@@ -3321,7 +3321,17 @@
       "kindAll": "All organizations",
       "kindPersonal": "Personal",
       "kindTeam": "Team",
-      "noOrganizationsMatch": "No organizations match \"{query}\"."
+      "noOrganizationsMatch": "No organizations match \"{query}\".",
+      "backToOrganizations": "Back to organizations",
+      "orgDetailCouldNotBeRead": "This organization could not be read",
+      "orgNotFound": "Organization not found",
+      "orgNotFoundHint": "It may have been deleted since the list was loaded.",
+      "owner": "Owner",
+      "noOwner": "No owner",
+      "monthlyBudgetUsd": "Monthly budget (USD)",
+      "noBudget": "No budget",
+      "noMembers": "No members",
+      "membersTruncated": "Showing the first {shown} of {total} members"
     },
     "agentDetail": {
       "perMonth": "${amount} per month"
