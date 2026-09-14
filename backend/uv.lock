@@ -108,7 +108,7 @@ requires-dist = [
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "liteparse", specifier = ">=2.14.4" },
     { name = "llama-cloud", specifier = ">=2.16.0" },
-    { name = "logfire", extras = ["fastapi", "asyncpg", "redis", "httpx"], specifier = ">=4.41.0" },
+    { name = "logfire", extras = ["fastapi", "asyncpg", "redis", "httpx"], specifier = ">=5.0.0" },
     { name = "mem0ai", specifier = ">=2.0.20" },
     { name = "openpyxl", specifier = ">=3.1.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -117,9 +117,9 @@ requires-dist = [
     { name = "pydantic", extras = ["email"], specifier = ">=2.13.5" },
     { name = "pydantic-ai-backend", extras = ["console", "remote"], specifier = ">=0.2.29" },
     { name = "pydantic-ai-harness", specifier = ">=0.30.0" },
-    { name = "pydantic-ai-skills", specifier = ">=1.4.0" },
-    { name = "pydantic-ai-slim", extras = ["mcp"], specifier = ">=2.35.3" },
-    { name = "pydantic-ai-slim", extras = ["openrouter", "anthropic", "google", "duckduckgo", "web-fetch", "groq", "mistral", "cohere", "huggingface", "xai"], specifier = ">=2.35.3" },
+    { name = "pydantic-ai-skills", specifier = ">=1.4.0,<2" },
+    { name = "pydantic-ai-slim", extras = ["mcp"], specifier = ">=2.42.0" },
+    { name = "pydantic-ai-slim", extras = ["openrouter", "anthropic", "google", "duckduckgo", "web-fetch", "groq", "mistral", "cohere", "huggingface", "xai"], specifier = ">=2.42.0" },
     { name = "pydantic-monty", specifier = ">=0.0.23" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", specifier = ">=2.14.0" },
@@ -2355,7 +2355,7 @@ wheels = [
 
 [[package]]
 name = "logfire"
-version = "4.41.0"
+version = "5.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "executing" },
@@ -2366,9 +2366,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/1a/529f5fd3d0b72eca62737e07b290d38737f104f31891d23e5ed47a8ec7a0/logfire-4.41.0.tar.gz", hash = "sha256:3806fba60389d57c38a12a88135a7c7bf9d0fca09325094517e976b29b5b9d33", size = 1302531, upload-time = "2026-08-20T17:42:23.037Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/da/0c73a4447dffe01e1737580556f5f061ffda8f85e46fbf35ac36f5b64d27/logfire-5.1.0.tar.gz", hash = "sha256:edf6c7d33c00214e11c2cdc567eb53051be36289747091e8bb910527e5970bea", size = 1359738, upload-time = "2026-09-11T10:25:11.674Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/e1/ee33bf0e3f85c00a4235c8c9c4e23f3955154d842f15f0377936461ec6a3/logfire-4.41.0-py3-none-any.whl", hash = "sha256:5bae36637aef81eeee6bfa5d764bf3cff0755af613a4888fd0ae4a656cd2451e", size = 426654, upload-time = "2026-08-20T17:42:20.092Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/02/b32c3d5c298e4a9010694d261fb82c2c672747c0bf2b47bffda484aef349/logfire-5.1.0-py3-none-any.whl", hash = "sha256:c1d54eabf39f4c8f5e18e71f35da13375c8adb144c263f3076e650ba85929108", size = 474841, upload-time = "2026-09-11T10:25:08.131Z" },
 ]
 
 [package.optional-dependencies]
@@ -3302,8 +3302,8 @@ name = "pendulum"
 version = "3.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "python-dateutil" },
-    { name = "tzdata" },
+    { name = "python-dateutil", marker = "python_full_version < '3.13'" },
+    { name = "tzdata", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/72/9a51afa0a822b09e286c4cb827ed7b00bc818dac7bd11a5f161e493a217d/pendulum-3.2.0.tar.gz", hash = "sha256:e80feda2d10fa3ff8b1526715f7d33dcb7e08494b3088f2c8a3ac92d4a4331ce", size = 86912, upload-time = "2026-01-30T11:22:24.093Z" }
 wheels = [
@@ -3889,7 +3889,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "2.40.0"
+version = "2.43.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3901,9 +3901,9 @@ dependencies = [
     { name = "pydantic-graph" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/21/1c93a1b1f0cadb66c19f152e6812241291aa570eef94f07e2fda0d94fd78/pydantic_ai_slim-2.40.0.tar.gz", hash = "sha256:c02aed7c3214d962163afee439af662c7c78396365449b4ea0ef94567485407d", size = 1391044, upload-time = "2026-09-05T00:19:07.981Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/09/6672706de85503112ad76820d6e8444742f08610e5be868f75f0a37ea19a/pydantic_ai_slim-2.43.0.tar.gz", hash = "sha256:72c123024b8ecc1c6358a34dc9b88e5e7902232b16cb05a82f7a457861a891dc", size = 1464836, upload-time = "2026-09-12T01:05:38.532Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/4d/d4d82c5fe8e37f6e653f4e2227b14002aa22f458119e929edd4b2a3317fc/pydantic_ai_slim-2.40.0-py3-none-any.whl", hash = "sha256:c943543939a6a8ad490c8dd48429957cb6b2d6479f0a47332253b6f8fbc5d993", size = 1635082, upload-time = "2026-09-05T00:19:00.712Z" },
+    { url = "https://files.pythonhosted.org/packages/21/c0/8631a038946d3782de9370ba1581d6780f276ca462b94d3e9c1d8d9e1f85/pydantic_ai_slim-2.43.0-py3-none-any.whl", hash = "sha256:b7843c2b8a8499beeb7dc82b143951bb47765256fa21732f1d4dcbfd7b84eacc", size = 1726087, upload-time = "2026-09-12T01:05:30.754Z" },
 ]
 
 [package.optional-dependencies]
@@ -4032,7 +4032,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "2.40.0"
+version = "2.43.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -4040,9 +4040,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/67/91/ad6871ffa1804c54e2427f3b47c62d9014ebbb4f689eced52a72b76425e1/pydantic_graph-2.40.0.tar.gz", hash = "sha256:ec0b84a627cdc398854e19cc277a9b255ac3acd4122eaef4fe11a1557c8c8775", size = 45188, upload-time = "2026-09-05T00:19:10.268Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/c9/cf80cd8d7b114ab6eeb87bfb786bb9a761aa51e91025e3e3bf419c2b1a9b/pydantic_graph-2.43.0.tar.gz", hash = "sha256:31ce4900f99c1c5eab7daeed07ec6f2b4545517562fe0394c5d5385a0a1528f0", size = 45189, upload-time = "2026-09-12T01:05:40.903Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/59/4a/d6f4da4a4ed9c4f6451fff046f982b14c35d378cdc3238c30dc977e7ec52/pydantic_graph-2.40.0-py3-none-any.whl", hash = "sha256:e2db5b8694b44b5f5e01e37d2ca1ef3b2e9bf104c7d0a8f13028b914a296905e", size = 52698, upload-time = "2026-09-05T00:19:04.016Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/f9/5d7979da026d09ca320b844e5080ef393770a7efbe14acf5e8eb92a67fdb/pydantic_graph-2.43.0-py3-none-any.whl", hash = "sha256:70ce81b2aa69440d30e5a0aa9082f13fff45b5bf4e44f06a63551e90b65f41a4", size = 52700, upload-time = "2026-09-12T01:05:34.374Z" },
 ]
 
 [[package]]
@@ -5681,8 +5681,8 @@ name = "whenever"
 version = "0.10.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-    { name = "tzlocal", marker = "sys_platform != 'darwin' and sys_platform != 'linux'" },
+    { name = "tzdata", marker = "python_full_version >= '3.13' and sys_platform == 'win32'" },
+    { name = "tzlocal", marker = "python_full_version >= '3.13' and sys_platform != 'darwin' and sys_platform != 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/40/94856fe2439c4b8162d1a23b4cf3a48bb00bed0ed7b8d10add40988fa555/whenever-0.10.3.tar.gz", hash = "sha256:af8958c870bd178742f0089c3552d5702241cab1f4b6bdfd3b03111db4bc2150", size = 435946, upload-time = "2026-07-17T07:35:25.734Z" }
 wheels = [
