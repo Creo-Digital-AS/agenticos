@@ -55,6 +55,7 @@ class TestVerification:
 
         assert response.status_code == 200
 
+    @pytest.mark.security
     async def test_a_bot_without_a_signing_secret_is_refused(self):
         """No secret is not a bot that skips verification - it is an
         unauthenticated endpoint that runs an agent on somebody's budget. It is

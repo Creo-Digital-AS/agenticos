@@ -1,5 +1,5 @@
 ---
-source_sha: "e783991fce12"
+source_sha: "bdf0839310f4"
 ---
 
 # Seguridad { #security }
@@ -145,6 +145,16 @@ Encuadrado frente a las salvaguardas técnicas de HIPAA §164.312 y SOC 2 CC6–
 | Cabeceras de framing y MIME en cada respuesta; CSP en todas salvo los endpoints de la referencia de la API | `SecurityHeadersMiddleware` (`app/core/middleware.py`), cuyos `exclude_paths` quitan la CSP — no el framing ni el MIME — para OpenAPI, Swagger y ReDoc; más la CSP propia del frontend por deployment (`frontend/src/middleware.ts`) | `test_security_headers.py`, incluido `test_an_excluded_path_keeps_its_framing_but_drops_the_csp` |
 | HTTPS y HSTS | Terminados en el reverse proxy — el `nginx/nginx.conf` incluido pone HSTS; la aplicación no, por diseño | Asunto del deployment; ver la lista de endurecimiento |
 | Límites de peticiones en las superficies públicas | Límites sobre Redis en la API de runs, el widget embed y las páginas alojadas (`app/services/rate_limit.py`); límites por remitente en los bots de canal (`app/services/channels/router.py`) | `test_rate_limited_surfaces.py`; el límite del bot de canal está implementado, pero poco testeado |
+
+### Los rechazos como conjunto { #the-refusals-as-a-set }
+
+Los tests de rechazo de arriba llevan el marcador `security`. `make test-security`
+ejecuta todo el conjunto, y CI publica la lista recogida como artefacto
+`security-tests.txt` en cada ejecución del backend (#1417) — así los rechazos se
+pueden contar y leer, en vez de darlos por supuestos. Un test cuyo nombre o módulo
+mencione un tenant, un permiso, un budget, una aprobación, un secreto o texto en
+claro y no lleve el marcador hace fallar `tests/test_security_marker.py`, que
+mantiene la lista completa a medida que crece la suite.
 
 ## Resumen { #recap }
 

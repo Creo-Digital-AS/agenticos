@@ -1,5 +1,5 @@
 ---
-source_sha: "e783991fce12"
+source_sha: "bdf0839310f4"
 ---
 
 # Sicherheit { #security }
@@ -149,6 +149,17 @@ SOC 2 CC6–CC8.
 | Framing- und MIME-Header auf jeder Antwort; CSP auf allen außer den API-Referenz-Endpunkten | `SecurityHeadersMiddleware` (`app/core/middleware.py`), dessen `exclude_paths` die CSP fallen lassen — nicht Framing oder MIME — für OpenAPI, Swagger und ReDoc; dazu die eigene CSP des Frontends pro Deployment (`frontend/src/middleware.ts`) | `test_security_headers.py`, inkl. `test_an_excluded_path_keeps_its_framing_but_drops_the_csp` |
 | HTTPS und HSTS | Am Reverse Proxy terminiert — die mitgelieferte `nginx/nginx.conf` setzt HSTS; die Anwendung bewusst nicht | Sache des Deployments; siehe die Härtungs-Checkliste |
 | Rate-Limits auf öffentlichen Oberflächen | Redis-gestützte Limits auf der Run-API, dem Embed-Widget und den gehosteten Seiten (`app/services/rate_limit.py`); Limits pro Absender auf Kanal-Bots (`app/services/channels/router.py`) | `test_rate_limited_surfaces.py`; das Limit der Kanal-Bots ist implementiert, aber dünn getestet |
+
+### Die Refusals als Menge { #the-refusals-as-a-set }
+
+Die Refusal-Tests oben tragen den `security`-Marker. `make test-security` führt
+die ganze Menge aus, und CI veröffentlicht die gesammelte Liste bei jedem
+Backend-Lauf als Artefakt `security-tests.txt` (#1417) — die Refusals lassen sich
+also zählen und lesen, statt geglaubt zu werden. Ein Test, dessen Name oder Modul
+einen Mandanten, eine Berechtigung, ein Budget, eine Freigabe, ein Secret oder
+Klartext erwähnt und den Marker nicht trägt, lässt
+`tests/test_security_marker.py` fehlschlagen, was die Liste vollständig hält,
+während die Suite wächst.
 
 ## Fazit { #recap }
 

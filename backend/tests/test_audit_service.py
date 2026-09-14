@@ -22,7 +22,7 @@ from app.core.audit import chain_hash
 from app.core.permissions import AuthContext, OrgRoleName
 from app.services.audit import AuditService
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.security]
 
 
 def _ctx(org_id: uuid.UUID | None = None) -> AuthContext:

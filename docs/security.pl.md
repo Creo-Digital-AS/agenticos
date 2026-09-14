@@ -1,5 +1,5 @@
 ---
-source_sha: "e783991fce12"
+source_sha: "bdf0839310f4"
 ---
 
 # Bezpieczeństwo { #security }
@@ -141,6 +141,15 @@ w mocy. Ujęte względem zabezpieczeń technicznych HIPAA §164.312 i SOC 2 CC6�
 | Nagłówki ramkowania i MIME na każdej odpowiedzi; CSP na wszystkich poza endpointami referencji API | `SecurityHeadersMiddleware` (`app/core/middleware.py`), którego `exclude_paths` zdejmują CSP — nie ramkowanie ani MIME — dla OpenAPI, Swaggera i ReDoc; plus CSP frontendu per wdrożenie (`frontend/src/middleware.ts`) | `test_security_headers.py`, w tym `test_an_excluded_path_keeps_its_framing_but_drops_the_csp` |
 | HTTPS i HSTS | Terminowane na reverse proxy — dołączony `nginx/nginx.conf` ustawia HSTS; aplikacja z założenia nie | Sprawa wdrożenia; zobacz listę kontrolną hardeningu |
 | Limity zapytań na publicznych powierzchniach | Limity oparte o Redis na API runów, widgecie embed i stronach hostowanych (`app/services/rate_limit.py`); limity per nadawca na botach kanałów (`app/services/channels/router.py`) | `test_rate_limited_surfaces.py`; limit bota kanału jest zaimplementowany, ale cienko przetestowany |
+
+### Odmowy jako zbiór { #the-refusals-as-a-set }
+
+Testy odmów powyżej niosą marker `security`. `make test-security` uruchamia cały
+zbiór, a CI publikuje zebraną listę jako artefakt `security-tests.txt` przy każdym
+przebiegu backendu (#1417) — więc odmowy da się policzyć i przeczytać, a nie tylko
+przyjąć na wiarę. Test, którego nazwa albo moduł wspomina tenanta, uprawnienie,
+budżet, zatwierdzenie, sekret albo tekst jawny, a nie ma markera, wywala
+`tests/test_security_marker.py`, co trzyma listę kompletną w miarę rozrostu suite.
 
 ## Podsumowanie { #recap }
 

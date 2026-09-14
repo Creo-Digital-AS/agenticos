@@ -135,6 +135,15 @@ true. Framed against HIPAA §164.312 technical safeguards and SOC 2 CC6–CC8.
 | HTTPS and HSTS | Terminated at the reverse proxy — the bundled `nginx/nginx.conf` sets HSTS; the app does not, by design | Deployment concern; see the hardening checklist |
 | Rate limits on public surfaces | Redis-backed limits on the run API, the embed widget and hosted pages (`app/services/rate_limit.py`); per-sender limits on channel bots (`app/services/channels/router.py`) | `test_rate_limited_surfaces.py`; the channel-bot limit is implemented but thinly tested |
 
+### The refusals as a set
+
+The refusal tests above carry the `security` marker. `make test-security` runs
+the whole set, and CI publishes the collected list as a `security-tests.txt`
+artifact on each backend run (#1417) — so the refusals can be counted and read,
+not taken on trust. A test whose name or module mentions a tenant, a permission,
+a budget, an approval, a secret or plaintext but lacks the marker fails
+`tests/test_security_marker.py`, which keeps the list complete as the suite grows.
+
 ## Recap
 
 - Trust the operator's infrastructure; trust no request into it. The boundaries

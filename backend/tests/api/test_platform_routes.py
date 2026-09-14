@@ -507,6 +507,7 @@ class TestEachRouteDemandsItsOwnPermission:
     more permissions than the route needs.
     """
 
+    @pytest.mark.security
     @pytest.mark.parametrize("call", CALLS, ids=str)
     @pytest.mark.usefixtures("synthetic_roles")
     async def test_a_caller_missing_only_that_permission_is_refused(
@@ -521,6 +522,7 @@ class TestEachRouteDemandsItsOwnPermission:
             f"{call} admitted a caller holding every permission except {call.permission.value}"
         )
 
+    @pytest.mark.security
     @pytest.mark.parametrize("call", CALLS, ids=str)
     @pytest.mark.usefixtures("synthetic_roles")
     async def test_a_caller_holding_only_that_permission_gets_through(
@@ -882,6 +884,7 @@ class TestEveryPlatformRouteIsGuarded:
     can notice a route that nobody remembered to name.
     """
 
+    @pytest.mark.security
     def test_no_platform_route_decides_nothing(self) -> None:
         """Authorization happens at the gate, or inside the sharing service.
 
