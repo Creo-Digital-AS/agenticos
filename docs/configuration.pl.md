@@ -1,5 +1,5 @@
 ---
-source_sha: "3f25ff0ca912"
+source_sha: "11b4afede893"
 ---
 
 # Konfiguracja { #configuration }
@@ -127,6 +127,7 @@ Walidacja produkcyjna: `API_KEY` nie może używać wartości domyślnej przy
 | `GOOGLE_CLIENT_SECRET` | (empty) | Client secret Google OAuth2 |
 | `GOOGLE_REDIRECT_URI` | `http://localhost:8000/api/v1/oauth/google/callback` | URL callbacku OAuth2 |
 | `FRONTEND_URL` | `http://localhost:3000` | URL frontendu dla przekierowań OAuth2 |
+| `DESKTOP_DEEP_LINK_SCHEME` | `agenticos` | Schemat, który rejestruje shell desktopowy dla logowania przekazanego przeglądarce systemowej ([Desktop](desktop.md#signing-in)). Callback buduje z niego przekierowanie, więc to ustawienie, a nie coś, co wybiera wołający |
 
 Skąd wziąć tę parę: [konsola Google Cloud](https://console.cloud.google.com/) →
 APIs & Services → Credentials → Create OAuth client ID → **Web application**.
