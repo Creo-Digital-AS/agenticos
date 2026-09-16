@@ -200,6 +200,9 @@ true. Framed against HIPAA §164.312 technical safeguards and SOC 2 CC6–CC8.
 | An approval is decided exactly once | `ApprovalService.decide` refuses a non-pending row read `for_update` (`app/services/approvals.py`) | `test_approvals_queue.py::TestDecidingTwiceIsRefused` |
 | Data is deleted on a schedule, per class and per organization | A daily sweep hard-deletes conversations, runs, workspaces, memory and uploaded documents past their period, recording counts and never content (`app/services/retention.py`, `app/worker/tasks/rag_tasks.py`). See [Retention](governance.md#retention) | `test_retention.py`, `tests/integration/test_retention_sweep.py` |
 | A purged run still counts toward the month's bill | The sweep keeps a per-month total on `purged_run_spend` before the rows go, summed by `app/services/spend.py` — otherwise a cap metered on the figure stops enforcing mid-month | `tests/integration/test_retention_sweep.py::TestWhatSurvives` |
+| Static analysis reaches the change that introduces the finding | CodeQL (`security-extended`) on every pull request for Python, JavaScript/TypeScript, Rust and the workflows, plus a weekly full run (`.github/workflows/codeql.yml`). The merge is refused by code-scanning merge protection on `main`'s ruleset, not by the job's own status — see [branching](branching.md#what-is-enforced-and-by-what) | `test_codeql_workflow.py` |
+| A known-vulnerable dependency fails the pull request | `make audit` over `backend/uv.lock` and `make audit-frontend` over `frontend/bun.lock`, both in the `Security Scan` job and in `make check` | `test_ci_parity.py` |
+| What a release contains can be read without building it | A CycloneDX SBOM per image, generated from the published manifest and attached to the release; [the component inventory](reference/components.md) is the readable index | `test_images_workflow.py::TestTheReleaseCarriesAnInventory` |
 
 ### Confidentiality of credentials · HIPAA §164.312(a)(2)(iv)
 
