@@ -392,6 +392,15 @@ CALLS: tuple[Call, ...] = (
         body={"portal_key": "google"},
     ),
     Call(
+        # The App variant, which is not an OAuth start at all: an App has no
+        # consent flow, so connecting it is recording which installation this
+        # organization's triggers belong to. Same permission for the same reason.
+        "POST",
+        "/mcp-connections/portals/github-app",
+        Perm.MCP_MANAGE,
+        body={"installation_id": "42"},
+    ),
+    Call(
         "POST",
         "/mcp-connections",
         Perm.MCP_MANAGE,
@@ -1487,6 +1496,11 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # service verifies that HMAC against the trigger named in the path. A
         # session here would mean the integration could never deliver.
         ("POST", f"{V1}/webhooks/triggers/{{source}}/{{trigger_id}}"),
+        # A GitHub App's single delivery URL. The same arrangement with the routing
+        # moved into the body: an App has one URL and one signing secret per
+        # installation, so the path names nothing and the installation id in the
+        # payload selects the grant whose secret verifies the HMAC (#1072).
+        ("POST", f"{V1}/webhooks/github-app"),
         # The public face of an embedded agent. There is no session to have:
         # these are reached from a stranger's browser on somebody else's site.
         # What authorises them is the widget's key plus the `Origin` the browser
