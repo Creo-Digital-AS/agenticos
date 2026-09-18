@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.embedding_resolution import EmbeddingKeySource, ResolvedEmbeddings
+from app.services.rag.filters import AppScope, RetrievalQuery, TenantScope
 from app.services.rag.ingestion import IngestionService
 from app.services.rag.models import (
     Document,
@@ -119,6 +122,41 @@ class TestTheIngesterThreadsItsBoundTenant:
 
         assert store.find_existing_document.await_args.kwargs["tenant"] == ORG_B
 
+    async def test_document_metadata_mirrors_the_bound_tenant_not_a_caller_value(self):
+        """`document.metadata.organization_id` is set from `self._tenant` alone.
+
+        It used to be set from a caller-supplied `organization_id` naming the
+        *paying* organization, which disagreed with the bound tenant for an
+        app-scoped base (`self._tenant is None` even though a real organization
+        uploaded and paid) - mistagging the row with the payer and leaving it
+        unreachable by every scope (#1684, FA-039). There is no `organization_id`
+        parameter on `ingest_file` to pass a conflicting value through any more.
+        """
+        service, store = _service(ORG_A)
+
+        await service.ingest_file(
+            filepath=Path("handbook.pdf"),
+            collection_name="kb",
+            replace=True,
+            source_path="/srv/sync/handbook.pdf",
+        )
+
+        document = store.insert_document.await_args.kwargs["document"]
+        assert document.metadata.organization_id == str(ORG_A)
+
+    async def test_an_app_scoped_ingester_stamps_no_organization_on_the_document(self):
+        service, store = _service(None)
+
+        await service.ingest_file(
+            filepath=Path("handbook.pdf"),
+            collection_name="kb",
+            replace=True,
+            source_path="/srv/sync/handbook.pdf",
+        )
+
+        document = store.insert_document.await_args.kwargs["document"]
+        assert document.metadata.organization_id is None
+
     async def test_remove_document_uses_the_bound_tenant_by_default(self):
         service, store = _service(ORG_A)
 
@@ -161,10 +199,24 @@ class TestTheChunkMetadataCarriesTheTenant:
 
     def test_no_tenant_leaves_no_tag(self):
         """A deployment-wide write (app-scoped, CLI, local sync) stamps nothing,
-        so the `IS NULL` scope its own reads use matches it."""
+        so the `IS NULL` scope its own reads use matches it. `DocumentMetadata`
+        always carries the key (pydantic dumps every field), so this is a null
+        value rather than an absent key - `metadata->>'organization_id'` reads
+        both as SQL NULL, which is what the scope actually tests against."""
         meta = self._store()._build_chunk_metadata(self._chunk(), _document(), None)
 
-        assert "organization_id" not in meta
+        assert meta["organization_id"] is None
+
+    def test_a_tenant_set_directly_on_document_metadata_is_stamped(self):
+        """A caller with no separate tenant argument - a direct store caller
+        seeding rows, not through `IngestionService` - sets
+        `document.metadata.organization_id` itself and gets it stamped as-is."""
+        doc = _document()
+        doc.metadata.organization_id = str(ORG_A)
+
+        meta = self._store()._build_chunk_metadata(self._chunk(), doc, None)
+
+        assert meta["organization_id"] == str(ORG_A)
 
 
 class TestKnowledgeBaseVectorTenant:
@@ -253,18 +305,27 @@ class TestResolveTenantForASearch:
         assert await store.resolve_tenant("kb", ORG_B) is None
 
 
+@asynccontextmanager
+async def _noop_savepoint() -> AsyncIterator[None]:
+    yield
+
+
 class TestPgVectorStoreScopesEveryRowOp:
     """Each statement carries the tenant conjunct and binds the value (#1684)."""
 
     @staticmethod
     def _store_over(execute: AsyncMock) -> PgVectorStore:
         session = MagicMock(execute=execute, commit=AsyncMock())
+        # `search` tunes HNSW recall inside a savepoint (FA-039 H1); a mocked
+        # session has to satisfy that context manager too.
+        session.begin_nested = MagicMock(side_effect=_noop_savepoint)
         session_ctx = MagicMock()
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=False)
         embedder = MagicMock(embed_query=MagicMock(return_value=[0.1, 0.2, 0.3]))
         store = PgVectorStore.__new__(PgVectorStore)
         store.async_session = MagicMock(return_value=session_ctx)
+        store.settings = MagicMock(hnsw_iterative_scan=False, hnsw_ef_search=100)
         store._collection_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
         store._table = MagicMock(return_value="rag_kb")  # type: ignore[method-assign]
         store._for_collection = AsyncMock(return_value=(embedder, 3))  # type: ignore[method-assign]
@@ -328,11 +389,26 @@ class TestPgVectorStoreScopesEveryRowOp:
         execute = AsyncMock(return_value=MagicMock(fetchall=MagicMock(return_value=[])))
         store = self._store_over(execute)
 
-        await store.search("kb", "query", limit=4, tenant=ORG_A)
+        await store.search(
+            "kb", "query", RetrievalQuery(scope=TenantScope(organization_id=ORG_A)), limit=4
+        )
 
         statement = str(execute.await_args.args[0])
-        assert "(metadata->>'organization_id') = :org" in statement
-        assert execute.await_args.args[1]["org"] == str(ORG_A)
+        assert "metadata->>'organization_id' = :scope_org" in statement
+        assert execute.await_args.args[1]["scope_org"] == str(ORG_A)
+
+    async def test_search_scopes_an_app_base_by_is_null(self):
+        """The FA-039 `AppScope` compiles to the same `IS NULL` conjunct the
+        deployment-wide `_org_filter(None)` used, so an app-scoped base's search
+        reads its own untagged rows rather than matching nothing (#1684)."""
+        execute = AsyncMock(return_value=MagicMock(fetchall=MagicMock(return_value=[])))
+        store = self._store_over(execute)
+
+        await store.search("kb", "query", RetrievalQuery(scope=AppScope()), limit=4)
+
+        statement = str(execute.await_args.args[0])
+        assert "(metadata->>'organization_id') IS NULL" in statement
+        assert "scope_org" not in execute.await_args.args[1]
 
     async def test_get_collection_info_counts_only_the_tenants_rows(self):
         execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=2)))

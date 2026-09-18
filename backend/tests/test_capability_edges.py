@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic_ai import ModelRetry, RunContext
@@ -34,6 +35,7 @@ from app.core.exceptions import ConfigurationError, ExternalServiceError
 from app.core.secret_kinds import ApiKeySecret
 from app.services.mcp_catalog import CatalogAuth, get_entry
 from app.services.rag.embeddings import EmbeddingService, OpenAIEmbeddingProvider
+from app.services.rag.filters import RetrievalQuery, TenantScope
 from app.services.rag.models import SearchResult
 from app.services.rag.retrieval import RetrievalService
 from app.services.rag.vectorstore import PgVectorStore
@@ -78,9 +80,12 @@ class TestSearchingSeveralCollections:
             ]
         )
 
+        scope = TenantScope(organization_id=uuid4())
         with pytest.raises(RuntimeError):
             await _retrieval_over(store).retrieve_multi(
-                query="anything", collection_names=["healthy", "broken"]
+                query="anything",
+                collection_names=["healthy", "broken"],
+                scopes={"healthy": scope, "broken": scope},
             )
 
     @pytest.mark.anyio
@@ -92,8 +97,11 @@ class TestSearchingSeveralCollections:
             side_effect=[[SearchResult(content="found", score=0.9)], []],
         )
 
+        scope = TenantScope(organization_id=uuid4())
         results = await _retrieval_over(store).retrieve_multi(
-            query="anything", collection_names=["populated", "never_ingested"]
+            query="anything",
+            collection_names=["populated", "never_ingested"],
+            scopes={"populated": scope, "never_ingested": scope},
         )
 
         assert [r.content for r in results] == ["found"]
@@ -111,7 +119,9 @@ class TestSearchingSeveralCollections:
         store.search = AsyncMock(return_value=[SearchResult(content="chunk", score=0.5)])
 
         results = await _retrieval_over(store).retrieve(
-            query="anything", collection_name="handbook"
+            query="anything",
+            collection_name="handbook",
+            scope=TenantScope(organization_id=uuid4()),
         )
 
         assert [r.metadata["collection"] for r in results] == ["handbook"]
@@ -125,31 +135,50 @@ class TestKnowledgeSearchGuards:
         assert "No active knowledge bases" in result
 
     @pytest.mark.anyio
+    async def test_a_search_without_an_organization_is_refused(self):
+        """Fail-closed: no trusted tenant means no scope, so no search runs.
+
+        An unscoped search over a shared physical table could read another
+        tenant's chunks, so the tool refuses rather than widening.
+        """
+        result = await search_knowledge_base(
+            query="x", kb_collection_names=["kb_a"], organization_id=None
+        )
+        assert "No organization context" in result
+
+    @pytest.mark.anyio
     async def test_one_collection_uses_the_single_collection_path(self):
         service = MagicMock()
+        service.resolve_scope = AsyncMock(return_value=MagicMock())
         service.retrieve = AsyncMock(return_value=[])
         with patch(
             "app.agents.capabilities.knowledge._search.get_retrieval_service",
             return_value=service,
         ):
-            await search_knowledge_base(query="x", kb_collection_names=["kb_a"])
+            await search_knowledge_base(
+                query="x", kb_collection_names=["kb_a"], organization_id=uuid4()
+            )
         service.retrieve.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_several_collections_use_the_multi_path(self):
         service = MagicMock()
+        service.resolve_scope = AsyncMock(return_value=MagicMock())
         service.retrieve_multi = AsyncMock(return_value=[])
         with patch(
             "app.agents.capabilities.knowledge._search.get_retrieval_service",
             return_value=service,
         ):
-            await search_knowledge_base(query="x", kb_collection_names=["kb_a", "kb_b"])
+            await search_knowledge_base(
+                query="x", kb_collection_names=["kb_a", "kb_b"], organization_id=uuid4()
+            )
         service.retrieve_multi.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_a_retrieval_failure_surfaces_as_an_external_service_error(self):
         """Not a silent empty result: an agent must not answer as if it searched."""
         service = MagicMock()
+        service.resolve_scope = AsyncMock(return_value=MagicMock())
         service.retrieve = AsyncMock(side_effect=RuntimeError("pgvector down"))
         with (
             patch(
@@ -158,7 +187,9 @@ class TestKnowledgeSearchGuards:
             ),
             pytest.raises(ExternalServiceError),
         ):
-            await search_knowledge_base(query="x", kb_collection_names=["kb_a"])
+            await search_knowledge_base(
+                query="x", kb_collection_names=["kb_a"], organization_id=uuid4()
+            )
 
     @pytest.mark.anyio
     async def test_an_unconfigured_deployment_keeps_saying_what_to_configure(self):
@@ -169,6 +200,7 @@ class TestKnowledgeSearchGuards:
         base search failed" leaves an operator with a symptom and no next step.
         """
         service = MagicMock()
+        service.resolve_scope = AsyncMock(return_value=MagicMock())
         service.retrieve = AsyncMock(
             side_effect=ConfigurationError(
                 message="No embedding credential is configured",
@@ -182,7 +214,9 @@ class TestKnowledgeSearchGuards:
             ),
             pytest.raises(ConfigurationError) as refusal,
         ):
-            await search_knowledge_base(query="x", kb_collection_names=["kb_a"])
+            await search_knowledge_base(
+                query="x", kb_collection_names=["kb_a"], organization_id=uuid4()
+            )
 
         assert refusal.value.details == {"key_origin": "collection 'kb_a'"}
 
@@ -303,7 +337,8 @@ class TestEmbeddingCredential:
         store._for_collection = AsyncMock(side_effect=AssertionError("should not embed"))
         store.async_session = MagicMock(side_effect=AssertionError("should not query"))
 
-        assert asyncio.run(store.search("never_ingested", "anything")) == []
+        query_filter = RetrievalQuery(scope=TenantScope(organization_id=uuid4()))
+        assert asyncio.run(store.search("never_ingested", "anything", query_filter)) == []
 
     def test_the_service_builds_with_no_key_and_refuses_only_when_asked_to_embed(self):
         """`get_embedding_service` is a FastAPI dependency of every RAG route.

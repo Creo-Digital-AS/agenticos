@@ -123,6 +123,9 @@ class IngestionService:
         source_path: str = "",
         *,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
+        source: str | None = None,
+        organizational_unit: str | None = None,
+        doc_date: str | None = None,
     ) -> IngestionResult:
         """`source_path` accepts URI schemes like gdrive://id or s3://bucket/key.
 
@@ -137,6 +140,24 @@ class IngestionService:
         insert's `CREATE TABLE IF NOT EXISTS` would resurrect the dropped table
         and leave an untracked one behind (#1275). A caller that can tell whether
         the collection still exists passes it so the write is skipped instead.
+
+        The **security-bearing** tenant stamped on every chunk (the conjunct
+        retrieval ANDs into every query) is `self._tenant` - resolved once from
+        the collection's knowledge base by whoever built this service, never a
+        per-call argument. It used to also ride `document.metadata.organization_id`,
+        set here from a caller-supplied `organization_id` naming whichever
+        organization was *paying* for the embeddings; those agree for an org base,
+        but not for an app-scoped one, where `self._tenant` is `None` even though a
+        real organization uploaded and paid. Trusting the caller's value left an
+        app-scoped base's chunks stamped with whichever organization uploaded
+        first - unreachable by both the `IS NULL` scope meant to match them and
+        every organization's own equality scope (#1684, FA-039). `document.metadata.organization_id`
+        is now mirrored from `self._tenant` alone, so it can only ever agree with
+        the value `_build_chunk_metadata` stamps. `source`, `organizational_unit`
+        and `doc_date` are the FA-039 business metadata; `document_type` is derived
+        here from the parsed filetype (P1). All ride `document.metadata`, so
+        `_build_chunk_metadata` writes them per chunk with no change to the write
+        path.
         """
         try:
             document: Document = await self.processor.process_file(filepath)
@@ -148,6 +169,27 @@ class IngestionService:
             if source_path:
                 document.metadata.source_path = source_path
                 document.metadata.filename = Path(source_path).name
+
+            # Trusted, security-bearing tenant plus the business dimensions. Set
+            # before insert_document so _build_chunk_metadata carries them. Mirrors
+            # self._tenant - never a caller-supplied organization_id, which is the
+            # paying organization and can disagree with it for an app-scoped base.
+            document.metadata.organization_id = (
+                str(self._tenant) if self._tenant is not None else None
+            )
+            document.metadata.source = source
+            document.metadata.organizational_unit = organizational_unit
+            document.metadata.doc_date = doc_date
+            # document_type is the stored filetype/extension, a pure derivation
+            # (FA-039 P1). A richer semantic document_category is deferred pending
+            # issue-owner confirmation - do not overload document_type with it.
+            # Lower-cased so it matches the closed vocabulary (built from the
+            # lower-case parser format lists) and the routing that already lowers
+            # `suffix.lower()`: `filetype` keeps the original case for display, but
+            # a `REPORT.PDF` must be filterable as `pdf`, the only casing a caller
+            # can submit past `RetrievalFilters` validation (FA-039 P1).
+            filetype = document.metadata.filetype
+            document.metadata.document_type = filetype.lower() if filetype else None
 
             existing_id = None
             if replace:

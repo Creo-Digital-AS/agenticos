@@ -49,8 +49,10 @@ from app.services.rag.connectors import CONNECTOR_REGISTRY
 from app.services.rag.documents import DocumentProcessor
 from app.services.rag.embeddings import EmbeddingService
 from app.services.rag.failures import IngestionStage, failure_summary
+from app.services.rag.filters import Source
 from app.services.rag.ingestion import IngestionService, StoredDocument
 from app.services.rag.models import IngestionResult, IngestionStatus
+from app.services.rag.provenance import iso_doc_date
 from app.services.rag.vectorstore import EmbeddingResolver
 from app.services.rag.vectorstore import PgVectorStore as VectorStore
 from app.services.spend import assert_organization_within_budget
@@ -390,6 +392,9 @@ async def _run_ingestion(
 
     ledger = SpendLedger(organization_id=organization_id)
     file_path = Path(filepath)
+    # An uploaded document's date: the file's own mtime, else ingestion time.
+    # The trusted tenant comes off the tracked row, never from the uploader.
+    upload_mtime = file_path.stat().st_mtime if file_path.exists() else None
     async with _ingestion_service(
         processor=processor, organization_id=organization_id, tenant=tenant
     ) as ingester:
@@ -401,6 +406,8 @@ async def _run_ingestion(
                     replace=replace,
                     source_path=source_path,
                     still_wanted=lambda: _still_ingestable(rag_document_id, collection_name),
+                    source=Source.UPLOAD,
+                    doc_date=iso_doc_date(upload_mtime),
                 )
         except Exception as exc:
             # `ingest_file` reports a failed parse or a failed index by returning
@@ -625,6 +632,14 @@ async def _run_sync(
                         # the filename fallback, and the row and the vector would
                         # now disagree about which file this is (#996).
                         source_path=source_path,
+                        # The origin only. Which tenant these chunks carry is not
+                        # decided here and never from the path: it is the
+                        # destination base's own `vector_tenant`, bound on the
+                        # ingester above - an organization's id for an org or
+                        # personal base, `None` for an app-scoped one, which
+                        # `AppScope` is what reads back (FA-039 R5, #1684).
+                        source=Source.LOCAL,
+                        doc_date=iso_doc_date(stat_result.st_mtime),
                     )
 
                 # Either way, which is the other half of #997: a file that failed
@@ -1103,6 +1118,16 @@ async def _run_source_sync(source_id: str, sync_log_id: str | None = None) -> di
                                 # go, or the collection grows a copy.
                                 replace=True,
                                 source_path=remote_file.source_path,
+                                # The trusted tenant already rides `ingester`'s own
+                                # bound `self._tenant`, resolved from the source's
+                                # collection when it was built above; `source` is
+                                # the connector's canonical name (gdrive, s3);
+                                # doc_date is the remote file's modified time, else
+                                # this file's mtime, else ingestion time.
+                                source=source.connector_type,
+                                doc_date=iso_doc_date(
+                                    remote_file.modified_at, stat_result.st_mtime
+                                ),
                             )
 
                         await _settle_document_row(row_id, result)
