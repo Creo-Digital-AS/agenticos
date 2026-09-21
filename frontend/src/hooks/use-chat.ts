@@ -16,6 +16,7 @@ import type {
   ActionRequest,
   AskUserAnswer,
   AskUserQuestion,
+  BrowserFrame,
   ChatMessageFile,
   Compaction,
   PersonalServiceGap,
@@ -36,6 +37,8 @@ import {
   resolveAwaitingOnResume,
   resumeFailureStatus,
 } from "@/lib/delegations";
+import { applyBrowserFrame, type Browse } from "@/lib/browse";
+import { useBrowserPanelStore } from "@/stores/browser-panel-store";
 import { buildAssistantParts } from "@/lib/conversation-to-chat";
 import { usePublicConfig } from "@/components/public-config/public-config-provider";
 import { toast } from "sonner";
@@ -166,6 +169,20 @@ export function useChat(options: UseChatOptions = {}) {
   // started to handle. Here the panels simply outlive `complete`, and each closes
   // on its own `subagent_complete`.
   const [delegations, setDelegations] = useState<Delegation[]>([]);
+  // The browses of the turn on screen, keyed by their own `call_id` and held
+  // outside the assistant message for the reason the delegations above are: a
+  // `browse_page` call outlives nothing here, but its finish frame can land
+  // after `complete`, and anything hung off the streaming message would lose the
+  // outcome - which for a browse is the whole answer.
+  const [browses, setBrowses] = useState<Browse[]>([]);
+  // Selected rather than destructured, so a frame arriving does not re-render
+  // this hook's whole tree every time the panel's own open state changes.
+  //
+  // Only `close`. Nothing here opens the panel: a browse shows itself as a card
+  // in the transcript, and expanding it is somebody's decision rather than the
+  // product's - a window opening over the conversation says watching the browser
+  // matters more than reading the answer, which is true for about four seconds.
+  const closeBrowserPanel = useBrowserPanelStore((state) => state.close);
   // The summary in flight, or `null`. Cleared by the finishing frame and by the
   // end of the turn: a `complete` that arrived without one - a run that failed
   // between the two - would otherwise leave the notice up until the next message.
@@ -412,6 +429,17 @@ export function useChat(options: UseChatOptions = {}) {
           // itself and the cases share one reducer instead of one copy each of
           // "find the task, change one field".
           setDelegations((current) => applyDelegationFrame(current, wsEvent.data as SubagentFrame));
+          break;
+        }
+
+        case "browser_opened":
+        case "browser_step":
+        case "browser_frame":
+        case "browser_finished": {
+          // One branch for every frame: the envelope's `type` is the frame's own
+          // `kind` (see `AgentSession._browser_event`), so the payload narrows
+          // itself and the cases share one reducer.
+          setBrowses((current) => applyBrowserFrame(current, wsEvent.data as BrowserFrame));
           break;
         }
 
@@ -683,6 +711,12 @@ export function useChat(options: UseChatOptions = {}) {
       // late frame from a background delegation of the turn before is dropped by
       // `applyDelegationFrame` rather than opening a nameless panel.
       setDelegations([]);
+      // A browse belongs to the turn that started it, and the panel draws the
+      // newest one - so without this the next turn opens under the last turn's
+      // viewport, and a browse that finished keeps a screenshot alive for as
+      // long as the hook does.
+      setBrowses([]);
+      closeBrowserPanel();
       setPersonalGaps([]);
       // Asking something new is the reader deciding not to wait for the turn
       // whose socket went away. Their call to make, and it is the only other
@@ -736,7 +770,16 @@ export function useChat(options: UseChatOptions = {}) {
       turnAgentIdRef.current = agentId;
       sendMessage(payload);
     },
-    [addMessage, updateMessage, setCurrentMessageId, sendMessage, conversationId],
+    [
+      addMessage,
+      updateMessage,
+      setCurrentMessageId,
+      sendMessage,
+      conversationId,
+      // The store action that shuts the browse panel when this turn ends the
+      // previous one's browse. Stable, and listed rather than omitted.
+      closeBrowserPanel,
+    ],
   );
 
   const sendChatMessage = useCallback(
@@ -788,7 +831,12 @@ export function useChat(options: UseChatOptions = {}) {
     // screen it would show the previous tenant's specialist names and prompts to
     // the new one.
     setDelegations([]);
-  }, [tenantId, clearQueued]);
+    // And the browse panel, which holds a screenshot of a page the previous
+    // tenant's agent was looking at - the one piece of this state that is a
+    // picture of somebody else's data.
+    setBrowses([]);
+    closeBrowserPanel();
+  }, [tenantId, clearQueued, closeBrowserPanel]);
 
   // The other half: a delegation, an approval and a question all belong to a run in
   // *this* conversation, and all three are drawn over whatever transcript is on
@@ -831,13 +879,15 @@ export function useChat(options: UseChatOptions = {}) {
     // approval is exactly that turn.
     if (previous === activeConversationId || previous === null) return;
     setDelegations([]);
+    setBrowses([]);
+    closeBrowserPanel();
     setPendingApproval(null);
     setPendingQuestions(null);
     setCompacting(null);
     setCompactionImpossible(null);
     setPersonalGaps([]);
     approvalOfferedForRef.current = new Set();
-  }, [activeConversationId]);
+  }, [activeConversationId, closeBrowserPanel]);
 
   // The caller's permissions, for the restore effect below: rebuilding the
   // approval panel reads an endpoint gated on `approvals:decide`, so a caller
@@ -1216,6 +1266,8 @@ export function useChat(options: UseChatOptions = {}) {
     lastUsage: onThisConversation ? liveUsage.usage : null,
     /** The turn's delegations, in the order they started. See `DelegationPanels`. */
     delegations,
+    /** The turn's browses, in the order they started. See `BrowserPanel`. */
+    browses,
     connect,
     disconnect,
     sendMessage: sendChatMessage,

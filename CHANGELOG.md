@@ -17,6 +17,180 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Added
+
+- **`browser_choice`, a browser capability that picks from the page instead of
+  writing its next move.** `browse_page` takes a goal and a URL, opens it in a
+  Chromium the operator runs, and repeats: read the page into a numbered table of
+  the elements a person could act on, ask a decision model which operation and
+  which element, do that. Only typing a field's value reaches a language model.
+  The premise is the security property - an engine that composes its action can
+  emit any string, so page text is an instruction channel into the model, while a
+  pick-one whose options are built server-side from the live DOM cannot be talked
+  into an action the page does not offer. It is still `side_effecting` and
+  gateable, because "Delete account" is an action a page genuinely offers. Four
+  outcomes and no fifth: finished, blocked by the page, stopped at the step limit,
+  browser unreachable - so a sign-in wall and a crashed browser are different
+  answers. `cdp_url` points at a browser service the operator runs and isolates,
+  SSRF-checked at publish; there is no local mode and no Chromium in the API image.
+  The engine arrives with the `browser` extra (`cdp-use` and the TypeSafe SDK),
+  which costs the lock two additions and no downgrade. Both model paths are
+  metered, and neither is priced - the bundled price snapshot does not know the
+  decision model, so `max_steps` is what bounds a browse rather than a dollar cap,
+  and the capability's README and `docs/reference/capabilities.md` say so. Page
+  content reaches the decision model on every step: the vault key requirement is
+  the operator's opt-in, `decision_base_url` moves the destination, and both are
+  named in `docs/data-protection.md`.
+- **`BROWSER_CDP_ALLOWED_HOSTS`, because the SSRF guard is the wrong control for a
+  CDP endpoint.** `cdp_url` first went through `validate_webhook_url`, copying
+  `browser_use` - and measured, the only endpoint that would publish was a
+  *public* IP address. That refuses the isolated browser service on the
+  deployment's own network that the reference page tells an operator to run
+  (`http://browser:9222` in the same compose project resolves privately and was
+  rejected) and accepts a CDP debugger exposed to the open internet, which is the
+  worse posture of the two. What decides the shape of the control is what
+  `cdp_url` is: it lives in a spec, which anyone holding `edit` on the agent
+  writes, so the address is tenant-controlled and the request is the
+  deployment's - the problem `MEM0_ALLOWED_HOSTS` already exists for. The operator
+  now names the hosts, matching is exact and case-folded, and an empty allowlist -
+  the default - refuses browser automation outright. The check no longer resolves
+  DNS, so publish validation does not need a thread for it.
+- **Ten defects in `browser_choice`, from a review of the unmerged branch.** Each
+  had a way of being invisible: `TYPE_TEXT` aimed at a link *clicked the link*
+  before failing, because typing begins by focusing and the operation and the
+  target are two independent answers from the model; a native `<select>` could
+  not be operated at all, because clicking one opens Chromium's own popup whose
+  options are not in the DOM, so a form needing one choice looped until the
+  repeat guard stopped it; an action used the coordinates its snapshot recorded,
+  and the decision model answers late enough for a re-rendered page to have moved
+  everything under them; the value the host model typed into a field was written
+  into the history that the separately configured decision endpoint reads on the
+  next step, so a password was disclosed to it; the decision prompt carried no
+  page text, so an engine that had already found the price could not tell it had
+  finished; `/json/version` was trusted to name the socket to open, so a
+  compromised or author-chosen endpoint could answer `ws://169.254.169.254/` and
+  have the deployment dial it; a browse that raised after opening left the chat
+  panel spinning for ever; the allowlist was checked only on the next snapshot,
+  so the final step could return an off-list page's content as the tool's answer;
+  the repeat guard read the URL alone, so a wizard clicking `Next` three times was
+  refused as a loop; and `preview_width` was declared in three places and read by
+  none. Every element now carries a selector, every action re-resolves it and
+  checks it still describes itself the way the candidate table said, a dropdown is
+  answered with a value, a typed value never leaves the run, and a finish frame is
+  sent on every path out.
+- **Eight more again, and this round changed the tool's shape.** A browse now
+  takes `private` beside `goal`: the value generator has no conversation history,
+  so a calling model asked to sign in had to put the credentials in the goal -
+  and the goal travels to the decision endpoint on every step, which is the one
+  place the field-value redaction could not reach. `private` is bound into what
+  the generator is told and never into the decision prompt.
+
+  The rest: the budget is asked *before* each of a browse's own model calls, not
+  only booked after, because `BudgetGuard` wraps the agent's requests and a
+  browse makes up to a hundred of its own inside one tool call (`guarded_by` is
+  the sibling of `metered_by`); the candidate cap, option lists, labels and page
+  text are cut inside the page rather than after the transfer, so a 594 KB page
+  with 3,000 controls now produces a 9.6 KB CDP response; `cdp_url` and
+  `decision_base_url` refuse an invalid port at publish instead of on the first
+  browse; `decision_model` is `x-suggestions` rather than `enum`, because an
+  `enum` made the console render a closed select and forbade the pinned build
+  the field exists to allow; the `cdp_url` hint is a placeholder rather than a
+  schema default, which the console shows without storing - so the form looked
+  filled in and publishing it was refused; and the frontend reducer creates a
+  browse only from its opening frame, so a late frame from the previous turn
+  cannot restore a browse, and its screenshot, under the new transcript.
+- **Eight more, from a third review, and one I found answering them.** A field's
+  contents left the browser: the history line stopped carrying a typed value and
+  the next snapshot copied `el.value` straight back out, so the password the host
+  model had just entered reached the decision endpoint one step after being
+  redacted. Closing that left two more routes, both found by the security pass
+  that followed: a pick-one's *options* are built separately from the table and
+  carried the value too, and `labelOf` had `el.value` at the end of its fallback
+  chain, so an unlabelled field's own value became its *name*. The table and the
+  options both say `[filled]` now, a value is a name only where it is a caption
+  (`submit`, `button`, `reset`), and only a dropdown reports its selection. `domain_allowed` let an agent with no `allowed_domains` browse
+  `file:///etc/passwd`, which `read()` would have returned as the answer; the
+  scheme is checked first and always. A click used coordinates without asking
+  what was *at* them, so an overlay took the press. `<div contenteditable>` was
+  reported as a `div`, which is not an editable role, so every rich-text editor
+  could be reached and never filled. A page's visible text was serialised whole
+  over CDP before Python bounded it. A `target="_blank"` link opened a tab the
+  loop never saw. A positive `min_confidence` was silently disabled by a decision
+  model that reported no confidence at all. And a hung CDP command had no
+  timeout, so it held the turn open for as long as the run could live.
+
+  The one found while fixing them: `type_text` cleared a field with `Ctrl+A`,
+  which is the wrong modifier on macOS and does nothing in a `contenteditable` -
+  so "replace" meant "append". The selection is made in the page now. And the
+  reason it took a live browser to find the others at all is that a page's own
+  exception was reported as "the collector did not run"; `exceptionDetails` is
+  read and quoted.
+- **Five more review findings, four of them real.** A form control's name was
+  read off the control alone, so `<label for="email">Email</label>` beside an
+  `<input id="email">` reached the decision model with an empty label and the
+  model could not tell which field to fill - `el.labels` and `aria-labelledby`
+  come first now, in the collector and in the identity check, because two answers
+  there would make every labelled control fail its own verification. Every browse
+  gets a browser context of its own, disposed with it: on the long-lived shared
+  browser this capability tells an operator to run, the default context kept the
+  cookie one person's agent signed in with and handed it to the next caller of
+  the same agent. `decision_base_url` has an allowlist -
+  `DECISION_MODEL_ALLOWED_HOSTS`, empty by default - because the field is in the
+  spec and the vault key is unsealed into a header to whatever it names, so an
+  author who may bind a shared TypeSafe key without being able to read it could
+  point it at a server of their own. And the frame sink now answers whether it
+  was delivered, so a browse whose reader closed the tab stops encoding a JPEG
+  per step for nobody while the browse itself carries on. The fifth - waiting for
+  the first navigation before the first snapshot - was already fixed, and is now
+  fixed properly: `about:blank` reports itself ready the instant it is asked, so
+  the wait has to be for the page it is *leaving*.
+- **The browse panel is a card first, and a window when you ask.** A full side
+  panel opening itself over the conversation says watching the browser matters
+  more than reading the answer, which is true for about four seconds. So a browse
+  appears as a glass card under the message - a thumbnail of the page, where it
+  is, how far along - and expands into a panel that drags to any width between
+  360 and 880 pixels, closes back to the card, and reopens. The resize handle is
+  a `slider` with arrow keys, because a width is a real setting and dragging is
+  not available to everyone.
+- **The browsing capability's form fills itself in.** `cdp_url` is prefilled from
+  `BROWSER_CDP_ALLOWED_HOSTS` when one host is allowed and hinted otherwise - an
+  author was already choosing from that list, and a field that refuses at publish
+  without saying what it would accept wastes an afternoon. `decision_model` is a
+  picker over a new `app/core/catalog/decision_models.json` while staying a
+  string, so a pinned build (`jev-1.13.0`) is still storable. `decision_base_url`
+  names the vendor endpoint it defaults to, because that default is the difference
+  between page content staying inside a deployment and leaving it.
+- **`agenticos cmd doctor` probes the browser hosts.** Reports rather than fails:
+  the allowlist holds hosts and not ports, so the probe assumes Chromium's 9222
+  and an operator running theirs elsewhere is not broken. What the line is for is
+  the other case - nothing listening anywhere, and an agent published against it.
+- **The decision-model key is a TypeSafe key.** It has its own entry in the
+  service catalog, so the Builder asks for "a TypeSafe key" rather than "a key for
+  Browser automation", the picker offers the TypeSafe secrets rather than every
+  `api_key` in the vault, and a key added from that picker is stored under that
+  purpose. Filed under `other` beside LlamaParse and mem0 - its actual peers - and
+  deliberately not `model_provider`, which is what the chat model picker reads to
+  offer a provider to run an agent on.
+- **A browse is no longer held for approval by default.** The capability stays
+  `side_effecting`, so the console badges it and an operator can still gate it with
+  `tool_approval`; the tool's own flag is now false. An approval on a browse
+  arrives before the first page is fetched, on a goal and a URL - it asks somebody
+  to approve actions nobody can see yet, and the answer is almost always yes. What
+  replaces it is that a browse is watchable, bounded by `allowed_domains`, and
+  refusable by `min_confidence`.
+- **`EXTRAS`, a build argument for the backend image.** The capability docs told an
+  operator to install `agenticos[browser]` and nothing in the build honoured it:
+  the image is `uv sync --frozen --no-dev` with no extras, so there was no
+  supported way to get the engine in and a bound agent failed its one tool with an
+  install line nobody could act on. `browser_use` has had the same gap since it
+  shipped. Empty by default, so a plain build is exactly what it was.
+- **A live browser panel in the chat.** A browse streams its steps, the
+  probability the engine chose each at, and the viewport as a picture per step -
+  narration and picture as separate frames, so encoding one never holds up the
+  other, and a finish frame on every outcome so nothing is left spinning. The
+  panel opens itself when a browse starts, stays up when it ends (*blocked by the
+  page* is the outcome most worth reading), and stays closed for a browse somebody
+  closed it on. `preview` off keeps the narration and drops the pictures.
 ## [0.0.478] - 2026-09-21
 
 ### Added
