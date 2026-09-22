@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -103,43 +103,6 @@ describe("ChatInput paste", () => {
     expect(onSend).toHaveBeenCalledWith("why does this fail?", ["f-1"], [uploaded()]);
   });
 });
-
-/**
- * A `FileList` that empties *in place* when the input is reset, as Blink's does.
- *
- * This is the one browser behaviour this suite cannot get from jsdom, and the
- * reason the picker shipped broken with every test here green: jsdom hands the
- * input a fresh list on reset, so a handler that captures `input.files` and
- * *then* sets `input.value = ""` still sees a populated list under test and an
- * empty one in Chrome, Edge and Safari. Modelled rather than trusted.
- */
-function blinkFileList(...files: File[]): FileList {
-  const list = {
-    length: files.length,
-    item: (index: number): File | null => files[index] ?? null,
-    clear(): void {
-      this.length = 0;
-    },
-    *[Symbol.iterator](): Generator<File> {
-      for (let index = 0; index < this.length; index++) yield files[index]!;
-    },
-  };
-  files.forEach((file, index) => Object.defineProperty(list, index, { value: file }));
-  // A test double for a host object with no constructor reachable from script.
-  return list as unknown as FileList;
-}
-
-/** Wire `input.value = ""` to clear `input.files` in place, the way a browser does. */
-function pick(input: HTMLInputElement, ...files: File[]): void {
-  const list = blinkFileList(...files);
-  Object.defineProperty(input, "files", { configurable: true, get: () => list });
-  Object.defineProperty(input, "value", {
-    configurable: true,
-    get: () => "",
-    set: () => (list as unknown as { clear: () => void }).clear(),
-  });
-  fireEvent.change(input);
-}
 
 describe("ChatInput attachments", () => {
   it("uploads a file picked through the paperclip, having copied it before resetting the input", async () => {
