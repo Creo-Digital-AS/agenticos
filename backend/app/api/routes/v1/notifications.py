@@ -57,7 +57,8 @@ async def list_notifications(
 
 @router.get("/notifications/unread-count", response_model=UnreadCountRead)
 async def unread_notification_count(service: NotificationCenterSvc, ctx: Auth) -> Any:
-    return UnreadCountRead(count=await service.unread_count(ctx))
+    unread = await service.unread_count(ctx)
+    return UnreadCountRead(count=unread.count, approximate=unread.approximate)
 
 
 @router.get("/notifications/preferences", response_model=NotificationPreferenceList)
@@ -110,8 +111,23 @@ async def mark_notification_read(
 
 
 @router.post("/notifications/mark-all-read", response_model=MarkAllReadResult)
-async def mark_all_notifications_read(service: NotificationCenterSvc, ctx: Auth) -> Any:
-    return MarkAllReadResult(marked=await service.mark_all_read(ctx))
+async def mark_all_notifications_read(
+    service: NotificationCenterSvc,
+    ctx: Auth,
+    cursor: str | None = Query(None, description="`next_cursor` from a previous, truncated sweep"),
+) -> Any:
+    """Mark the caller's visible unread rows, one bounded window at a time.
+
+    The same opaque cursor the inbox listing uses: a truncated sweep answers
+    with where it stopped, and passing that back continues from there rather
+    than re-reading the window already covered.
+    """
+    result = await service.mark_all_read(ctx, after=decode_cursor(cursor) if cursor else None)
+    return MarkAllReadResult(
+        marked=result.marked,
+        remaining=result.remaining,
+        next_cursor=encode_cursor(*result.resume) if result.resume is not None else None,
+    )
 
 
 @router.delete("/notifications", response_model=ClearInboxResult)

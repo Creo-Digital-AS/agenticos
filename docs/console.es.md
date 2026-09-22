@@ -1,5 +1,5 @@
 ---
-source_sha: "15ab128f02d8"
+source_sha: "5b981aaf60d8"
 ---
 
 # La consola { #the-console }
@@ -70,10 +70,21 @@ la estrecha la organización en la que esté actuando, porque una audiencia
 Una fila con un destino es un enlace; una sin él — el anuncio propio de un
 admin, la mayoría de las veces — solo se puede marcar como leída. Marcar una
 como leída, o todas a la vez, actualiza el contador al instante; nada aquí
-espera a que se recargue la página. **Mark all read** barre hasta quinientas
-filas no leídas de una vez y luego vuelve a pedir el contador — así que con un
+espera a que se recargue la página. **Mark all read** barre por lotes hasta
+cinco mil filas no leídas y luego vuelve a pedir el contador — así que con un
 atraso mayor la insignia sigue mostrando lo que queda por leer y un clic más
 termina el resto, en lugar de anunciar una bandeja que solo trabajó en parte.
+
+Cada clic avanza siempre, incluso cuando todo el lote eran filas que quien lee
+ya no puede ver. Nunca las marca: la comprobación es sobre los permisos
+*actuales*, así que a quien estuviera degradado una semana y luego restituido le
+aparecerían ya leídos los avisos de seguridad de esa semana. En su lugar, un
+barrido truncado dice dónde se paró y el siguiente clic arranca desde ahí.
+
+Tanto el contador como el barrido dicen cuándo se han parado en ese límite y no
+al final de la bandeja — `approximate` en `GET /notifications/unread-count` y
+`remaining` en `POST /notifications/mark-all-read` —, porque si no un contador
+justo en el límite y un contador real del mismo tamaño son el mismo número.
 
 Leída no es lo mismo que fuera, y se ofrecen las dos cosas. Pasar el cursor por
 una fila revela una cruz que la saca de la lista; **Clear** en la cabecera saca

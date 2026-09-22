@@ -28,6 +28,7 @@ from app.db.models.notification_delivery import NotificationDelivery
 from app.db.models.notification_preference import NotificationChannelPreference
 from app.db.models.user import User
 from app.main import app
+from app.services import notification_center
 from app.services.notification_center import NotificationCenterService
 from app.services.notification_delivery import NotificationDeliveryService
 
@@ -184,7 +185,41 @@ class TestUnreadCount:
             async with client() as http:
                 response = await http.get(_url("/unread-count"))
         assert response.status_code == 200
-        assert response.json() == {"count": 2}
+        assert response.json() == {"count": 2, "approximate": False}
+
+    async def test_an_empty_inbox_counts_nothing_and_claims_nothing(self, client: OpenClient):
+        with patch(
+            f"{NOTIFICATION_PATH}.notification_repo.list_unread",
+            new=AsyncMock(return_value=[]),
+        ):
+            async with client() as http:
+                response = await http.get(_url("/unread-count"))
+        assert response.json() == {"count": 0, "approximate": False}
+
+    async def test_it_walks_past_a_full_batch(self, client: OpenClient, monkeypatch):
+        """A full batch is not the end of the inbox. One capped fetch was all
+        this used to do, so 600 unread rows read as 500 (#1761)."""
+        monkeypatch.setattr(notification_center, "_UNREAD_CANDIDATE_CAP", 2)
+        with patch(
+            f"{NOTIFICATION_PATH}.notification_repo.list_unread",
+            new=AsyncMock(side_effect=[[_row(), _row()], [_row()]]),
+        ):
+            async with client() as http:
+                response = await http.get(_url("/unread-count"))
+        assert response.json() == {"count": 3, "approximate": False}
+
+    async def test_a_count_that_ran_out_of_scan_says_it_is_a_floor(
+        self, client: OpenClient, monkeypatch
+    ):
+        monkeypatch.setattr(notification_center, "_UNREAD_CANDIDATE_CAP", 2)
+        monkeypatch.setattr(notification_center, "_UNREAD_SCAN_LIMIT", 2)
+        with patch(
+            f"{NOTIFICATION_PATH}.notification_repo.list_unread",
+            new=AsyncMock(return_value=[_row(), _row()]),
+        ):
+            async with client() as http:
+                response = await http.get(_url("/unread-count"))
+        assert response.json() == {"count": 2, "approximate": True}
 
 
 class TestMarkOneRead:
@@ -233,7 +268,64 @@ class TestMarkAllRead:
             async with client() as http:
                 response = await http.post(_url("/mark-all-read"))
         assert response.status_code == 200
-        assert response.json() == {"marked": 3}
+        assert response.json() == {"marked": 3, "remaining": False, "next_cursor": None}
+
+    async def test_a_sweep_that_ran_out_of_scan_says_rows_were_left(
+        self, client: OpenClient, monkeypatch
+    ):
+        """`marked` alone cannot say whether the inbox is now clear, and a
+        caller that read it as "clear" would hide the button that finishes the
+        job - which is what the single capped fetch did silently (#1761)."""
+        monkeypatch.setattr(notification_center, "_UNREAD_CANDIDATE_CAP", 2)
+        monkeypatch.setattr(notification_center, "_UNREAD_SCAN_LIMIT", 2)
+        with (
+            patch(
+                f"{NOTIFICATION_PATH}.notification_repo.list_unread",
+                new=AsyncMock(return_value=[_row(), _row()]),
+            ),
+            patch(
+                f"{NOTIFICATION_PATH}.notification_repo.mark_ids_read",
+                new=AsyncMock(return_value=2),
+            ),
+        ):
+            async with client() as http:
+                response = await http.post(_url("/mark-all-read"))
+        body = response.json()
+        assert body["marked"] == 2
+        assert body["remaining"] is True
+        # The window this sweep covered, so asking again starts past it rather
+        # than re-reading the same rows.
+        assert body["next_cursor"]
+
+    async def test_a_cursor_carries_the_sweep_past_the_window_it_covered(
+        self, client: OpenClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run of rows the read-time gate hides is never marked on the
+        recipient's behalf - the gate reads current permissions, and a restored
+        role would find them already read. The cursor is what gets past them."""
+        monkeypatch.setattr(notification_center, "_UNREAD_CANDIDATE_CAP", 2)
+        monkeypatch.setattr(notification_center, "_UNREAD_SCAN_LIMIT", 2)
+        seen: list[object] = []
+
+        async def listing(_db, **kwargs):
+            seen.append(kwargs.get("after"))
+            return [_row(), _row()]
+
+        with (
+            patch(f"{NOTIFICATION_PATH}.notification_repo.list_unread", new=listing),
+            patch(
+                f"{NOTIFICATION_PATH}.notification_repo.mark_ids_read",
+                new=AsyncMock(return_value=2),
+            ),
+        ):
+            async with client() as http:
+                first = await http.post(_url("/mark-all-read"))
+                cursor = first.json()["next_cursor"]
+                await http.post(_url(f"/mark-all-read?cursor={cursor}"))
+
+        assert seen[0] is None
+        # The second sweep opens where the first stopped.
+        assert seen[-1] is not None
 
 
 class TestDismissOne:

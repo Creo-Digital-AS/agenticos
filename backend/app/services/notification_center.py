@@ -108,6 +108,56 @@ _TOGGLABLE_PAIRS = _build_togglable_pairs()
 
 
 @dataclass(frozen=True)
+class UnreadCount:
+    """How many unread rows the caller can see, and whether that is all of them.
+
+    `approximate` is true only when the scan stopped on `_UNREAD_SCAN_LIMIT`
+    with rows still behind it. Without it, a badge of exactly the cap and a
+    genuine count of exactly the cap are the same number.
+    """
+
+    count: int
+    approximate: bool
+
+
+@dataclass(frozen=True)
+class _UnreadScan:
+    """One bounded walk of a recipient's unread rows.
+
+    `visible` is what they can see; `resume` is where the walk stopped, so the
+    next one can start there instead of at the newest row again.
+    """
+
+    visible: list[uuid.UUID]
+    truncated: bool
+    resume: tuple[datetime, uuid.UUID] | None
+
+
+@dataclass(frozen=True)
+class MarkAllRead:
+    """How many rows one "mark all read" marked, and where to carry on from.
+
+    `marked` is what this request actually changed - rows that were unread when
+    its update ran, not rows it merely looked at. Two overlapping sweeps see the
+    same visible rows, and the second one changes none of them; reporting what
+    it scanned would have it claim work the first had already done.
+
+    `remaining` says the sweep ran out of scan rather than out of inbox, and
+    `resume` is what makes asking again finish the job: the next sweep starts
+    past the window this one covered. Without it a recipient demoted out of an
+    audience - whose whole scan window is rows the read-time gate hides - marked
+    nothing, reported `remaining`, and rescanned the identical prefix forever.
+    Those rows are never *marked* to force progress: the gate reads current
+    permissions, so a restored role would find its security notices already read
+    and out of the badge, which is the one thing worse than a sweep that stalls.
+    """
+
+    marked: int
+    remaining: bool
+    resume: tuple[datetime, uuid.UUID] | None = None
+
+
+@dataclass(frozen=True)
 class PreferenceItem:
     """One `(event_type, channel)` pair's current, defaulted-if-unset value."""
 
@@ -178,6 +228,20 @@ _COALESCED_WRITE_CLAIM = rate_limit.Limit(
 # unbounded.
 _MAX_INBOX_FETCH_ROUNDS = 5
 _UNREAD_CANDIDATE_CAP = 500
+# How far the badge and mark-all-read will *read* looking for unread rows,
+# across as many `_UNREAD_CANDIDATE_CAP` batches as it takes. Both used to make
+# exactly one capped fetch and stop, so an account with 600 gate-visible unread
+# rows saw a badge of 500 and a "mark all read" that left the hundred oldest
+# unread - silently, with nothing in the response saying the request had been
+# partial (#1761).
+#
+# Separate from the cap for the reason `_DISMISS_SCAN_LIMIT` is: the rows the
+# gate hides are read and not counted, and they sit newer than the ones that
+# are. Bounded rather than exhaustive for the same reason too, and what the
+# bound costs is now *said* - `UnreadCount.approximate` and
+# `MarkAllRead.remaining` are how a caller tells a truncated answer from an
+# exact one, which "exactly 500" never could.
+_UNREAD_SCAN_LIMIT = 5_000
 # What one "clear" sweeps: how many rows it will *dismiss*, and how many it
 # will *read* to find them. Two numbers because they are two different costs,
 # and conflating them is what made the first version stall.
@@ -710,22 +774,65 @@ class NotificationCenterService:
                 return visible, gates, None
         return visible, gates, cursor
 
-    async def unread_count(self, ctx: AuthContext) -> int:
-        user_id = self._require_caller(ctx)
-        candidates = await notification_repo.list_unread(
+    async def _unread_scan(
+        self,
+        ctx: AuthContext,
+        user_id: uuid.UUID,
+        *,
+        after: tuple[datetime, uuid.UUID] | None = None,
+    ) -> _UnreadScan:
+        """One bounded walk of the caller's unread rows, starting after `after`.
+
+        Walks the cursor for the reason `clear_inbox` does: one capped fetch
+        starting at the newest row is the same page every time, so a recipient
+        whose newest rows all fail the read-time gate would count nothing and
+        mark nothing however often they asked. Bounded by `_UNREAD_SCAN_LIMIT`,
+        and `truncated` is what the bound costs.
+
+        `resume` is where it stopped, so a caller holding a truncated answer can
+        continue past this window rather than re-reading it.
+        """
+        visible: list[uuid.UUID] = []
+        scanned = 0
+        cursor = after
+        while scanned < _UNREAD_SCAN_LIMIT:
+            batch = await notification_repo.list_unread(
+                self.db,
+                recipient_id=user_id,
+                organization_id=ctx.organization_id,
+                is_app_admin=ctx.is_app_admin,
+                after=cursor,
+                cap=_UNREAD_CANDIDATE_CAP,
+            )
+            if not batch:
+                return _UnreadScan(visible=visible, truncated=False, resume=None)
+            scanned += len(batch)
+            cache = await self._build_gate_cache(ctx, batch)
+            for row in batch:
+                gate = await self.gate_for(ctx, row, cache)
+                if gate.visible:
+                    visible.append(row.id)
+            if len(batch) < _UNREAD_CANDIDATE_CAP:
+                return _UnreadScan(visible=visible, truncated=False, resume=None)
+            cursor = (batch[-1].created_at, batch[-1].id)
+        # Out of scan. Whether that is also out of inbox takes one more row to
+        # answer, and it is worth the query: an inbox holding exactly the scan
+        # limit ends on a full batch, and calling that truncated would put back
+        # the exact-boundary ambiguity these two flags exist to remove.
+        beyond = await notification_repo.list_unread(
             self.db,
             recipient_id=user_id,
             organization_id=ctx.organization_id,
             is_app_admin=ctx.is_app_admin,
-            cap=_UNREAD_CANDIDATE_CAP,
+            after=cursor,
+            cap=1,
         )
-        cache = await self._build_gate_cache(ctx, candidates)
-        count = 0
-        for row in candidates:
-            gate = await self.gate_for(ctx, row, cache)
-            if gate.visible:
-                count += 1
-        return count
+        return _UnreadScan(visible=visible, truncated=bool(beyond), resume=cursor)
+
+    async def unread_count(self, ctx: AuthContext) -> UnreadCount:
+        user_id = self._require_caller(ctx)
+        scan = await self._unread_scan(ctx, user_id)
+        return UnreadCount(count=len(scan.visible), approximate=scan.truncated)
 
     async def mark_one_read(
         self, ctx: AuthContext, notification_id: uuid.UUID
@@ -757,24 +864,28 @@ class NotificationCenterService:
             )
         return notification, gate
 
-    async def mark_all_read(self, ctx: AuthContext) -> int:
+    async def mark_all_read(
+        self, ctx: AuthContext, *, after: tuple[datetime, uuid.UUID] | None = None
+    ) -> MarkAllRead:
+        """Mark the unread rows the caller can see, from `after` onwards.
+
+        Only the visible ones are written. A row the read-time gate hides is not
+        this caller's to clear: the gate reads *current* permissions, so a
+        recipient demoted for a week and restored would find the security
+        notices of that week already read and gone from their badge.
+
+        Progress across a hidden prefix comes from `resume` instead, which is
+        why it is returned: a caller holding `remaining` asks again from there,
+        and each sweep covers a window the last one did not. `marked` is what
+        the update actually changed, so two overlapping sweeps do not both claim
+        the same rows.
+        """
         user_id = self._require_caller(ctx)
-        candidates = await notification_repo.list_unread(
-            self.db,
-            recipient_id=user_id,
-            organization_id=ctx.organization_id,
-            is_app_admin=ctx.is_app_admin,
-            cap=_UNREAD_CANDIDATE_CAP,
+        scan = await self._unread_scan(ctx, user_id, after=after)
+        marked = await notification_repo.mark_ids_read(
+            self.db, ids=scan.visible, read_at=datetime.now(UTC)
         )
-        cache = await self._build_gate_cache(ctx, candidates)
-        visible_ids = []
-        for row in candidates:
-            gate = await self.gate_for(ctx, row, cache)
-            if gate.visible:
-                visible_ids.append(row.id)
-        return await notification_repo.mark_ids_read(
-            self.db, ids=visible_ids, read_at=datetime.now(UTC)
-        )
+        return MarkAllRead(marked=marked, remaining=scan.truncated, resume=scan.resume)
 
     async def dismiss_one(self, ctx: AuthContext, notification_id: uuid.UUID) -> None:
         """Clear one row out of the caller's own inbox.

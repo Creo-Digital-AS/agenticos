@@ -17,6 +17,36 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- **The unread badge and "mark all read" no longer stop at five hundred rows
+  and say nothing.** Both fetched exactly one capped batch of candidates and
+  never looked further, so a recipient with six hundred gate-visible unread
+  notifications saw a badge of 500, and one "mark all read" left the hundred
+  oldest unread - with no error and nothing in the response saying the request
+  had been partial. Both now walk the inbox in batches to a bound of five
+  thousand, following a cursor rather than re-reading the same page, which is
+  also what reaches the visible rows sitting behind a backlog the read-time
+  gate hides. The bound is still a bound, and it is now stated:
+  `GET /notifications/unread-count` carries `approximate` and
+  `POST /notifications/mark-all-read` carries `remaining`, because a count of
+  exactly the bound and a genuine count of exactly the bound were otherwise the
+  same number, and a sweep's own batch ends full whether or not anything is
+  behind it - so one row past the bound is asked for before either is called
+  partial.
+
+  A repeated click always gets further, which is what makes `remaining` an
+  instruction rather than a description: a truncated sweep answers with a
+  `next_cursor`, and the next one resumes from there instead of re-reading the
+  window already covered. Rows the read-time gate hides are never marked to
+  force that progress - the gate reads *current* permissions, so a recipient
+  demoted for a week and restored would find that week's security notices
+  already read and out of their badge. `marked` is what the request changed
+  rather than what it looked at, so two overlapping sweeps cannot both claim the
+  same rows, and the console keeps `approximate`: a truncated count of zero
+  still has a sweep worth offering, which is exactly the case a demoted
+  recipient lands in. (#1761)
+
 ## [0.0.491] - 2026-09-22
 
 ### Changed
