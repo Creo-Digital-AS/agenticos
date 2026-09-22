@@ -8,6 +8,7 @@ import { ChatInput } from "./chat-input";
 import { PublicConfigProvider } from "@/components/public-config/public-config-provider";
 import type { FileUploadResponse } from "@/lib/file-api";
 import { DEFAULT_PUBLIC_CONFIG } from "@/lib/public-config";
+import { pick } from "@/test-utils/file-picker";
 
 const state = vi.hoisted(() => ({
   upload: vi.fn<(file: File) => Promise<FileUploadResponse>>(),

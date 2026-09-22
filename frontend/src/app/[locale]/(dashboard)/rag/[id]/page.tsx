@@ -154,9 +154,16 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
 
   usePollWhileIngesting(documents, refresh);
 
-  const handleFiles = async (files: FileList | null) => {
-    if (!mayEdit || !files || files.length === 0) return;
-    for (const file of Array.from(files)) {
+  /**
+   * Upload the files added here, in the order they were given.
+   *
+   * Takes a `File[]` and never a `FileList`: the list an input hands over is the
+   * input's own, and clearing the input empties that same object in place. The
+   * conversion happens once, at each call site, before anything can clear it.
+   */
+  const handleFiles = async (files: File[]) => {
+    if (!mayEdit || files.length === 0) return;
+    for (const file of files) {
       try {
         await uploadDocument(file, uploadOverride);
       } catch {
@@ -177,13 +184,25 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
   if (!kb) return null;
 
   return (
-    <FileDropZone collectionName={kb.name} onFiles={handleFiles}>
+    <FileDropZone collectionName={kb.name} onFiles={(files) => void handleFiles(Array.from(files))}>
       <input
         ref={fileInputRef}
         type="file"
         multiple
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => {
+          // Copied before the reset: `e.target.files` is the input's own live
+          // `FileList`, and clearing the input empties that same object in
+          // place in Blink and WebKit. jsdom hands the input a fresh list
+          // instead, so nothing here is held by the DOM the suite runs on.
+          const files = Array.from(e.target.files ?? []);
+          // Cleared unconditionally, and before the empty check: a file input
+          // fires `change` only when the selection changes, so without this,
+          // picking the same document twice in a row does nothing at all -
+          // which is what somebody does after a refusal they have since fixed.
+          e.target.value = "";
+          void handleFiles(files);
+        }}
         disabled={isUploading}
       />
 
