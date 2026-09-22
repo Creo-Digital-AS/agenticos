@@ -460,6 +460,27 @@ class TestChannelRestriction:
         assert deliveries == []
 
 
+def _budget_spent(counts: dict[str, int] | None = None):
+    """A limiter that refuses the mandatory-write budget and meters the claim.
+
+    Two limits now share `rate_limit.consume`, and a stub that refuses both
+    would refuse the coalesced write itself - proving nothing. The claim is
+    counted here the way Redis counts it, so a burst proves what it is meant
+    to: one coalesced write per window, however many events overflow (#1762).
+    """
+    seen = counts if counts is not None else {}
+
+    async def _consume(*, surface: str, caller: str, limit, **_kwargs):
+        if surface == "notification_mandatory_write":
+            return notification_center.rate_limit.Decision(allowed=False, retry_after_seconds=30)
+        seen[caller] = seen.get(caller, 0) + 1
+        return notification_center.rate_limit.Decision(
+            allowed=seen[caller] <= limit.attempts, retry_after_seconds=0
+        )
+
+    return _consume
+
+
 class TestMandatoryEvents:
     async def test_a_mandatory_event_ignores_preferences_on_both_channels(self, db):
         owner = await _user(db)
@@ -519,16 +540,19 @@ class TestMandatoryEvents:
         )
         assert len(written) == 1
 
-    async def test_a_rate_limited_mandatory_write_writes_nothing(self, db, monkeypatch):
+    async def test_a_rate_limited_mandatory_write_coalesces_rather_than_dropping(
+        self, db, monkeypatch
+    ):
+        """Returning nothing is what defeated the guarantee (#1762): a
+        mandatory event exists because the audit log is not what admins watch,
+        and the one event in a burst that mattered reached neither the inbox
+        nor email."""
         owner = await _user(db)
         org = await _org(db, owner)
         admin = await _member(db, org, role="admin")
         service = NotificationCenterService(db)
 
-        async def _blocked(**_kwargs):
-            return notification_center.rate_limit.Decision(allowed=False, retry_after_seconds=30)
-
-        monkeypatch.setattr(notification_center.rate_limit, "consume", _blocked)
+        monkeypatch.setattr(notification_center.rate_limit, "consume", _budget_spent())
 
         written = await service.write(
             recipients=[admin.id],
@@ -538,7 +562,41 @@ class TestMandatoryEvents:
             organization_id=org.id,
             actor_user_id=owner.id,
         )
-        assert written == []
+        assert len(written) == 1
+        row = written[0]
+        assert row.occurrence_id.startswith(f"coalesced:{org.id}:{owner.id}:")
+        assert (
+            row.summary
+            == notification_center._COALESCED_SUMMARY[NotificationEventType.SECURITY_EVENT]
+        )
+        # Not the refused event's own words: it says the minute was busier than
+        # the inbox lists, and points at where all of it is.
+        assert "A secret was rotated" not in row.summary
+        assert row.event_type == NotificationEventType.SECURITY_EVENT.value
+        assert row.organization_id == org.id
+
+    async def test_a_burst_past_the_budget_coalesces_into_one_row(self, db, monkeypatch):
+        """One write per window, claimed before the fan-out rather than left to
+        the conflict clause. `ON CONFLICT DO NOTHING` stops a second row and a
+        second delivery; it does not stop the savepoint and the insert attempted
+        for every recipient, and those are the work the budget exists to bound."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        admin = await _member(db, org, role="admin")
+        service = NotificationCenterService(db)
+
+        claims: dict[str, int] = {}
+        monkeypatch.setattr(notification_center.rate_limit, "consume", _budget_spent(claims))
+
+        for index in range(4):
+            await service.write(
+                recipients=[admin.id],
+                event_type=NotificationEventType.SECURITY_EVENT,
+                occurrence_id=f"audit-burst-{index}",
+                summary="A secret was rotated",
+                organization_id=org.id,
+                actor_user_id=owner.id,
+            )
         rows = (
             (
                 await db.execute(
@@ -548,14 +606,70 @@ class TestMandatoryEvents:
             .scalars()
             .all()
         )
-        assert rows == []
+        assert len(rows) == 1
+        deliveries = (
+            (
+                await db.execute(
+                    select(NotificationDelivery).where(
+                        NotificationDelivery.notification_id == rows[0].id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(deliveries) == 1
+        # Four overflows, one claim allowed and three refused before any
+        # per-recipient work was done.
+        assert list(claims.values()) == [4]
 
-    async def test_a_rate_limited_mandatory_write_with_no_actor_still_writes_nothing(
+    async def test_two_organizations_overflowing_at_once_each_get_their_own_notice(
+        self, db, monkeypatch
+    ):
+        """Dedup is `(recipient, event_type, occurrence_id)`, so one key for one
+        actor would give somebody who administers both organizations only the
+        first one's notice - the second row a no-op carrying a different tenant
+        and a link nobody ever sees."""
+        actor = await _user(db)
+        first = await _org(db, actor)
+        second = await _org(db, actor)
+        admin = await _member(db, first, role="admin")
+        await db.execute(
+            OrganizationMember.__table__.insert().values(
+                id=uuid.uuid4(), organization_id=second.id, user_id=admin.id, role="admin"
+            )
+        )
+        service = NotificationCenterService(db)
+
+        monkeypatch.setattr(notification_center.rate_limit, "consume", _budget_spent())
+
+        for organization in (first, second):
+            await service.write(
+                recipients=[admin.id],
+                event_type=NotificationEventType.SECURITY_EVENT,
+                occurrence_id=f"audit-{organization.id}",
+                summary="A secret was rotated",
+                organization_id=organization.id,
+                actor_user_id=actor.id,
+            )
+        rows = (
+            (
+                await db.execute(
+                    select(Notification).where(Notification.recipient_user_id == admin.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {row.organization_id for row in rows} == {first.id, second.id}
+
+    async def test_a_rate_limited_write_with_no_actor_still_coalesces_under_system(
         self, db, monkeypatch
     ):
         """A system-triggered audit entry has no human actor
         (`AppAdminAuditLog.actor_user_id` is nullable), and that must still be
-        bounded, not exempted - the gap this guard exists to close."""
+        bounded, not exempted - the gap this guard exists to close. Its
+        overflow coalesces under its own key rather than any person's."""
         owner = await _user(db)
         org = await _org(db, owner)
         admin = await _member(db, org, role="admin")
@@ -563,11 +677,14 @@ class TestMandatoryEvents:
 
         calls: list[str] = []
 
-        async def _blocked(*, caller: str, **_kwargs):
-            calls.append(caller)
-            return notification_center.rate_limit.Decision(allowed=False, retry_after_seconds=30)
+        budget = _budget_spent()
 
-        monkeypatch.setattr(notification_center.rate_limit, "consume", _blocked)
+        async def _consume(*, surface: str, caller: str, **kwargs):
+            if surface == "notification_mandatory_write":
+                calls.append(caller)
+            return await budget(surface=surface, caller=caller, **kwargs)
+
+        monkeypatch.setattr(notification_center.rate_limit, "consume", _consume)
 
         written = await service.write(
             recipients=[admin.id],
@@ -577,8 +694,30 @@ class TestMandatoryEvents:
             organization_id=org.id,
             actor_user_id=None,
         )
-        assert written == []
         assert calls == ["user:system:security_event"]
+        assert len(written) == 1
+        assert written[0].occurrence_id.startswith(f"coalesced:{org.id}:system:")
+
+    async def test_a_rate_limited_configuration_change_says_what_it_coalesced(
+        self, db, monkeypatch
+    ):
+        """The two mandatory event types coalesce into their own sentence: a
+        settings change reported as a security event would misdescribe it."""
+        admin = await _user(db, is_app_admin=True)
+        service = NotificationCenterService(db)
+
+        monkeypatch.setattr(notification_center.rate_limit, "consume", _budget_spent())
+
+        written = await service.write(
+            recipients=[admin.id],
+            event_type=NotificationEventType.CONFIGURATION_CHANGED,
+            occurrence_id="settings-9",
+            summary="The deployment's settings were updated.",
+            organization_id=None,
+            actor_user_id=admin.id,
+        )
+        assert len(written) == 1
+        assert "settings were changed more times" in written[0].summary
 
 
 class TestSavepointSafety:
@@ -1658,6 +1797,350 @@ class TestUnreadCountAndMarkRead:
         )
         marked = await service.mark_all_read(_ctx(member, org, role="member"))
         assert marked == 0
+
+
+class TestDismissAndClear:
+    """Clearing the inbox - `dismissed_at`, not a delete.
+
+    The row is the dedup anchor (`INSERT ... ON CONFLICT (recipient_user_id,
+    event_type, occurrence_id) DO NOTHING`), so a deleted row is one a retried
+    producer writes again: a budget alert somebody cleared would come back on
+    the next check. Dismissed, it stays, stops being listed, and ages out on
+    the ordinary retention sweep.
+    """
+
+    async def test_a_dismissed_row_leaves_the_inbox_and_the_badge(self, db):
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-dismiss-1",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+        ctx = _ctx(recipient, org, role="member")
+        assert await service.unread_count(ctx) == 1
+
+        await service.dismiss_one(ctx, notification.id)
+
+        rows, _, _ = await service.list_inbox(ctx, after=None, limit=50)
+        assert rows == []
+        # A row nobody can reach cannot go on counting towards a badge that
+        # nothing left on screen can clear.
+        assert await service.unread_count(ctx) == 0
+
+    async def test_dismissing_an_already_read_row_keeps_the_time_it_was_read(self, db):
+        """Dismissing marks an *unread* row read, and only an unread one.
+
+        Overwriting the timestamp would move a row that was read last week to
+        "now", which is the one thing the read time is for - the retention
+        sweep counts from when the row was written, but a person reading the
+        inbox is told how long ago they saw it.
+        """
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-dismiss-read",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+        ctx = _ctx(recipient, org, role="member")
+        read, _ = await service.mark_one_read(ctx, notification.id)
+        was_read_at = read.read_at
+
+        await service.dismiss_one(ctx, notification.id)
+
+        stored = await db.scalar(select(Notification).where(Notification.id == notification.id))
+        assert stored is not None
+        assert stored.read_at == was_read_at
+        assert stored.dismissed_at is not None
+
+    async def test_clearing_leaves_an_already_read_rows_timestamp_alone(self, db):
+        """The bulk path takes the same `CASE` as the single one - a clear over
+        a mostly-read inbox must not restamp every row in it."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-clear-read",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+        ctx = _ctx(recipient, org, role="member")
+        read, _ = await service.mark_one_read(ctx, notification.id)
+        was_read_at = read.read_at
+
+        assert await service.clear_inbox(ctx) == 1
+
+        stored = await db.scalar(select(Notification).where(Notification.id == notification.id))
+        assert stored is not None
+        assert stored.read_at == was_read_at
+        assert stored.dismissed_at is not None
+
+    async def test_the_row_survives_so_the_same_fact_cannot_be_written_twice(self, db):
+        """The whole reason this is not a delete."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.BUDGET_EXCEEDED,
+            occurrence_id="budget-42",
+            summary="Over budget",
+            organization_id=org.id,
+        )
+        ctx = _ctx(recipient, org, role="member")
+        await service.dismiss_one(ctx, notification.id)
+
+        # The producer retries, as a budget check does on every run.
+        again = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.BUDGET_EXCEEDED,
+            occurrence_id="budget-42",
+            summary="Over budget",
+            organization_id=org.id,
+        )
+
+        assert again == []
+        rows, _, _ = await service.list_inbox(ctx, after=None, limit=50)
+        assert rows == []
+
+    async def test_dismissing_a_row_twice_is_refused_the_second_time(self, db):
+        """`get_own` no longer returns it, so the second call has no row to
+        act on - and a 204 for an id this request never resolved would be a
+        claim it cannot support."""
+        from app.core.exceptions import NotFoundError
+
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-dismiss-2",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+        ctx = _ctx(recipient, org, role="member")
+        await service.dismiss_one(ctx, notification.id)
+
+        with pytest.raises(NotFoundError):
+            await service.dismiss_one(ctx, notification.id)
+
+    @pytest.mark.security
+    async def test_dismissing_somebody_elses_row_reads_as_missing(self, db):
+        from app.core.exceptions import NotFoundError
+
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        other = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[recipient.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-dismiss-3",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+
+        with pytest.raises(NotFoundError):
+            await service.dismiss_one(_ctx(other, org, role="member"), notification.id)
+
+    @pytest.mark.security
+    async def test_dismissing_a_gate_excluded_row_reads_as_missing(self, db):
+        """Decision 7's read-time recheck applies to the write that clears a
+        row as much as to the read that lists it: a member who is no longer an
+        admin must not be able to act on an admin-gated row by its id."""
+        from app.core.exceptions import NotFoundError
+
+        owner = await _user(db)
+        org = await _org(db, owner)
+        member = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        [notification] = await service.write(
+            recipients=[member.id],
+            event_type=NotificationEventType.SECURITY_EVENT,
+            occurrence_id="audit-dismiss",
+            summary="A secret was rotated",
+            organization_id=org.id,
+        )
+
+        with pytest.raises(NotFoundError):
+            await service.dismiss_one(_ctx(member, org, role="member"), notification.id)
+
+    async def test_clearing_takes_read_rows_as_well_as_unread(self, db):
+        """What "clear" means to somebody looking at the panel is everything in
+        the panel - so this walks the listing, not the unread candidates that
+        `mark_all_read` walks."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        ctx = _ctx(recipient, org, role="member")
+        for index in range(3):
+            await service.write(
+                recipients=[recipient.id],
+                event_type=NotificationEventType.RUN_COMPLETED,
+                occurrence_id=f"run-clear-{index}",
+                summary="Run completed",
+                organization_id=org.id,
+            )
+        await service.mark_all_read(ctx)
+
+        assert await service.clear_inbox(ctx) == 3
+
+        rows, _, _ = await service.list_inbox(ctx, after=None, limit=50)
+        assert rows == []
+
+    async def test_clearing_an_empty_inbox_clears_nothing(self, db):
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+
+        cleared = await NotificationCenterService(db).clear_inbox(
+            _ctx(recipient, org, role="member")
+        )
+
+        assert cleared == 0
+
+    @pytest.mark.security
+    async def test_clearing_leaves_a_row_the_caller_may_not_see(self, db):
+        """The sweep is gate-aware for the same reason `mark_all_read` is: it
+        must not write to a row this reader's current standing excludes."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        admin = await _member(db, org, role="admin")
+        service = NotificationCenterService(db)
+        await service.write(
+            recipients=[admin.id],
+            event_type=NotificationEventType.SECURITY_EVENT,
+            occurrence_id="audit-clear",
+            summary="A secret was rotated",
+            organization_id=org.id,
+        )
+
+        # The same person, read as a plain member: the row is theirs, and the
+        # gate is what says they may not act on it now.
+        assert await service.clear_inbox(_ctx(admin, org, role="member")) == 0
+        assert (
+            len((await service.list_inbox(_ctx(admin, org, role="admin"), after=None, limit=50))[0])
+            == 1
+        )
+
+    async def test_clearing_pages_past_rows_the_gate_hides(self, db, monkeypatch):
+        """The whole reason `clear_inbox` walks a cursor.
+
+        A single capped fetch starting at `after=None` is the same page every
+        time. A recipient whose *newest* rows all fail the read-time gate -
+        somebody demoted out of an audience, whose security notifications are
+        still stored and no longer visible - would clear nothing, and every
+        retry would re-read that same invisible page while the visible rows
+        behind it stayed in the inbox for good.
+
+        The caps are lowered rather than the fixture grown: one gated row and
+        one visible row prove the cursor advanced, where the real 1,000 would
+        need a thousand.
+        """
+        monkeypatch.setattr(notification_center, "_DISMISS_CANDIDATE_CAP", 1)
+        owner = await _user(db)
+        org = await _org(db, owner)
+        member = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        # Written first so it is the *older* row: the listing is newest-first,
+        # so the gated one below lands on page one and this one only becomes
+        # reachable once the cursor moves past it.
+        [visible] = await service.write(
+            recipients=[member.id],
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id="run-behind-the-gate",
+            summary="Run completed",
+            organization_id=org.id,
+        )
+        await service.write(
+            recipients=[member.id],
+            event_type=NotificationEventType.SECURITY_EVENT,
+            occurrence_id="audit-hides-it",
+            summary="A secret was rotated",
+            organization_id=org.id,
+        )
+        ctx = _ctx(member, org, role="member")
+
+        assert await service.clear_inbox(ctx) == 1
+
+        stored = await db.scalar(select(Notification).where(Notification.id == visible.id))
+        assert stored is not None
+        assert stored.dismissed_at is not None
+
+    async def test_clearing_stops_once_it_has_read_its_allotted_rows(self, db, monkeypatch):
+        """A backlog of gated rows must run the loop to its bound rather than
+        forever. Nothing is cleared, and that is the honest answer: there was
+        nothing this reader could see.
+
+        The bound is on rows *read*, not on fetches made, because those are two
+        different costs and the first version conflated them - five fetches of
+        a thousand is a scan limit written in units nobody can size.
+
+        Named "rows" rather than "budget": in this codebase a budget is money,
+        and `tests/test_security_marker.py` sweeps that word to find refusal
+        tests - a loop's scan cap borrowing it is a collision, not a refusal.
+        """
+        monkeypatch.setattr(notification_center, "_DISMISS_CANDIDATE_CAP", 1)
+        monkeypatch.setattr(notification_center, "_DISMISS_SCAN_LIMIT", 2)
+        owner = await _user(db)
+        org = await _org(db, owner)
+        member = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        for index in range(3):
+            await service.write(
+                recipients=[member.id],
+                event_type=NotificationEventType.SECURITY_EVENT,
+                occurrence_id=f"audit-rounds-{index}",
+                summary="A secret was rotated",
+                organization_id=org.id,
+            )
+
+        assert await service.clear_inbox(_ctx(member, org, role="member")) == 0
+
+    async def test_a_dismissed_row_does_not_come_back_on_a_later_page(self, db):
+        """The cursor walks `list_inbox_page`, which filters dismissed rows out
+        - so paging past a cleared row must not resurface it."""
+        owner = await _user(db)
+        org = await _org(db, owner)
+        recipient = await _member(db, org, role="member")
+        service = NotificationCenterService(db)
+        ctx = _ctx(recipient, org, role="member")
+        written = []
+        for index in range(4):
+            [row] = await service.write(
+                recipients=[recipient.id],
+                event_type=NotificationEventType.RUN_COMPLETED,
+                occurrence_id=f"run-page-{index}",
+                summary="Run completed",
+                organization_id=org.id,
+            )
+            written.append(row)
+        await service.dismiss_one(ctx, written[0].id)
+        await service.dismiss_one(ctx, written[2].id)
+
+        first, _, cursor = await service.list_inbox(ctx, after=None, limit=1)
+        assert len(first) == 1
+        rest, _, _ = await service.list_inbox(ctx, after=cursor, limit=50)
+
+        seen = {row.id for row in first} | {row.id for row in rest}
+        assert seen == {written[1].id, written[3].id}
 
 
 class TestRequireCaller:

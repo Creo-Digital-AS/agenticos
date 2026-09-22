@@ -7,6 +7,8 @@ import { useNotificationInbox } from "@/hooks";
 import { isInAppPath } from "@/lib/notification-link";
 import { cn, timeAgo } from "@/lib/utils";
 import { WidgetFrame } from "../widget-frame";
+import { Bell } from "lucide-react";
+
 import { WidgetEmptyBody, WidgetErrorBody, WidgetSkeleton } from "../widget-states";
 import type { DashboardWidgetProps } from "./types";
 
@@ -35,7 +37,11 @@ export function NotificationsWidget({ title, hint, seeAll, options }: DashboardW
       ) : error ? (
         <WidgetErrorBody onRetry={refetch} />
       ) : shown.length === 0 ? (
-        <WidgetEmptyBody title={t("empty.title")} description={t("empty.description")} />
+        <WidgetEmptyBody
+          icon={Bell}
+          title={t("empty.title")}
+          description={t("empty.description")}
+        />
       ) : (
         <ul className="space-y-1">
           {shown.map((item) => {
