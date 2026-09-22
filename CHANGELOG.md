@@ -17,6 +17,34 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Changed
+
+- **One LibreOffice manager instead of two.** The RAG parser's office → PDF
+  converter and the chat attachment path's DOC → text converter each wrapped the
+  same `soffice` binary, arrived within a week of each other from opposite ends
+  of the product, and each carried a safety property the other lacked — so a
+  deployment running both paths had one converter that could be flooded and one
+  that could not, and a reader had to know which was which. There is one manager
+  now, with the union: a process group killed on timeout *and* on cancellation, a
+  per-call user profile, a concurrency semaphore, OS resource limits applied in a
+  fresh single-threaded launcher, and a bounded stderr drain. Both callers are
+  thin — the RAG one returns a PDF path, the chat one returns text. Nothing was
+  broken before this; it was duplication, and each path now gets the protections
+  only the other had.
+
+  One behaviour does change, because sharing a semaphore made it matter: the
+  conversion timeout now covers **the wait for a converter slot** as well as the
+  subprocess. It used to start after the semaphore, so with both slots held by
+  RAG conversions of up to 600s each, a chat conversion asking for 60s could sit
+  for ten minutes before its own timer began. A caller that cannot be served
+  inside its deadline is now refused inside it, and the budget covers the
+  caller's own staging as well: the chat path holds its converter slot before it
+  writes the upload's copy to disk, so a burst queued behind slow conversions
+  cannot fill the worker's temporary volume while the concurrency bound looks
+  like it is holding. The per-call user profile is also made and removed on the
+  file pool rather than on the event loop, the rule the chat path already
+  followed for its own temporary tree. (#1767)
+
 ## [0.0.490] - 2026-09-22
 
 ### Added
