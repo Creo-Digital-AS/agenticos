@@ -17,6 +17,19 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A notification opened its destination by reloading the whole console.**
+  `notifications.context_url` held `FRONTEND_URL` plus a path, and the bell and
+  the dashboard card rendered it as a plain anchor - so clicking a row fetched a
+  whole new document to reach a page the reader was usually already standing
+  inside, throwing away everything the query cache held and racing the
+  mark-read write against the unload. The column holds the path alone now and
+  both surfaces navigate it as a sub-route, with the origin put back on for the
+  one reader that has none: the email. Rows written before this keep their
+  absolute destination, keep working, and age out with the retention sweep -
+  no migration rewrites them.
+
 ## [0.0.480] - 2026-09-22
 
 ### Added
