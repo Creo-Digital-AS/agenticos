@@ -23,9 +23,9 @@ names no author is in the evidence column below.
 
 | Licence | Backend | Frontend |
 |---|---:|---:|
-| MIT | 112 | 230 |
+| MIT | 112 | 237 |
 | Apache-2.0 | 60 | 24 |
-| BSD-3-Clause | 33 | 4 |
+| BSD-3-Clause | 33 | 5 |
 | ISC | 6 | 16 |
 | BSD-2-Clause | 10 | 0 |
 | LGPL-3.0-or-later | 1 | 2 |
@@ -79,8 +79,8 @@ names no author is in the evidence column below.
 | bcrypt | 5.0.0 | Apache-2.0 | https://github.com/pyca/bcrypt/ | License field |
 | beartype | 0.22.9 | MIT | https://github.com/beartype/beartype | License field |
 | beautifulsoup4 | 4.15.0 | MIT | https://www.crummy.com/software/BeautifulSoup/bs4/ | License field |
-| boto3 | 1.43.95 | Apache-2.0 | https://github.com/boto/boto3 | License field |
-| botocore | 1.43.95 | Apache-2.0 | https://github.com/boto/botocore | License field |
+| boto3 | 1.43.97 | Apache-2.0 | https://github.com/boto/boto3 | License field |
+| botocore | 1.43.98 | Apache-2.0 | https://github.com/boto/botocore | License field |
 | bracex | 3.0.1 | MIT | https://github.com/facelessuser/bracex | License-Expression |
 | burner-redis | 0.1.7 | MIT | https://github.com/PrefectHQ/burner-redis | License field |
 | cachetools | 7.1.8 | MIT | https://github.com/tkem/cachetools/ | License-Expression |
@@ -173,7 +173,7 @@ names no author is in the evidence column below.
 | markupsafe | 3.0.3 | BSD-3-Clause | https://github.com/pallets/markupsafe/ | License-Expression |
 | mcp | 1.30.0 | MIT | https://github.com/modelcontextprotocol/python-sdk | License field |
 | mdurl | 0.1.2 | MIT | https://github.com/executablebooks/mdurl | classifier |
-| mem0ai | 2.0.20 | Apache-2.0 | https://pypi.org/project/mem0ai/2.0.20/ | License-Expression |
+| mem0ai | 2.1.0 | Apache-2.0 | https://pypi.org/project/mem0ai/2.1.0/ | License-Expression |
 | mistralai | 2.10.1 | Apache-2.0 | https://github.com/mistralai/client-python.git | licence file text |
 | more-itertools | 11.1.0 | MIT | https://github.com/more-itertools/more-itertools | License-Expression |
 | multidict | 6.8.0 | Apache-2.0 | https://github.com/aio-libs/multidict | License field |
@@ -220,10 +220,10 @@ names no author is in the evidence column below.
 | pydantic-ai-backend | 0.2.29 | MIT | https://github.com/vstorm-co/pydantic-ai-backend | License-Expression |
 | pydantic-ai-harness | 0.31.0 | MIT | https://github.com/pydantic/pydantic-ai-harness | License-Expression |
 | pydantic-ai-skills | 2.0.0 | MIT | https://github.com/dougtrajano/pydantic-ai-skills | License-Expression |
-| pydantic-ai-slim | 2.43.0 | MIT | https://github.com/pydantic/pydantic-ai/tree/main/pydantic_ai_slim | License-Expression |
+| pydantic-ai-slim | 2.45.0 | MIT | https://github.com/pydantic/pydantic-ai/tree/main/pydantic_ai_slim | License-Expression |
 | pydantic-core | 2.46.5 | MIT | https://github.com/pydantic/pydantic/tree/main/pydantic-core | License-Expression |
 | pydantic-extra-types | 2.11.1 | MIT | https://github.com/pydantic/pydantic-extra-types | License-Expression |
-| pydantic-graph | 2.43.0 | MIT | https://github.com/pydantic/pydantic-ai | License-Expression |
+| pydantic-graph | 2.45.0 | MIT | https://github.com/pydantic/pydantic-ai | License-Expression |
 | pydantic-monty | 0.0.23 | MIT | https://github.com/pydantic/monty | License-Expression; no licence file, attributed to Pydantic Services Inc. |
 | pydantic-monty-client | 0.0.23 | MIT | https://github.com/pydantic/monty | License field; no licence file, attributed to Pydantic Services Inc. |
 | pydantic-monty-runtime | 0.0.23 | MIT | https://github.com/pydantic/monty | License field; no licence file, attributed to Pydantic Services Inc. |
@@ -299,10 +299,11 @@ names no author is in the evidence column below.
 
 ## Frontend image (npm)
 
-281 distributions.
+289 distributions.
 
 | Component | Version | Licence | Source | Evidence |
 |---|---|---|---|---|
+| @blobatar/react | 2.7.0 | MIT | https://github.com/Alain00/blobatar | package.json license |
 | @eloqnt/config | 0.1.0 | MIT | https://cli.eloqnt.dev/docs/configuration | package.json license |
 | @eloqnt/format-json | 0.1.0 | MIT | https://cli.eloqnt.dev/docs/configuration | package.json license |
 | @eloqnt/format-po | 0.1.0 | MIT | https://cli.eloqnt.dev/docs/formats/po | package.json license |
@@ -413,6 +414,8 @@ names no author is in the evidence column below.
 | aria-hidden | 1.2.6 | MIT | https://github.com/theKashey/aria-hidden | package.json license |
 | bail | 2.0.2 | MIT | https://github.com/wooorm/bail | package.json license |
 | baseline-browser-mapping | 2.11.10 | Apache-2.0 | https://github.com/web-platform-dx/baseline-browser-mapping | package.json license |
+| blobatar | 2.7.0 | MIT | https://github.com/Alain00/blobatar | package.json license |
+| border-beam | 1.3.0 | MIT | https://github.com/Jakubantalik/border-beam | package.json license |
 | caniuse-lite | 1.0.30001806 | CC-BY-4.0 | https://github.com/browserslist/caniuse-lite | package.json license; review accepted |
 | ccount | 2.0.1 | MIT | https://github.com/wooorm/ccount | package.json license |
 | character-entities | 2.0.2 | MIT | https://github.com/wooorm/character-entities | package.json license |
@@ -457,8 +460,10 @@ names no author is in the evidence column below.
 | hast-util-to-text | 4.0.2 | MIT | https://github.com/syntax-tree/hast-util-to-text | package.json license |
 | hast-util-whitespace | 3.0.0 | MIT | https://github.com/syntax-tree/hast-util-whitespace | package.json license |
 | highlight.js | 11.11.1 | BSD-3-Clause | https://github.com/highlightjs/highlight.js | package.json license |
+| highlight.js | 11.12.0 | BSD-3-Clause | https://github.com/highlightjs/highlight.js | package.json license |
 | html-url-attributes | 3.0.1 | MIT | https://github.com/rehypejs/rehype-minify/tree/main/packages/html-url-attributes | package.json license |
 | icu-minify | 4.14.5 | MIT | https://github.com/amannn/next-intl | package.json license |
+| img-fx | 0.5.1 | MIT | https://github.com/Jakubantalik/img-fx | package.json license |
 | immer | 11.1.15 | MIT | https://github.com/immerjs/immer | package.json license |
 | import-in-the-middle | 3.3.3 | Apache-2.0 | https://github.com/nodejs/import-in-the-middle | package.json license |
 | inline-style-parser | 0.2.7 | MIT | https://github.com/remarkablemark/inline-style-parser | package.json license |
@@ -563,6 +568,8 @@ names no author is in the evidence column below.
 | style-to-object | 1.0.14 | MIT | https://github.com/remarkablemark/style-to-object | package.json license |
 | styled-jsx | 5.1.6 | MIT | https://github.com/vercel/styled-jsx | package.json license |
 | tailwind-merge | 3.7.0 | MIT | https://github.com/dcastil/tailwind-merge | package.json license |
+| thinking-orbs | 0.3.1 | MIT | https://github.com/Jakubantalik/thinking-orbs | package.json license |
+| three | 0.186.0 | MIT | https://github.com/mrdoob/three.js | package.json license |
 | tiny-invariant | 1.3.3 | MIT | https://github.com/alexreardon/tiny-invariant | package.json license |
 | trim-lines | 3.0.1 | MIT | https://github.com/wooorm/trim-lines | package.json license |
 | trough | 2.2.0 | MIT | https://github.com/wooorm/trough | package.json license |
@@ -581,6 +588,7 @@ names no author is in the evidence column below.
 | vfile | 6.0.3 | MIT | https://github.com/vfile/vfile | package.json license |
 | vfile-message | 4.0.3 | MIT | https://github.com/vfile/vfile-message | package.json license |
 | victory-vendor | 37.3.6 | MIT AND ISC | https://github.com/FormidableLabs/victory | package.json license; no licence file, attributed to Formidable |
+| voice-glow | 0.2.0 | MIT | https://github.com/Jakubantalik/Libraries.dev | package.json license |
 | yaml | 2.9.1 | ISC | github:eemeli/yaml | package.json license |
 | zustand | 5.0.15 | MIT | https://github.com/pmndrs/zustand | package.json license |
 | zwitch | 2.0.4 | MIT | https://github.com/wooorm/zwitch | package.json license |

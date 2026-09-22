@@ -9,6 +9,7 @@ import { qk } from "@/lib/query-keys";
 import {
   useAgentSelectionStore,
   useAuthStore,
+  useBrowserPanelStore,
   useChatStore,
   useConversationStore,
   useOrgStore,
@@ -2290,5 +2291,88 @@ describe("what the person cannot reach", () => {
     act(() => result.current.sendMessage("try again"));
 
     expect(result.current.personalGaps).toEqual([]);
+  });
+});
+
+describe("useChat - watching a browse", () => {
+  /** One browser frame, replayed the way the server sends one. */
+  function browserFrame(type: string, data: Record<string, unknown>): void {
+    receive(type, { kind: type, call_id: "c1", ...data });
+  }
+
+  it("collects a browse without opening anything over the conversation", () => {
+    // The browse shows itself as a card in the transcript. A panel that opened
+    // itself would say watching the browser matters more than reading the
+    // answer, which is true for about four seconds.
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    browserFrame("browser_opened", { step: 0, goal: "find the price", max_steps: 25 });
+
+    expect(useBrowserPanelStore.getState().openCallId).toBeNull();
+    expect(result.current.browses).toHaveLength(1);
+    expect(result.current.browses[0]).toMatchObject({ callId: "c1", goal: "find the price" });
+  });
+
+  it("fills the browse from its steps, its pictures and its outcome", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    browserFrame("browser_opened", { step: 0, goal: "g", max_steps: 25 });
+    browserFrame("browser_frame", { step: 1, image: "data:image/jpeg;base64,AAA" });
+    browserFrame("browser_step", {
+      step: 1,
+      operation: "CLICK",
+      target: "Accept all",
+      confidence: 0.42,
+    });
+    browserFrame("browser_finished", { step: 2, outcome: "blocked", detail: "Sign in first" });
+
+    expect(result.current.browses[0]).toMatchObject({
+      image: "data:image/jpeg;base64,AAA",
+      imageStep: 1,
+      outcome: "blocked",
+      detail: "Sign in first",
+    });
+    expect(result.current.browses[0]?.steps[0]).toMatchObject({
+      operation: "CLICK",
+      confidence: 0.42,
+    });
+  });
+
+  it("drops the previous turn's browse when a new question is asked", () => {
+    // The panel draws the newest browse, so without this the next turn opens
+    // under the last turn's viewport - and a finished browse keeps a screenshot
+    // alive for as long as the hook does.
+    const { result } = renderHook(() => useChat(), { wrapper });
+    browserFrame("browser_opened", { step: 0, goal: "first" });
+    browserFrame("browser_finished", { step: 1, outcome: "done" });
+
+    act(() => result.current.sendMessage("something else"));
+
+    expect(result.current.browses).toEqual([]);
+    expect(useBrowserPanelStore.getState().openCallId).toBeNull();
+  });
+
+  it("a new turn's browse replaces the last one rather than joining it", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    browserFrame("browser_opened", { step: 0, goal: "first" });
+    act(() => result.current.sendMessage("something else"));
+
+    browserFrame("browser_opened", { step: 0, goal: "second" });
+
+    expect(result.current.browses).toHaveLength(1);
+    expect(result.current.browses[0]).toMatchObject({ goal: "second" });
+  });
+
+  it("keeps taking frames while the panel somebody opened is closed again", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    browserFrame("browser_opened", { step: 0, goal: "g" });
+    act(() => useBrowserPanelStore.getState().open("c1", "panel"));
+    act(() => useBrowserPanelStore.getState().close());
+
+    browserFrame("browser_step", { step: 1, operation: "CLICK" });
+
+    expect(useBrowserPanelStore.getState().openCallId).toBeNull();
+    // The frames still arrive; only the panel is closed. The card is still there.
+    expect(result.current.browses[0]?.steps).toHaveLength(1);
   });
 });

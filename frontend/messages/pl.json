@@ -243,7 +243,9 @@
     "thinking": "Myślę...",
     "title": "Czat",
     "tools": {
-      "patternInFile": "{pattern} w {file}"
+      "patternInFile": "{pattern} w {file}",
+      "workingThroughPage": "Przechodzę przez stronę",
+      "browsePage": "Przejdź przez stronę"
     },
     "unfavourite": "Usuń z ulubionych",
     "controls": {
@@ -262,7 +264,35 @@
       }
     },
     "viewMeans": "View pozwala tylko czytać tę konwersację.",
-    "whatWentWrong": "Co poszło nie tak?"
+    "whatWentWrong": "Co poszło nie tak?",
+    "rail": {
+      "label": "Przejdź do wiadomości",
+      "previous": "Poprzednia wiadomość",
+      "next": "Następna wiadomość",
+      "jumpTo": "Przejdź do wiadomości od {author}",
+      "you": "Ty",
+      "agent": "Agent",
+      "empty": "Ta wiadomość nie ma tekstu"
+    },
+    "browserHeading": "Przeglądarka",
+    "browserClose": "Zamknij panel przeglądarki",
+    "browserGoal": "Cel",
+    "browserSteps": "Kroki",
+    "browserStep": "Krok {step}",
+    "browserStepOf": "Krok {step} z {total}",
+    "browserWaitingForFrame": "Czekam na pierwszy widok strony…",
+    "browserNoPreview": "Ten agent działa bez podglądu na żywo.",
+    "browserViewportAlt": "Strona w kroku {step}",
+    "browserConfidenceHint": "Silnik wybrał tę opcję z prawdopodobieństwem {value}",
+    "browserOutcome": {
+      "done": "Zakończone",
+      "blocked": "Strona zablokowała działanie",
+      "exhausted": "Zatrzymane na limicie kroków",
+      "failed": "Nie udało się połączyć z przeglądarką"
+    },
+    "browserResize": "Zmień szerokość widoku przeglądarki",
+    "browserOpenPanel": "Otwórz w panelu bocznym",
+    "browserOpenFull": "Otwórz na pełnym ekranie"
   },
   "errors": {
     "authorizationFailed": "Autoryzacja nie powiodła się",
