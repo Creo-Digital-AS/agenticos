@@ -4980,7 +4980,7 @@
     "openVault2": "Open the Vault",
     "pasteHere": "Paste it here",
     "purposeConnector": "Document source",
-    "purposeConnectorHint": "Google Drive, S3",
+    "purposeConnectorHint": "Google Drive, S3, SharePoint",
     "purposeModelProvider": "Model provider",
     "purposeModelProviderHint": "OpenAI, Anthropic…",
     "purposeObservability": "Tracing",
