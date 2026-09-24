@@ -1,5 +1,5 @@
 ---
-source_sha: "a40ae2358eec"
+source_sha: "3f22a407fdb4"
 ---
 
 # Przetwarzanie plików { #file-processing }
@@ -1190,9 +1190,10 @@ poleceniu CLI `rag-sync-gdrive`, które operator uruchamia z własnej powłoki.
     folderu jednego tenanta wybiera to, co jest czytane pod tożsamością
     operatora.
 
-To, co source wskazuje w `secret_id`, to `gcp_service_account` dla Drive albo
-para `aws_credentials` dla S3, deklarowane przez konektor jako `SECRET_KIND`
-i podawane kreatorowi jako `secret_kind` na listingu konektorów.
+To, co source wskazuje w `secret_id`, to `gcp_service_account` dla Drive, para
+`aws_credentials` dla S3 albo rejestracja `entra_app` dla SharePointa,
+deklarowane przez konektor jako `SECRET_KIND` i podawane kreatorowi jako
+`secret_kind` na listingu konektorów.
 
 Kiedyś siedziało to w `config`, zaszyfrowane przez `app/core/crypto.py` — jeden
 klucz Fernet obowiązujący dla całego wdrożenia nad poświadczeniem każdego
@@ -1232,9 +1233,16 @@ staje się czytelne dla każdego, kto może przeczytać tę kolekcję.**
 Dwie połowy tego zasięgu nie są równie niezawodne i to jest ta część warta
 wiedzenia.
 
-Source Drive ograniczony jest swoim `folder_id`, a source S3 swoim `bucket`
-i `prefix`, więc szerokie poświadczenie wycelowane w jeden folder wciąga jeden
-folder.
+Source Drive ograniczony jest swoim `folder_id`, source S3 swoim `bucket`
+i `prefix`, a source SharePoint swoją witryną i `folder_path` — więc szerokie
+poświadczenie wycelowane w jeden folder wciąga jeden folder.
+
+SharePoint to przypadek, w którym najłatwiej podnieść ten sufit przez
+przypadek, bo uprawnienie *aplikacji* nie jest zawężane przez to, kto
+skonfigurował source: rejestracja aplikacji z `Sites.Read.All` może czytać każdą
+witrynę w katalogu, a source wycelowany w jedną z nich jest konfiguracją,
+a nie granicą. Zamiast tego przyznaj `Sites.Selected`, a potem odczyt na
+konkretnej witrynie — wtedy sufitem jest ta jedna witryna.
 
 Ale `config` to pole na wierszu, edytowalne przez każdego, kto ma
 `collections:edit` na tej kolekcji.

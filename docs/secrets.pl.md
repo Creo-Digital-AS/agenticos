@@ -1,5 +1,5 @@
 ---
-source_sha: "da79e004aa8d"
+source_sha: "b788b7962cb7"
 ---
 
 # Sekrety i vault { #secrets-and-the-vault }
@@ -96,6 +96,7 @@ kończy z poświadczeniem, które zawodzi przy pierwszym runie. Sekret ma więc
 | `aws_credentials` | Access key id, secret access key, region, opcjonalny token sesji |
 | `gcp_service_account` | JSON konta serwisowego, walidowany przy wprowadzaniu |
 | `github_oauth_app` | Publiczny client id aplikacji GitHub OAuth App i jej sekret |
+| `entra_app` | Tenant, application id i client secret rejestracji aplikacji Microsoft Entra |
 | `none` | Nie jest sekretem — znacznik endpointu, który nie potrzebuje poświadczenia |
 
 `github_oauth_app` jest zużywany przez platformę, a nie wybierany przez
@@ -105,6 +106,15 @@ być dokładnie jeden**: prywatne poświadczenie członka nigdy nie zostaje po c
 użyte dla połączenia całej organizacji, a przy dwóch zapisanych aplikacjach
 widocznych dla organizacji łączenie zostaje odrzucone (z nazwaniem obu), zamiast
 zostać przypisane do tej, której nazwa sortuje się pierwsza.
+
+`entra_app` niesie trzy pola, bo Entra wystawia tokeny per katalog: application
+id nazywa aplikację, a tenant id nazywa katalog, który wyraził na nią zgodę,
+i to z tego drugiego budowany jest endpoint tokenów. Samo application id jest
+poświadczeniem, którym nic się nie uwierzytelni. To postać app-only —
+synchronizacja SharePointa działa o trzeciej w nocy i nie ma kto wyrazić zgody —
+więc uprawnienia aplikacji w Graphie są całością tego, do czego source używający
+jej może sięgnąć; to właśnie argument za `Sites.Selected`, przedstawiony
+w [Konfiguracja sync source'ów](howto/configure-sync-sources.md#sharepoint-setup).
 
 `aws_credentials` to najczytelniejszy argument za tym, żeby rodzaje w ogóle
 istniały: access key id nie jest tajny, a secret access key jest, i jedno pole

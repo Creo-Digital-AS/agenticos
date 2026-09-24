@@ -156,3 +156,6 @@ CONNECTOR_REGISTRY["gdrive"] = GoogleDriveConnector
 from app.services.rag.connectors.s3 import S3Connector
 
 CONNECTOR_REGISTRY["s3"] = S3Connector
+from app.services.rag.connectors.sharepoint import SharePointConnector
+
+CONNECTOR_REGISTRY["sharepoint"] = SharePointConnector

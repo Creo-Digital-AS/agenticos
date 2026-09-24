@@ -1,5 +1,5 @@
 ---
-source_sha: "a40ae2358eec"
+source_sha: "3f22a407fdb4"
 ---
 
 # Dateiverarbeitung { #file-processing }
@@ -1258,9 +1258,10 @@ seiner eigenen Shell ausführt.
     Ordner-Id eines Tenants wählt, was unter der Identität des Betreibers gelesen
     wird.
 
-Was die Source in `secret_id` nennt, ist ein `gcp_service_account` für Drive oder
-ein `aws_credentials`-Paar für S3, vom Connector als `SECRET_KIND` deklariert und
-dem Assistenten als `secret_kind` in der Connector-Auflistung angeboten.
+Was die Source in `secret_id` nennt, ist ein `gcp_service_account` für Drive, ein
+`aws_credentials`-Paar für S3 oder eine `entra_app`-Registrierung für SharePoint,
+vom Connector als `SECRET_KIND` deklariert und dem Assistenten als `secret_kind`
+in der Connector-Auflistung angeboten.
 
 Früher stand es in `config`, verschlüsselt von `app/core/crypto.py` — ein
 deploymentweiter Fernet-Schlüssel über den Zugangsdaten jedes Tenants, und das ist
@@ -1303,9 +1304,18 @@ Source liest, lesbar für jeden, der diese Collection lesen kann.**
 Die beiden Hälften dieser Reichweite sind nicht gleich verlässlich, und das ist
 der Teil, den man wissen sollte.
 
-Eine Drive-Source ist durch ihre `folder_id` begrenzt und eine S3-Source durch
-ihren `bucket` und `prefix`, weit reichende Zugangsdaten, die auf einen Ordner
-gerichtet sind, lesen also einen Ordner ein.
+Eine Drive-Source ist durch ihre `folder_id` begrenzt, eine S3-Source durch
+ihren `bucket` und `prefix` und eine SharePoint-Source durch ihre Site und ihren
+`folder_path` — weit reichende Zugangsdaten, die auf einen Ordner gerichtet sind,
+lesen also einen Ordner ein.
+
+SharePoint ist der Fall, in dem sich diese Decke am leichtesten versehentlich
+anheben lässt, denn eine *Anwendungs*-Berechtigung wird nicht dadurch enger, wer
+die Source konfiguriert hat: Eine App-Registrierung mit `Sites.Read.All` kann
+jede Site im Verzeichnis lesen, und eine Source, die auf eine davon zeigt, ist
+eine Konfiguration und keine Grenze. Gewähren Sie stattdessen `Sites.Selected`
+und danach Leserechte auf der einzelnen Site — dann ist die Decke diese eine
+Site.
 
 Aber `config` ist ein Feld auf der Zeile, bearbeitbar von jedem, der
 `collections:edit` auf dieser Collection hält.

@@ -30,9 +30,17 @@ pytestmark = [pytest.mark.anyio, pytest.mark.security]
 
 
 class TestVocabularies:
-    def test_source_is_the_four_code_set_origins(self):
-        assert sorted(SOURCE_VOCABULARY) == ["gdrive", "local", "s3", "upload"]
+    def test_source_is_the_code_set_origins(self):
+        assert sorted(SOURCE_VOCABULARY) == ["gdrive", "local", "s3", "sharepoint", "upload"]
         assert Source.UPLOAD == "upload"
+
+    def test_every_registered_connector_type_is_one_of_them(self):
+        """`sync_source_flow` stamps `source.connector_type` verbatim, so a
+        connector whose type is missing here ingests documents that no
+        `source=[...]` filter can name."""
+        from app.services.rag.connectors import CONNECTOR_REGISTRY
+
+        assert set(CONNECTOR_REGISTRY) <= SOURCE_VOCABULARY
 
     def test_document_type_vocabulary_is_extensions_without_dots(self):
         assert "pdf" in DOCUMENT_TYPE_VOCABULARY
