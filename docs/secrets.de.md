@@ -1,5 +1,5 @@
 ---
-source_sha: "da79e004aa8d"
+source_sha: "b788b7962cb7"
 ---
 
 # Secrets und der Vault { #secrets-and-the-vault }
@@ -102,6 +102,7 @@ existieren.
 | `aws_credentials` | Access Key ID, Secret Access Key, Region, optionales Session-Token |
 | `gcp_service_account` | Das JSON des Service-Accounts, beim Hineingeben validiert |
 | `github_oauth_app` | Die öffentliche Client-ID einer GitHub OAuth App und deren Secret |
+| `entra_app` | Tenant, Application-ID und Client Secret einer Microsoft-Entra-App-Registrierung |
 | `none` | Kein Secret — die Markierung für einen Endpunkt, der keine Zugangsdaten braucht |
 
 `github_oauth_app` wird von der Plattform ausgegeben und nicht von einer Person
@@ -112,6 +113,17 @@ werden nie stillschweigend für die Verbindung der ganzen Organisation verwendet
 und bei zwei gespeicherten org-sichtbaren Apps wird die Verbindung abgelehnt
 (unter Nennung beider), statt an denjenigen Namen gebunden zu werden, der zuerst
 sortiert.
+
+`entra_app` trägt drei Felder, weil Entra seine Token pro Verzeichnis ausstellt:
+eine Application-ID benennt eine Anwendung und eine Tenant-ID das Verzeichnis,
+das ihr zugestimmt hat, und der Token-Endpunkt wird aus der zweiten gebaut. Eine
+Application-ID allein sind Zugangsdaten, mit denen sich nichts authentifizieren
+lässt. Es ist die App-only-Form — eine SharePoint-Synchronisation läuft um drei
+Uhr nachts, und es ist niemand da, der zustimmen könnte — also sind die
+Graph-Berechtigungen der Anwendung das Ganze dessen, was eine Source damit
+erreichen kann. Das ist das Argument für `Sites.Selected`, das in
+[Sync-Sources konfigurieren](howto/configure-sync-sources.md#sharepoint-setup)
+vorgebracht wird.
 
 `aws_credentials` ist der klarste Fall dafür, dass es Arten überhaupt gibt: die
 Access Key ID ist nicht geheim und der Secret Access Key ist es, und ein einzelnes

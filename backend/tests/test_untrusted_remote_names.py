@@ -30,7 +30,12 @@ from app.services.rag.connectors import CONNECTOR_REGISTRY, BaseSyncConnector, R
 from app.services.rag.connectors.google_drive import GoogleDriveConnector
 from app.services.rag.connectors.s3 import S3Connector
 from app.services.rag.filters import Source
-from app.services.rag.remote_names import checked_drive_folder_id, destination_within
+from app.services.rag.remote_names import (
+    checked_drive_folder_id,
+    checked_sharepoint_host,
+    checked_sharepoint_path,
+    destination_within,
+)
 from app.services.rag.sources.base import SourceFile
 from app.services.rag.sources.google_drive import GoogleDriveSource
 from app.services.rag.sources.s3 import S3Source
@@ -493,3 +498,90 @@ def test_the_s3_connector_refuses_a_credential_of_the_wrong_kind() -> None:
         connector._get_s3_client({"bucket": "ours"}, wrong)
 
     client.assert_not_called()
+
+
+class TestTheSharePointAddress:
+    """A hostname and two paths, each interpolated into a Graph URL.
+
+    Nothing here can reach a different *server* - every request the connector
+    makes goes to `graph.microsoft.com`, whatever the config says. What it can
+    reach is a different Graph *resource*, because Graph's path addressing reads
+    `:` as the boundary between a path and what follows it, and `?` as the start
+    of the query options. So the refusals are about the URL's grammar rather
+    than about SSRF, and they are an allowlist for the reason
+    `checked_drive_folder_id` is one: a real site path needs nothing withheld.
+    """
+
+    @pytest.mark.parametrize(
+        "hostname", ["contoso.sharepoint.com", "a1.b2.sharepoint.de", "host-1.example.com"]
+    )
+    def test_a_host_name_is_answered_unchanged(self, hostname: str) -> None:
+        assert checked_sharepoint_host(hostname) == hostname
+
+    @pytest.mark.parametrize(
+        "hostname",
+        [
+            "contoso.sharepoint.com/sites/Other",
+            "https://contoso.sharepoint.com",
+            "contoso.sharepoint.com:443",
+            "contoso..sharepoint.com",
+            "contoso.sharepoint.com:/sites/x:/drive",
+            "",
+            "-",
+            42,
+            None,
+            ["contoso.sharepoint.com"],
+        ],
+    )
+    def test_anything_that_is_not_one_is_refused(self, hostname: object) -> None:
+        with pytest.raises(BadRequestError):
+            checked_sharepoint_host(hostname)
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("/sites/Engineering", "sites/Engineering"),
+            ("sites/Engineering/", "sites/Engineering"),
+            ("Shared Documents/Legal", "Shared%20Documents/Legal"),
+            ("Q1 & Q2", "Q1%20%26%20Q2"),
+            ("Ärsrapport", "%C3%84rsrapport"),
+        ],
+    )
+    def test_a_path_is_answered_encoded_and_without_its_delimiters(
+        self, path: str, expected: str
+    ) -> None:
+        """The encoding is part of the answer, not the caller's next step: a
+        document library is called "Shared Documents", so the values that must
+        work are exactly the ones a raw interpolation breaks."""
+        assert checked_sharepoint_path(path, what="site path") == expected
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "..",
+            "a/../b",
+            "./a",
+            "/sites/Engineering:/drive/root:",
+            "Legal?$expand=children",
+            "Legal#fragment",
+            "Legal%2Fother",
+            "Legal\\other",
+            "Legal\nOther",
+            "",
+            "/",
+            "///",
+            7,
+            None,
+        ],
+    )
+    def test_a_component_that_would_address_something_else_is_refused(self, path: object) -> None:
+        with pytest.raises(BadRequestError):
+            checked_sharepoint_path(path, what="folder path")
+
+    def test_the_refusal_says_which_of_the_two_paths_it_is_about(self) -> None:
+        """One function answers both questions, so the caller supplies the
+        noun - a form marking `site_path` must not say "folder path"."""
+        with pytest.raises(BadRequestError, match="folder path"):
+            checked_sharepoint_path("..", what="folder path")
+        with pytest.raises(BadRequestError, match="site path"):
+            checked_sharepoint_path("..", what="site path")

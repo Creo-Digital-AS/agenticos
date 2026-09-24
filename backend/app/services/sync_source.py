@@ -35,8 +35,16 @@ from app.schemas.sync_source import (
 # The credential field names the two shipped connectors used to hold in `config`.
 # Kept as a list so a caller posting the old shape is told what to do instead of
 # having the value silently dropped (#937).
+#
+# The first three are fields the two shipped connectors genuinely used to have.
+# `client_secret` never was one, and is here because the SharePoint connector
+# makes it the obvious thing to try: every walkthrough of an Entra app
+# registration outside this repository puts the tenant, the application id and
+# the secret in one place, and `config` is a dict that accepts a key nobody
+# declared - so without this the paste lands a plaintext client secret in a
+# JSONB column, which is the exact leak the vault exists to make impossible.
 _RETIRED_CREDENTIAL_FIELDS = frozenset(
-    {"service_account_json", "access_key_id", "secret_access_key"}
+    {"service_account_json", "access_key_id", "secret_access_key", "client_secret"}
 )
 
 
