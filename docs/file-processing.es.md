@@ -1,5 +1,5 @@
 ---
-source_sha: "3f22a407fdb4"
+source_sha: "a40ae2358eec"
 ---
 
 # Procesamiento de archivos { #file-processing }
@@ -1209,10 +1209,9 @@ propio shell.
     ámbito de deployment, porque una caída significa que el id de carpeta de un
     tenant elige qué se lee bajo la identidad del operador.
 
-Lo que la fuente nombra en `secret_id` es un `gcp_service_account` para Drive, un
-par `aws_credentials` para S3 o un registro `entra_app` para SharePoint, declarado
-por el conector como `SECRET_KIND` y ofrecido al asistente como `secret_kind` en
-el listado de conectores.
+Lo que la fuente nombra en `secret_id` es un `gcp_service_account` para Drive o un
+par `aws_credentials` para S3, declarado por el conector como `SECRET_KIND` y
+ofrecido al asistente como `secret_kind` en el listado de conectores.
 
 Antes estaba en `config`, cifrado por `app/core/crypto.py` — una sola clave Fernet
 de ámbito de deployment sobre la credencial de cada tenant, que es justo la
@@ -1252,16 +1251,9 @@ lee pasa a ser legible por todo el que pueda leer esa colección.**
 Las dos mitades de ese alcance no son igual de fiables, que es la parte que
 conviene saber.
 
-Una fuente de Drive está acotada por su `folder_id`, una de S3 por su `bucket` y
-su `prefix`, y una de SharePoint por su sitio y su `folder_path` — así que una
-credencial amplia apuntada a una carpeta ingiere una carpeta.
-
-SharePoint es el caso en el que más fácil resulta levantar ese techo sin querer,
-porque un permiso de *aplicación* no lo estrecha quien configuró la fuente: un
-registro de aplicación con `Sites.Read.All` puede leer todos los sitios del
-directorio, y una fuente apuntada a uno de ellos es una configuración y no un
-límite. Concede `Sites.Selected` y después lectura sobre el sitio concreto, y el
-techo pasa a ser ese único sitio.
+Una fuente de Drive está acotada por su `folder_id` y una de S3 por su `bucket` y
+su `prefix`, así que una credencial amplia apuntada a una carpeta ingiere una
+carpeta.
 
 Pero `config` es un campo de la fila, editable por cualquiera que tenga
 `collections:edit` sobre esa colección.

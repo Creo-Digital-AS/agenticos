@@ -28,7 +28,7 @@ every sync operation.
 ### List available connector types
 
 ```bash
-# Shows all registered connectors (e.g. gdrive, s3, sharepoint)
+# Shows all registered connectors (e.g. gdrive, s3)
 uv run agenticos cmd rag-sources
 ```
 
@@ -211,86 +211,6 @@ For MinIO, the endpoint is typically `http://minio:9000` (Docker) or
 | `bucket` | string | Yes | -- | S3 bucket name |
 | `prefix` | string | No | `""` | Key prefix to limit sync scope (e.g. `documents/legal/`). Leave empty for the entire bucket. |
 
-## SharePoint setup
-
-A `sharepoint` source reads a site's default document library through Microsoft
-Graph, authenticating as an Entra ID app registration rather than as a person.
-That is what lets a sync run on a schedule with nobody signed in, and it is also
-what makes the next section the important one.
-
-### 1. Register an application, and grant it as little as possible
-
-1. In [Entra ID](https://entra.microsoft.com/) go to **App registrations** and
-   create one.
-2. Under **API permissions**, add a Microsoft Graph **Application** permission —
-   see the table below for which — and **grant admin consent**. Application
-   permissions do nothing until consent is granted.
-3. Under **Certificates & secrets**, create a client secret and copy its
-   **value**. The portal shows it once; the *Secret ID* beside it is not the
-   credential.
-
-| Permission | What a source using it can reach |
-|---|---|
-| `Sites.Selected` | Only the sites the application has separately been granted on. **Prefer this.** |
-| `Sites.Read.All` | Every site in the directory |
-| `Files.Read.All` | Every file in every site and every user's OneDrive |
-
-!!! warning "An application permission is a ceiling, and the source's config is not"
-
-    A source's `site_path` narrows what it ingests; it does not narrow what the
-    credential could ingest. Anyone holding `collections:edit` on the collection
-    can repoint the source, and with `Sites.Read.All` the new target can be any
-    site in the tenant — published to everyone who can read that collection.
-    With `Sites.Selected` it cannot.
-
-With `Sites.Selected`, grant the application read on the one site as well —
-through Graph's `POST /sites/{site-id}/permissions`, or from the SharePoint admin
-centre. Without that second step a `Sites.Selected` app reaches nothing and the
-first sync fails with a 403.
-
-### 2. Give the source the credential
-
-Add the tenant id, the application id and the client secret to the **Vault** once,
-as a **Microsoft Entra app** credential, and point each SharePoint source at it
-with `secret_id`. None of the three is a config field: a credential does not go in
-a source's configuration
-([#937](https://github.com/vstorm-co/agenticos/issues/937)), and one registration
-feeding six sites is one secret to rotate rather than six.
-
-A client secret expires — Entra's default is two years, and its maximum is two
-years. Rotating it is an edit to the one vault entry; every source that names it
-keeps working, which is the reason the credential is referenced rather than
-pasted.
-
-### 3. Find the site
-
-The hostname and the site path are the two halves of a site's URL:
-
-```
-https://contoso.sharepoint.com/sites/Engineering/Shared%20Documents/Forms/AllItems.aspx
-        ^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^
-        hostname               site path
-```
-
-### 4. SharePoint connector config fields
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `hostname` | string | Yes | -- | The tenant's SharePoint host, e.g. `contoso.sharepoint.com` |
-| `site_path` | string | Yes | -- | The site's server-relative path, e.g. `/sites/Engineering` |
-| `folder_path` | string | No | `""` | A folder inside the document library, e.g. `Legal/Contracts`. Leave empty for the whole library. |
-| `include_subfolders` | boolean | No | `true` | Recursively include files from subfolders |
-
-All three text fields are interpolated into a Graph URL, so each may hold only
-what a real site path holds. `:`, `?`, `#`, `%`, a backslash and `..` are refused
-when the source is created and again at sync time — not because they would reach
-another server (every request goes to `graph.microsoft.com` regardless) but
-because Graph would read them as addressing a different resource. Spaces are
-fine: `Shared Documents` is what a document library is actually called.
-
-One source reads one site's **default** document library. A site with several
-libraries is several sources, which is also how its permissions are granted.
-
 ## API reference
 
 All sync source endpoints live under `/api/v1/rag/sync/`. Listing takes
@@ -467,29 +387,6 @@ service account needs at least Viewer access.
 Verify that `S3_RAG_ACCESS_KEY`, `S3_RAG_SECRET_KEY`, and
 `S3_RAG_ENDPOINT` are set correctly in `.env`. For MinIO, ensure the
 endpoint includes the port (e.g. `http://localhost:9000`).
-
-### SharePoint: "Microsoft Entra refused this source's credential (HTTP 401)"
-
-The tenant id, the application id or the client secret is wrong, or the secret has
-expired. Entra's own explanation is in the worker log and deliberately not in the
-sync history: its error body echoes the request, and the request carries the
-secret. Check the expiry date on the registration's **Certificates & secrets**
-page first — an expired secret is the common one, and it is invisible until a
-sync fails.
-
-### SharePoint: "Microsoft Graph refused the site (HTTP 403)"
-
-The registration authenticated and is not allowed to read that site. With
-`Sites.Selected`, this is the second step nobody does: the application needs a
-read grant on the specific site as well as the consented permission. With
-`Sites.Read.All`, check that admin consent was actually granted — a permission
-added and not consented to looks configured and grants nothing.
-
-### SharePoint: "Microsoft Graph refused the site (HTTP 404)"
-
-The hostname and site path together do not resolve. The path is
-server-relative and includes `/sites/`: `/sites/Engineering`, not `Engineering`
-and not the whole URL.
 
 ### Scheduled syncs are not running
 

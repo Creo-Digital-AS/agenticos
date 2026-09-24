@@ -58,11 +58,6 @@ const CONNECTOR_BRANDS: Record<string, BrandName> = {
   dropbox: "dropbox",
   s3: "s3",
   aws: "s3",
-  // No SharePoint mark in any of the three catalogues `gen-brand-icons`
-  // draws from, so the product's own: a SharePoint source is a Microsoft
-  // credential and a Microsoft site, and the monogram fallback would say
-  // less than that.
-  sharepoint: "microsoft",
 };
 
 /** The brand mark for a connector type, or `undefined` when it has none. */

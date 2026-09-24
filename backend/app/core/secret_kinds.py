@@ -37,12 +37,6 @@ The kinds are the shapes that actually exist, and no more:
     A Google OAuth client's `client_id` and `client_secret`, for connecting a
     mailbox a trigger reads. The same two fields as GitHub's and a separate kind
     on purpose: a kind names what a credential is *for*.
-`entra_app`
-    A Microsoft Entra ID app registration: the directory it lives in, its
-    application id and a client secret. Three fields rather than two because
-    Entra issues its tokens per directory - the same application id means
-    nothing without the tenant that granted it consent, so a source that stored
-    only the pair would be a credential nobody can authenticate with.
 
 Two unions, deliberately. :data:`StorableSecret` is what a person can save;
 :data:`SecretValue` adds `none`, which the runtime can hold but nobody can
@@ -85,7 +79,6 @@ class SecretKind(StrEnum):
     GITHUB_OAUTH_APP = "github_oauth_app"
     GITHUB_APP = "github_app"
     GOOGLE_OAUTH_APP = "google_oauth_app"
-    ENTRA_APP = "entra_app"
 
 
 def _reveal(value: SecretStr) -> str:
@@ -362,56 +355,6 @@ class GoogleOAuthAppSecret(_SecretBase):
         return self.client_id[-4:]
 
 
-class EntraAppSecret(_SecretBase):
-    """A Microsoft Entra ID app registration, authenticating as itself.
-
-    Three fields where GitHub's and Google's OAuth apps take two, because Entra
-    issues a token *per directory*: `client_id` names an application and
-    `tenant_id` names the directory that granted it consent, and the token
-    endpoint is built from the second. An application id on its own is a
-    credential nothing can authenticate with.
-
-    This is the app-only (client credentials) shape, which is what a sync source
-    needs: nobody is present at 3am when a scheduled sync runs, so there is no
-    one to consent and no refresh token to keep alive. The consequence is that
-    the app's Graph permissions are the whole of what a source can reach, which
-    is why the SharePoint connector's page argues for `Sites.Selected` over
-    `Sites.Read.All` - an application permission is not narrowed by who
-    configured the source.
-
-    The tenant and client ids are not confidential - both appear on the app's
-    overview page in the Entra portal - so only the secret is a
-    :data:`CredentialStr`, the same split `aws_credentials` makes.
-    """
-
-    kind: Literal[SecretKind.ENTRA_APP] = SecretKind.ENTRA_APP
-    tenant_id: str = Field(
-        min_length=1,
-        max_length=255,
-        title="Directory (tenant) ID",
-        description="The directory the app is registered in, e.g. 72f988bf-86f1-41af-91ab-2d7cd011db47",
-    )
-    client_id: str = Field(
-        min_length=1,
-        max_length=255,
-        title="Application (client) ID",
-        description="The app registration's own id, from its overview page",
-    )
-    client_secret: CredentialStr = Field(
-        title="Client secret",
-        description=(
-            "The secret's *value*, not its ID - the portal shows the value once, "
-            "on the page that created it"
-        ),
-    )
-
-    @property
-    def hint(self) -> str:
-        # The client id, not the secret: it is public, and it is what names the
-        # registration on the Entra page an operator would open to check.
-        return self.client_id[-4:]
-
-
 StorableSecret = Annotated[
     ApiKeySecret
     | AzureOpenAISecret
@@ -419,8 +362,7 @@ StorableSecret = Annotated[
     | GcpServiceAccountSecret
     | GithubOAuthAppSecret
     | GithubAppSecret
-    | GoogleOAuthAppSecret
-    | EntraAppSecret,
+    | GoogleOAuthAppSecret,
     Field(discriminator="kind"),
 ]
 """Every shape a person can actually save."""
@@ -433,8 +375,7 @@ SecretValue = Annotated[
     | GcpServiceAccountSecret
     | GithubOAuthAppSecret
     | GithubAppSecret
-    | GoogleOAuthAppSecret
-    | EntraAppSecret,
+    | GoogleOAuthAppSecret,
     Field(discriminator="kind"),
 ]
 """What the runtime holds - :data:`StorableSecret` plus "there is no credential"."""
@@ -515,7 +456,6 @@ _KIND_MODELS: dict[SecretKind, type[BaseModel]] = {
     SecretKind.GITHUB_OAUTH_APP: GithubOAuthAppSecret,
     SecretKind.GITHUB_APP: GithubAppSecret,
     SecretKind.GOOGLE_OAUTH_APP: GoogleOAuthAppSecret,
-    SecretKind.ENTRA_APP: EntraAppSecret,
 }
 
 _KIND_LABELS: dict[SecretKind, tuple[str, str]] = {
@@ -546,12 +486,6 @@ _KIND_LABELS: dict[SecretKind, tuple[str, str]] = {
     SecretKind.GOOGLE_OAUTH_APP: (
         "Google OAuth client",
         "A Google OAuth client's id and secret, used to connect a mailbox an agent is run by.",
-    ),
-    SecretKind.ENTRA_APP: (
-        "Microsoft Entra app",
-        "An Entra ID app registration's directory, application id and client "
-        "secret - app-only access to Microsoft Graph, which is what a SharePoint "
-        "sync source reads with.",
     ),
 }
 

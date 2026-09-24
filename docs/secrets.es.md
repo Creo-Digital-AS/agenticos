@@ -1,5 +1,5 @@
 ---
-source_sha: "b788b7962cb7"
+source_sha: "da79e004aa8d"
 ---
 
 # Secretos y el vault { #secrets-and-the-vault }
@@ -98,7 +98,6 @@ secreto tiene un **kind**, y el kind decide qué campos existen.
 | `aws_credentials` | Access key id, secret access key, región, session token opcional |
 | `gcp_service_account` | El JSON de la cuenta de servicio, validado al entrar |
 | `github_oauth_app` | El client id público de una GitHub OAuth App y su secreto |
-| `entra_app` | El tenant, el application id y el client secret de un registro de aplicación de Microsoft Entra |
 | `none` | No es un secreto — la marca para un endpoint que no necesita credencial |
 
 `github_oauth_app` lo gasta la plataforma en lugar de elegirlo una persona — el
@@ -108,18 +107,6 @@ exactamente uno**: la credencial privada de un miembro nunca se usa en silencio
 para la conexión de toda la organización, y con dos apps visibles para la
 organización guardadas la conexión se rechaza (nombrando ambas) en lugar de
 quedar atada al nombre que ordene primero.
-
-`entra_app` lleva tres campos porque Entra emite sus tokens por directorio: un
-application id nombra una aplicación y un tenant id nombra el directorio que le
-dio su consentimiento, y el endpoint de tokens se construye a partir del segundo.
-Un application id por sí solo es una credencial con la que nada puede
-autenticarse.
-
-Es la forma app-only: una sincronización de SharePoint se ejecuta a las tres de
-la mañana y no hay nadie presente para consentir. Los permisos de Graph de la
-aplicación son entonces todo aquello a lo que puede llegar una fuente que la
-use, y ese es el argumento a favor de `Sites.Selected` que se expone en
-[Configurar fuentes de sincronización](howto/configure-sync-sources.md#sharepoint-setup).
 
 `aws_credentials` es el caso más claro de por qué existen los kinds: el access key
 id no es secreto y el secret access key sí lo es, y un único campo no puede

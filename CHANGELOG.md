@@ -17,29 +17,6 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
-### Added
-
-- **A SharePoint sync connector.** A knowledge collection can be fed from a
-  SharePoint site's document library, alongside Google Drive and S3: point a
-  source at a hostname, a site path and optionally a folder, and it walks the
-  library - subfolders included unless you say otherwise - through Microsoft
-  Graph. It authenticates as an Entra ID app registration rather than as a
-  person, because a scheduled sync runs with nobody present to consent, and
-  that credential is a new `entra_app` kind in the vault: a tenant, an
-  application id and a client secret, stored once and referenced by every
-  source that needs it.
-
-  The setup page argues for `Sites.Selected` over `Sites.Read.All` and says
-  why, because this is the connector where the ceiling is easiest to raise by
-  accident: an application permission is not narrowed by who configured the
-  source, so a registration granted the whole directory makes a source's site
-  path a configuration rather than a boundary. The hostname and both paths are
-  checked before they reach a Graph URL - `:`, `?`, `#`, `%`, a backslash and
-  `..` are refused when the source is created and again at sync time, since
-  Graph would read any of them as addressing a different resource. The bearer
-  token goes to Graph and stops there: a download's redirect to Microsoft's
-  CDN is followed without it.
-
 ### Fixed
 
 - **A notification opened its destination by reloading the whole console.**

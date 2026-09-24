@@ -118,14 +118,5 @@
     "help_url": "https://console.aws.amazon.com/iam/home#/security_credentials",
     "description": "A key pair an S3 or MinIO sync source reads objects with.",
     "icon": "s3"
-  },
-  {
-    "id": "sharepoint",
-    "label": "SharePoint",
-    "category": "connector",
-    "kind": "entra_app",
-    "help_url": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-    "description": "An Entra app registration a SharePoint sync source reads document libraries with.",
-    "icon": "microsoft"
   }
 ]

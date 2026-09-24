@@ -79,30 +79,18 @@ describe("connectorBrand", () => {
     ["drive", "gdrive"],
     ["aws", "s3"],
     ["s3", "s3"],
-    // No SharePoint mark in the three catalogues the generator draws from, so
-    // the product's own: a SharePoint source is a Microsoft credential and a
-    // Microsoft site, which says more than the monogram fallback would.
-    ["sharepoint", "microsoft"],
   ])("maps the connector type %s to %s", (connector, brand) => {
     expect(connectorBrand(connector)).toBe(brand);
   });
 
   it("has no mark for a connector type it does not know", () => {
-    expect(connectorBrand("mainframe")).toBeUndefined();
+    expect(connectorBrand("sharepoint")).toBeUndefined();
   });
 
   it("only ever names a brand the set draws", () => {
     // A spelling that maps to a name with no glyph would throw at render, in a
     // list, on whichever deployment happens to have that connector.
-    for (const connector of [
-      "google_drive",
-      "gdrive",
-      "drive",
-      "github",
-      "notion",
-      "slack",
-      "sharepoint",
-    ]) {
+    for (const connector of ["google_drive", "gdrive", "drive", "github", "notion", "slack"]) {
       expect(isBrandName(connectorBrand(connector) ?? "")).toBe(true);
     }
   });

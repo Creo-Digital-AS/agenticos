@@ -89,7 +89,6 @@ decides which fields exist.
 | `aws_credentials` | Access key id, secret access key, region, optional session token |
 | `gcp_service_account` | The service account JSON, validated on the way in |
 | `github_oauth_app` | A GitHub OAuth App's public client id and its secret |
-| `entra_app` | A Microsoft Entra app registration's tenant, application id and client secret |
 | `none` | Not a secret — the marker for an endpoint needing no credential |
 
 `github_oauth_app` is spent by the platform rather than picked by a person — the
@@ -98,15 +97,6 @@ GitHub connect flow reads it server-side to run the token exchange — so it mus
 never silently used for the whole organization's connection, and with two org-visible
 apps stored the connect is refused (naming both) rather than keyed to whichever name
 sorts first.
-
-`entra_app` carries three fields because Entra issues its tokens per directory: an
-application id names an app and a tenant id names the directory that consented to
-it, and the token endpoint is built from the second. An application id on its own
-is a credential nothing can authenticate with. It is the app-only shape — a
-SharePoint sync runs at 3am with nobody present to consent — so the app's Graph
-permissions are the whole of what a source using it can reach, which is the
-argument for `Sites.Selected` made in
-[Configure sync sources](howto/configure-sync-sources.md#sharepoint-setup).
 
 `aws_credentials` is the clearest case for kinds existing at all: the access key id
 is not secret and the secret access key is, and a single field cannot express that.

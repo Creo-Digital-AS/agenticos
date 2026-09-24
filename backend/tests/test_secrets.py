@@ -23,7 +23,6 @@ from app.core.secret_kinds import (
     ApiKeySecret,
     AwsCredentialsSecret,
     AzureOpenAISecret,
-    EntraAppSecret,
     GcpServiceAccountSecret,
     GithubOAuthAppSecret,
     GoogleOAuthAppSecret,
@@ -194,13 +193,8 @@ class TestSecretKinds:
             lambda: GoogleOAuthAppSecret(
                 client_id="1234-abc.apps.googleusercontent.com", client_secret="1234567"
             ),
-            lambda: EntraAppSecret(
-                tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
-                client_id="6731de76-14a6-49ae-97bc-6eba6914391e",
-                client_secret="1234567",
-            ),
         ],
-        ids=["api_key", "azure", "aws_secret", "aws_session_token", "github", "google", "entra"],
+        ids=["api_key", "azure", "aws_secret", "aws_session_token", "github", "google"],
     )
     def test_a_secret_too_short_to_hint_safely_is_refused(self, build):
         """`ApiKeySecret(api_key="1234").hint` used to be `"1234"` - the whole key,
@@ -252,36 +246,6 @@ class TestSealAndOpen:
         assert opened.client_secret.get_secret_value() == "ghs-live-4242"
         # The identifying id becomes the hint, not the punctuation of the JSON.
         assert sealed.hint == "cdef"
-
-    def test_an_entra_app_survives_the_envelope_whole(self):
-        """Three fields, sealed as one document: the tenant a token is minted
-        against cannot be edited without the secret it is minted with."""
-        scope = VaultScope.organization(uuid.uuid4())
-        value = EntraAppSecret(
-            tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
-            client_id="6731de76-14a6-49ae-97bc-6eba6914391e",
-            client_secret="an-entra-client-secret",
-        )
-        sealed = seal_secret(value, scope=scope)
-
-        opened = unseal_secret(sealed.ciphertext, kind=SecretKind.ENTRA_APP, scope=scope)
-
-        assert isinstance(opened, EntraAppSecret)
-        assert opened.tenant_id == "72f988bf-86f1-41af-91ab-2d7cd011db47"
-        assert opened.client_secret.get_secret_value() == "an-entra-client-secret"
-        # The application id, which is public and is what names the
-        # registration on the portal page an operator would open to check.
-        assert sealed.hint == "391e"
-
-    def test_an_entra_app_masks_its_secret_and_not_its_ids(self):
-        value = EntraAppSecret(
-            tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
-            client_id="6731de76-14a6-49ae-97bc-6eba6914391e",
-            client_secret="an-entra-client-secret",
-        )
-
-        assert "an-entra-client-secret" not in repr(value)
-        assert "6731de76-14a6-49ae-97bc-6eba6914391e" in repr(value)
 
     def test_an_envelope_whose_kind_disagrees_with_the_row_is_refused(self):
         """A swapped column would otherwise hand the wrong shape to a caller."""

@@ -1116,10 +1116,9 @@ been shared. The fallback is gone; the setting now serves only the
     deployment-wide fallback, because a fallback means one tenant's folder id
     choosing what is read under the operator's identity.
 
-What the source names in `secret_id` is a `gcp_service_account` for Drive, an
-`aws_credentials` pair for S3 or an `entra_app` registration for SharePoint,
-declared by the connector as `SECRET_KIND` and offered to the wizard as
-`secret_kind` on the connector listing.
+What the source names in `secret_id` is a `gcp_service_account` for Drive or an
+`aws_credentials` pair for S3, declared by the connector as `SECRET_KIND` and
+offered to the wizard as `secret_kind` on the connector listing.
 
 It used to be in `config`, encrypted by `app/core/crypto.py` — one
 deployment-wide Fernet key over every tenant's credential, which is the weakness
@@ -1156,16 +1155,8 @@ readable by everyone who can read that collection.**
 The two halves of that reach are not equally reliable, which is the part worth
 knowing.
 
-A Drive source is bounded by its `folder_id`, an S3 source by its `bucket` and
-`prefix`, and a SharePoint source by its site and `folder_path` — so a broad
-credential pointed at one folder ingests one folder.
-
-SharePoint is the case where the ceiling is easiest to raise by accident, because
-an *application* permission is not narrowed by who configured the source: an app
-registration granted `Sites.Read.All` can read every site in the directory, and a
-source pointed at one of them is a configuration rather than a boundary. Grant
-`Sites.Selected` and then read on the specific site instead, and the ceiling is
-the one site.
+A Drive source is bounded by its `folder_id` and an S3 source by its `bucket` and
+`prefix`, so a broad credential pointed at one folder ingests one folder.
 
 But `config` is a field on the row, editable by anyone holding `collections:edit` on
 that collection.

@@ -1,5 +1,5 @@
 ---
-source_sha: "5f5029d248ba"
+source_sha: "482d37ce9407"
 ---
 
 # Sync-Quellen einrichten { #configure-sync-sources }
@@ -33,7 +33,7 @@ Ingestion-Pipeline (parsen, chunken, einbetten, speichern). Ein Eintrag in
 ### Verfügbare Connector-Typen auflisten { #list-available-connector-types }
 
 ```bash
-# Shows all registered connectors (e.g. gdrive, s3, sharepoint)
+# Shows all registered connectors (e.g. gdrive, s3)
 uv run agenticos cmd rag-sources
 ```
 
@@ -222,91 +222,6 @@ Bei MinIO lautet der Endpunkt üblicherweise `http://minio:9000` (Docker) oder
 | `bucket` | string | Ja | -- | Name des S3-Buckets |
 | `prefix` | string | Nein | `""` | Key-Präfix, das den Sync eingrenzt (etwa `documents/legal/`). Für den ganzen Bucket leer lassen. |
 
-## SharePoint einrichten { #sharepoint-setup }
-
-Eine `sharepoint`-Quelle liest die Standard-Dokumentbibliothek einer Site über
-Microsoft Graph und authentifiziert sich dabei als Entra-ID-App-Registrierung
-statt als Person. Das ist es, was einen Sync nach Zeitplan laufen lässt, ohne
-dass jemand angemeldet ist — und es ist auch das, was den nächsten Abschnitt zum
-wichtigen macht.
-
-### 1. Eine Anwendung registrieren und ihr so wenig wie möglich gewähren { #1-register-an-application-and-grant-it-as-little-as-possible }
-
-1. Gehen Sie in [Entra ID](https://entra.microsoft.com/) zu **App registrations**
-   und legen Sie eine an.
-2. Fügen Sie unter **API permissions** eine **Application**-Berechtigung für
-   Microsoft Graph hinzu — welche, sagt die Tabelle unten — und **erteilen Sie
-   die Administratorzustimmung**. Anwendungsberechtigungen tun nichts, solange
-   keine Zustimmung erteilt ist.
-3. Erzeugen Sie unter **Certificates & secrets** ein Client Secret und kopieren
-   Sie dessen **Wert**. Das Portal zeigt ihn einmal; die *Secret ID* daneben
-   sind nicht die Zugangsdaten.
-
-| Berechtigung | Was eine Quelle damit erreichen kann |
-|---|---|
-| `Sites.Selected` | Nur die Sites, auf die die Anwendung eigens berechtigt wurde. **Nehmen Sie diese.** |
-| `Sites.Read.All` | Jede Site im Verzeichnis |
-| `Files.Read.All` | Jede Datei in jeder Site und im OneDrive jedes Benutzers |
-
-!!! warning "Eine Anwendungsberechtigung ist eine Decke, die Konfiguration der Quelle nicht"
-
-    Der `site_path` einer Quelle grenzt ein, was sie einliest; er grenzt nicht
-    ein, was die Zugangsdaten einlesen könnten. Wer `collections:edit` auf der
-    Collection hält, kann die Quelle umlenken, und mit `Sites.Read.All` kann das
-    neue Ziel jede Site im Tenant sein — veröffentlicht an alle, die diese
-    Collection lesen dürfen. Mit `Sites.Selected` kann es das nicht.
-
-Gewähren Sie der Anwendung bei `Sites.Selected` zusätzlich Leserechte auf der
-einen Site — über Graphs `POST /sites/{site-id}/permissions` oder im
-SharePoint Admin Center. Ohne diesen zweiten Schritt erreicht eine
-`Sites.Selected`-App nichts, und der erste Sync scheitert mit einem 403.
-
-### 2. Der Quelle die Zugangsdaten geben { #2-give-the-source-the-credential }
-
-Legen Sie Tenant-ID, Application-ID und Client Secret einmal im **Vault** als
-**Microsoft Entra app**-Zugangsdaten ab und lassen Sie jede SharePoint-Quelle
-sie über `secret_id` benennen. Keines der drei ist ein Konfigurationsfeld:
-Zugangsdaten gehören nicht in die Konfiguration einer Quelle
-([#937](https://github.com/vstorm-co/agenticos/issues/937)), und eine
-Registrierung, die sechs Sites versorgt, ist ein Secret zum Rotieren statt
-sechs.
-
-Ein Client Secret läuft ab — Entras Vorgabe sind zwei Jahre, und zwei Jahre sind
-auch das Maximum. Das Rotieren ist eine Änderung an diesem einen Vault-Eintrag;
-jede Quelle, die ihn benennt, arbeitet weiter, und genau deshalb werden die
-Zugangsdaten benannt statt eingefügt.
-
-### 3. Die Site herausfinden { #3-find-the-site }
-
-Hostname und Site-Pfad sind die beiden Hälften der URL einer Site:
-
-```
-https://contoso.sharepoint.com/sites/Engineering/Shared%20Documents/Forms/AllItems.aspx
-        ^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^
-        Hostname               Site-Pfad
-```
-
-### 4. Konfigurationsfelder des SharePoint-Connectors { #4-sharepoint-connector-config-fields }
-
-| Feld | Typ | Pflicht | Vorgabe | Beschreibung |
-|-------|------|----------|---------|-------------|
-| `hostname` | string | Ja | -- | Der SharePoint-Host des Tenants, etwa `contoso.sharepoint.com` |
-| `site_path` | string | Ja | -- | Der serverrelative Pfad der Site, etwa `/sites/Engineering` |
-| `folder_path` | string | Nein | `""` | Ein Ordner in der Dokumentbibliothek, etwa `Legal/Contracts`. Für die ganze Bibliothek leer lassen. |
-| `include_subfolders` | boolean | Nein | `true` | Dateien aus Unterordnern rekursiv einbeziehen |
-
-Alle drei Textfelder werden in eine Graph-URL eingesetzt, jedes darf also nur
-enthalten, was ein echter Site-Pfad enthält. `:`, `?`, `#`, `%`, ein Backslash
-und `..` werden beim Anlegen der Quelle und erneut zur Sync-Zeit abgelehnt —
-nicht weil sie einen anderen Server erreichen würden (jede Anfrage geht ohnehin
-an `graph.microsoft.com`), sondern weil Graph sie als Adresse einer anderen
-Ressource läse. Leerzeichen sind in Ordnung: `Shared Documents` heißt eine
-Dokumentbibliothek tatsächlich.
-
-Eine Quelle liest die **Standard**-Dokumentbibliothek einer Site. Eine Site mit
-mehreren Bibliotheken sind mehrere Quellen — so werden auch ihre Berechtigungen
-vergeben.
-
 ## API-Referenz { #api-reference }
 
 Alle Endpunkte für Sync-Quellen liegen unter `/api/v1/rag/sync/`. Das Auflisten
@@ -489,30 +404,6 @@ Viewer-Zugriff.
 Prüfen Sie, ob `S3_RAG_ACCESS_KEY`, `S3_RAG_SECRET_KEY` und `S3_RAG_ENDPOINT` in
 der `.env` richtig gesetzt sind. Achten Sie bei MinIO darauf, dass der Endpunkt
 den Port enthält (etwa `http://localhost:9000`).
-
-### SharePoint: „Microsoft Entra refused this source's credential (HTTP 401)" { #sharepoint-microsoft-entra-refused-this-sources-credential-http-401 }
-
-Tenant-ID, Application-ID oder Client Secret ist falsch, oder das Secret ist
-abgelaufen. Entras eigene Erklärung steht im Worker-Log und bewusst nicht in der
-Sync-Historie: ihr Fehlertext wiederholt die Anfrage, und die Anfrage trägt das
-Secret. Prüfen Sie zuerst das Ablaufdatum auf der Seite **Certificates &
-secrets** der Registrierung — ein abgelaufenes Secret ist der häufige Fall, und
-es fällt erst auf, wenn ein Sync scheitert.
-
-### SharePoint: „Microsoft Graph refused the site (HTTP 403)" { #sharepoint-microsoft-graph-refused-the-site-http-403 }
-
-Die Registrierung hat sich authentifiziert und darf diese Site nicht lesen. Bei
-`Sites.Selected` ist das der zweite Schritt, den niemand macht: Die Anwendung
-braucht neben der zugestimmten Berechtigung auch Leserechte auf der konkreten
-Site. Bei `Sites.Read.All` prüfen Sie, ob die Administratorzustimmung wirklich
-erteilt wurde — eine hinzugefügte und nicht zugestimmte Berechtigung sieht
-konfiguriert aus und gewährt nichts.
-
-### SharePoint: „Microsoft Graph refused the site (HTTP 404)" { #sharepoint-microsoft-graph-refused-the-site-http-404 }
-
-Hostname und Site-Pfad ergeben zusammen nichts Auflösbares. Der Pfad ist
-serverrelativ und enthält `/sites/`: `/sites/Engineering`, nicht `Engineering`
-und nicht die ganze URL.
 
 ### Geplante Syncs laufen nicht { #scheduled-syncs-are-not-running }
 
