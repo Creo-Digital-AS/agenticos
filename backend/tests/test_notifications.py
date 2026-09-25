@@ -841,10 +841,16 @@ class TestSyncCompletedAndFailed:
                 ingested=3,
                 updated=1,
                 skipped=2,
+                removed=4,
                 failed=0,
             )
 
         call = written.calls[0]
+        # Every category the run counted, removals included: a removal-only
+        # sync used to read as one that did nothing.
+        assert call["summary"] == (
+            "Sync of 'docs' finished: 3 ingested, 1 updated, 2 skipped, 4 removed, 0 failed."
+        )
         assert call["event_type"] is NotificationEventType.INGESTION_COMPLETED
         assert call["recipients"] == [triggerer]
         assert call["occurrence_id"] == "log-1:2024-01-01"
@@ -864,6 +870,7 @@ class TestSyncCompletedAndFailed:
                 ingested=0,
                 updated=0,
                 skipped=0,
+                removed=0,
                 failed=0,
             )
 
@@ -882,6 +889,7 @@ class TestSyncCompletedAndFailed:
                 ingested=1,
                 updated=0,
                 skipped=0,
+                removed=0,
                 failed=0,
             )
 
@@ -1617,6 +1625,7 @@ class TestWhatTheColumnHoldsAndWhatAnEmailPrints:
                 ingested=1,
                 updated=0,
                 skipped=0,
+                removed=0,
                 failed=0,
             )
             await service.security_event(
@@ -1646,6 +1655,7 @@ class TestWhatTheColumnHoldsAndWhatAnEmailPrints:
                 ingested=1,
                 updated=0,
                 skipped=0,
+                removed=0,
                 failed=0,
             )
 
