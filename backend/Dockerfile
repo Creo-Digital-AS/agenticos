@@ -45,8 +45,7 @@ RUN if echo "${EXTRAS}" | grep -q kerberos; then \
     fi
 
 # Install dependencies
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    --mount=type=bind,source=backend/uv.lock,target=uv.lock \
+RUN --mount=type=bind,source=backend/uv.lock,target=uv.lock \
     --mount=type=bind,source=backend/pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-install-project --no-dev ${EXTRAS}
 
@@ -55,8 +54,7 @@ COPY backend /app
 COPY emails /app/emails
 
 # Install project
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev ${EXTRAS}
+RUN uv sync --frozen --no-dev ${EXTRAS}
 
 
 # Runtime stage
