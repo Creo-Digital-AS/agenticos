@@ -134,12 +134,16 @@ class TestRangesAreRefusedBeforeAnythingRuns:
             {"max_tokens": 0},
             {"max_tokens": 10_000_000},
             {"timeout": 0.0},
-            {"timeout": 6_000.0},
+            {"timeout": 1_800.1},
         ],
     )
     def test_a_value_outside_its_range_is_refused(self, settings: dict):
         with pytest.raises(ValidationError):
             AgentSpec(name="x", model_settings=settings)
+
+    def test_a_timeout_at_the_1800_second_cap_is_accepted(self):
+        """The ceiling the Builder allows; the value itself must pass."""
+        assert ModelSettingsSpec(timeout=1800.0).timeout == 1800.0
 
     def test_a_setting_this_version_does_not_expose_is_refused_when_written_fresh(self):
         """`extra="forbid"` is what makes a typo fail rather than do nothing."""
