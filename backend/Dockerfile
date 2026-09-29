@@ -45,9 +45,8 @@ RUN if echo "${EXTRAS}" | grep -q kerberos; then \
     fi
 
 # Install dependencies
-RUN --mount=type=bind,source=backend/uv.lock,target=uv.lock \
-    --mount=type=bind,source=backend/pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev ${EXTRAS}
+COPY backend/uv.lock backend/pyproject.toml /app/
+RUN uv sync --frozen --no-install-project --no-dev ${EXTRAS}
 
 # Copy application
 COPY backend /app
