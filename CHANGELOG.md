@@ -17,6 +17,16 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- `web_fetch` returns a PDF or an office document as its extracted text instead of
+  its raw bytes. A model behind an OpenAI-compatible endpoint that takes no document
+  parts, such as a self-hosted vLLM, refused the whole next request (`Unsupported
+  chat content part type: 'file'`), and the agent then fetched the same document
+  again. Documents now go through the same parser as chat attachments and are cut
+  at `max_content_chars`. Images still come back as images, and a binary with no
+  readable text is a retry that names what came back.
+
 ## [0.0.514] - 2026-09-29
 
 ### Changed
