@@ -1,12 +1,12 @@
 ---
-source_sha: "7dfde94e116e"
+source_sha: "35cbb3d979ce"
 ---
 
 # Konfiguracja źródeł synchronizacji { #configure-sync-sources }
 
 Źródła synchronizacji samodzielnie pobierają dokumenty z usług zewnętrznych
-(Google Drive, S3/MinIO, publiczna strona internetowa) do kolekcji wiedzy. Każde
-źródło przechowuje typ connectora, kolekcję docelową, ustawienia właściwe dla
+(Google Drive, S3/MinIO, publiczna strona internetowa, repozytorium Git, witryna
+SharePoint albo OneDrive) do kolekcji wiedzy. Każde źródło przechowuje typ connectora, kolekcję docelową, ustawienia właściwe dla
 connectora, tryb synchronizacji, opcjonalny harmonogram oraz id
 [sekretu w vault](../secrets.md), który je uwierzytelnia - strona internetowa
 żadnego nie potrzebuje.
@@ -36,7 +36,7 @@ synchronizacji.
 ### Wypisz dostępne typy connectorów { #list-available-connector-types }
 
 ```bash
-# Shows all registered connectors (e.g. gdrive, s3)
+# Shows all registered connectors (e.g. gdrive, s3, git, sharepoint)
 uv run agenticos cmd rag-sources
 ```
 
@@ -66,6 +66,40 @@ uv run agenticos cmd rag-source-add \
   --schedule 0
 ```
 
+### Dodaj źródło Git -- dokumentacja repozytorium, co noc { #add-a-git-source-a-repositorys-docs-nightly }
+
+```bash
+uv run agenticos cmd rag-source-add \
+  --name "Handbook" \
+  --type git \
+  --org 0c8f2b1e-... \
+  --collection handbook \
+  --config '{"repository_url": "https://github.com/acme/handbook.git", "branch": "main", "path_prefix": "docs"}' \
+  --sync-mode new_only \
+  --schedule 1440
+```
+
+Następnie wybierz jego token dostępu jako poświadczenie źródła w interfejsie albo
+wyślij `secret_id` metodą `PATCH` — zobacz
+[Konfiguracja repozytorium Git](#git-repository-setup).
+
+### Dodaj źródło SharePoint -- jeden folder biblioteki, co 6 godzin { #add-a-sharepoint-source-one-library-folder-every-6-hours }
+
+```bash
+uv run agenticos cmd rag-source-add \
+  --name "HR policies" \
+  --type sharepoint \
+  --org 0c8f2b1e-... \
+  --collection hr \
+  --secret-id <vault-secret-id> \
+  --config '{"site_url": "https://contoso.sharepoint.com/sites/HR", "folder_path": "Policies"}' \
+  --sync-mode new_only \
+  --schedule 360
+```
+
+`--secret-id` to aplikacja Microsoft Entra w vault organizacji — zobacz
+[Konfiguracja SharePoint i OneDrive](#sharepoint-and-onedrive-setup).
+
 ### Wyzwól synchronizację ręcznie { #trigger-sync-manually }
 
 ```bash
@@ -89,7 +123,8 @@ liście `rag-sources`.
 
 1. Przejdź do **Knowledge Base** i otwórz zakładkę **Sync**.
 2. Kliknij **"+ Add Source"**.
-3. Wybierz typ connectora (Google Drive, S3, Website). Pola formularza są
+3. Wybierz typ connectora (Google Drive, S3, Website, Git
+   repository, SharePoint & OneDrive). Pola formularza są
    generowane ze schematu JSON Schema z `CONFIG_MODEL` connectora. Strona
    internetowa nie ma kroku poświadczenia.
 4. Wypełnij pola konfiguracji właściwe dla connectora (na przykład folder ID,
@@ -136,9 +171,37 @@ inna synchronizacja tego samego źródła wciąż trwa, nie startuje, a jej log 
 tym.
 
 Usuwane są wyłącznie dokumenty samego źródła. Przesłany plik ani dokument, który
-do tej samej kolekcji wprowadziło inne źródło, nigdy nie są ruszane. Dokument
-przetworzony, zanim źródło zaczęło to odnotowywać (wrzesień 2026), zostaje
-zachowany, dopóki źródło nie przetworzy go ponownie.
+do tej samej kolekcji wprowadziło inne źródło, nigdy nie są ruszane. Gdy dwa
+źródła jednej kolekcji wymieniają ten sam dokument, zostaje on, dopóki oba nie
+przestaną go wymieniać. Dokument przetworzony, zanim źródło zaczęło to
+odnotowywać (wrzesień 2026), zostaje zachowany, dopóki synchronizacja źródła
+znowu go nie wymieni.
+
+### Co robi druga synchronizacja { #what-a-second-sync-does }
+
+Każda synchronizacja po pierwszej robi tak mało, jak pozwala na to źródło:
+
+- **Niezmieniony plik kosztuje pobranie, nie embedowanie.** Jego SHA-256 zgadza
+  się ze skrótem zapisanego dokumentu, więc jest liczony jako `skipped` i nigdy
+  nie jest ponownie parsowany ani embedowany.
+- **Niezmienione źródło kosztuje jedno zapytanie.** Connector, który potrafi
+  powiedzieć, w jakim stanie jest cała jego zawartość — w przypadku gałęzi Git
+  jest to jej commit na czubku (head), a w przypadku biblioteki SharePoint jej
+  strumień zmian — zapisuje tę wartość po każdym przebiegu,
+  który zakończył się bez żadnego błędu. Następny przebieg `new_only` albo
+  `update_only`, który zastanie tę samą wartość przy tej samej konfiguracji,
+  zatrzymuje się, zanim cokolwiek wypisze: jego log nie pokazuje żadnych
+  przetworzonych plików, a przebieg niczego nie usuwa. Zmiana konfiguracji, kolekcji albo trybu sprawia, że
+  następny przebieg czyta wszystko od nowa, a `full` nigdy nie kończy się
+  wcześniej.
+- **Plik, który przerwana synchronizacja zostawiła w połowie, zostaje
+  naprawiony.** Worker zatrzymany po zapisaniu wektorów pliku, a przed ich
+  odnotowaniem, zostawia je bez śledzącego wiersza. Następna synchronizacja tego
+  źródła usuwa to, czego nic nie śledzi, i ponownie przetwarza plik; dopóki taki
+  plik czeka, nie kończy się wcześniej.
+
+Przebieg z plikiem, którego nie udało się przetworzyć, nie zapisuje stanu, więc
+następny przebieg czyta źródło w całości i ponawia próbę.
 
 ## Harmonogram { #schedule }
 
@@ -310,6 +373,224 @@ przez nie kolekcję, tak jak w przypadku każdego innego źródła. Zobacz
 Importowane są wyłącznie strony HTML. PDF ani inny plik podlinkowany ze strony nie
 jest pobierany.
 
+## Konfiguracja repozytorium Git { #git-repository-setup }
+
+Źródło `git` czyta dokumentację repozytorium przez HTTPS — z GitHuba, GitLaba
+albo dowolnego innego hosta, który serwuje git przez HTTPS. Potrzebuje adresu
+URL do klonowania i tokena dostępu, a nie API którejkolwiek z tych platform.
+
+### 1. Wystaw token dla jednego repozytorium { #1-issue-a-token-for-the-one-repository }
+
+**Zasięg tokena to zasięg źródła.** Wszystko, co źródło przetworzy, staje się
+możliwe do przeszukania przez każdego, kto może czytać kolekcję, więc token,
+który może czytać każde prywatne repozytorium swojego właściciela, to token,
+który może je wszystkie opublikować tym odbiorcom. Zobacz
+[kto ostatecznie może czytać to, co przetworzyło
+źródło](../file-processing.md#who-ends-up-able-to-read-what-a-source-ingested).
+
+- **GitHub:** fine-grained personal access token, *Only select repositories*,
+  z tym jednym repozytorium i **Contents: Read-only** jako jedynym uprawnieniem.
+- **GitLab:** project access token w tym jednym projekcie, rola **Reporter**,
+  wyłącznie zakres **`read_repository`**.
+
+Nadaj mu datę wygaśnięcia. Gdy wygaśnie, następna synchronizacja źródła kończy
+się błędem *the repository refused the source's token*, a naprawą jest nowy
+token w tym samym sekrecie w vault.
+
+### 2. Dodaj go do vault { #2-add-it-to-the-vault }
+
+Dodaj token do vault jako **Git access token**, razem z **hostem**, do którego
+należy: `github.com`, `gitlab.com` albo własny serwer, na przykład
+`git.example.com:8443`. Host z literami spoza ASCII wpisuje się w postaci
+zakodowanej, na przykład `xn--bcher-kva.example` dla `bücher.example`. Potem
+wybierz token w kroku poświadczenia źródła. Jest
+wysyłany jako nagłówek HTTP `Authorization`, nigdy w adresie URL i nigdy
+w wierszu poleceń, który mógłby odczytać inny proces.
+
+**Host należy do tokena, nie do źródła.** Adres URL repozytorium wybiera ten,
+kto edytuje źródło, a token jest wysyłany wyłącznie do hosta, z którym został
+dodany. Edycja źródła nie może więc skierować tokena organizacji na inny serwer,
+a żadnego innego rodzaju klucza, na przykład klucza API dostawcy modelu, nie da
+się w ogóle wybrać dla źródła Git.
+
+### 3. Pola konfiguracji connectora Git { #3-git-connector-config-fields }
+
+| Pole | Typ | Wymagane | Domyślnie | Opis |
+|-------|------|----------|---------|-------------|
+| `repository_url` | string | Tak | -- | Adres URL klonowania przez HTTPS, np. `https://github.com/acme/handbook.git`. Bez nazwy użytkownika i tokena. |
+| `branch` | string | Nie | `main` | Gałąź do odczytu. |
+| `path_prefix` | string | Nie | -- | Katalog wewnątrz repozytorium, np. `docs`. Zostaw pusty, aby objąć całe repozytorium. |
+| `include` | lista stringów | Nie | `**/*.md`, `**/*.txt` | Które pliki przetwarzać, jako wzorce w stylu `.gitignore` względem `path_prefix`. |
+
+Domyślnie jest to dokumentacja, a nie całe drzewo: kod źródłowy repozytorium nie
+jest korpusem, a jego przetworzenie wypełnia bazę wiedzy kodem, którego nikt nie
+chciał przeszukiwać. Dodaj wzorzec taki jak `**/*.pdf` dla innego formatu, który
+czyta parser kolekcji. Wzorzec nie może zaczynać się od `!`.
+
+Każdy plik jest dokumentem o adresie
+`git://<host>/<owner>/<repo>@<branch>/<path>`, z `:<port>` po hoście, gdy port
+nie jest 443. Gałąź jest częścią adresu, więc dwa źródła czytające dwie gałęzie
+jednego repozytorium do jednej kolekcji mają osobne dokumenty.
+
+### 4. Co przesyła synchronizacja { #4-what-a-sync-transfers }
+
+Pierwszym zapytaniem każdej synchronizacji jest `git ls-remote` dla gałęzi —
+około kilobajta. Gdy commit na czubku gałęzi nie przesunął się od ostatniego
+czystego przebiegu, synchronizacja na tym się kończy. Gdy się przesunął,
+connector wykonuje płytki, częściowy i rzadki (sparse) klon: jeden commit
+i wyłącznie pliki pasujące do wzorców `include`. Dokumentacja monorepo kosztuje
+więc tyle, co dokumentacja, a nie całe drzewo źródeł.
+
+Zanim klon zapisze cokolwiek na dysk workera, connector mierzy każdy plik, który
+by zapisał. Plik większy niż limit dokumentu bazy wiedzy (`MAX_UPLOAD_SIZE_MB`,
+domyślnie 50 MB) albo łącznie ponad 512 MB plików zostaje odrzucony i nic nie
+jest zapisywane.
+
+Dowiązania symboliczne i submoduły nie są śledzone, a dowiązanie nie jest
+przetwarzane jako dokument.
+
+### Reguły sieciowe { #network-rules }
+
+Adres URL musi zaczynać się od `https://`. Jego host jest rozwiązywany raz
+i sprawdzany tak jak każdy inny adres wybrany przez tenanta: host, który
+rozwiązuje się na adres prywatny, loopback albo link-local, jest odrzucany przy
+zapisie źródła i ponownie przy synchronizacji, a git łączy się wyłącznie
+z adresami, które ta kontrola zatwierdziła. Przekierowania nie są śledzone.
+Deployment za proxy wyjściowym (`HTTPS_PROXY`) nadal z niego korzysta; proxy
+rozwiązuje wtedy host samo.
+
+Obraz workera zawiera `git`. Worker zbudowany z innego obrazu potrzebuje `git`
+w wersji 2.37 lub nowszej na swoim `PATH`.
+
+## Konfiguracja SharePoint i OneDrive { #sharepoint-and-onedrive-setup }
+
+Źródło `sharepoint` czyta jedną bibliotekę dokumentów przez Microsoft Graph:
+bibliotekę witryny SharePoint albo OneDrive konkretnej osoby, który Microsoft 365
+przechowuje jako osobną witrynę. Może czytać całą bibliotekę albo jeden folder
+w niej. Loguje się jako rejestracja aplikacji Microsoft Entra, którą administrator
+Twojego tenanta tworzy jednorazowo.
+
+### 1. Zarejestruj aplikację w Microsoft Entra { #1-register-an-app-in-microsoft-entra }
+
+W [Microsoft Entra admin center](https://entra.microsoft.com) otwórz
+**App registrations → New registration**. Nadaj jej nazwę, na przykład *AgenticOS
+sync*, zostaw **Accounts in this organizational directory only** i nie wypełniaj
+redirect URI. Źródło loguje się jako sama aplikacja, a nie jako osoba.
+
+Na stronie **Overview** aplikacji zanotuj **Application (client) ID** oraz
+**Directory (tenant) ID**. W **Certificates & secrets** dodaj client secret
+i skopiuj jego **Value**. Wartość jest pokazywana tylko raz. *ID* sekretu to nie
+jest to, czego potrzebuje źródło.
+
+### 2. Przyznaj jej jedną witrynę, nie cały tenant { #2-grant-it-one-site-not-the-tenant }
+
+**Zasięg aplikacji to zasięg źródła.** Wszystko, co źródło przetworzy, staje się
+możliwe do przeszukania przez każdego, kto może czytać zasilaną przez nie
+kolekcję. Zobacz [kto ostatecznie może czytać to, co przetworzyło
+źródło](../file-processing.md#who-ends-up-able-to-read-what-a-source-ingested).
+
+W **API permissions** dodaj uprawnienie Microsoft Graph typu **application**
+**`Sites.Selected`** i udziel dla niego zgody administratora (admin consent).
+Samo `Sites.Selected` nie pozwala niczego odczytać. Administrator przyznaje
+następnie aplikacji dostęp do odczytu tej jednej witryny, którą czyta źródło:
+
+```http
+POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
+Content-Type: application/json
+
+{
+  "roles": ["read"],
+  "grantedToIdentities": [
+    {"application": {"id": "<client-id>", "displayName": "AgenticOS sync"}}
+  ]
+}
+```
+
+To wywołanie wymaga `Sites.FullControl.All`, więc administrator wykonuje je
+z Graph Explorer albo poleceniem PnP PowerShell
+`Grant-PnPAzureADAppSitePermission`, a nie samą aplikacją.
+`GET https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com:/sites/HR?$select=id`
+zwraca id witryny. OneDrive przyznaje się tak samo, przez jego witrynę:
+`contoso-my.sharepoint.com:/personal/jane_contoso_com`.
+
+!!! danger "`Files.Read.All` albo `Sites.Read.All` otwiera do odczytu każdą bibliotekę w tenancie"
+
+    Na te uprawnienia zgoda jest udzielana dla całego tenanta. Źródło, które je
+    ma, nadal czyta wyłącznie bibliotekę, którą wskazuje. Ale ten, kto może
+    edytować źródło, może skierować jego adres URL witryny na dowolną witrynę albo
+    dowolny OneDrive w organizacji, a następna synchronizacja udostępni tę
+    bibliotekę do przeszukiwania każdemu, kto może czytać kolekcję. Nic w tym
+    produkcie nie potrafi rozpoznać, jakie uprawnienie dostała aplikacja, bo token
+    tego nie mówi. Używaj `Sites.Selected` i przyznawaj jedną aplikację na jedną
+    grupę odbiorców.
+
+### 3. Dodaj ją do vault { #3-add-it-to-the-vault }
+
+Dodaj aplikację do vault jako **Microsoft Entra app**: tenant id (albo domenę
+tenanta, na przykład `contoso.onmicrosoft.com`), client id oraz wartość client
+secretu. Potem wybierz ją w kroku poświadczenia źródła. Sekret jest wysyłany
+wyłącznie do `login.microsoftonline.com`, w celu zalogowania.
+
+Client secret wygasa, najpóźniej po dwóch latach. Gdy wygaśnie, następna
+synchronizacja kończy się błędem *Microsoft Entra refused the app registration's
+credentials (invalid_client)*. Dodaj aplikacji nowy sekret i podmień wartość
+w tym samym sekrecie w vault. Każde źródło, które z niego korzysta, pobierze nową
+wartość przy następnej synchronizacji.
+
+### 4. Pola konfiguracji connectora SharePoint { #4-sharepoint-connector-config-fields }
+
+| Pole | Typ | Wymagane | Domyślnie | Opis |
+|-------|------|----------|---------|-------------|
+| `site_url` | string | Tak | -- | Witryna, np. `https://contoso.sharepoint.com/sites/HR`, albo OneDrive, np. `https://contoso-my.sharepoint.com/personal/jane_contoso_com`. Wyłącznie witryna: adres URL biblioteki lub strony skopiowany z przeglądarki jest odrzucany. |
+| `library` | string | Nie | domyślna biblioteka witryny | Nazwa biblioteki tak, jak pokazuje ją SharePoint, np. `Documents`. OneDrive ma wyłącznie swoją bibliotekę domyślną. |
+| `folder_path` | string | Nie | -- | Folder wewnątrz biblioteki, np. `Policies/HR`. Zostaw pusty, aby objąć całą bibliotekę. |
+| `include_subfolders` | boolean | Nie | `true` | Czy czytać foldery poniżej `folder_path`. |
+| `extensions` | lista stringów | Nie | `.pdf`, `.docx`, `.md`, `.txt` | Które typy plików przetwarzać. Dodaj `.pptx`, `.xlsx` albo inny typ tylko wtedy, gdy czyta go parser kolekcji: plik, którego parser nie potrafi odczytać, liczy się jako nieudany plik przy każdej synchronizacji. |
+
+Każdy plik jest dokumentem o adresie `sharepoint://<drive-id>/<item-id>`. Adres
+podąża za plikiem, a nie za jego ścieżką, więc plik, którego nazwę zmieniono albo
+który przeniesiono wewnątrz biblioteki, zachowuje swój dokument. Dokument zachowuje
+nazwę pliku z chwili przetworzenia, dopóki nie zmieni się zawartość pliku.
+
+Notesy OneNote i pliki innych typów nie są przetwarzane.
+
+### 5. Co przesyła synchronizacja { #5-what-a-sync-transfers }
+
+Każda synchronizacja zaczyna się od strumienia zmian Microsoft Graph dla
+biblioteki. Gdy od ostatniego czystego przebiegu nic w bibliotece się nie
+zmieniło, synchronizacja na tym się kończy: jedno zapytanie i żadnego wypisywania.
+Strumień obejmuje całą bibliotekę, bo Graph udostępnia go wyłącznie dla korzenia
+biblioteki. Zmiana w innym folderze tej samej biblioteki sprawia więc, że następna
+synchronizacja ponownie wypisuje folder źródła.
+
+Gdy coś się zmieniło, synchronizacja wypisuje folder i pobiera każdy plik
+skonfigurowanych typów. Plik, którego zawartość się nie zmieniła, jest następnie
+pomijany przed embedowaniem, więc embedowanie kosztują wyłącznie pliki nowe
+i zmienione. Plik jest pobierany z adresu, który podaje dla niego Graph, bez
+tokena aplikacji. Plik większy niż limit dokumentu bazy wiedzy
+(`MAX_UPLOAD_SIZE_MB`, domyślnie 50 MB) nie jest pobierany i liczy się jako
+nieudany plik.
+
+Graph spowalnia klienta, który czyta szybko. Zapytanie, które Graph dławi
+(HTTP 429) albo które kończy się błędem 5xx lub błędem sieci, jest próbowane
+łącznie cztery razy, a synchronizacja czeka tak długo, jak prosi `Retry-After`
+z Graph, najwyżej minutę. Folder, którego nadal nie da się wypisać, jest
+wymieniany w logu synchronizacji, a ta synchronizacja niczego nie usuwa, bo pliki
+w tym folderze nie zostały zobaczone. Pliki z pozostałych folderów są nadal
+przetwarzane.
+
+Plik usunięty po wypisaniu, a przed pobraniem, jest usuwany tak jak plik, którego
+lista nie wymieniła.
+
+### Sieć { #network }
+
+Worker potrzebuje wyjściowego HTTPS do `login.microsoftonline.com`,
+`graph.microsoft.com` oraz hostów `*.sharepoint.com` Twojego tenanta. Nic, co
+wpisze osoba edytująca źródło, nie staje się adresem, z którym łączy się worker:
+adres URL witryny to tylko nazwa, którą wyszukuje Graph. Chmury krajowe
+Microsoftu, takie jak US Government i Chiny, używają innych hostów i nie są
+obsługiwane.
+
 ## Dokumentacja API { #api-reference }
 
 Wszystkie endpointy źródeł synchronizacji leżą pod `/api/v1/rag/sync/`.
@@ -459,6 +740,7 @@ typy poleceniem `rag-sources` albo `GET /api/v1/rag/sync/connectors`.
 Google Drive (`gdrive`) jest dostępny.
 S3 (`s3`) jest dostępny.
 Strona internetowa (`web`) jest dostępna.
+Git (`git`) jest dostępny.
 
 ### Google Drive: "this source has no credential" { #google-drive-this-source-has-no-credential }
 
@@ -525,10 +807,143 @@ strony za nią nie zostały zobaczone.
 
 ### "The source could not be listed completely, so documents it may no longer hold were kept" { #the-source-could-not-be-listed-completely-so-documents-it-may-no-longer-hold-were-kept }
 
-Lista urwała się przed końcem: crawl osiągnął `max_pages` albo części stron nie
-udało się odczytać. To, co znaleziono, zostało przetworzone, a nic nie usunięto.
-Zwiększ `max_pages` albo zawęź crawl przez `path_prefix`, aż przebieg skończy się
-bez tego komunikatu.
+Lista urwała się przed końcem: crawl osiągnął `max_pages`, części stron nie
+udało się odczytać albo nie udało się wypisać folderu SharePoint. To, co
+znaleziono, zostało przetworzone, a nic nie usunięto. W przypadku strony
+internetowej zwiększ `max_pages` albo zawęź crawl przez `path_prefix`, aż przebieg
+skończy się bez tego komunikatu. W przypadku SharePoint zobacz wpis dotyczący tego
+folderu poniżej.
+
+### Git: "The repository refused the source's token" { #git-the-repository-refused-the-sources-token }
+
+Token wygasł, został unieważniony albo nie może czytać tego repozytorium. Wystaw
+nowy zgodnie z opisem w [Konfiguracja repozytorium Git](#git-repository-setup)
+i podmień wartość sekretu w vault, którego używa źródło; każde źródło korzystające
+z tego sekretu pobierze ją przy następnej synchronizacji.
+
+### Git: "The repository was not found, or the source's token cannot see it" { #git-the-repository-was-not-found-or-the-sources-token-cannot-see-it }
+
+Najpierw sprawdź adres URL klonowania. Prywatne repozytorium odpowiada tokenowi,
+który nie może go czytać, *not found* zamiast *forbidden*, więc fine-grained
+token wystawiony dla innego repozytorium wygląda właśnie tak.
+
+### Git: "The repository has no branch named …" { #git-the-repository-has-no-branch-named }
+
+Pole `branch` wskazuje gałąź, której repozytorium nie ma. Domyślnie jest to
+`main`; w starszym repozytorium gałęzią domyślną może być `master`.
+
+### Git: "… is … MB, and a synced file may be at most … MB" { #git-is-mb-and-a-synced-file-may-be-at-most-mb }
+
+Plik pasujący do wzorców `include` jest większy niż limit dokumentu bazy wiedzy.
+Zawęź `include` albo `path_prefix` tak, by ten plik został pominięty. W tej
+synchronizacji nic nie zostało zapisane.
+
+### Git: "… over the … MB one sync may check out" { #git-over-the-mb-one-sync-may-check-out }
+
+Wszystkie pliki pasujące do wzorców `include` mają łącznie ponad 512 MB. Zawęź
+`include` albo `path_prefix` albo podziel repozytorium na kilka źródeł, każde
+z własnym prefiksem.
+
+### Git: "This token was added for …, and the repository is on …" { #git-this-token-was-added-for-and-the-repository-is-on }
+
+Repozytorium źródła jest na innym hoście niż ten, z którym dodano jego token.
+Albo adres URL jest błędny, albo źródło potrzebuje tokena dodanego dla tego
+hosta. Do hosta repozytorium nic nie zostało wysłane.
+
+### Git: "A Git source needs a Git access token" { #git-a-git-source-needs-a-git-access-token }
+
+Źródło wskazuje sekret innego rodzaju, na przykład API key. Dodaj token jako
+**Git access token**, razem z jego hostem, i wybierz właśnie ten.
+
+### "Another sync of this source is still running" { #another-sync-of-this-source-is-still-running }
+
+Przebieg został wyzwolony, gdy trwał inny przebieg tego samego źródła, więc nie
+wystartował. Trwający przebieg kończy się normalnie; wyzwól synchronizację
+ponownie po nim, jeśli źródło w międzyczasie się zmieniło.
+
+### Git: "… resolves to a private address" { #git-resolves-to-a-private-address }
+
+Host repozytorium rozwiązuje się na adres wewnątrz sieci deploymentu, więc
+źródło jest odrzucane. Źródło synchronizacji nie może dotrzeć do
+samodzielnie hostowanego serwera Git pod adresem wewnętrznym.
+
+### Git: "git is not installed on this worker" { #git-git-is-not-installed-on-this-worker }
+
+Worker działa z obrazu bez `git`. Dostarczany `backend/Dockerfile` go instaluje;
+do własnego obrazu trzeba go dodać.
+
+### Git: synchronizacja zakończyła się bez przetworzonych plików { #git-a-sync-finished-with-no-files-processed }
+
+Commit na czubku gałęzi jest tym samym, który przeczytał ostatni czysty
+przebieg, przy tej samej konfiguracji, więc nie było nic do zrobienia. Przełącz
+źródło na `full` na jeden przebieg, aby mimo to przeczytać wszystko od nowa.
+
+### SharePoint: "Microsoft Entra refused the app registration's credentials (…)" { #sharepoint-microsoft-entra-refused-the-app-registrations-credentials }
+
+Microsoft Entra nie zalogował aplikacji. `invalid_client` zwykle oznacza, że
+client secret wygasł albo vault przechowuje ID sekretu zamiast jego wartości.
+`unauthorized_client` albo `invalid_request` zwykle oznacza błędny tenant id albo
+client id. Porównaj te trzy wartości z **Overview** i **Certificates & secrets**
+aplikacji i podmień je w sekrecie w vault.
+
+### SharePoint: "Microsoft Graph did not accept the app's token for …" { #sharepoint-microsoft-graph-did-not-accept-the-apps-token-for }
+
+Aplikacja się zalogowała, ale jej token nie niesie żadnego uprawnienia Microsoft
+Graph. Dodaj uprawnienie typu **application** `Sites.Selected`, a nie delegowane,
+i udziel zgody administratora, zgodnie z opisem w
+[kroku 2](#2-grant-it-one-site-not-the-tenant).
+
+### SharePoint: "Microsoft Graph denied the app access to … (accessDenied)" { #sharepoint-microsoft-graph-denied-the-app-access-to-accessdenied }
+
+Aplikacja ma `Sites.Selected`, ale żadnego przyznania na tej witrynie. Przyznaj
+jej `read` na witrynie, zgodnie z opisem w
+[kroku 2](#2-grant-it-one-site-not-the-tenant). Jeśli komunikat wymienia folder
+poniżej folderu źródła, ten folder ma własne uprawnienia, które wykluczają
+aplikację. Reszta biblioteki została przetworzona, a nic nie usunięto.
+
+### SharePoint: "There is no SharePoint site at …, or the app cannot see it" { #sharepoint-there-is-no-sharepoint-site-at-or-the-app-cannot-see-it }
+
+Najpierw sprawdź adres URL witryny: to własny adres witryny, na przykład
+`https://contoso.sharepoint.com/sites/HR`, a nie biblioteka czy strona wewnątrz
+niej. Przy `Sites.Selected` tak samo może odpowiedzieć witryna, na której
+aplikacja nie ma przyznania.
+
+### SharePoint: "The site has no document library named …" { #sharepoint-the-site-has-no-document-library-named }
+
+Komunikat wymienia biblioteki, które aplikacja widzi. Skopiuj jedną z tych nazw do
+`library` albo zostaw `library` puste, aby użyć domyślnej biblioteki witryny.
+Domyślna biblioteka jest nazwana w języku witryny, na przykład *Documents* albo
+*Dokumente*.
+
+### SharePoint: "The library has no folder …" or "… is a file, not a folder" { #sharepoint-the-library-has-no-folder-or-is-a-file-not-a-folder }
+
+`folder_path` nie wskazuje folderu w bibliotece. Jest podawany względem
+najwyższego poziomu biblioteki, np. `Policies/HR`, i nie powtarza nazwy
+biblioteki.
+
+### SharePoint: "The folder … could not be listed: …" { #sharepoint-the-folder-could-not-be-listed }
+
+Nie udało się odczytać folderu poniżej folderu źródła. Przyczyna następuje po
+dwukropku. Pozostałe foldery zostały przetworzone, a w tym przebiegu nic nie
+usunięto.
+
+### SharePoint: "Microsoft 365 stayed unavailable or kept throttling … after 4 attempts" { #sharepoint-microsoft-365-stayed-unavailable-or-kept-throttling-after-4-attempts }
+
+Graph nadal dławił zapytania albo zwracał błędy po czterech próbach. Następna
+synchronizacja zaczyna od nowa. Jeśli dzieje się tak przy każdej synchronizacji,
+planuj źródło rzadziej albo podziel bardzo dużą bibliotekę na kilka źródeł, każde
+z własnym `folder_path`.
+
+### SharePoint: "A SharePoint source needs a Microsoft Entra app credential" { #sharepoint-a-sharepoint-source-needs-a-microsoft-entra-app-credential }
+
+Źródło wskazuje sekret innego rodzaju, na przykład API key. Dodaj aplikację do
+vault jako **Microsoft Entra app** i wybierz właśnie tę.
+
+### SharePoint: synchronizacja zakończyła się bez przetworzonych plików { #sharepoint-a-sync-finished-with-no-files-processed }
+
+Od ostatniego czystego przebiegu przy tej samej konfiguracji nic w bibliotece się
+nie zmieniło, więc nie było nic do zrobienia. Przełącz źródło na `full` na jeden
+przebieg, aby mimo to przeczytać wszystko od nowa.
 
 ### Zaplanowane synchronizacje nie działają { #scheduled-syncs-are-not-running }
 

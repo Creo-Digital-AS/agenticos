@@ -1,5 +1,5 @@
 ---
-source_sha: "7999a1202c63"
+source_sha: "1ff020c86d59"
 ---
 
 # Dodaj konektor synchronizacji { #add-a-sync-connector }
@@ -104,6 +104,21 @@ wtedy niczego, zamiast usunąć wszystko, do czego nie dotarł.
 listing nie zdołał odczytać. Synchronizacja liczy każdą z nich jako plik, który
 się nie powiódł, i pokazuje ją w logu synchronizacji, więc pisz je własnymi
 słowami: host i kod statusu, nigdy tekst ze zdalnego systemu.
+
+### Dwa opcjonalne hooki: zmiana i sprzątanie { #two-optional-hooks-change-and-cleanup }
+
+`list_files()` i `_fetch()` to wszystko, co konektor musi napisać. Dwie kolejne
+metody mają wartości domyślne, dzięki którym konektor działa tak jak Drive i S3,
+a konektor nadpisuje którąś z nich, gdy jego źródło potrafi odpowiedzieć na
+pytanie, które ta metoda zadaje. `GitConnector` w
+`app/services/rag/connectors/git.py` nadpisuje obie, podobnie jak
+`SharePointConnector` w `app/services/rag/connectors/sharepoint.py`, który
+korzysta z `previous`.
+
+| Hook | Domyślnie | Nadpisz go, gdy |
+|------|---------|------------------|
+| `remote_version(config, credential, previous)` | `None`: każdy przebieg wypisuje listę | Źródło potrafi tanio powiedzieć, w jakim stanie jest cała jego zawartość, na przykład przez commit albo token zmian. Po przebiegu, w którym nic nie zakończyło się błędem, synchronizacja zapisuje tę wartość razem z odciskiem konfiguracji. Następny przebieg, który zastanie tę samą parę, zatrzymuje się przed `list_files()`. Wartość musi się zmienić zawsze, gdy mógł się zmienić którykolwiek wypisany plik albo sama lista. `previous` to wartość, którą ostatni czysty przebieg zapisał przy tej samej konfiguracji, albo `None`. Źródło, które potrafi podać wyłącznie to, co się zmieniło *od* jakiegoś punktu, na przykład delta link z Graph, odpowiada z powrotem `previous`, gdy nic się nie zmieniło. |
+| `aclose()` | nic | Konektor przechowuje coś między `list_files()` a pobraniami, na przykład klon albo sesję. Jest wywoływana po zakończeniu synchronizacji, niezależnie od tego, czy się powiodła. |
 
 ## Krok po kroku: konektor do Notion { #step-by-step-a-notion-connector }
 
