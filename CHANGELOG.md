@@ -17,6 +17,18 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- People are no longer signed out several times a day by their own refresh. Two
+  tabs refreshing on the shared cookie, or a refresh whose answer was lost to a VPN
+  reconnect or a closed lid, presented the token the rotation had just spent, and
+  reuse detection ended the session as if it were stolen. A spent token now
+  refreshes once more within `REFRESH_REUSE_GRACE_SECONDS` (60 by default) of its
+  rotation. The console also serializes refreshes across tabs. The `/api/auth/me`
+  and `/api/auth/refresh` proxies clear the cookies only when the backend refuses
+  the token: before, a 502 during a redeploy also cleared them, and so did a failed
+  read after a successful refresh. Adds `sessions.rotated_at`.
+
 ## [0.0.514] - 2026-09-29
 
 ### Changed
