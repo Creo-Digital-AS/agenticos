@@ -17,6 +17,165 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Added
+
+- **Published pages look like the console.** The library set gains
+  `agenticos-2.css` - the console's proportions and the components a report is
+  made of (a header, stats with a delta, sections, tabs, callouts, key-value
+  lists) - `agenticos-2.js`, which gives Chart.js the console's fonts, grid,
+  tooltip and graphite palette, formats numbers in the page's language and wires
+  tabs, and Lucide 1.46.0, so a page draws the console's icons instead of emoji.
+  The `artifact-pages` skill and its two templates are rewritten on them, and
+  `publish_artifact` itself tells a model without the skill to keep to the look.
+  `agenticos-1.css` stays served for the pages published against it.
+- **An agent can change part of a page it published.** `read_artifact` returns
+  the current version's source, and `publish_artifact` takes `edits` - exact
+  replacements applied to that version - beside `path` and `content`. An edit
+  made against a version another run has since replaced is refused, so it never
+  overwrites the newer page (#1970).
+- **Pages load charts from the deployment instead of inlining them.** Chart.js
+  4.5.1, d3 7.9.0 and a stylesheet of the console's tokens are served beside every
+  page under `lib/`, the one remote source the page's policy allows. A bundled
+  `artifact-pages` skill carries two templates and the house style; the
+  Artifacts capability's **Page style** tab offers it, and an existing
+  organization gets it through `seed-skills` (#1971).
+- **Restore a kept version** from the artifact's page. It adds a new version
+  with the old one's bytes, so the history is never rewritten (#1966).
+- **The public link has settings**: a date after which it opens nothing, a
+  pinned version a new publication does not change, a password asked before the
+  page is shown, and how often the link was opened (#1972).
+- **A public page can be embedded** on the sites listed for it, through an
+  embed document whose policy lets only those sites frame it (#1973).
+- **The artifact list filters by the agent that published** (#1967).
+- **A "Claude Code like" agent template**, under a new *General purpose*
+  category: an agent for any task that reads before it acts, plans with a task
+  list, edits files and runs commands in its workspace, delegates to three
+  specialists sharing that workspace (`explore`, `research`, `review`), researches
+  the web, and publishes pages people open later. It switches on every
+  capability that works without a key or a vetted endpoint; attach a sandbox
+  connection for a real shell. A new check holds every shipped template to the
+  validation publish runs.
+
+### Changed
+
+- **`seed-skills` refreshes bundled skills nobody edited.** Every copy of a
+  bundled skill now records which version it was written from, so a copy left
+  as seeded is replaced with the version a release ships - files and all, with
+  a `skill.refreshed` audit entry - while a copy edited here is left alone.
+  `--replace` takes the bundled version over edits, and `--dry-run` prints the
+  plan for each skill instead of "would install" for every one. A copy made
+  before this release is reported as untracked unless it already matches.
+- **The chat composer is one row of actions.** The model picker is an icon
+  beside the microphone, naming the model in its tooltip, and what the
+  conversation is using - the context window, the cost, the budgets, the
+  workspace - is one icon that fills with the context share and turns amber or
+  red when any reading nears its limit; the numbers open on a click. The
+  disclaimer is a footnote, the connection shows only when it is lost, and on a
+  phone the composer no longer sits under the tab bar.
+- **Tables in an answer are easier to read and to take away.** Headers are in
+  sentence case, a figure stays on one line in tabular digits, a text column
+  keeps a readable width, and the rule under the last column is back. A copy
+  button on hover copies the table as HTML for a spreadsheet or a document and
+  as markdown for a text field.
+- **A published page's card in chat shows the page** - the version that run
+  published - instead of an icon and a title.
+- **Memory steps stay folded** even as the last step of a turn: what an agent
+  notes for itself is not what the person asked to see.
+- **A link inside a published page opens after a confirmation.** The page still
+  has no `allow-popups`; a platform script turns the click into a request, and
+  the console, the public page and the embed show the full address and open it in
+  a new tab only when the person agrees (#1969).
+- **An environment's release switch is now "Pinned".** It is on for an environment
+  that waits to be promoted onto and off for one that follows every publish; the
+  switch used to be "follows latest".
+- **A new agent's `production` follows publishes.** The environment the first
+  publish creates is the agent's only one, so there is nothing to promote between:
+  a publish is what answers next, with no promotion to remember. Pin it once a
+  `dev` or `staging` sits beside it. An environment added later still waits to be
+  promoted onto by default.
+- **The artifact list's thumbnails run the page's script**, so a chart a library
+  draws is on the card, and each one is unmounted when its card scrolls away
+  (#1968).
+
+### Fixed
+
+- **oauthlib 4.0.0**, for CVE-2026-49265 (GHSA-xpv3-w29h-x7cv). It arrives
+  through Prefect's notification library and nothing here calls it; the lock
+  is the only change. virtualenv 21.14.1 in the development tools, for four
+  advisories published against 21.7.9 (CVE-2026-102925, -102930, -102937,
+  -102938).
+- **Next.js 16.3.8**, for the remote code execution in `next/og` `ImageResponse`
+  (GHSA-vcvr-r3jv-pc5j, affecting 16.2.0 to 16.3.5). With it, jsdom 30.1.1 for
+  three undici advisories in the test environment and brace-expansion 1.1.21 and
+  5.0.12 for two advisories in the lint tooling.
+- **Review fixes on artifacts and environments.** A password-protected embed no
+  longer carries the page's title; a link confirmation keeps the address it is
+  asking about while the page posts another, in the console and in the embed; a
+  public link's expiry without a UTC offset is refused instead of failing as a
+  500; pinning a version takes the lock a publish prunes under; the platform
+  script goes after a leading doctype rather than before it; the Page style tab
+  no longer calls the agent's other skills missing; and an environment with a
+  run still working or parked on an approval cannot be removed, since its
+  pages would land on production's. From the second review: `seed-skills` counts a
+  file description written on a copy as an edit and decides under a row lock on
+  the row as it is now; a template no longer binds a bundled skill the installer
+  may not read; restoring a version whose bytes are gone is refused; and a
+  cross-tab refresh stamp from ahead of the clock no longer suppresses refreshes. From the
+  third: removing an environment locks its row first, so a run cannot start in
+  it between the check and the delete; the chat's socket recovery reads
+  `/auth/me` under the cross-tab lock; and an embed origin's port must be in
+  range. From the security review: `read_artifact` reads as the
+  person listening, so on a public widget or an embed, where the run stands in
+  for an anonymous visitor, it opens nothing. From the fourth: a refresh
+  rotation stamped in the future is outside the reuse grace window; a pin to a
+  version whose bytes are gone is refused; the platform script is placed right
+  after the document's lead, so a `<head>` inside a comment or a script cannot
+  move it where it never runs; and the first-run tour waits for the page's
+  session check, instead of greeting a person who finished onboarding since
+  they signed in.
+- **An artifact whose stored bytes are gone answers 404, not 500.** A version
+  row whose file storage no longer has - a restored database beside an older
+  volume - made the page, its thumbnail and `read_artifact` fail with a server
+  error; the page is now not found, the tool says to publish it again, and the
+  mismatch is logged.
+- **A sign-in that the network never answers no longer spins forever.** After
+  an idle laptop or a VPN reconnect the login request could go out on a dead
+  connection and hang until the page was reloaded; it now gives up after 20
+  seconds and says the server did not answer. A session check sent before the
+  sign-in and answered after it can no longer put the new account back on the
+  login page.
+- People are no longer signed out several times a day by their own refresh. Two
+  tabs refreshing on the shared cookie, or a refresh whose answer was lost to a VPN
+  reconnect or a closed lid, presented the token the rotation had just spent, and
+  reuse detection ended the session as if it were stolen. A spent token now
+  refreshes once more within `REFRESH_REUSE_GRACE_SECONDS` (60 by default) of its
+  rotation. The console also serializes refreshes across tabs. The `/api/auth/me`
+  and `/api/auth/refresh` proxies clear the cookies only when the backend refuses
+  the token: before, a 502 during a redeploy also cleared them, and so did a failed
+  read after a successful refresh. Adds `sessions.rotated_at`.
+- `web_fetch` returns a PDF or an office document as its extracted text instead of
+  its raw bytes. A model behind an OpenAI-compatible endpoint that takes no document
+  parts, such as a self-hosted vLLM, refused the whole next request (`Unsupported
+  chat content part type: 'file'`), and the agent then fetched the same document
+  again. Documents now go through the same parser as chat attachments and are cut
+  at `max_content_chars`. Images still come back as images, and a binary with no
+  readable text is a retry that names what came back.
+- Web chat no longer looks frozen while the model writes a large tool call. A
+  `write_file` carrying a whole report could stream its arguments for many minutes,
+  and the step only appeared once they were complete, so all that showed was a
+  blinking cursor. `part_start` now names the tool and its call id, and the chat
+  draws the step straight away with how much of the arguments has arrived
+  ("42.0 KB so far"). A call cut off mid-way by an error or a stop is marked
+  unfinished instead of spinning.
+- **The "Claude Code like" template binds the `artifact-pages` skill.** A
+  template can now name a skill bundled with every organization; installing
+  used to hand that name to the gallery, which did not know it, so the agent
+  built pages without the style written for them.
+- **A run in a named environment no longer republishes the default
+  environment's page.** The environment is part of an artifact's identity, read
+  from the run, so `staging` publishes a page of its own. Deleting an
+  environment leaves its pages readable with no publisher (#1965).
+
 ## [0.0.514] - 2026-09-29
 
 ### Changed

@@ -46,7 +46,7 @@ tools listed.
 | `compaction` | Context management | utility | none, by design | — | — |
 | `media` | Media offload | utility | none, by design | — | — |
 | `tool_output_limits` | Tool output limits | utility | `read_tool_result` | — | — |
-| `artifacts` | Artifacts | utility | `publish_artifact` | — | — |
+| `artifacts` | Artifacts | utility | `publish_artifact`, `read_artifact` | — | — |
 | `channel_tools` | Chat channel lookup | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history` | — | — |
 
 Seven of those have no tools on purpose. `thinking` changes how the model runs
@@ -466,6 +466,19 @@ scope.
 
 The fetch itself is Pydantic AI's `web_fetch_tool` over its SSRF-guarded
 `safe_download`, and that is the reason this is not code of ours.
+
+What a response turns into is decided here:
+
+- A page (HTML, Markdown, JSON, plain text) comes back as Markdown.
+- An image comes back as an image, for a model that reads pictures.
+- A PDF or an office document comes back as its **extracted text**, read by the same
+  parser a chat attachment goes through, and cut at `max_content_chars` like a page.
+  The library would hand back the raw bytes for the model to read natively. A model
+  served behind an OpenAI-compatible endpoint that cannot do that refuses the whole
+  request (`Unsupported chat content part type: 'file'`), and the agent then fetches
+  the same document again.
+- A binary with no readable text (a scanned PDF, an archive) reaches the model as a
+  retryable error that names what came back.
 
 The URL comes from the **model** and is dereferenced from inside the container, so
 validating it up front — the way `app.core.sanitize.validate_webhook_url` does for a
@@ -930,23 +943,33 @@ simply has nowhere to build with them.
 
 `publish_artifact` — *Publish a finished page - a report, a small dashboard, a
 summary - under a stable link.*
+`read_artifact` — *Read the current version of a page this agent published, as it
+was written.*
 
 Publishes one self-contained HTML or Markdown document as an
 [artifact](../artifacts.md): a shared resource with an owner, a visibility and
 grants, opened in a browser under a link that stays put. No configuration.
 
-**The name is the identity.** `(organization, agent, name)` picks the artifact,
-so the next run of the same agent that publishes `weekly-report` - from a chat, a
-schedule or the API - adds a version to the same one instead of making a second
-link. Identical bytes add no version and answer `unchanged`.
+**The name is the identity.** `(organization, agent, environment, name)` picks the
+artifact, so the next run of the same agent that publishes `weekly-report` - from
+a chat, a schedule or the API - adds a version to the same one instead of making a
+second link. The environment comes from the run, so a run in `staging` publishes a
+page of its own. Identical bytes add no version and answer `unchanged`.
 
 **Where the page comes from.** `path` reads a file from the run's workspace
 through its own backend, so it works wherever the `sandbox` capability does;
-`content` takes the page inline for an agent with no workspace. Exactly one of the
-two. A wrong call - both or neither, a name outside
-`^[a-z0-9][a-z0-9-]{0,63}$`, an unknown extension, an empty or oversized page -
-is a retry naming what to change. A read the workspace's permission rules refuse
-is a result, not a retry.
+`content` takes the page inline for an agent with no workspace; `edits` are exact
+replacements applied to the version `read_artifact` returned, and a publish in
+between refuses them rather than overwrite it. Exactly one of the three. A wrong
+call - more than one, none, a name outside `^[a-z0-9][a-z0-9-]{0,63}$`, an unknown
+extension, an empty or oversized page, an edit that matches no place or several -
+is a retry naming what to change. A read the workspace's permission rules refuse,
+and a page the run's person may not open, are results, not retries.
+
+**Reading back.** `read_artifact` returns a header line (version, format, size)
+and the source, cut at 100,000 characters with the header saying so. It opens
+only what the run's person may open in the console, and nothing on a public
+widget or an embed, where the run stands in for a visitor nobody identified.
 
 **Not side-effecting.** A first publication is private to the person the run was
 for, and only a person widens who reads it, so the approval gate would only
@@ -954,8 +977,9 @@ park the scheduled report this exists for. An author who wants each republish of
 a shared page approved sets `tool_approval` on `publish_artifact`.
 
 **The page has no network.** It is served in an opaque origin under a `sandbox`
-policy with `connect-src 'none'`, and the tool text tells the model to inline
-everything. See [how the page is isolated](../artifacts.md#how-the-page-is-isolated).
+policy with `connect-src 'none'`, and the tool text tells the model to inline its
+own data and load charts from the deployment's [library set](../artifacts.md#the-library-set)
+rather than a CDN. See [how the page is isolated](../artifacts.md#how-the-page-is-isolated).
 
 ## Delegation
 

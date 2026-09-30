@@ -1,5 +1,5 @@
 ---
-source_sha: "1c0ca646d240"
+source_sha: "6093b312c6d2"
 ---
 
 # Der Capability-Katalog { #the-capability-catalog }
@@ -51,7 +51,7 @@ Capabilities decken außerdem Dinge ab, die gar keine Tools sind — deshalb ste
 | `compaction` | Kontextverwaltung | utility | keine, mit Absicht | — | — |
 | `media` | Medien-Auslagerung | utility | keine, mit Absicht | — | — |
 | `tool_output_limits` | Grenzen für Tool-Ausgaben | utility | `read_tool_result` | — | — |
-| `artifacts` | Artefakte | utility | `publish_artifact` | — | — |
+| `artifacts` | Artefakte | utility | `publish_artifact`, `read_artifact` | — | — |
 | `channel_tools` | Chat-Kanal-Abfrage | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history` | — | — |
 
 Sieben davon haben absichtlich keine Tools. `thinking` verändert, wie das Modell
@@ -523,6 +523,19 @@ eigenen Scope.
 Der Abruf selbst ist das `web_fetch_tool` von Pydantic AI über dessen
 SSRF-geschütztes `safe_download`, und das ist der Grund, warum dies kein Code von
 uns ist.
+
+Was aus einer Antwort wird, entscheidet sich hier:
+
+- Eine Seite (HTML, Markdown, JSON, reiner Text) kommt als Markdown zurück.
+- Ein Bild kommt als Bild zurück, für ein Modell, das Bilder liest.
+- Ein PDF oder ein Office-Dokument kommt als sein **extrahierter Text** zurück, gelesen
+  vom selben Parser, durch den ein Chat-Anhang geht, und wie eine Seite bei
+  `max_content_chars` abgeschnitten. Die Bibliothek würde die rohen Bytes zurückgeben,
+  damit das Modell sie nativ liest. Ein Modell hinter einem OpenAI-kompatiblen Endpunkt,
+  das das nicht kann, lehnt die ganze Anfrage ab (`Unsupported chat content part type:
+  'file'`), und der Agent ruft dasselbe Dokument dann erneut ab.
+- Eine Binärdatei ohne lesbaren Text (ein gescanntes PDF, ein Archiv) erreicht das Modell
+  als wiederholbarer Fehler, der nennt, was zurückkam.
 
 Die URL kommt vom **Modell** und wird von innerhalb des Containers dereferenziert,
 deshalb reicht es nicht aus, sie vorab zu validieren — so wie es
@@ -1034,25 +1047,38 @@ Bilder trotzdem; er hat nur nichts, womit er damit bauen könnte.
 
 `publish_artifact` — *veröffentlicht eine fertige Seite — einen Bericht, ein
 kleines Dashboard, eine Zusammenfassung — unter einem stabilen Link.*
+`read_artifact` — *liest die aktuelle Version einer Seite, die dieser Agent
+veröffentlicht hat, so wie sie geschrieben wurde.*
 
 Veröffentlicht ein in sich geschlossenes HTML- oder Markdown-Dokument als
 [Artefakt](../artifacts.md): eine geteilte Ressource mit einem Besitzer, einer
 Sichtbarkeit und Grants, die im Browser unter einem Link geöffnet wird, der
 bleibt. Keine Konfiguration.
 
-**Der Name ist die Identität.** `(organization, agent, name)` wählt das Artefakt
-aus, sodass der nächste Run desselben Agents, der `weekly-report` veröffentlicht —
-aus einem Chat, einem Zeitplan oder der API —, demselben Artefakt eine Version
-hinzufügt, statt einen zweiten Link anzulegen. Identische Bytes fügen keine
-Version hinzu und antworten mit `unchanged`.
+**Der Name ist die Identität.** `(organization, agent, environment, name)` wählt
+das Artefakt aus, sodass der nächste Run desselben Agents, der `weekly-report`
+veröffentlicht — aus einem Chat, einem Zeitplan oder der API —, demselben Artefakt
+eine Version hinzufügt, statt einen zweiten Link anzulegen. Die Umgebung kommt vom
+Run, also veröffentlicht ein Run in `staging` eine eigene Seite. Identische Bytes
+fügen keine Version hinzu und antworten mit `unchanged`.
 
 **Woher die Seite kommt.** `path` liest eine Datei aus dem Workspace des Runs über
 dessen eigenes Backend, funktioniert also überall, wo die Capability `sandbox`
-funktioniert; `content` nimmt die Seite inline für einen Agent ohne Workspace.
-Genau eines von beiden. Ein falscher Aufruf — beides oder keines, ein Name
-außerhalb von `^[a-z0-9][a-z0-9-]{0,63}$`, eine unbekannte Endung, eine leere
-oder zu große Seite — ist ein Retry, der nennt, was zu ändern ist. Ein Lesen, das
-die Berechtigungsregeln des Workspace ablehnen, ist ein Ergebnis, kein Retry.
+funktioniert; `content` nimmt die Seite inline für einen Agent ohne Workspace;
+`edits` sind exakte Ersetzungen, angewendet auf die Version, die `read_artifact`
+geliefert hat, und eine Veröffentlichung dazwischen lehnt sie ab, statt sie zu
+überschreiben. Genau eines der drei. Ein falscher Aufruf — mehr als eines, keines,
+ein Name außerhalb von `^[a-z0-9][a-z0-9-]{0,63}$`, eine unbekannte Endung, eine
+leere oder zu große Seite, eine Ersetzung, die keine oder mehrere Stellen trifft —
+ist ein Retry, der nennt, was zu ändern ist. Ein Lesen, das die
+Berechtigungsregeln des Workspace ablehnen, und eine Seite, die die Person des
+Runs nicht öffnen darf, sind Ergebnisse, keine Retries.
+
+**Zurücklesen.** `read_artifact` liefert eine Kopfzeile (Version, Format, Größe)
+und den Quelltext, bei 100.000 Zeichen abgeschnitten, was die Kopfzeile sagt. Es
+öffnet nur, was die Person des Runs in der Konsole öffnen darf, und nichts in
+einem öffentlichen Widget oder einem Embed, wo der Run für einen Besucher steht,
+den niemand identifiziert hat.
 
 **Ohne Seiteneffekte.** Eine erste Veröffentlichung ist privat für die Person,
 für die der Run lief, und nur eine Person erweitert, wer sie liest; das
@@ -1062,7 +1088,9 @@ genehmigt haben möchte, setzt `tool_approval` auf `publish_artifact`.
 
 **Die Seite hat kein Netzwerk.** Sie wird in einem opaken Origin unter einer
 `sandbox`-Policy mit `connect-src 'none'` ausgeliefert, und der Tool-Text sagt dem
-Modell, alles einzubetten. Siehe
+Modell, seine eigenen Daten einzubetten und Diagramme aus dem
+[Bibliothekssatz](../artifacts.md#the-library-set) des Deployments statt aus einem
+CDN zu laden. Siehe
 [wie die Seite isoliert wird](../artifacts.md#how-the-page-is-isolated).
 
 ## Delegation { #delegation }
