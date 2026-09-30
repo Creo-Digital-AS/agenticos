@@ -50,6 +50,7 @@ import {
 } from "@/stores";
 import { useConversations } from "@/hooks";
 import { useSlashCommands } from "@/hooks";
+import { useFollowContent } from "@/hooks/use-follow-content";
 import { Beam } from "@/components/ui/beam";
 import { useMicrophone, VoiceGlow } from "@/components/ui/voice-glow";
 
@@ -205,6 +206,7 @@ export function ChatContainer() {
   }, [attachments, setAvailableFiles]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // true = user deliberately scrolled up; suppress auto-scroll until they return to bottom
   const userScrolledUpRef = useRef(false);
@@ -275,6 +277,9 @@ export function ChatContainer() {
     if (userScrolledUpRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+  // And on growth the messages do not announce: an answer's last words are
+  // revealed over frames after its message has stopped changing.
+  useFollowContent(scrollContainerRef, transcriptRef, userScrolledUpRef);
   const { commands: slashCommands } = useSlashCommands();
 
   const handleRegenerate = useCallback(
@@ -359,6 +364,7 @@ export function ChatContainer() {
       queuedMessages={queuedMessages}
       onCancelQueued={cancelQueued}
       messagesEndRef={messagesEndRef}
+      transcriptRef={transcriptRef}
       scrollContainerRef={scrollContainerRef}
       pendingApproval={pendingApproval}
       onResumeDecisions={sendResumeDecisions}
@@ -429,6 +435,8 @@ interface ChatUIProps {
   queuedMessages?: import("@/hooks/use-chat").QueuedMessage[];
   onCancelQueued?: (id: string) => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  /** The transcript's content, whose growth the scroller follows. */
+  transcriptRef: React.RefObject<HTMLDivElement | null>;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   pendingApproval?: PendingApproval | null;
   onResumeDecisions?: (decisions: Decision[]) => void;
@@ -467,6 +475,7 @@ function ChatUI({
   queuedMessages,
   onCancelQueued,
   messagesEndRef,
+  transcriptRef,
   scrollContainerRef,
   pendingApproval,
   onResumeDecisions,
@@ -561,7 +570,7 @@ function ChatUI({
           className="flex-1 scrollbar-thin overflow-y-auto"
           style={{ paddingBottom: dockHeight }}
         >
-          <div className="mx-auto max-w-5xl px-2 py-4 sm:px-4 sm:py-6">
+          <div ref={transcriptRef} className="mx-auto max-w-5xl px-2 py-4 sm:px-4 sm:py-6">
             {isLoadingConversation ? (
               <ConversationSkeleton />
             ) : messages.length === 0 ? (
@@ -668,7 +677,7 @@ function ChatUI({
                 >
                   <div className="px-3 pt-3 pb-1 sm:px-4 sm:pt-4">
                     {isArchived && (
-                      <p className="text-muted-foreground pb-2 text-center font-mono text-[11px] tracking-wider uppercase">
+                      <p className="text-muted-foreground pb-2 text-center font-mono text-xs tracking-wider uppercase">
                         {t("conversationArchived")}
                       </p>
                     )}
@@ -695,7 +704,7 @@ function ChatUI({
                       statusSlot={
                         <>
                           <span
-                            className={`inline-flex shrink-0 items-center gap-1.5 font-mono text-[10px] tracking-wider uppercase ${isConnected ? "text-muted-foreground" : "text-destructive"}`}
+                            className={`inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] tracking-wider uppercase ${isConnected ? "text-muted-foreground" : "text-destructive"}`}
                           >
                             <span
                               className={`inline-block h-1.5 w-1.5 rounded-full ${
@@ -756,7 +765,7 @@ function ChatUI({
                 other surface: a translucent chip took its colour from whatever
                 line of the transcript happened to be under it. */}
             <p className="text-center">
-              <span className="text-foreground/40 bg-background mt-2 inline-block rounded-full px-3 py-0.5 text-center font-mono text-[10px] tracking-wider uppercase">
+              <span className="text-muted-foreground bg-background mt-2 inline-block rounded-full px-3 py-0.5 text-center font-mono text-[11px] tracking-wider uppercase">
                 {t("aiCanMakeMistakes")}
               </span>
             </p>

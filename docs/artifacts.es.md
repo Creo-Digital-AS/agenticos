@@ -1,5 +1,5 @@
 ---
-source_sha: "2106ff45a345"
+source_sha: "95e0b53485c2"
 ---
 
 # Artefactos { #artifacts }
@@ -87,9 +87,16 @@ incrusta la hoja de estilos, el script y las imágenes (como URI `data:`) en el
 ## Quién puede abrirlo { #who-can-open-it }
 
 Un artefacto nuevo es **privado** para la persona en nombre de la cual actuó el
-run que lo publicó: la persona del chat, o el creador de un trigger. Desde su
-página en **Artifacts**, cualquiera que pueda gestionarlo puede compartirlo de
-tres maneras:
+run que lo publicó: la persona del chat, o el creador de un trigger.
+
+Su enlace - al que apuntan la tarjeta del chat y la respuesta del agente - abre
+la propia página, a toda la ventana, bajo una única barra con el título, la
+versión y **Share**. El enlace por sí solo no deja entrar a nadie: solo se abre
+para un miembro con sesión iniciada al que las reglas de abajo ya dejan entrar.
+Nombra la organización en la que está el artefacto (`?org=`), así que un miembro
+de varias llega a la correcta.
+
+En **Share**, cualquiera que pueda gestionarlo puede compartirlo de tres maneras:
 
 | Alcance | Cómo | Quién |
 |---|---|---|
@@ -154,6 +161,13 @@ consola ni a la persona que lo mira:
   contadas por dirección antes de leer nada. La consola y la página pública
   emiten una dirección nueva cada vez que dibujan el frame, y emitirla a través
   de un enlace público ya está limitado por enlace.
+
+La lista **Artifacts** dibuja la página actual de cada tarjeta como una
+miniatura en vivo, por el mismo frame y con la misma lista `sandbox`. La
+miniatura es inerte — sin eventos de puntero, fuera del orden de tabulación,
+oculta a las tecnologías de asistencia — y su dirección se emite solo cuando la
+tarjeta se acerca a la vista, así que una lista larga no emite de antemano una
+por artefacto.
 
 Además, un despliegue puede servir el contenido desde un **dominio registrable
 aparte** fijando `ARTIFACT_ORIGIN`, por ejemplo

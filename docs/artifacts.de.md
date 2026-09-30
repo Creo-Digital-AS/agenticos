@@ -1,5 +1,5 @@
 ---
-source_sha: "2106ff45a345"
+source_sha: "95e0b53485c2"
 ---
 
 # Artefakte { #artifacts }
@@ -92,9 +92,17 @@ in die eine Datei ein.
 ## Wer es öffnen kann { #who-can-open-it }
 
 Ein neues Artefakt ist **privat** für die Person, für die der veröffentlichende
-Run gehandelt hat: die Person im Chat oder der Ersteller eines Triggers. Von
-seiner Seite unter **Artifacts** aus kann jeder, der es verwalten darf, es auf
-drei Wegen teilen:
+Run gehandelt hat: die Person im Chat oder der Ersteller eines Triggers.
+
+Sein Link - der, auf den die Karte im Chat und die Antwort des Agents zeigen -
+öffnet die Seite selbst, fensterfüllend unter einer Leiste mit Titel, Version
+und **Share**. Der Link allein lässt niemanden hinein: Er öffnet sich nur für
+ein angemeldetes Mitglied, das die Regeln unten bereits hereinlassen. Er nennt
+die Organisation, in der das Artefakt liegt (`?org=`), sodass ein Mitglied
+mehrerer Organisationen in der richtigen landet.
+
+Unter **Share**
+kann jeder, der es verwalten darf, es auf drei Wegen teilen:
 
 | Reichweite | Wie | Wer |
 |---|---|---|
@@ -161,6 +169,13 @@ nichts, was es tut, die Konsole oder die Person erreichen kann, die es ansieht:
   öffentliche Seite stellen jedes Mal eine frische Adresse aus, wenn sie den
   Frame zeichnen, und das Ausstellen über einen öffentlichen Link ist selbst pro
   Link begrenzt.
+
+Die Liste **Artifacts** zeichnet die aktuelle Seite jeder Karte als
+Live-Vorschau, durch denselben Frame und mit derselben `sandbox`-Liste. Die
+Vorschau ist inert — keine Zeigerereignisse, nicht in der Tab-Reihenfolge, vor
+assistiven Technologien verborgen — und ihre Adresse wird erst ausgestellt, wenn
+die Karte in die Nähe des Sichtbereichs kommt, sodass eine lange Liste nicht
+vorab eine Adresse pro Artefakt ausstellt.
 
 Darüber hinaus kann ein Deployment Inhalte von einer **separaten registrierbaren
 Domain** ausliefern, indem es `ARTIFACT_ORIGIN` setzt — zum Beispiel

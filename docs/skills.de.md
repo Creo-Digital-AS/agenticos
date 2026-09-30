@@ -1,5 +1,5 @@
 ---
-source_sha: "10bf6042e631"
+source_sha: "14be638e2c6f"
 ---
 
 # Skills { #skills }
@@ -64,6 +64,11 @@ category: support
 Most refund questions are decided by the order date and one exception. Check
 those before escalating anything.
 
+Die Seite **Skills** zeigt auf jeder Karte den Anfang des Inhalts — ohne Front
+Matter, ein paar Zeilen — und dahinter ein Blatt für jede Datei, die der Skill
+mitbringt. `GET /api/v1/skills` liefert diesen Anfang als `excerpt`; den Inhalt
+selbst lädt erst das Öffnen des Skills.
+
 ## Decide without asking
 ...
 ```
@@ -109,6 +114,14 @@ gebundenen Skills eine Datei zum Lesen mitbringt.
 
 Ein Spec bindet Skills über ihre Id in `skill_ids`, sodass ein Agent genau die
 sieht, die ihm gegeben wurden, und sonst nichts.
+
+**Der Name eines Skills ist die id, unter der ein Modell ihn lädt**, also hat
+er die Form, in der Modelle ids schreiben: Kleinbuchstaben und Ziffern, verbunden
+durch einzelne Bindestriche, etwa `refund-policy`. Ein Name mit Leerzeichen oder
+Großbuchstaben wird beim Anlegen des Skills abgelehnt. Einen Namen, den das Modell
+exakt wiedergeben müsste, wie `Refund policy`, lud es stattdessen als
+`refund-policy`, und zwei falsche Vermutungen beenden die Runde
+([#1911](https://github.com/vstorm-co/agenticos/issues/1911)).
 
 **Ein Skill darf nicht heißen wie eine Capability.** Jeder liegt unter seinem
 eigenen Namen im selben Namensraum wie `knowledge`, `planning` und der Rest - ein
@@ -258,10 +271,10 @@ Rest und lässt diesen einen in Ruhe: ein vorhandener Name wird übersprungen st
 Etwas zur Gallery hinzuzufügen ist dasselbe wie einen mitgelieferten Skill
 hinzuzufügen — ein Ordner mit einer `SKILL.md`, unter der Branche, zu der er
 gehört — mit einer zusätzlichen Regel: **sein Name darf weder mit einem
-mitgelieferten Skill noch mit einem anderen Gallery-Skill kollidieren.** Die
-Installation gleicht über den Namen ab, eine Kollision würde also für immer
-stillschweigend übersprungen. Ein Test liest alle siebzig und schlägt bei einer
-fehl.
+mitgelieferten Skill noch mit einem anderen Gallery-Skill kollidieren,** und er
+ist der Name seines Ordners. Die Installation gleicht über den Namen ab, eine
+Kollision würde also für immer stillschweigend übersprungen. Ein Test liest alle
+siebzig und schlägt bei einem der beiden Fehler fehl.
 
 ### Kopien beim Seeding { #seeding-copies }
 

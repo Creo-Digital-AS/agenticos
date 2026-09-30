@@ -715,8 +715,8 @@ export default function AgentBuilderPage({ params }: PageProps) {
     <div className="space-y-6">
       <PageHeader
         title={
-          <span className="flex items-center gap-3">
-            <span className="group relative">
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="group relative shrink-0">
               <AgentAvatar
                 agentId={id}
                 slug={agent.slug}
@@ -738,7 +738,16 @@ export default function AgentBuilderPage({ params }: PageProps) {
                 </button>
               )}
             </span>
-            {agent.name}
+            {/* One line, whatever the width: the actions wrap under it before
+                the name is broken, and a name longer than the column ends in
+                an ellipsis with the whole of it on hover. */}
+            <span className="truncate" title={agent.name}>
+              {agent.name}
+            </span>
+          </span>
+        }
+        badges={
+          <>
             <AgentStatusBadge status={agent.status} />
             {/* Two badges, two different questions. This one: is the stored
                 draft what published surfaces are answering with - computed
@@ -759,12 +768,12 @@ export default function AgentBuilderPage({ params }: PageProps) {
               ) : (
                 isDirty && <Badge variant="secondary">{t("unsaved")}</Badge>
               ))}
-          </span>
+          </>
         }
         description={agent.description ?? undefined}
         breadcrumbs={[{ label: t("agents"), href: ROUTES.AGENTS }, { label: agent.name }]}
         actions={
-          <div className="flex items-center gap-2">
+          <>
             {/* Trying the agent happens in the chat, which streams, keeps the
                 conversation and can hand a tool call to the approval queue.
                 Only a published agent has a version to run - the chat's own
@@ -866,7 +875,7 @@ export default function AgentBuilderPage({ params }: PageProps) {
               className="hidden"
               onChange={handleAvatar}
             />
-          </div>
+          </>
         }
       />
 
@@ -1297,23 +1306,36 @@ export default function AgentBuilderPage({ params }: PageProps) {
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="monthly">{t("monthlyUsd")}</Label>
-                <Input
-                  id="monthly"
-                  type="number"
-                  step="1"
-                  min="0"
-                  value={spec.budget?.monthly_usd ?? ""}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    update({
-                      budget: {
-                        ...spec.budget,
-                        monthly_usd: event.target.value ? Number(event.target.value) : null,
-                      },
-                    })
-                  }
-                  placeholder={t("noLimit")}
-                />
+                <div className="relative">
+                  <span
+                    aria-hidden
+                    className="text-muted-foreground pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm"
+                  >
+                    $
+                  </span>
+                  <Input
+                    id="monthly"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={spec.budget?.monthly_usd ?? ""}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      update({
+                        budget: {
+                          ...spec.budget,
+                          monthly_usd: event.target.value ? Number(event.target.value) : null,
+                        },
+                      })
+                    }
+                    placeholder={t("noLimit")}
+                    aria-describedby="monthly-hint"
+                    className="pl-7"
+                  />
+                </div>
+                <p id="monthly-hint" className="text-muted-foreground text-xs">
+                  {t("monthlyUsdHint")}
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="max-steps">{t("maxStepsPerRun")}</Label>
@@ -1329,8 +1351,11 @@ export default function AgentBuilderPage({ params }: PageProps) {
                     update({ max_steps: event.target.value ? Number(event.target.value) : null })
                   }
                   placeholder={t("n100Default")}
+                  aria-describedby="max-steps-hint"
                 />
-                <p className="text-muted-foreground text-xs">{t("howManyModelRequests")}</p>
+                <p id="max-steps-hint" className="text-muted-foreground text-xs">
+                  {t("howManyModelRequests")}
+                </p>
               </div>
             </CardContent>
           </Card>

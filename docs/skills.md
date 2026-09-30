@@ -57,6 +57,11 @@ category: support
 Most refund questions are decided by the order date and one exception. Check
 those before escalating anything.
 
+The **Skills** page shows the opening of each body on its card — front matter
+dropped, a few lines — with a sheet stacked behind it for each file the skill
+carries. `GET /api/v1/skills` returns that opening as `excerpt`; the body itself
+loads when a skill is opened.
+
 ## Decide without asking
 ...
 ```
@@ -100,6 +105,13 @@ one of the bound skills ships a file to read.
 
 A spec binds skills by id in `skill_ids`, so an agent sees the ones it was given
 and nothing else.
+
+**A skill's name is the id a model loads it by**, so it takes the form models
+write ids in: lowercase letters and digits joined by single hyphens, such as
+`refund-policy`. A name with spaces or capitals is refused when the skill is
+created. A name the model has to reproduce exactly, like `Refund policy`, was
+loaded as `refund-policy` instead, and two wrong guesses end the turn
+([#1911](https://github.com/vstorm-co/agenticos/issues/1911)).
 
 **A skill cannot be named after a capability.** Each one is filed under its own
 name in the same namespace as `knowledge`, `planning` and the rest, so a skill
@@ -238,9 +250,9 @@ deployment does not ship.
 
 Adding to the gallery is the same as adding a bundled skill — a folder with a
 `SKILL.md`, under the industry it belongs to — with one extra rule: **its name
-must not collide with a bundled skill or another gallery skill.** Installing
-matches on name, so a collision would silently skip forever. A test reads all
-seventy and fails on one.
+must not collide with a bundled skill or another gallery skill,** and it is the
+folder's own name. Installing matches on name, so a collision would silently skip
+forever. A test reads all seventy and fails on either.
 
 ### Seeding copies
 

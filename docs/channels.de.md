@@ -1,5 +1,5 @@
 ---
-source_sha: "3961622d1ad6"
+source_sha: "570a2d302580"
 ---
 
 # Einen Agent dorthin bringen, wo die Menschen schon sind { #putting-an-agent-where-people-already-are }
@@ -98,7 +98,7 @@ Sie zwei Zeilen ein.
 Öffnen Sie im Builder den Agent → **Availability** → *Website widget*. Sie
 wählen:
 
-- **Allowed origins** — die Seiten, von denen aus dieses Widget geöffnet werden
+- **Allowed sites** — die Seiten, von denen aus dieses Widget geöffnet werden
   darf. **Eine leere Liste erlaubt nichts**, deshalb wird ein Veröffentlichen
   ohne eine solche Liste abgelehnt, statt ein Widget zu erzeugen, das nirgends
   antwortet. Der Schlüssel im Script-Tag ist von Natur aus öffentlich, also ist

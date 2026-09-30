@@ -1,5 +1,5 @@
 ---
-source_sha: "2106ff45a345"
+source_sha: "95e0b53485c2"
 ---
 
 # Artefakty { #artifacts }
@@ -86,8 +86,17 @@ stylów, skrypt i obrazy (jako URI `data:`) do tego jednego pliku.
 ## Kto może go otworzyć { #who-can-open-it }
 
 Nowy artefakt jest **prywatny** dla osoby, w imieniu której działał publikujący
-run: dla osoby na czacie albo dla twórcy triggera. Na jego stronie w **Artifacts**
-każdy, kto może nim zarządzać, może go udostępnić na trzy sposoby:
+run: dla osoby na czacie albo dla twórcy triggera.
+
+Jego link - ten, na który wskazują karta w czacie i odpowiedź agenta - otwiera
+samą stronę, na całe okno, pod jednym paskiem z tytułem, wersją i przyciskiem
+**Share**. Sam link nikogo nie wpuszcza: otwiera się tylko zalogowanemu
+członkowi, którego wpuszczają już poniższe zasady. Link wskazuje organizację, w
+której jest artefakt (`?org=`), więc członek kilku organizacji trafia do
+właściwej.
+
+Pod **Share** każdy, kto może nim zarządzać, może go udostępnić
+na trzy sposoby:
 
 | Zasięg | Jak | Kto |
 |---|---|---|
@@ -149,6 +158,12 @@ ani osoby, która go ogląda:
   per adres, zanim cokolwiek zostanie odczytane. Konsola i strona publiczna
   wydają świeży adres za każdym razem, gdy rysują ramkę, a wydanie go przez
   publiczny link samo jest ograniczone per link.
+
+Lista **Artifacts** rysuje na każdej karcie bieżącą stronę jako żywą miniaturę,
+przez tę samą ramkę i z tą samą listą `sandbox`. Miniatura jest bezczynna — bez
+zdarzeń wskaźnika, poza kolejnością tabulacji, ukryta przed technologiami
+asystującymi — a jej adres powstaje dopiero, gdy karta zbliża się do widoku,
+więc długa lista nie wybija z góry adresu dla każdego artefaktu.
 
 Ponadto wdrożenie może serwować treść z **osobnej domeny rejestrowalnej**,
 ustawiając `ARTIFACT_ORIGIN` — na przykład

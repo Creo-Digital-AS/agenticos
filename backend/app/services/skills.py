@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import catalog
 from app.core.audit import record_audit
 from app.core.exceptions import AlreadyExistsError, BadRequestError, NotFoundError
+from app.core.excerpt import excerpt
 from app.core.permissions import AuthContext, Perm
 from app.db.models.resource_grant import Visibility
 from app.db.models.skill import Skill, SkillResource
@@ -35,6 +36,7 @@ from app.schemas.skill import (
     SkillResourceUpdate,
     SkillSummary,
     SkillUpdate,
+    skill_name_refusal,
 )
 from app.services import skill_library
 from app.services.access import SKILL, resolve_access, visible_resource_ids
@@ -72,6 +74,7 @@ def _summary(skill: Skill, bundled_names: frozenset[str]) -> SkillSummary:
         enabled=skill.enabled,
         file_count=len(skill.resources),
         built_in=skill.name in bundled_names,
+        excerpt=excerpt(skill.content),
     )
 
 
@@ -301,10 +304,16 @@ class SkillService:
         """Create a skill.
 
         Raises:
+            BadRequestError: If the name is not one a model can load the skill
+                by. `SkillCreate` refuses it too, but an applied skill proposal
+                arrives here with an agent's directory name and no schema.
             AlreadyExistsError: If the name is taken. Names are how the model
                 refers to a skill, so two with one name is an ambiguity the
                 agent cannot resolve.
         """
+        refusal = skill_name_refusal(name)
+        if refusal is not None:
+            raise BadRequestError(message=refusal, details={"name": name})
         if await skill_repo.get_by_name(self.db, name, organization_id=ctx.organization_id):
             raise AlreadyExistsError(
                 message=(
