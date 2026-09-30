@@ -77,8 +77,15 @@ script and the images (as `data:` URIs) into the one file.
 ## Who can open it
 
 A new artifact is **private** to the person the publishing run acted for: the
-person in the chat, or the creator of a trigger. From its page in **Artifacts**,
-anybody who may manage it can share it three ways:
+person in the chat, or the creator of a trigger.
+
+Its link - the one the chat card and the agent's reply point at - opens the page
+itself, filling the window under one strip with its title, its version and
+**Share**. Nobody gets in through that link alone: it opens only for a signed-in
+member the rules below already let in. It names the organization the artifact is
+in (`?org=`), so a member of several lands in the right one.
+
+Under **Share**, anybody who may manage it can share it three ways:
 
 | Reach | How | Who |
 |---|---|---|
@@ -137,6 +144,12 @@ the person looking at it:
   address before anything is read. The console and the public page mint a
   fresh address each time they draw the frame, and minting one through a public
   link is itself limited per link.
+
+The **Artifacts** list draws each card's current page as a live thumbnail
+through the same frame, with the same `sandbox` list. The thumbnail is inert —
+no pointer events, out of the tab order, hidden from assistive technology — and
+its address is minted only once the card nears the viewport, so a long list does
+not mint one per artifact up front.
 
 On top of that, a deployment can serve content from a **separate registrable
 domain** by setting `ARTIFACT_ORIGIN` - for example

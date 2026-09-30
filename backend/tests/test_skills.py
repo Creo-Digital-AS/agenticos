@@ -67,6 +67,7 @@ def _row(name: str) -> Skill:
         organization_id=uuid.uuid4(),
         name=name,
         description="How refunds are handled.",
+        content="---\nname: x\n---\n\n# Refunds\n\nCheck the order first.",
         category=None,
         enabled=True,
         resources=[],
@@ -263,6 +264,22 @@ class TestSkillManagement:
         assert "edit it" in refused.value.message
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("name", ["Refund Policy", "planning"])
+    async def test_the_service_refuses_a_name_the_schema_would(self, name):
+        """An applied skill proposal creates a skill from an agent's directory
+        name with no `SkillCreate` in between, so the service checks it too."""
+        create = AsyncMock()
+        with (
+            patch("app.services.skills.skill_repo.get_by_name", new=AsyncMock(return_value=None)),
+            patch("app.services.skills.skill_repo.create", new=create),
+            pytest.raises(BadRequestError) as refused,
+        ):
+            await SkillService(_db()).create(_ctx(), name=name, description="x", content="")
+
+        assert refused.value.details == {"name": name}
+        create.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_creation_is_audited(self):
         with (
             patch("app.services.skills.skill_repo.get_by_name", new=AsyncMock(return_value=None)),
@@ -350,6 +367,9 @@ class TestSkillManagement:
             listing = await SkillService(_db()).list_readable(ctx)
 
         assert [item.built_in for item in listing.items] == [True, False]
+        # The card peeks at the body without the listing carrying it: front
+        # matter is dropped, because the card already shows the name.
+        assert listing.items[0].excerpt == "# Refunds\n\nCheck the order first."
 
     @pytest.mark.anyio
     async def test_the_listing_carries_the_filters_the_page_cannot(self):
@@ -521,6 +541,33 @@ class TestSkillManagement:
             SkillCreate(name="planning", description="d")
 
         assert SkillCreate(name="refunds", description="d").name == "refunds"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Product description writer",
+            "Refund-Policy",
+            "refund_policy",
+            "refund policy",
+            "-refunds",
+            "refunds-",
+            "refund--policy",
+        ],
+    )
+    def test_a_skill_name_must_be_an_agent_skills_id(self, name):
+        """The name is the id a model loads the skill by, written the way models
+        write it: lowercase letters and digits joined by single hyphens (#1911)."""
+        from pydantic import ValidationError
+
+        from app.schemas.skill import SkillCreate
+
+        with pytest.raises(ValidationError, match="lowercase letters, digits and hyphens"):
+            SkillCreate(name=name, description="d")
+
+    def test_digits_and_single_hyphens_are_a_valid_skill_name(self):
+        from app.schemas.skill import SkillCreate
+
+        assert SkillCreate(name="iso-27001-audit", description="d").name == "iso-27001-audit"
 
     def test_every_suggested_category_is_storable(self):
         """The pickers offer these before an organization invents its own; a
@@ -1427,6 +1474,34 @@ class TestTheGalleryOnDisk:
         assert len(names) == len(set(names)), "two gallery skills share a name"
         bundled = {entry.name for entry in skill_library.library()}
         assert not (set(names) & bundled), "a gallery skill is shadowed by a bundled one"
+
+    def test_every_shipped_skill_name_is_one_a_model_can_load(self):
+        """A skill's name is its `load_capability` id, and models write that id in
+        the Agent Skills form. Every gallery skill once had a title for a name,
+        and `Product description writer` was loaded as
+        `product-description-writer` until the turn ran out of retries (#1911).
+
+        Each name also has to be one `SkillCreate` would accept, so a shipped
+        skill is never something a person could not have created by hand.
+        """
+        from app.schemas.skill import SKILL_NAME_PATTERN, SkillCreate
+        from app.services import skill_library
+
+        names = [s.name for i in skill_library.gallery() for s in i.skills]
+        names += [entry.name for entry in skill_library.library()]
+        assert len(names) == 73
+        for name in names:
+            assert SKILL_NAME_PATTERN.fullmatch(name), name
+            SkillCreate(name=name, description="d")
+
+    def test_a_gallery_skill_is_named_after_its_folder(self):
+        """The folder is the install key's second half, so the two cannot drift
+        into naming one skill two ways."""
+        from app.services import skill_library
+
+        for industry in skill_library.gallery():
+            for entry in industry.skills:
+                assert entry.key == f"{industry.id}/{entry.name}", entry.key
 
     def test_every_gallery_category_is_one_the_console_can_filter_by(self):
         """A category outside the catalog is a shelf label nothing matches."""

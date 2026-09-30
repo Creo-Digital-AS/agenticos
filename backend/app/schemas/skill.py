@@ -1,5 +1,6 @@
 """Schemas for skills."""
 
+import re
 from datetime import datetime
 from uuid import UUID
 
@@ -7,6 +8,40 @@ from pydantic import Field, field_validator
 
 from app.agents.capabilities import all_capabilities
 from app.schemas.base import BaseSchema
+
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+"""The Agent Skills name format: lowercase letters and digits, joined by hyphens.
+
+A skill's name is the id the model passes to `load_capability`, and models
+trained on this format write the hyphenated form whatever the catalog lists. A
+gallery skill called `Product description writer` was loaded as
+`product-description-writer`, which is no id at all, and the second wrong guess
+ended the turn (#1911).
+"""
+
+
+def skill_name_refusal(name: str) -> str | None:
+    """Why `name` cannot be a skill's name, or None when it can.
+
+    A skill is a deferred capability, filed under its name in the same namespace
+    as `knowledge`, `planning` and the rest - so a skill called `planning` bound
+    to an agent that also has the planning capability is a duplicate id the
+    library refuses before the first token. Checked on the request schema and
+    again in `SkillService.create`, which an applied skill proposal reaches
+    without one, and at publish for the skills that predate this (#1704 review).
+    """
+    if not SKILL_NAME_PATTERN.fullmatch(name):
+        return (
+            "Use lowercase letters, digits and hyphens, such as 'refund-policy' - "
+            "the name is the id a model loads the skill by, and it writes names in "
+            "that form"
+        )
+    if name in {definition.id for definition in all_capabilities()}:
+        return (
+            f"'{name}' is the name of a capability this platform offers, and a skill "
+            "is a capability too - pick another name"
+        )
+    return None
 
 
 class SkillResourceRead(BaseSchema):
@@ -88,6 +123,13 @@ class SkillSummary(BaseSchema):
     built_in: bool = Field(
         description="Whether this skill shipped with the deployment, by library name"
     )
+    excerpt: str = Field(
+        default="",
+        description=(
+            "The body's first lines, front matter dropped and bounded, so a card can "
+            "show what the skill says without the listing carrying every body"
+        ),
+    )
 
 
 class SkillList(BaseSchema):
@@ -113,26 +155,18 @@ class SkillCreate(BaseSchema):
     name: str = Field(
         min_length=1,
         max_length=64,
-        description="How the model refers to this skill; unique per organization",
+        description=(
+            "How the model refers to this skill: lowercase letters, digits and hyphens, "
+            "unique per organization"
+        ),
     )
 
     @field_validator("name")
     @classmethod
     def _not_a_capability_name(cls, name: str) -> str:
-        """Refuse a name the platform's own capabilities already answer to.
-
-        A skill is a deferred capability, filed under its name in the same
-        namespace as `knowledge`, `planning` and the rest - so a skill called
-        `planning` bound to an agent that also has the planning capability is a
-        duplicate id the library refuses before the first token. Caught here so
-        it cannot be created, and again at publish for the skills that predate
-        this (#1704 review).
-        """
-        if name in {definition.id for definition in all_capabilities()}:
-            raise ValueError(
-                f"'{name}' is the name of a capability this platform offers, and a skill "
-                "is a capability too - pick another name"
-            )
+        refusal = skill_name_refusal(name)
+        if refusal is not None:
+            raise ValueError(refusal)
         return name
 
     description: str = Field(

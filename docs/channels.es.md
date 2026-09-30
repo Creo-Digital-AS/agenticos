@@ -1,5 +1,5 @@
 ---
-source_sha: "3961622d1ad6"
+source_sha: "570a2d302580"
 ---
 
 # Poner un agent donde la gente ya está { #putting-an-agent-where-people-already-are }
@@ -93,7 +93,7 @@ El camino más corto. Publica el agent, crea un embed, pega dos líneas.
 
 En el Builder, abre el agent → **Availability** → *Website widget*. Eliges:
 
-- **Orígenes permitidos** — los sitios desde los que se puede abrir este widget.
+- **Allowed sites** — los sitios desde los que se puede abrir este widget.
   **Una lista vacía no permite nada**, así que publicar sin ella se rechaza en vez
   de producir un widget que no responde en ninguna parte. La clave de la etiqueta
   de script es pública por construcción, así que la lista de orígenes es lo que
