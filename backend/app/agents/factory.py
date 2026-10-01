@@ -14,7 +14,7 @@ just another client" true rather than aspirational.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -58,9 +58,10 @@ from app.agents.capabilities.media import (
 from app.agents.capabilities.memory_files import MEMORY_FILES_CAPABILITY_ID
 from app.agents.capabilities.memory_mem0 import MEMORY_MEM0_CAPABILITY_ID
 from app.agents.capabilities.system_reminders import REMINDER_STATE_RESOURCE, ReminderState
+from app.agents.connect_on_use import CONNECT_ACCOUNT, ConnectOnUse
 from app.agents.deps import AgentDeps, ApprovalCallback
 from app.agents.manifest import RecordingModel, RunRecorder
-from app.agents.model_resolver import ModelRequestSpec
+from app.agents.model_resolver import PROMPT_CACHE_DEFAULTS, ModelRequestSpec
 from app.agents.observability import instrument_agent, suppress_content
 from app.agents.spec import AgentSpec
 from app.core.secret_kinds import ApiKeySecret, StorableSecret
@@ -155,6 +156,7 @@ def build_agent(
     resources: dict[str, Any] | None = None,
     secrets: Mapping[UUID, StorableSecret] | None = None,
     extra_toolsets: list[AbstractToolset[Any]] | None = None,
+    extra_capabilities: Sequence[AbstractCapability[AgentDeps]] = (),
     agent_period_spend: PeriodSpendLookup | None = None,
     org_period_spend: PeriodSpendLookup | None = None,
     org_monthly_budget_usd: Decimal | None = None,
@@ -188,6 +190,11 @@ def build_agent(
             context, and a spec carries only the id.
         extra_toolsets: Toolsets resolved outside the registry, such as MCP
             servers configured per organization.
+        extra_capabilities: Capabilities a surface adds for this run alone,
+            outside the spec - `connect_account` where somebody can connect a
+            service while the run waits. Their tools are never deferred behind
+            tool search: a tool the model has to find first is one it does not
+            know to look for.
         agent_period_spend: How to read what *this agent* has booked this month,
             for the cap in its own spec. Omitted where there is no database to
             ask - a preview - in which case that cap meters only this run.
@@ -324,8 +331,17 @@ def build_agent(
         # instructions.
         ReinjectSystemPrompt(),
         budget,
-        ApprovalGate(required_tool_names=approval_required, gate_every_tool=gate_every_tool),
+        ApprovalGate(
+            required_tool_names=approval_required,
+            gate_every_tool=gate_every_tool,
+            asking_tool_names=(
+                frozenset({CONNECT_ACCOUNT})
+                if any(isinstance(extra, ConnectOnUse) for extra in extra_capabilities)
+                else frozenset()
+            ),
+        ),
         *configured,
+        *extra_capabilities,
         # Every agent, not only one that compacts. The warning is most useful to
         # exactly the agent that will not: it is the one that reaches the ceiling
         # and gets refused by the provider.
@@ -333,14 +349,21 @@ def build_agent(
     ]
 
     # Profile settings first, agent overrides second - the agent is the more
-    # specific statement of intent.
+    # specific statement of intent. Under both, the provider's prompt caching,
+    # which a profile can still turn off by setting it false.
     #
     # A setting the author never chose is absent from the dump rather than
     # present as `None`, which is what keeps this merge honest in both
     # directions: it cannot blank out a value the model profile set, and it
     # cannot send `temperature: null` to a reasoning model, which rejects the
     # parameter however it is spelled. See `ModelSettingsSpec`.
-    model_settings = ModelSettings(**{**model_spec.params, **spec.model_settings.model_dump()})
+    model_settings = ModelSettings(
+        **{
+            **PROMPT_CACHE_DEFAULTS.get(model_spec.provider, {}),
+            **model_spec.params,
+            **spec.model_settings.model_dump(),
+        }
+    )
 
     # Wrapped, so what the provider is handed is written down as it is handed
     # over. Reconstructing the prompt and the tool schemas from the spec
