@@ -799,11 +799,13 @@ export function useChat(options: UseChatOptions = {}) {
       refreshingRef.current = true;
       void (async () => {
         try {
-          const res = await fetch("/api/auth/me");
-          if (res.ok) {
-            const data = (await res.json()) as { access_token?: string };
-            if (data.access_token) useAuthStore.getState().setAccessToken(data.access_token);
-          }
+          // Through `apiClient`, not a bare fetch: `/auth/me` refreshes on the
+          // server when the access cookie has expired, and only `apiClient` sends
+          // it under the cross-tab auth lock. An expired access token closes this
+          // socket at the same moment the page's own requests start refreshing,
+          // and the unserialized refresh here was one of that burst.
+          const data = await apiClient.get<{ access_token?: string }>("/auth/me");
+          if (data?.access_token) useAuthStore.getState().setAccessToken(data.access_token);
         } catch {
           // ignore - backoff reconnect will retry
         } finally {
