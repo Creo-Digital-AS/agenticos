@@ -550,7 +550,7 @@ class ModelSettingsSpec(BaseModel):
     timeout: float | None = Field(
         default=None,
         gt=0.0,
-        le=600.0,
+        le=1800.0,
         description=(
             "How long one model request may take, in seconds, before it is "
             "abandoned. An agent answering someone in a chat window has a "

@@ -26,6 +26,16 @@ Two things are versioned separately from this file and worth knowing about:
   trips; it now reads up to eight hosts at a time. A host that does not answer is
   reported after ten seconds instead of the archive's sixty-second default. The
   "Count files" switch on the per-workspace view gets the same treatment.
+- A burst of refreshes on one cookie no longer signs the person out. The reuse
+  grace window rotated the session again on every grace refresh, so the third
+  request of a burst matched nothing, got a 401, and its response cleared the
+  cookie the other two had just set. Within `REFRESH_REUSE_GRACE_SECONDS` a spent
+  token is now answered with the successor the session already holds - the same
+  token for every request in the burst - so the cookie converges whichever
+  response lands last.
+- A session that has ended sends the person to sign in. A refused refresh left the
+  console signed in, with every request answering 401 and the chat socket
+  reconnecting on a dead token, until a full reload.
 
 ## [0.0.516] - 2026-10-01
 

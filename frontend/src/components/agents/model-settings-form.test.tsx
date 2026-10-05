@@ -98,7 +98,7 @@ describe("ModelSettingsForm", () => {
     expect(temperature()).toHaveAttribute("max", "2");
     expect(screen.getByLabelText("Top P")).toHaveAttribute("max", "1");
     expect(screen.getByLabelText("Max tokens")).toHaveAttribute("max", "200000");
-    expect(screen.getByLabelText("Timeout (seconds)")).toHaveAttribute("max", "600");
+    expect(screen.getByLabelText("Timeout (seconds)")).toHaveAttribute("max", "1800");
   });
 
   it("offers three answers for parallel tool calls, because there are three", () => {

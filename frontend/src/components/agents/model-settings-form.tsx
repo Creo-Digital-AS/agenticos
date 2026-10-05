@@ -116,7 +116,7 @@ export function ModelSettingsForm({ value, onChange, disabled }: ModelSettingsFo
             id="model-timeout"
             type="number"
             min={1}
-            max={600}
+            max={1800}
             step={1}
             value={value.timeout ?? ""}
             disabled={disabled}
