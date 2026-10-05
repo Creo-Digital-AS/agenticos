@@ -42,10 +42,11 @@ run degrades to a cheaper one rather than to a silent drop.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_ai.capabilities import WrapperCapability
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
@@ -60,7 +61,9 @@ from pydantic_ai_harness.tool_output_limits import (
     ToolOutputLimits,
     Truncate,
     TruncationStrategy,
+    indented_json,
 )
+from pydantic_core import to_json
 
 from app.agents.capabilities._tool_text import ToolText
 from app.agents.capabilities.budget import (
@@ -71,12 +74,29 @@ from app.agents.capabilities.budget import (
 )
 from app.agents.capabilities.tool_output_limits._store import BackendOverflowStore
 
-DEFAULT_THRESHOLD = 10_000
-"""Size at or above which a return is reduced - characters, or estimated tokens
-when `over_tokens` is set. Matches the harness's own default."""
+DEFAULT_THRESHOLD = 60_000
+"""Characters at or above which a return is reduced, when a binding names none.
 
-DEFAULT_MAX_CHARS = 4_000
-"""Characters kept when a return is truncated, or when a spill falls back to one."""
+Above the harness's own 10,000 on purpose. A fetched page or a file of 30,000 to
+40,000 characters is an ordinary return an agent is expected to read whole, and
+at 10,000 it arrived as a preview the model had to page through - which read as
+the tool being broken. `web_fetch` returns up to 50,000 characters of content by
+default, and its URL, title and truncation marker come on top, so the threshold
+sits clear of all of it: a full fetch passes untouched."""
+
+DEFAULT_TOKEN_THRESHOLD = DEFAULT_THRESHOLD // 4
+"""The same default for a binding that measures in tokens (`over_tokens`).
+
+A quarter, because the harness estimates a token as about four characters - so
+switching the unit does not quietly make the default four times as permissive."""
+
+DEFAULT_MAX_CHARS = 20_000
+"""Characters kept when a return is truncated, or when a spill falls back to one.
+
+Large enough that a truncated return still carries the bulk of an ordinary one;
+4,000 left too little of a page to act on. Never more than the threshold when a
+binding leaves this unset: a truncation that keeps more than the size it was
+triggered at leaves the return as it was."""
 
 DEFAULT_SUMMARY_PROMPT: str = ToolOutputLimits().summary_prompt
 """The prompt a `summarize` reduction is written with, unless a binding replaces it.
@@ -125,7 +145,8 @@ class ToolOutputLimitsConfig(BaseModel):
         ge=500,
         description=(
             "Size at or above which a return is reduced. Characters by default; "
-            "estimated tokens when 'over tokens' is set"
+            "estimated tokens when 'over tokens' is set, where it defaults to "
+            f"{DEFAULT_TOKEN_THRESHOLD:,}"
         ),
     )
     over_tokens: bool = Field(
@@ -137,7 +158,7 @@ class ToolOutputLimitsConfig(BaseModel):
         ge=200,
         description=(
             "Characters kept when a return is truncated, or when a spill or summary "
-            "falls back to truncation"
+            "falls back to truncation. Left unset, never more than the threshold"
         ),
     )
     truncation_strategy: StrategyName = Field(
@@ -166,6 +187,22 @@ class ToolOutputLimitsConfig(BaseModel):
         ),
         json_schema_extra={"x-multiline": True},
     )
+
+    @model_validator(mode="after")
+    def _defaults_follow_the_threshold(self) -> ToolOutputLimitsConfig:
+        """Fill the two defaults that depend on what the binding did set.
+
+        A threshold left unset in token mode is the character default in tokens,
+        not 60,000 tokens. And an unset `max_chars` is capped at the threshold in
+        characters: a binding asking to truncate at 10,000 would otherwise keep
+        20,000, and a return between the two would be "truncated" to itself.
+        """
+        if "threshold" not in self.model_fields_set and self.over_tokens:
+            self.threshold = DEFAULT_TOKEN_THRESHOLD
+        if "max_chars" not in self.model_fields_set:
+            in_chars = self.threshold * 4 if self.over_tokens else self.threshold
+            self.max_chars = min(DEFAULT_MAX_CHARS, in_chars)
+        return self
 
     @field_validator("summary_prompt")
     @classmethod
@@ -247,6 +284,30 @@ def build_limits(
         store=_build_store(backend, spill_log),
         strip_ansi=config.strip_ansi,
         summary_prompt=config.summary_prompt,
+        serializer=readable_return,
+    )
+
+
+def readable_return(value: object) -> str:
+    """A structured return as text that pages by line once it is spilled.
+
+    `read_tool_result` slices by line, and compact JSON is one line - so a page
+    an MCP server returned as `{"title": ..., "text": "..."}` read back as "1
+    matching line, output capped" whatever offset the model asked for, and it
+    went looking for the file with a shell instead. A text field is the part
+    worth paging, so a mapping holding one is written out with that text as it
+    is, one field after another; anything else is indented JSON, one field per
+    line, which is the harness's own preset.
+    """
+    if not isinstance(value, Mapping) or not any(
+        isinstance(field, str) and "\n" in field for field in value.values()
+    ):
+        return indented_json(value)
+    return "\n".join(
+        f"{key}:\n{field}"
+        if isinstance(field, str) and "\n" in field
+        else f"{key}: {to_json(field, fallback=repr).decode()}"
+        for key, field in value.items()
     )
 
 

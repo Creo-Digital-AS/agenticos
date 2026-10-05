@@ -7,8 +7,8 @@ token seconds later, and was signed out for it. `rotated_at` lets the refresh
 route tell the two apart by age. Existing rows keep null, which reads as outside
 the window - the behaviour they had before.
 
-Revision ID: 0101_session_rotated_at
-Revises: 0100_directory_groups
+Revision ID: 0102_session_rotated_at
+Revises: 0101_artifact_pages
 Create Date: 2026-09-30
 """
 
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0101_session_rotated_at"
-down_revision: str | None = "0100_directory_groups"
+revision: str = "0102_session_rotated_at"
+down_revision: str | None = "0101_artifact_pages"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
