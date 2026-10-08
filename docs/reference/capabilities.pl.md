@@ -1,5 +1,5 @@
 ---
-source_sha: "c57de35c211d"
+source_sha: "41d9eec9e333"
 ---
 
 # Katalog capability { #the-capability-catalog }
@@ -716,7 +716,9 @@ runa nadrzędnego — tym, którego poświadczenie zostało rozwiązane z vaulta
 jego krok to jedno żądanie do modelu, księgowane w budżecie runa przez ten sam
 rejestr zużycia otoczkowego, z którego korzysta streszczenie kompaktujące. To nie
 jest własny hostowany model browser-use i nie są to wydatki niewidoczne dla
-strażnika budżetu.
+strażnika budżetu. Każdy krok sprawdza budżet przed wysłaniem, więc gdy budżet
+runa jest wyczerpany, kolejny krok agenta przeglądarkowego zostaje odrzucony, a nie
+opłacony.
 
 **`browser-use` jest dodatkiem opcjonalnym.** Ciągnie za sobą ciężkie drzewo
 zależności (Chromium przez Playwright) i przypina zależności o wersję niższą niż

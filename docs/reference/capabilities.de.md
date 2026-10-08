@@ -1,5 +1,5 @@
 ---
-source_sha: "c57de35c211d"
+source_sha: "41d9eec9e333"
 ---
 
 # Der Capability-Katalog { #the-capability-catalog }
@@ -760,7 +760,9 @@ aufgelöst wurden —, und jeder seiner Schritte ist eine Modellanfrage, die üb
 dasselbe Konto für Umgebungsverbrauch gegen das Budget des Runs gebucht wird, das
 auch eine Compaction-Zusammenfassung nutzt. Es ist nicht das eigene gehostete
 Modell von browser-use, und es sind keine Ausgaben, die der Budget-Guard nicht
-sehen kann.
+sehen kann. Jeder Schritt prüft das Budget, bevor er gesendet wird: Ist das Budget
+des Runs aufgebraucht, wird der nächste Schritt des Browser-Agents abgelehnt statt
+bezahlt.
 
 **`browser-use` ist ein optionales Extra.** Es zieht einen schweren Baum nach sich
 (Chromium über Playwright) und pinnt Abhängigkeiten eine Minor-Version tiefer als
