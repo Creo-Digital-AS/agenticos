@@ -17,6 +17,17 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Documentation
+
+- **What a triggered run cannot reach on its creator's behalf.** A scheduled or
+  event-triggered run uses its creator's role and grants but answers to no
+  identified person, so memory files, mem0, conversation search, personal MCP
+  bindings and `read_artifact` all refuse it. `docs/concepts.md` now says so,
+  names the exception (a `session_scope: user` sandbox opens the creator's own
+  workspace) and gives the workarounds; the capability reference marks each
+  refusal, and two tutorials no longer say a fire spends the creator's budget
+  (#1902).
+
 ## [0.0.529] - 2026-10-08
 
 ### Changed
