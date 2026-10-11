@@ -17,15 +17,234 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+## [0.0.535] - 2026-10-09
+
 ### Fixed
 
-- The Workspaces page no longer sits on its loading state for a long time before
-  it draws. Its landing view, every file at once, read up to twenty-five
-  container-backed workspaces one after another and then fetched their image
-  thumbnails one after another, so the page waited for the sum of all those round
-  trips; it now reads up to eight hosts at a time. A host that does not answer is
-  reported after ten seconds instead of the archive's sixty-second default. The
-  "Count files" switch on the per-workspace view gets the same treatment.
+- **Scheduled triggers and every periodic job fire again.** The Prefect server
+  image was the floating `prefecthq/prefect:3-latest`, and a deploy on
+  2026-09-28 pulled 3.8.7, built against SQLAlchemy 2.1. Its scheduler fails on
+  every tick (PrefectHQ/prefect#23199) and creates no runs, while the API stays
+  healthy and every deployment reads ready. Agent triggers, notification emails,
+  portal polling, RAG sync checks and the hourly and daily sweeps stopped as a
+  result; manually run triggers kept working. All three compose files now pin
+  `3.8.8-python3.12`, whose image ships SQLAlchemy 2.0.
+- **Prefect's database survives a container recreate.** The `prefect_data`
+  volume was mounted on `/root/.local/share/prefect/`, but Prefect 3 keeps its
+  SQLite database in `/root/.prefect/`, so every recreate of `prefect-server`
+  dropped the deployments, the run history and every queued run until the
+  runner restarted. The volume now sits on `/root/.prefect/`.
+
+### Added
+
+- **A `scheduler` health check.** `/admin/system`, the dashboard's service
+  health widget and `agenticos cmd doctor` report when the trigger heartbeat
+  last completed, and fail once it has missed five intervals. The outage above
+  ran for eleven days with every health check green.
+
+## [0.0.534] - 2026-10-09
+
+### Changed
+
+- **`pydantic-monty` 1.1.0 and `aiohttp` 3.14.4.** Monty, the sandboxed Python
+  the code-mode tools run in, gains a `complex` type, treats `bool`s as `int`s in
+  arithmetic, and releases a failed dict literal's operands; `aiohttp` is a patch
+  release.
+
+## [0.0.533] - 2026-10-09
+
+### Security
+
+- **`mako` moves to 1.4.3.** 1.4.1, which Alembic pulls in, is affected by
+  CVE-2026-102991 (GHSA-5639-2j2p-m4mx): a `TemplateLookup` on Windows follows a
+  URI with a drive letter outside its directories. The backend runs on Linux and
+  renders no Mako template of its own beyond Alembic's migration skeleton, so
+  this is hygiene; only the lockfile and the third-party notices change.
+- **The desktop app's `glib` 0.18 advisory stays open upstream.**
+  GHSA-wrw7-89jp-8q8g (unsound `VariantStrIter` iterators) is fixed in `glib`
+  0.20, but Tauri 2.12, `wry` 0.57 and `webkit2gtk` 2.0.2 all still require
+  `gtk` 0.18 and with it `glib` 0.18, so no lockfile change can move it. It is
+  Linux-only, and nothing in the desktop shell iterates a `Variant` string
+  array. The alert is dismissed as tolerable until Tauri moves to a newer
+  gtk-rs.
+
+## [0.0.532] - 2026-10-09
+
+### Changed
+
+- **Backend dependencies move up.** SQLAlchemy 2.1.4, PyJWT 2.15.1 (accepts the
+  trailing `=` padding AWS ALB tokens carry), Prefect 3.8.8, the MCP SDK 2.3.0,
+  LiteParse 2.15.1, cryptography 50.0.2, boto3 1.43.110, google-auth 2.61.0,
+  google-api-python-client 2.201.0, slack-sdk 3.45.0, mem0ai 2.2.1 and ruff
+  0.16.10; the floors in `pyproject.toml` follow. Replaces Dependabot's #2021,
+  whose harness bump already shipped with #2011.
+
+## [0.0.531] - 2026-10-08
+
+### Documentation
+
+- **AgenticOS is described as a sovereign agentic AI layer.** The README, the
+  comparison page and both decks now give one name for the product where they
+  say what it is. The comparison page gains "How much stays yours": for each of
+  nine products, where it runs, which models it may use, what its licence lets
+  you do (including that the default PDF parser is AGPL-3.0, so a modified image
+  served to others owes them its source) and its sign-in, audit and spend
+  controls, taken from each product's guide.
+
+## [0.0.530] - 2026-10-08
+
+### Documentation
+
+- **What a triggered run cannot reach on its creator's behalf.** A scheduled or
+  event-triggered run uses its creator's role and grants but answers to no
+  identified person, so memory files, mem0, conversation search, personal MCP
+  bindings and `read_artifact` all refuse it. `docs/concepts.md` now says so,
+  names the exception (a `session_scope: user` sandbox opens the creator's own
+  workspace) and gives the workarounds; the capability reference marks each
+  refusal, and two tutorials no longer say a fire spends the creator's budget
+  (#1902).
+
+## [0.0.529] - 2026-10-08
+
+### Changed
+
+- **Agents work in Pydantic AI workspaces.** The sandbox, attachments, skills,
+  artifacts, generated images and spilled tool results all reach an agent's
+  files through the run's workspace, on Pydantic AI 2.54 and
+  `pydantic-ai-backend` 0.2.32. The runner hands the run the workspace it
+  opened, so a conversation that continues on another host, or in another
+  environment, works in the workspace it has now.
+- **A sandbox whose files were purged is reported, not replaced.** Once a
+  conversation's container or Daytona sandbox has been opened, later turns attach
+  to that session; if its files were swept on the host, the agent is told they are
+  gone instead of carrying on in an empty one, and the next turn starts afresh.
+- **The activity log names what reached the sandbox.** Operations are `read`,
+  `write`, `ls_info`, `mkdir`, `remove` and `execute`: an `edit_file` shows as a
+  `read` and a `write`, a `glob` or `grep` as the command it ran. Rows recorded
+  before keep their old names (`edit`, `glob_info`, `grep_raw`, `read_bytes`)
+  until retention removes them.
+- **A Daytona connection can open a sandbox.** The Daytona SDK was never
+  installed, so the old backend's lazy import failed on every open; the backend
+  image now carries it, and a Daytona sandbox found broken (`error`,
+  `build_failed`) is deleted so the next turn can open its name afresh.
+- **Budgets and reminders keep their place around compaction.** Pydantic AI 2.54
+  runs every `wrap_*` hook outside every `before_*` hook, so the budget is now
+  checked again after a compaction summary was paid for, and a system reminder is
+  appended after compaction rather than before it, where a summary dropped it.
+- **An Anthropic agent with no `max_tokens` can answer at length.** Pydantic AI
+  now defaults it to the model's maximum output rather than 4,096 tokens. Set
+  `max_tokens` on the agent or its model profile to keep a ceiling.
+
+## [0.0.528] - 2026-10-08
+
+### Fixed
+
+- **OpenAI's newest models run.** Every `openai` profile was built on Chat
+  Completions, so a model served on the Responses API only, such as
+  `gpt-6-luna`, failed at its first request with a 400. A profile on `openai`
+  or `azure` now stores which API it uses, chosen under **Agents → add a model
+  → API**. The form starts on Responses for OpenAI's own endpoint and on Chat
+  Completions for an endpoint of your own or for Azure; a regional OpenAI
+  endpoint can pick Responses. Migration `0104_model_profile_api` gives
+  existing `openai` profiles without an endpoint Responses, and the rest Chat
+  Completions. A Responses model sends `store: false`, so moving to Responses
+  does not start keeping conversations on OpenAI's side; a profile can set
+  `openai_store` to opt back in. A profile moved to Responses loses the
+  Chat-only settings in its `params` (`seed`, `stop_sequences`,
+  `presence_penalty`, `frequency_penalty`, `logit_bias`), which Pydantic AI does
+  not send there. Replaces #2033.
+
+## [0.0.527] - 2026-10-08
+
+### Fixed
+
+- **Local services work from the console.** Knowledge → Integrations and a
+  collection's embedding and OCR server pickers called `/api/local-services`,
+  which had no proxy route in the console, so listing, registering or removing
+  an Ollama or OCR server returned the console's 404 page and no collection
+  could be pointed at one. The route now forwards to `/api/v1/local-services`
+  like every other resource.
+
+## [0.0.526] - 2026-10-08
+
+### Fixed
+
+- **A capability's own model requests check the budget before each one, not
+  only the first.** Knowledge self-query, query expansion and both browser
+  capabilities run model requests through an agent of their own, which the
+  run's budget guard does not wrap. Self-query, query expansion and browser
+  choice checked the budget once before each nested run, and a browser-use
+  step did not check it at all. A corrected self-query attempt, an expansion
+  retry or the next browser-use step could therefore still be sent after an
+  earlier request took the run to its cap. Every such request is now refused
+  before it is sent once a cap is reached. Self-query still stops the run with
+  the budget refusal, and query expansion still falls back to the query as
+  written (#1808).
+
+## [0.0.525] - 2026-10-08
+
+### Fixed
+
+- **An output guardrail screens the answer before anyone sees it.** The web
+  chat, the embedded widget and the channel bots stream an answer as it is
+  written, and the output guardrail read only the finished one, so a key it
+  redacted, or a term it blocked, had already been shown and stored. With any
+  output check configured, each piece of text and reasoning is now held until
+  it is complete, run through the same detectors and only then sent. Text the
+  model writes before a tool call is screened too. A blocked keyword in the answer
+  ends the run before any of the blocked text is shown; one in the model's
+  reasoning withholds that reasoning instead of ending the run. Such an agent's
+  answer arrives a step at a time rather than word by word, and its model
+  requests stream even through the HTTP API. Turns stored before this change may still hold the
+  unredacted text in their parts.
+
+## [0.0.524] - 2026-10-08
+
+### Fixed
+
+- **A document's text is extracted only up to the limit.** A chat attachment and
+  a document `web_fetch` downloads were parsed to the last page and only then cut,
+  so a compressed PDF under the 10 MiB download limit could cost far more worker
+  time and memory than the text the model was shown. The readers now stop at the
+  limit: a PDF loads pages until one crosses it, and stops after 2,000 pages; an
+  `.xlsx` streams rows until one crosses it, and reads at most a million cells
+  whatever range the sheet declares, ending with a note when that count stopped
+  it. DOCX, PPTX, ODT and ODP stop extracting at the paragraph or slide, but are still decompressed and parsed whole, within the
+  archive size limits. `web_fetch` passes its `max_content_chars` as that limit;
+  attachments keep `CHAT_PARSED_TEXT_MAX_CHARS`. Text that goes past the limit ends
+  with a note that the rest of the document is left out (`web_fetch` keeps its
+  `[Content truncated]`), in place of a total length that is no longer counted.
+
+## [0.0.523] - 2026-10-08
+
+### Security
+
+- **`sharp` moves to 0.35.5.** 0.35.4, which `next` pulls in for image
+  optimization, bundles a `librsvg` affected by CVE-2026-96889
+  (GHSA-wq5f-xc86-pv6w), and `make audit-frontend` failed on it. 0.35.5 is
+  inside the range `next` already asks for, so only the lockfile and the
+  third-party notices change.
+
+## [0.0.522] - 2026-10-06
+
+### Fixed
+
+- **The Workspaces page no longer sits on its loading state before it draws.**
+  Its landing view, every file at once, read up to twenty-five container-backed
+  workspaces one after another and then fetched their image thumbnails one after
+  another, so the page waited for the sum of all those round trips. Workspaces
+  and thumbnails are now read side by side, on eight threads of their own shared
+  by the whole process, so several people opening the page against a host that
+  has stopped answering cannot hold up sign-in or anything else on the default
+  thread pool. A listing waits ten seconds for each call to a host instead of the
+  archive's sixty-second default, so a host that does not answer at all is
+  reported as unreadable after ten seconds; one that answers slowly can still
+  take longer over a deep walk. The "Count files" switch reads hosts the same way.
+
+## [0.0.521] - 2026-10-06
+
+### Fixed
+
 - A burst of refreshes on one cookie no longer signs the person out. The reuse
   grace window rotated the session again on every grace refresh, so the third
   request of a burst matched nothing, got a 401, and its response cleared the
@@ -36,6 +255,90 @@ Two things are versioned separately from this file and worth knowing about:
 - A session that has ended sends the person to sign in. A refused refresh left the
   console signed in, with every request answering 401 and the chat socket
   reconnecting on a dead token, until a full reload.
+
+## [0.0.520] - 2026-10-06
+
+### Fixed
+
+- **Knowledge self-query and query expansion run under the agent's model
+  settings.** Both make a model request of their own inside a search, and
+  both inherited the run's model without the `timeout`, `max_tokens` and
+  `temperature` the agent set, so a query rewrite or a filter inference could
+  outlive the agent's timeout or generate more than it permits. They now run
+  under the same settings as the run's own requests, as compaction summaries
+  and system reminders have since 0.0.507. The tool-output summary is
+  unchanged: the harness it builds on exposes no settings knob (#1810).
+
+## [0.0.519] - 2026-10-06
+
+### Fixed
+
+- **PII redaction covers phone numbers.** The `redact_pii_*` guardrails
+  scrubbed email, IBAN, card and US SSN, and a phone number in the same
+  message reached the model and the reader unchanged. They now also redact a
+  phone number as `[redacted:phone]` when it is valid in its country's
+  numbering plan and grouped the way that country writes it, so a date, an
+  amount or an order id such as `ORD-2026-000417` comes through. A number
+  written with `+` is caught for any country; a national one for the countries
+  in the new `phone_regions` field, `US, GB, DE, PL` by default. An unknown
+  code, or more than 16 of them, is refused at publish. A text longer than
+  200,000 characters or with more than 10,000 digits is not read: it ends the
+  run with `guardrail_blocked` rather than reach the model unredacted. Each
+  country past four shrinks both limits in proportion, since each is another
+  pass over the text. An agent with no PII toggle on is unchanged.
+  `POST /api/v1/ml/privacy/pii` finds the same numbers as a `phone`
+  category, against the default countries, where it returned them unchanged
+  and refused `categories: ["phone"]`; a scan that includes `phone` refuses
+  text with more than 10,000 digits.
+
+## [0.0.518] - 2026-10-06
+
+### Fixed
+
+- **An agent card no longer blinks out when the cursor leaves it.** The
+  gallery's entrance animation and the card's hover beam both set an
+  animation on the same element, so each time the beam went out the card
+  replayed its entrance from fully transparent. Firefox and browsers built on
+  it showed this as the card vanishing under the cursor. The beam now sits
+  inside its own wrapper.
+
+### Security
+
+- **`multidict` moves to 6.9.1 and `source-map-js` to 1.2.2.** 6.8.0, which
+  `aiohttp` and `yarl` pull in, is affected by CVE-2026-104874
+  (GHSA-54p9-h82j-f925), and `make audit` failed on it. 1.2.1, which `postcss`,
+  Tailwind and `css-tree` pull in at build and test time, is affected by
+  GHSA-68fv-2mgg-jv7q, and `make audit-frontend` failed on it. Only the
+  lockfiles change.
+
+## [0.0.517] - 2026-10-05
+
+### Changed
+
+- **A new README, in four languages.** It opens on what AgenticOS is for
+  ("AI agents your whole team can use and improve"), a 45-second intro film and
+  a product tour with current screenshots in light and dark, and keeps the list
+  of what AgenticOS does not do yet. The Polish, German and Spanish READMEs
+  follow it, and their links to the documentation site open the page in the
+  same language where a translation exists.
+- **Two presentations on the documentation site.** `/presentation/` is a
+  14-slide introduction to the open-source project and `/presentation/tour/`
+  the 44-slide product tour. Both use the new type (Instrument Serif, DM Sans,
+  DM Mono) on warm white, and show the marks of the stack and the model
+  providers. `make presentation` checks both decks and their assets.
+- **`make audit-frontend` skips one advisory with no fix.**
+  GHSA-vfj7-8cjw-p6xm (braces <= 3.0.3) has no patched release and reaches the
+  tree only through a lint-time dependency of `eslint-config-next` that the
+  built console does not ship. The exception is named in the `Makefile`, with
+  the condition for removing it.
+
+### Fixed
+
+- **The presentation's presenter view talks only to its own origin.** The deck
+  and the presenter window send their messages to the page's origin and ignore
+  messages from any other, so a presenter window navigated elsewhere no longer
+  receives slide state or speaker notes. Speaker notes and the slide list are
+  written as text, not HTML.
 
 ## [0.0.516] - 2026-10-01
 
