@@ -17,15 +17,26 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+## [0.0.522] - 2026-10-06
+
 ### Fixed
 
-- The Workspaces page no longer sits on its loading state for a long time before
-  it draws. Its landing view, every file at once, read up to twenty-five
-  container-backed workspaces one after another and then fetched their image
-  thumbnails one after another, so the page waited for the sum of all those round
-  trips; it now reads up to eight hosts at a time. A host that does not answer is
-  reported after ten seconds instead of the archive's sixty-second default. The
-  "Count files" switch on the per-workspace view gets the same treatment.
+- **The Workspaces page no longer sits on its loading state before it draws.**
+  Its landing view, every file at once, read up to twenty-five container-backed
+  workspaces one after another and then fetched their image thumbnails one after
+  another, so the page waited for the sum of all those round trips. Workspaces
+  and thumbnails are now read side by side, on eight threads of their own shared
+  by the whole process, so several people opening the page against a host that
+  has stopped answering cannot hold up sign-in or anything else on the default
+  thread pool. A listing waits ten seconds for each call to a host instead of the
+  archive's sixty-second default, so a host that does not answer at all is
+  reported as unreadable after ten seconds; one that answers slowly can still
+  take longer over a deep walk. The "Count files" switch reads hosts the same way.
+
+## [0.0.521] - 2026-10-06
+
+### Fixed
+
 - A burst of refreshes on one cookie no longer signs the person out. The reuse
   grace window rotated the session again on every grace refresh, so the third
   request of a burst matched nothing, got a 401, and its response cleared the
@@ -36,6 +47,90 @@ Two things are versioned separately from this file and worth knowing about:
 - A session that has ended sends the person to sign in. A refused refresh left the
   console signed in, with every request answering 401 and the chat socket
   reconnecting on a dead token, until a full reload.
+
+## [0.0.520] - 2026-10-06
+
+### Fixed
+
+- **Knowledge self-query and query expansion run under the agent's model
+  settings.** Both make a model request of their own inside a search, and
+  both inherited the run's model without the `timeout`, `max_tokens` and
+  `temperature` the agent set, so a query rewrite or a filter inference could
+  outlive the agent's timeout or generate more than it permits. They now run
+  under the same settings as the run's own requests, as compaction summaries
+  and system reminders have since 0.0.507. The tool-output summary is
+  unchanged: the harness it builds on exposes no settings knob (#1810).
+
+## [0.0.519] - 2026-10-06
+
+### Fixed
+
+- **PII redaction covers phone numbers.** The `redact_pii_*` guardrails
+  scrubbed email, IBAN, card and US SSN, and a phone number in the same
+  message reached the model and the reader unchanged. They now also redact a
+  phone number as `[redacted:phone]` when it is valid in its country's
+  numbering plan and grouped the way that country writes it, so a date, an
+  amount or an order id such as `ORD-2026-000417` comes through. A number
+  written with `+` is caught for any country; a national one for the countries
+  in the new `phone_regions` field, `US, GB, DE, PL` by default. An unknown
+  code, or more than 16 of them, is refused at publish. A text longer than
+  200,000 characters or with more than 10,000 digits is not read: it ends the
+  run with `guardrail_blocked` rather than reach the model unredacted. Each
+  country past four shrinks both limits in proportion, since each is another
+  pass over the text. An agent with no PII toggle on is unchanged.
+  `POST /api/v1/ml/privacy/pii` finds the same numbers as a `phone`
+  category, against the default countries, where it returned them unchanged
+  and refused `categories: ["phone"]`; a scan that includes `phone` refuses
+  text with more than 10,000 digits.
+
+## [0.0.518] - 2026-10-06
+
+### Fixed
+
+- **An agent card no longer blinks out when the cursor leaves it.** The
+  gallery's entrance animation and the card's hover beam both set an
+  animation on the same element, so each time the beam went out the card
+  replayed its entrance from fully transparent. Firefox and browsers built on
+  it showed this as the card vanishing under the cursor. The beam now sits
+  inside its own wrapper.
+
+### Security
+
+- **`multidict` moves to 6.9.1 and `source-map-js` to 1.2.2.** 6.8.0, which
+  `aiohttp` and `yarl` pull in, is affected by CVE-2026-104874
+  (GHSA-54p9-h82j-f925), and `make audit` failed on it. 1.2.1, which `postcss`,
+  Tailwind and `css-tree` pull in at build and test time, is affected by
+  GHSA-68fv-2mgg-jv7q, and `make audit-frontend` failed on it. Only the
+  lockfiles change.
+
+## [0.0.517] - 2026-10-05
+
+### Changed
+
+- **A new README, in four languages.** It opens on what AgenticOS is for
+  ("AI agents your whole team can use and improve"), a 45-second intro film and
+  a product tour with current screenshots in light and dark, and keeps the list
+  of what AgenticOS does not do yet. The Polish, German and Spanish READMEs
+  follow it, and their links to the documentation site open the page in the
+  same language where a translation exists.
+- **Two presentations on the documentation site.** `/presentation/` is a
+  14-slide introduction to the open-source project and `/presentation/tour/`
+  the 44-slide product tour. Both use the new type (Instrument Serif, DM Sans,
+  DM Mono) on warm white, and show the marks of the stack and the model
+  providers. `make presentation` checks both decks and their assets.
+- **`make audit-frontend` skips one advisory with no fix.**
+  GHSA-vfj7-8cjw-p6xm (braces <= 3.0.3) has no patched release and reaches the
+  tree only through a lint-time dependency of `eslint-config-next` that the
+  built console does not ship. The exception is named in the `Makefile`, with
+  the condition for removing it.
+
+### Fixed
+
+- **The presentation's presenter view talks only to its own origin.** The deck
+  and the presenter window send their messages to the page's origin and ignore
+  messages from any other, so a presenter window navigated elsewhere no longer
+  receives slide state or speaker notes. Speaker notes and the slide list are
+  written as text, not HTML.
 
 ## [0.0.516] - 2026-10-01
 
