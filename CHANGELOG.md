@@ -17,6 +17,14 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A second page that refuses `web_fetch` no longer ends the run.** Pydantic AI
+  counts retries per tool, not per URL, so two sites answering 403 (or any two
+  failed fetches) in one run failed it with `UnexpectedModelBehavior: Tool
+  'web_fetch' exceeded max retries count of 1`. A failed fetch is now a retry
+  while the tool has one left and the same message as its result once it has not.
+
 ## [0.0.535] - 2026-10-09
 
 ### Fixed
