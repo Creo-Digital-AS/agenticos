@@ -27,6 +27,7 @@ from pydantic_ai.common_tools import web_fetch as web_fetch_module
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     RetryPromptPart,
     TextPart,
@@ -179,6 +180,41 @@ class TestARunThatMeetsRefusals:
         ]
         assert returned
         assert all("403" in str(part.content) for part in returned)
+
+    async def test_forbidden_pages_fetched_in_parallel_do_not_end_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Calls in one response all see the same attempt, and spend one retry between them.
+
+        So two refusals in the first response are both retries, and the two in the
+        next are both results, not a budget the first pair already exhausted.
+        """
+        _forbidden(monkeypatch)
+        batches = [
+            ["https://a.example.com/", "https://b.example.com/"],
+            ["https://c.example.com/", "https://d.example.com/"],
+        ]
+
+        def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            step = sum(isinstance(message, ModelResponse) for message in messages)
+            if step < len(batches):
+                return ModelResponse(
+                    parts=[ToolCallPart("web_fetch", {"url": url}) for url in batches[step]]
+                )
+            return ModelResponse(parts=[TextPart("None of them would let me in.")])
+
+        agent = Agent(FunctionModel(model), capabilities=[_built()])
+
+        result = await agent.run("Read these pages.")
+
+        assert result.output == "None of them would let me in."
+        answered = [
+            [type(part) for part in message.parts]
+            for message in result.all_messages()
+            if isinstance(message, ModelRequest)
+            and any(isinstance(part, RetryPromptPart | ToolReturnPart) for part in message.parts)
+        ]
+        assert answered == [[RetryPromptPart, RetryPromptPart], [ToolReturnPart, ToolReturnPart]]
 
 
 class TestWhoFetches:
