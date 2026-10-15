@@ -17,6 +17,15 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent can be renamed in the Builder.** The name and description are
+  spec fields, and the API stored them with the draft, but no Builder control
+  edited them. A duplicate therefore kept the name "<name> (copy)". The Build
+  tab now opens on a name and description card that autosaves with the rest
+  of the draft. A blank name is flagged and not sent. The handle (`@slug`)
+  stays the same, so delegations and mentions wired to it keep working.
+
 ## [0.0.536] - 2026-10-15
 
 ### Fixed
