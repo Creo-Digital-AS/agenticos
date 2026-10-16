@@ -39,6 +39,7 @@ from app.agents.audience import RunAudience
 from app.agents.browser_events import BrowserCommand, BrowserEvent, BrowserKey
 from app.agents.browser_sign_ins import SignIn
 from app.agents.capabilities import CapabilityBinding, CapabilityBuildContext, get
+from app.agents.capabilities.background_tools import BACKGROUND
 from app.agents.capabilities.browser_use import (
     BROWSER_STEP_MODEL_RESOURCE,
     WebBrowser,
@@ -1691,6 +1692,33 @@ async def _call_as(deps: AgentDeps, opener: _Opener | None = None) -> str:
     tools = await toolset.get_tools(ctx)
     args = {"task": "find the price", "start_url": "https://example.test/"}
     return str(await toolset.call_tool("browse_web", args, ctx, tools["browse_web"]))
+
+
+class TestALongBrowseMayRunInTheBackground:
+    async def test_browse_web_is_marked_for_the_background_tools_capability(self):
+        """#2108: the browse is the slow tool `background_tools` lets run on."""
+        toolset = _toolset(_Opener())
+        tools = await toolset.get_tools(_tool_context(_browsing_model(DONE_ARGS), None))
+
+        assert tools["browse_web"].tool_def.metadata == BACKGROUND
+        # Not a barrier, which the library would refuse to send away; the direct
+        # actions still are, so two of them never interleave.
+        assert tools["browse_web"].tool_def.sequential is False
+        assert tools["browser_read"].tool_def.sequential is True
+
+    async def test_a_direct_action_waits_for_the_tab_a_browse_is_driving(self):
+        toolset = _toolset(_Opener())
+        ctx = _tool_context(_browsing_model(DONE_ARGS), None)
+        tools = await toolset.get_tools(ctx)
+
+        async with toolset.tab:
+            read = asyncio.create_task(
+                toolset.call_tool("browser_read", {}, ctx, tools["browser_read"])
+            )
+            await asyncio.sleep(0.02)
+            assert not read.done()
+
+        assert "No page is open" in str(await read)
 
 
 class TestEveryBrowseIsAlsoLive:

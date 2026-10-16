@@ -10,7 +10,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/comp
 import { IconButton } from "@/components/ui";
 import { ConversationAgents } from "@/components/agents/conversation-agents";
 import { cn, setUrlParam, timeAgo } from "@/lib/utils";
-import { useAgentSelectionStore, useChatBandsStore, useChatSidebarStore } from "@/stores";
+import {
+  useAgentSelectionStore,
+  useChatBandsStore,
+  useChatSidebarStore,
+  useWorkingStore,
+} from "@/stores";
 import { DEFAULT_COLLAPSED_BANDS, LONG_LIST } from "@/stores/chat-sidebar-store";
 import {
   Archive,
@@ -53,6 +58,10 @@ interface ConversationItemProps {
   onShare: () => void;
   onFavourite: (favourite: boolean) => void;
 }
+
+/** How long a thread left mid-answer keeps its mark when the listing never shows
+ *  its run: a turn that short is over by then, and the listing is right. */
+const HANDOFF_GRACE_MS = 20_000;
 
 function ConversationItem({
   conversation,
@@ -103,6 +112,26 @@ function ConversationItem({
             has_avatar: addressed.has_avatar ?? false,
           },
         ];
+  // The server's word, or this tab's own when it is the one waiting: a short turn
+  // can begin and end between two listings, and the thread asked in must not
+  // look idle for it.
+  const workingHere = useWorkingStore((state) => state.since[conversation.id]);
+  const runningSince = conversation.running_since ?? workingHere ?? null;
+  // A thread this tab left mid-answer keeps its own mark until the listing has
+  // the run - then the listing speaks for it, and polls it to its end - or until
+  // long enough that a turn the listing never saw has surely finished.
+  const handedOff = useWorkingStore((state) => conversation.id in state.handedOff);
+  const settleWorking = useWorkingStore((state) => state.settle);
+  const listed = conversation.running_since != null;
+  useEffect(() => {
+    if (!handedOff) return;
+    if (listed) {
+      settleWorking(conversation.id);
+      return;
+    }
+    const timer = setTimeout(() => settleWorking(conversation.id), HANDOFF_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [handedOff, listed, conversation.id, settleWorking]);
   const agentLabel =
     agents.length === 0
       ? null
@@ -161,11 +190,16 @@ function ConversationItem({
         // One line hid the time behind a hover and left the face to say who.
         <div className="min-w-0 flex-1">
           <p className="text-muted-foreground truncate text-[11px] leading-4">
-            {agentLabel && <>{agentLabel} · </>}
-            {conversation.running_since ? (
-              <RunningFor since={conversation.running_since} />
+            {/* At work, the line says so and for how long, in place of who and
+                when: beside the agent's name it was cut to nothing. The face
+                still says who. */}
+            {runningSince ? (
+              <RunningFor since={runningSince} />
             ) : (
-              timeAgo(conversation.updated_at || conversation.created_at, tTime, locale)
+              <>
+                {agentLabel && <>{agentLabel} · </>}
+                {timeAgo(conversation.updated_at || conversation.created_at, tTime, locale)}
+              </>
             )}
           </p>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -746,6 +780,19 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
   useEffect(() => {
     fetchConversations();
   }, [fetchConversations]);
+
+  // A link to another thread followed from this page - the inbox's "answered
+  // while you were away" - is a same-page navigation: nothing remounts, so the
+  // effect above never sees the new `?id=`, and the address said one thread while
+  // the chat showed another. Acted on only when the address moves, and only when
+  // it disagrees: a thread picked here writes `?id=` after it is already open.
+  const linkedId = searchParams.get("id");
+  const lastLinked = useRef(linkedId);
+  useEffect(() => {
+    if (lastLinked.current === linkedId) return;
+    lastLinked.current = linkedId;
+    if (linkedId !== null && linkedId !== currentConversationId) void selectConversation(linkedId);
+  }, [linkedId, currentConversationId, selectConversation]);
 
   const changeView = (next: ConversationView) => {
     setView(next);

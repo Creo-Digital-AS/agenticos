@@ -114,6 +114,10 @@ interface ChatContainerProps {
   holdSending?: boolean;
 }
 
+/** When to read a finished turn's transcript again while its answer is not yet
+ *  written: at once, then backing off, about fifteen seconds in all. */
+const ANSWER_REREADS_MS = [0, 500, 1000, 2000, 4000, 8000];
+
 /** The test panel's pinned questions, and how one is pinned or taken off. */
 export interface PinnedPrompts {
   pinned: readonly string[];
@@ -262,6 +266,49 @@ export function ChatContainer({
     acknowledgeDetachedTurn();
     handleTurnInterrupted();
   }, [acknowledgeDetachedTurn, handleTurnInterrupted]);
+
+  // An answer being written under a session this tab does not hold (#2108): the
+  // question was asked, then the tab closed, the app quit or the page reloaded,
+  // and the turn goes on on the server. The conversation list says a run is
+  // still at work - it is re-read on every run event - and the transcript ends
+  // with the question, so say so rather than show a question nobody is answering.
+  const runningSince =
+    conversations.find((conversation) => conversation.id === currentConversationId)
+      ?.running_since ?? null;
+  const answeringElsewhere =
+    runningSince !== null && !isProcessing && messages.at(-1)?.role === "user";
+  // And fetch the answer when that run ends, rather than waiting for a reload:
+  // the run's end clears `running_since`, and the transcript is where it landed.
+  //
+  // Read until it is there, not once. The run's terminal event is published when
+  // its row commits, and the session writes the answer after that, so the first
+  // read can come back ending in the question - and nothing else would ask again.
+  const runningIn = useRef<{ id: string | null; running: boolean }>({ id: null, running: false });
+  const answered = messages.at(-1)?.role === "assistant";
+  const answeredRef = useRef(answered);
+  useEffect(() => {
+    answeredRef.current = answered;
+  }, [answered]);
+  useEffect(() => {
+    const was = runningIn.current;
+    const running = runningSince !== null;
+    runningIn.current = { id: currentConversationId, running };
+    if (was.id !== currentConversationId || !was.running || running) return;
+    if (currentConversationId === null || answeredRef.current) return;
+    const id = currentConversationId;
+    let waiting = true;
+    void (async () => {
+      for (const pause of ANSWER_REREADS_MS) {
+        await new Promise((resolve) => setTimeout(resolve, pause));
+        if (!waiting) return;
+        await selectConversation(id);
+        if (useConversationStore.getState().currentMessages.at(-1)?.role === "assistant") return;
+      }
+    })();
+    return () => {
+      waiting = false;
+    };
+  }, [runningSince, currentConversationId, selectConversation]);
 
   // What the file panel watches, rather than a timer. Counted from the transcript
   // rather than kept as state: a finished assistant message *is* a finished turn,
@@ -446,7 +493,7 @@ export function ChatContainer({
       compactionImpossible={compactionImpossible}
       interrupted={interrupted}
       detachedTurnPending={detachedTurnPending}
-      leftTurnPending={leftTurnPending}
+      leftTurnPending={leftTurnPending || answeringElsewhere}
       onRecheck={handleRecheck}
       personalGaps={personalGaps}
       // The live turn's cost while there is one, and the newest measured answer in

@@ -17,6 +17,30 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Added
+
+- **Write to an agent and leave: it answers anyway, and tells you.** A chat
+  turn left running when you close the tab, quit the app or open another
+  conversation now carries on for up to an hour (`CHAT_DETACHED_TURN_MINUTES`,
+  was a fixed ten minutes), lands in the conversation, and puts a notice in the
+  bell - and an email, under the run-finished and run-failed preferences - with a
+  link back to it. One stopped at the limit says so (#2108).
+
+- **Coming back to an answer still being written.** Open a conversation whose
+  agent is still answering - after a reload, in another tab, on another
+  device - and the chat says so, then shows the answer when the run ends,
+  without reloading. The list of conversations marks a thread as working the
+  moment you ask in it, rather than when the server's next listing arrives.
+
+- **Work while tools run.** A new `background_tools` capability lets an agent
+  send a slow tool - today a long `browse_web` - to the background, the model
+  deciding per call, and answer the rest of the request while it runs; the
+  result arrives as a message. Built on pydantic-ai-harness `BackgroundTools`,
+  with one difference that matters: a background result passes the agent's
+  guardrails and tool output limits like a foreground one, where the library
+  alone would deliver it past them. Approval still comes first, the spend is
+  the run's, and stopping the run stops the tool (#2108).
+
 ## [1.0.0] - 2026-10-16
 
 ### Added

@@ -47,7 +47,7 @@ import { toast } from "sonner";
 
 import { apiClient } from "@/lib/api-client";
 import { setUrlParam } from "@/lib/utils";
-import { useConversationStore } from "@/stores";
+import { useConversationStore, useWorkingStore } from "@/stores";
 /** A message the user typed while the agent was busy / socket offline.
  *  Held outside the chat history until the drainer ships it. */
 /** A correction sent to the running turn, shown until it reaches the model. */
@@ -173,6 +173,8 @@ export function useChat(options: UseChatOptions = {}) {
   // The tool calls whose arguments are still streaming, by part index, so a turn
   // that ends before `tool_call` arrives can mark them unfinished.
   const streamingCallsRef = useRef<Map<number, string>>(new Map());
+  // Whether the next text delta opens a new model response, and so a new part.
+  const newResponseRef = useRef(false);
   // Outbound queue: messages typed while agent is busy / socket offline. Held
   // here (not in the chat history) so the UI can surface them as cancellable
   // "pending" entries above the input. The ref is the source of truth for the
@@ -312,6 +314,24 @@ export function useChat(options: UseChatOptions = {}) {
   // when it finishes, which is what coming back to one of these says.
   const [leftRunning, setLeftRunning] = useState<ReadonlySet<string>>(() => new Set());
   const leftTurnPending = activeConversationId !== null && leftRunning.has(activeConversationId);
+  // Say in the list of conversations that this one is being answered, from the
+  // moment the question goes rather than from whenever the server's next listing
+  // arrives (`useWorkingStore`). Stamped once per turn, so a conversation named
+  // mid-turn keeps the time the question was asked.
+  const turnStartedAt = useRef<string | null>(null);
+  const startWorking = useWorkingStore((state) => state.start);
+  const stopWorking = useWorkingStore((state) => state.stop);
+  const handOffWorking = useWorkingStore((state) => state.handOff);
+  useEffect(() => {
+    if (!isProcessing) {
+      turnStartedAt.current = null;
+      return;
+    }
+    turnStartedAt.current ??= new Date().toISOString();
+    if (activeConversationId === null) return;
+    startWorking(activeConversationId, turnStartedAt.current);
+    return () => stopWorking(activeConversationId);
+  }, [isProcessing, activeConversationId, startWorking, stopWorking]);
 
   /**
    * Re-read what the whole thread has cost, after a turn has added to it.
@@ -481,6 +501,11 @@ export function useChat(options: UseChatOptions = {}) {
           }
           // Part indices restart with every model response.
           streamingCallsRef.current.clear();
+          // And its text is its own part. Two responses used to meet only across
+          // a tool step; a tool run in the background answers as a message, so
+          // what was written while it ran and after it returned met mid-word
+          // (#2108) - the stored transcript splits them the same way.
+          newResponseRef.current = true;
           break;
         }
 
@@ -517,7 +542,8 @@ export function useChat(options: UseChatOptions = {}) {
           // text part or starts a new one after a thinking/tool part).
           if (currentMessageIdRef.current) {
             const content = (wsEvent.data as { index: number; content: string }).content;
-            appendTextDelta(currentMessageIdRef.current, content);
+            appendTextDelta(currentMessageIdRef.current, content, newResponseRef.current);
+            newResponseRef.current = false;
           }
           break;
         }
@@ -1688,10 +1714,13 @@ export function useChat(options: UseChatOptions = {}) {
     const previous = turnBelongsTo.current;
     turnBelongsTo.current = activeConversationId;
     if (previous === null || previous === activeConversationId || !isProcessing) return;
+    // Before the working mark's own cleanup, which runs after layout effects:
+    // the thread left is still being answered, whatever this tab does next.
+    handOffWorking(previous);
     endTurnLocally();
     reopen();
     setLeftRunning((threads) => new Set(threads).add(previous));
-  }, [activeConversationId, isProcessing, endTurnLocally, reopen]);
+  }, [activeConversationId, isProcessing, endTurnLocally, reopen, handOffWorking]);
 
   // The answer that was left behind has landed - the transcript, re-read on
   // coming back, ends with it - so there is nothing still coming to talk about.
