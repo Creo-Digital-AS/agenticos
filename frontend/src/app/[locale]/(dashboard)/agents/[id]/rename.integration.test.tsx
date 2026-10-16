@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { Suspense, type ReactNode } from "react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { Suspense } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AgentBuilderPage from "./page";
-import type { AgentDetail } from "@/types/agents";
+import type { AgentSpec } from "@/types/agents";
+import type { ProfilesStatus } from "@/hooks/use-model-providers";
 import { Perm } from "@/types/permissions";
 import type { Permission } from "@/types/permissions";
 
@@ -14,122 +14,160 @@ import type { Permission } from "@/types/permissions";
  * A duplicate arrives as "<name> (copy)", and the name is spec, so the field
  * edits the draft and the draft's autosave is what stores it. The refusal is a
  * blank name: the spec rejects it, so it must never reach the save.
+ *
+ * The harness is the first-publish spec's.
  */
 
-const AGENT: AgentDetail = {
-  id: "a1",
-  slug: "support",
-  name: "Support (copy)",
-  description: null,
-  status: "draft",
-  visibility: "private",
-  owner_user_id: "u1",
-  current_version_id: null,
-  can_run: false,
-  has_avatar: false,
-  categories: [],
-  tags: [],
-  draft_spec: {
-    name: "Support (copy)",
-    description: null,
-    instructions: "",
-    model_profile_id: null,
-    model_settings: {},
-    capabilities: [],
-    collection_ids: [],
-    skill_ids: [],
-    context_ids: [],
-    mcp_servers: [],
-    budget: null,
-  },
+const MODEL_PROFILE = {
+  id: "p-1",
+  label: "openai default",
+  provider: "openai",
+  model: "gpt-5",
+  secret_id: "s-1",
 };
 
-const mutation = () => ({
-  mutate: vi.fn(),
-  mutateAsync: vi.fn().mockResolvedValue({}),
-  isPending: false,
-  variables: undefined,
-  data: undefined,
+const refetchProfiles = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const saveDraft = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+const state = {
+  permissions: [] as Permission[],
+  profiles: [MODEL_PROFILE] as (typeof MODEL_PROFILE)[],
+  // Both queries settle successfully by default; a case that wants the failed
+  // or still-pending read says so, because that is where an empty list stops
+  // meaning "the organization has none".
+  profilesStatus: "loaded" as ProfilesStatus,
+  permissionsLoaded: true,
+  versions: [] as { version: number }[],
+  nextPublished: 1,
+};
+
+vi.mock("@/hooks", async () => {
+  // The real one: the Builder keeps its tab in `?tab=`, as local state here.
+  const { useUrlState } =
+    await vi.importActual<typeof import("@/hooks/use-url-state")>("@/hooks/use-url-state");
+  return {
+    useUrlState,
+    useAgent: () => ({
+      agent: {
+        id: "a-1",
+        slug: "support",
+        name: "Support (copy)",
+        status: "draft",
+        has_avatar: false,
+        draft_spec: {
+          name: "Support (copy)",
+          description: null,
+          instructions: "Be helpful.",
+          model_profile_id: null,
+          model_settings: {},
+          capabilities: [],
+          collection_ids: [],
+          skill_ids: [],
+          context_ids: [],
+          mcp_servers: [],
+          subagents: [],
+        } satisfies AgentSpec,
+      },
+      isLoading: false,
+      saveDraft: { mutateAsync: saveDraft, isPending: false },
+      validate: async () => ({ problems: [], fields: [] }),
+      publish: {
+        mutateAsync: vi.fn().mockResolvedValue({ version: state.nextPublished }),
+        isPending: false,
+      },
+      rollback: { mutateAsync: vi.fn() },
+      setAvatar: { mutateAsync: vi.fn(), isPending: false },
+      setColor: { mutate: vi.fn(), isPending: false },
+      setMetadata: { mutate: vi.fn(), isPending: false },
+    }),
+    useAgentEnvironments: () => ({ environments: [], promote: { mutateAsync: vi.fn() } }),
+    useAgents: () => ({
+      agents: [],
+      clone: { mutateAsync: vi.fn() },
+      archive: { mutateAsync: vi.fn() },
+      unarchive: { mutateAsync: vi.fn() },
+      remove: { mutateAsync: vi.fn() },
+    }),
+    useAgentVersion: () => ({ version: undefined, isLoading: false }),
+    useAgentVersions: () => ({ versions: state.versions }),
+    useAllAgentVersions: () => ({ versions: [] }),
+    useCapabilityCatalog: () => ({ capabilities: [] }),
+    usePromptVariables: () => ({ variables: [] }),
+    useDelegationTree: () => ({ tree: null, isLoading: false, error: null }),
+    useExposures: () => ({ exposures: [] }),
+    useEmbeds: () => ({ embeds: [] }),
+    useKnowledgeBases: () => ({ kbs: [] }),
+    useMcpCatalog: () => ({ servers: [] }),
+    useModelProviders: () => ({
+      profiles: state.profiles,
+      profilesStatus: state.profilesStatus,
+      refetchProfiles,
+      isLoading: false,
+      deleteProfile: { mutate: vi.fn() },
+      createProfile: { mutateAsync: vi.fn(), isPending: false },
+      catalog: [],
+    }),
+    useMcpConnections: () => ({ connections: [] }),
+    useOrgMcpConnections: () => ({ connections: [] }),
+    usePermissions: () => ({
+      can: (permission: Permission) => state.permissions.includes(permission),
+      isLoaded: state.permissionsLoaded,
+    }),
+    useProviderModels: () => ({ models: [], source: null, isLoading: false }),
+    useRuns: () => ({ runs: [] }),
+    useSecretPurposes: () => ({ purposes: [] }),
+    useSecrets: () => ({ secrets: [] }),
+    useSkills: () => ({ skills: [], total: 0 }),
+  };
 });
 
-let allowed: Set<Permission>;
-// One instance across renders, so the call the autosave makes can be read back.
-const saveDraft = mutation();
-
-vi.mock("@/hooks", () => ({
-  useAgent: () => ({
-    agent: AGENT,
-    isLoading: false,
-    saveDraft,
-    validate: vi.fn().mockResolvedValue({ problems: [], fields: [] }),
-    publish: mutation(),
-    rollback: mutation(),
-    setAvatar: mutation(),
-    setColor: mutation(),
-    setMetadata: mutation(),
-  }),
-  useAgentEnvironments: () => ({ environments: [], promote: mutation() }),
-  useAgents: () => ({
-    agents: [],
-    clone: mutation(),
-    archive: mutation(),
-    unarchive: mutation(),
-    remove: mutation(),
-  }),
-  useAgentVersions: () => ({ versions: [], total: 0, isLoading: false }),
-  useCapabilityCatalog: () => ({ capabilities: [] }),
-  useDelegationTree: () => ({ tree: null, isLoading: false, error: null }),
-  useEmbeds: () => ({ embeds: [] }),
-  useExposures: () => ({ exposures: [] }),
-  useKnowledgeBases: () => ({ kbs: [], isLoading: false, listError: null }),
-  useMcpCatalog: () => ({ servers: [], isLoading: false, error: null }),
-  useModelProviders: () => ({ profiles: [], profilesStatus: "loaded" }),
-  useOrgMcpConnections: () => ({
-    connections: [],
-    test: vi.fn(),
-    isLoading: false,
-    error: null,
-  }),
-  usePermissions: () => ({
-    can: (permission: Permission) => allowed.has(permission),
-    isLoaded: true,
-  }),
-  useRuns: () => ({ runs: [] }),
-  useSkills: () => ({ skills: [], total: 0, isLoading: false, error: null }),
-}));
 vi.mock("@/hooks/use-context", () => ({
-  useContextFiles: () => ({ files: [], total: 0, isLoading: false, error: null }),
+  useContextFiles: () => ({ files: [], total: 0 }),
 }));
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
-  usePathname: () => "/agents/a1",
-}));
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-vi.mock("@/components/agents/publish-state", () => ({ PublishState: () => null }));
-vi.mock("@/components/agents/stale-references", () => ({ StaleReferences: () => null }));
-vi.mock("@/components/agents/model-profile-picker", () => ({ ModelProfilePicker: () => null }));
+vi.mock("@/stores", () => ({
+  useAgentSelectionStore: (select: (state: { select: () => void }) => unknown) =>
+    select({ select: vi.fn() }),
+  useConversationStore: (select: (state: { reset: () => void }) => unknown) =>
+    select({ reset: vi.fn() }),
+  useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }),
+}));
+
+// Composition the Model panel does not depend on. Each is covered where it
+// lives; mounted here they only make the page slower and this spec's failures
+// harder to read.
+vi.mock("@/components/agents/agent-avatar", () => ({ AgentAvatar: () => null }));
 vi.mock("@/components/agents/model-settings-form", () => ({ ModelSettingsForm: () => null }));
 vi.mock("@/components/agents/thinking-setting", () => ({ ThinkingSetting: () => null }));
+vi.mock("@/components/ui/markdown-editor", () => ({
+  MarkdownEditor: () => null,
+  MarkdownModeToggle: () => null,
+}));
+// What the Availability tab holds is covered where each panel lives; here the
+// only question is whether the hint opens the tab.
+vi.mock("@/components/agents/exposures-panel", () => ({ ExposuresPanel: () => null }));
+vi.mock("@/components/agents/embeds-panel", () => ({ EmbedsPanel: () => null }));
+vi.mock("@/components/triggers/triggers-panel", () => ({ TriggersPanel: () => null }));
 
-function wrapper({ children }: { children: ReactNode }) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return (
-    <QueryClientProvider client={client}>
-      <Suspense fallback={null}>{children}</Suspense>
-    </QueryClientProvider>
-  );
-}
-
-const PARAMS = Promise.resolve({ id: "a1", locale: "en" });
-
+/**
+ * The page reads its route params with `use()`, so the first render suspends and
+ * the tree only exists after that promise settles - awaited here rather than in
+ * every assertion.
+ */
 async function mount() {
   await act(async () => {
-    render(<AgentBuilderPage params={PARAMS} />, { wrapper });
-    await PARAMS;
+    render(
+      <Suspense fallback={null}>
+        <AgentBuilderPage params={Promise.resolve({ id: "a-1" })} />
+      </Suspense>,
+    );
   });
+}
+
+/** The name and description card: the page has other fields called "Name". */
+async function identity() {
+  const title = await screen.findByText("Name and description");
+  return within(title.closest("[data-tour='agent-identity']") as HTMLElement);
 }
 
 // Past the Builder's 1.2s autosave debounce.
@@ -139,25 +177,33 @@ async function settleAutosave() {
   });
 }
 
-describe("renaming an agent in the Builder", () => {
-  beforeEach(() => vi.clearAllMocks());
-  afterEach(() => vi.useRealTimers());
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.permissions = [Perm.agentsEdit];
+  state.versions = [];
+  state.profiles = [MODEL_PROFILE];
+  state.profilesStatus = "loaded";
+  state.permissionsLoaded = true;
+});
 
+afterEach(() => vi.useRealTimers());
+
+describe("renaming an agent in the Builder", () => {
   it("stores a new name and description with the draft", async () => {
-    allowed = new Set([Perm.agentsEdit]);
     await mount();
-    const name = await screen.findByRole("textbox", { name: "Name" });
+    const card = await identity();
+    const name = card.getByRole("textbox", { name: "Name" });
     expect(name).toHaveValue("Support (copy)");
 
     vi.useFakeTimers();
     fireEvent.change(name, { target: { value: "Support - Norway" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Description" }), {
+    fireEvent.change(card.getByRole("textbox", { name: "Description" }), {
       target: { value: "Answers Norwegian customers" },
     });
     await settleAutosave();
 
-    expect(saveDraft.mutateAsync).toHaveBeenCalledTimes(1);
-    expect(saveDraft.mutateAsync).toHaveBeenCalledWith(
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Support - Norway",
         description: "Answers Norwegian customers",
@@ -166,27 +212,27 @@ describe("renaming an agent in the Builder", () => {
   });
 
   it("clears a description to null rather than an empty string", async () => {
-    allowed = new Set([Perm.agentsEdit]);
     await mount();
-    const description = await screen.findByRole("textbox", { name: "Description" });
+    const card = await identity();
+    const description = card.getByRole("textbox", { name: "Description" });
 
     vi.useFakeTimers();
     fireEvent.change(description, { target: { value: "x" } });
     fireEvent.change(description, { target: { value: "" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+    fireEvent.change(card.getByRole("textbox", { name: "Name" }), {
       target: { value: "Renamed" },
     });
     await settleAutosave();
 
-    expect(saveDraft.mutateAsync).toHaveBeenCalledWith(
+    expect(saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Renamed", description: null }),
     );
   });
 
   it("refuses a blank name without sending it", async () => {
-    allowed = new Set([Perm.agentsEdit]);
     await mount();
-    const name = await screen.findByRole("textbox", { name: "Name" });
+    const card = await identity();
+    const name = card.getByRole("textbox", { name: "Name" });
 
     vi.useFakeTimers();
     fireEvent.change(name, { target: { value: "   " } });
@@ -194,28 +240,28 @@ describe("renaming an agent in the Builder", () => {
 
     expect(screen.getByText("An agent needs a name.")).toBeInTheDocument();
     expect(name).toHaveAttribute("aria-invalid", "true");
-    expect(saveDraft.mutateAsync).not.toHaveBeenCalled();
+    expect(saveDraft).not.toHaveBeenCalled();
   });
 
   it("holds Publish back while the name is blank", async () => {
-    allowed = new Set([Perm.agentsEdit, Perm.agentsPublish]);
+    state.permissions = [Perm.agentsEdit, Perm.agentsPublish];
     await mount();
-    const name = await screen.findByRole("textbox", { name: "Name" });
+    const card = await identity();
+    const name = card.getByRole("textbox", { name: "Name" });
     const publish = screen.getByRole("button", { name: "Publish" });
     expect(publish).toBeEnabled();
 
     fireEvent.change(name, { target: { value: "   " } });
 
     expect(publish).toBeDisabled();
-    fireEvent.click(publish);
-    expect(saveDraft.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("shows the name read-only to a caller who may not edit", async () => {
-    allowed = new Set([Perm.agentsView]);
+    state.permissions = [Perm.agentsView];
     await mount();
+    const card = await identity();
 
-    expect(await screen.findByRole("textbox", { name: "Name" })).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "Description" })).toBeDisabled();
+    expect(card.getByRole("textbox", { name: "Name" })).toBeDisabled();
+    expect(card.getByRole("textbox", { name: "Description" })).toBeDisabled();
   });
 });

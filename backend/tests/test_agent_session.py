@@ -54,6 +54,7 @@ import anyio
 import pytest
 from fastapi import WebSocketDisconnect
 from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai.exceptions import CallDeferred
 from pydantic_ai.messages import (
     BinaryContent,
     FinalResultEvent,
@@ -76,6 +77,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai_harness.ask_user import AskUserAnswer, AskUserRequest, Question, QuestionOption
 from subagents_pydantic_ai import SubAgentState, TaskStatus
 
 # The library binds this itself around every delegation and exports the reader
@@ -91,6 +93,7 @@ from app.agents.capabilities.subagents import Delegation
 from app.agents.compaction_events import CompactionEvent
 from app.agents.connect_on_use import ConnectionRequest
 from app.agents.deps import AgentDeps
+from app.agents.steering import SteeringInbox
 from app.agents.subagent_events import (
     SubagentFinished,
     SubagentStarted,
@@ -477,6 +480,19 @@ class TestReauthorizingEachFrame:
         assert session._turn_task is None
         session.websocket.close.assert_awaited_once_with(code=4001, reason="Session revoked")
 
+    async def test_a_revoked_session_does_not_steer(self):
+        """A correction acts on the session, so it is refused on a dead credential (#2087)."""
+        session = self._socket_session()
+        inbox = SteeringInbox()
+        session._steering = inbox
+        session._turn_task = asyncio.get_running_loop().create_future()  # a turn "running"
+
+        with self._revoked():
+            await session.handle_frame({"type": "steer", "text": "use the EU numbers"})
+
+        assert inbox.unapplied() == []
+        session._turn_task.cancel()
+
     async def test_a_revoked_session_cancels_a_turn_already_running(self):
         """A turn in flight when the next frame lands on a revoked session is
         cancelled, rather than left running as the revoked identity."""
@@ -611,6 +627,28 @@ class TestATurnThatFinished:
     `complete` frame's usage is filed under, and `tool_approval_required` has to
     arrive while the turn is still on screen.
     """
+
+    async def test_new_chat_starts_a_conversation_instead_of_continuing_the_open_one(self):
+        """The console sends `conversation_id: null` for a new chat. The session read
+        it as "no id given" and wrote the message into the conversation the socket
+        had open - or failed with "Conversation not found" once that one had been
+        deleted."""
+        session = _session()
+        session.current_conversation_id = "the-one-left-behind"
+
+        with _chat(AsyncMock(return_value=_finished_turn()), newly_created=True) as chat:
+            await session.process_message(_message(conversation_id=None))
+
+        assert chat.prompt.await_args.kwargs["current_conversation_id"] is None
+
+    async def test_a_frame_without_the_key_continues_the_session_s_conversation(self):
+        session = _session()
+        session.current_conversation_id = _CONVERSATION
+
+        with _chat(AsyncMock(return_value=_finished_turn())) as chat:
+            await session.process_message(_message())
+
+        assert chat.prompt.await_args.kwargs["current_conversation_id"] == _CONVERSATION
 
     async def test_a_turn_that_started_a_conversation_announces_it_first(self):
         session = _session()
@@ -893,6 +931,7 @@ class TestATurnThatFinished:
                         "tool_call_id": "call-1",
                         "tool_name": "send_email",
                         "args": {"to": "ops@example.com"},
+                        "account": None,
                     }
                 ],
                 "review_configs": [{"tool_name": "send_email", "allow_edit": False}],
@@ -1089,6 +1128,39 @@ class TestATurnThatDidNotFinish:
         )
         assert "503 from https://api.example.com/v1/chat" in caplog.text
 
+    async def test_a_provider_out_of_credit_is_told_in_words(self):
+        """A 402 from the provider's gateway (an OpenRouter key over its limit) was
+        shown as "(ModelHTTPError)"; the reader can act on it, so it says why."""
+        from pydantic_ai.exceptions import ModelHTTPError
+
+        session = _session()
+        refused = ModelHTTPError(
+            402, "anthropic/claude-sonnet-5.5", {"message": "can only afford 1901"}
+        )
+
+        with _chat(AsyncMock(side_effect=refused)):
+            await session.process_message(_message())
+
+        message = _sent_events(session)[-1][1]["message"]
+        assert "for want of credit (HTTP 402)" in message
+        assert "spending limit" in message
+        assert "1901" not in message
+
+    async def test_a_provider_refusal_inside_a_task_group_is_told_in_words(self):
+        """A refusal raised inside a task group arrives wrapped; the words are the
+        wrapped refusal's, not the group's class."""
+        from pydantic_ai.exceptions import ModelHTTPError
+
+        session = _session()
+        refused = ModelHTTPError(429, "anthropic/claude-sonnet-5.5", {"message": "slow down"})
+
+        with _chat(AsyncMock(side_effect=ExceptionGroup("turn", [refused]))):
+            await session.process_message(_message())
+
+        message = _sent_events(session)[-1][1]["message"]
+        assert "429" in message
+        assert "ExceptionGroup" not in message
+
     async def test_a_disconnect_is_not_reported_to_the_socket_that_left(self):
         """A `WebSocketDisconnect` surfacing from inside the turn is re-raised
         rather than turned into an `error` frame: there is nobody to read it, and
@@ -1268,7 +1340,16 @@ class TestAskingTheUser:
                 "ask_user",
                 {
                     "questions": [
-                        {"question": "Which region?", "options": ["eu", "us"], "allow_custom": True}
+                        {
+                            "question": "Which region?",
+                            "header": None,
+                            "options": [
+                                {"label": "eu", "description": None},
+                                {"label": "us", "description": None},
+                            ],
+                            "multi_select": False,
+                            "allow_custom": True,
+                        }
                     ]
                 },
             )
@@ -1279,6 +1360,52 @@ class TestAskingTheUser:
         )
 
         assert await asking == "eu"
+
+    async def test_an_ask_user_card_is_answered_with_the_picked_labels(self):
+        """#2064: the `ask_user` capability's batch goes out as one card on the same
+        frame, and the picks come back keyed by header - each pair also landing on
+        the turn's timeline the moment the answer arrives."""
+        session = _session()
+        session._current_timeline = TurnTimeline()
+        asked = _next_frame(session)
+        request = AskUserRequest(
+            questions=(
+                Question(
+                    header="Audience",
+                    question="Who will use it?",
+                    options=(QuestionOption(label="Everyone"), QuestionOption(label="My team")),
+                ),
+                Question(
+                    header="Tone",
+                    question="How should it sound?",
+                    options=(QuestionOption(label="Formal"), QuestionOption(label="Casual")),
+                ),
+            )
+        )
+
+        asking = asyncio.create_task(session._ask_questions(request))
+        await _wait(asked)
+        [(kind, payload)] = _sent_events(session)
+        await session.handle_frame(
+            {
+                "type": "ask_user_response",
+                "answers": [{"selected": ["My team"]}, {"answer": "Friendly but brief"}],
+            }
+        )
+        response = await asking
+
+        assert kind == "ask_user"
+        assert [item["header"] for item in payload["questions"]] == ["Audience", "Tone"]
+        assert response.answers == (
+            AskUserAnswer(header="Audience", selected=("My team",)),
+            AskUserAnswer(header="Tone", custom_answer="Friendly but brief"),
+        )
+        stored = session._current_timeline.stored()
+        assert stored is not None
+        assert [(part.question, part.answer) for part in stored] == [
+            ("Who will use it?", "My team"),
+            ("How should it sound?", "Friendly but brief"),
+        ]
 
     async def test_an_answered_question_is_recorded_on_the_turns_timeline(self):
         """The whole point of #502: the question and the answer land on the running
@@ -2831,6 +2958,61 @@ class TestASocketThatWentAway:
         assert answered == [[]]
         assert not task.cancelled()
 
+    async def test_the_runs_own_question_left_open_parks_the_run(self):
+        """An `ask_user` card the person walked away from is not a decline: the run
+        parks on it, and answering it later - on this device or another -
+        continues the run (#2064)."""
+        session = _session()
+        asked = _next_frame(session)
+        request = AskUserRequest(
+            questions=(
+                Question(
+                    header="Tone",
+                    question="How should it sound?",
+                    options=(QuestionOption(label="Formal"), QuestionOption(label="Casual")),
+                ),
+            )
+        )
+        parked: list[bool] = []
+
+        async def turn() -> None:
+            # What the run does with it: the tool call ends deferred.
+            try:
+                await session._ask_questions(request)
+            except CallDeferred:
+                parked.append(True)
+
+        session._turn_task = asyncio.create_task(turn())
+        await _wait(asked)
+
+        await session.shutdown()
+
+        assert parked == [True]
+        assert session._round_parks is False
+
+    async def test_a_delegates_question_left_open_is_still_no_answer(self):
+        """Only the run's own agent parks: a delegate asking through `ask_parent`
+        has nowhere to park, so it carries on with what it had."""
+        session = _session()
+        asked = _next_frame(session)
+        request = AskUserRequest(
+            questions=(
+                Question(
+                    header="Region",
+                    question="Which region?",
+                    options=(QuestionOption(label="EU"), QuestionOption(label="US")),
+                ),
+            )
+        )
+        with patch.object(agent_session_module, "asking_delegate", return_value="researcher"):
+            asking = asyncio.create_task(session._ask_questions(request))
+            await _wait(asked)
+        session._turn_task = asking
+
+        await session.shutdown()
+
+        assert (await asking).cancelled
+
     async def test_a_connection_nobody_can_make_no_longer_holds_the_turn_open(self):
         """The same for a run waiting on `connect_account`: nobody is there to
         connect anything, so the wait ends as a skip and the turn goes on."""
@@ -2910,10 +3092,10 @@ class TestTellingTheClientWhatThePersonCannotReach:
 class TestForwardingBrowserFrames:
     """What the client hears while the agent is driving a browser.
 
-    A `browse_page` call is the longest tool call this platform makes, and the
+    A `browse_web` call is the longest tool call this platform makes, and the
     only one where watching it is how somebody notices it acting on a page they
     did not expect. Without these frames the chat shows a tool call named
-    `browse_page` and then, a minute later, a paragraph.
+    `browse_web` and then, a minute later, a paragraph.
     """
 
     async def test_a_frame_is_sent_under_the_name_the_union_gave_it(self):
@@ -2928,7 +3110,7 @@ class TestForwardingBrowserFrames:
                 title="Pricing",
                 operation="CLICK",
                 target="Accept all",
-                confidence=0.42,
+                reason="Close the cookie banner",
             )
         )
 
@@ -2937,8 +3119,8 @@ class TestForwardingBrowserFrames:
         assert payload["kind"] == "browser_step"
         assert (payload["call_id"], payload["step"]) == ("call-1", 3)
         assert (payload["operation"], payload["target"]) == ("CLICK", "Accept all")
-        # The number a reviewer reads to decide whether to look at this step.
-        assert payload["confidence"] == 0.42
+        # What a person watching reads to tell where the browse is heading.
+        assert payload["reason"] == "Close the cookie banner"
 
     async def test_a_picture_travels_as_a_data_url_on_its_own_frame(self):
         """Separate from the narration so encoding one never holds up the other."""
@@ -2976,3 +3158,65 @@ class TestForwardingBrowserFrames:
         assert name == "browser_finished"
         assert payload["outcome"] == "blocked"
         assert "no available action" in payload["detail"]
+
+
+class TestAddingToARunningTurn:
+    """`steer` adds to the turn the person is watching (#2087)."""
+
+    async def test_a_correction_reaches_the_running_turn_and_is_shown_where_it_landed(self):
+        session = _session()
+        running = asyncio.Event()
+        release = asyncio.Event()
+
+        async def runs_until_released(**kwargs: Any) -> ChatTurn:
+            running.set()
+            await release.wait()
+            # What the model's next request does with it: tells the surface.
+            steering = kwargs["steering"]
+            for steer in steering.take():
+                await steering.on_applied(steer.text)
+            return _finished_turn()
+
+        with _chat(AsyncMock(side_effect=runs_until_released)) as chat:
+            await session.handle_frame(_message("draft the report"))
+            turn = session._turn_task
+            assert turn is not None
+            await _wait(running)
+
+            await session.handle_frame({"type": "steer", "text": "  use the EU numbers  "})
+            release.set()
+            await turn
+
+        assert ("steer_applied", {"text": "use the EU numbers"}) in _sent_events(session)
+        parts = chat.answer.await_args.kwargs["parts"]
+        assert MessagePart(type="steer", text="use the EU numbers") in parts
+        assert session._steering is None
+
+    async def test_one_that_arrived_after_the_last_request_is_handed_back(self):
+        session = _session()
+        running = asyncio.Event()
+        release = asyncio.Event()
+
+        async def runs_until_released(**_kwargs: Any) -> ChatTurn:
+            running.set()
+            await release.wait()
+            return _finished_turn()
+
+        with _chat(AsyncMock(side_effect=runs_until_released)):
+            await session.handle_frame(_message("go"))
+            turn = session._turn_task
+            assert turn is not None
+            await _wait(running)
+            await session.handle_frame({"type": "steer", "text": "and the totals"})
+            release.set()
+            await turn
+
+        assert ("steer_unapplied", {"texts": ["and the totals"]}) in _sent_events(session)
+
+    async def test_with_nothing_running_it_is_handed_back_at_once(self):
+        session = _session()
+
+        await session.handle_frame({"type": "steer", "text": "hello"})
+        await session.handle_frame({"type": "steer", "text": "   "})
+
+        assert _sent_events(session) == [("steer_unapplied", {"texts": ["hello"]})]

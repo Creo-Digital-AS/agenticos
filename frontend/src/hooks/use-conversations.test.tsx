@@ -97,6 +97,37 @@ describe("the conversation list", () => {
     );
   });
 
+  it("reads the list again while a thread on it is at work, and stops once none is", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    serve({ items: [conversation("c-1", { running_since: "2026-10-13T12:00:00Z" })] });
+    await hook();
+    const lists = () =>
+      vi.mocked(apiClient.get).mock.calls.filter(([path]) => !String(path).includes("/messages"))
+        .length;
+    const first = lists();
+
+    serve({ items: [conversation("c-1", { running_since: null })] });
+    await act(async () => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(lists()).toBe(first + 1));
+    // Nothing at work now, so no further read comes.
+    await act(async () => vi.advanceTimersByTimeAsync(8_000));
+    expect(lists()).toBe(first + 1);
+    vi.useRealTimers();
+  });
+
+  it("marks a thread read at once, and puts the mark back if the server refuses", async () => {
+    serve({ items: [conversation("c-1", { unread: true })] });
+    const result = await hook();
+
+    await act(async () => result.current.markRead("c-1"));
+    expect(apiClient.post).toHaveBeenCalledWith("/conversations/c-1/read", {});
+    await waitFor(() => expect(result.current.conversations[0]?.unread).toBe(false));
+
+    vi.mocked(apiClient.post).mockRejectedValueOnce(new Error("offline"));
+    await act(async () => result.current.markRead("c-1"));
+    await waitFor(() => expect(result.current.conversations[0]?.unread).toBe(true));
+  });
+
   it("counts what matches rather than what was fetched", async () => {
     // A page is thirty rows and the deployment holds more: `total` is the
     // server's count of the list, which is what the sidebar puts on screen.
@@ -683,6 +714,29 @@ describe("creating, renaming and removing a conversation", () => {
     expect(apiClient.delete).toHaveBeenCalledWith("/conversations/c-1");
     await waitFor(() => expect(result.current.conversations).toEqual([]));
     expect(useConversationStore.getState().currentConversationId).toBeNull();
+  });
+
+  it("takes a deleted open conversation off the screen and out of the address", async () => {
+    // Left in `?id=`, the next list fetch or reload adopted the deleted id again and
+    // the next message went to a conversation that no longer exists.
+    window.history.replaceState(null, "", "/chat?id=c-1");
+    const result = await hook();
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage({
+      id: "m-1",
+      role: "user",
+      content: "hello",
+      timestamp: new Date(),
+    });
+
+    serve({ items: [] });
+    await act(async () => {
+      await result.current.deleteConversation("c-1");
+    });
+
+    expect(new URLSearchParams(window.location.search).get("id")).toBeNull();
+    expect(useChatStore.getState().messages).toEqual([]);
+    expect(useConversationStore.getState().currentMessages).toEqual([]);
   });
 
   it("keeps the selection when a different conversation is deleted", async () => {

@@ -23,9 +23,9 @@ names no author is in the evidence column below.
 
 | Licence | Backend | Frontend |
 |---|---:|---:|
-| MIT | 121 | 241 |
-| Apache-2.0 | 69 | 24 |
-| BSD-3-Clause | 33 | 5 |
+| MIT | 123 | 241 |
+| Apache-2.0 | 72 | 24 |
+| BSD-3-Clause | 34 | 4 |
 | ISC | 6 | 16 |
 | BSD-2-Clause | 10 | 0 |
 | MPL-2.0 | 4 | 0 |
@@ -52,7 +52,7 @@ names no author is in the evidence column below.
 
 ## Backend image (Python)
 
-263 distributions.
+269 distributions.
 
 | Component | Version | Licence | Source | Evidence |
 |---|---|---|---|---|
@@ -123,7 +123,8 @@ names no author is in the evidence column below.
 | executing | 2.2.1 | MIT | https://github.com/alexmojaki/executing | License field |
 | fastapi | 0.143.1 | MIT | https://github.com/fastapi/fastapi | License-Expression |
 | fastavro | 1.12.2 | MIT | https://github.com/fastavro/fastavro | License field |
-| fastmcp-slim | 4.0.5 | Apache-2.0 | https://github.com/PrefectHQ/fastmcp | License-Expression; no licence file, attributed to Jeremiah Lowin, Nate Nowack |
+| fastmcp | 4.1.0 | Apache-2.0 | https://github.com/PrefectHQ/fastmcp | License-Expression |
+| fastmcp-slim | 4.1.0 | Apache-2.0 | https://github.com/PrefectHQ/fastmcp | License-Expression; no licence file, attributed to Jeremiah Lowin, Nate Nowack |
 | filelock | 3.32.6 | MIT | https://github.com/tox-dev/py-filelock | License-Expression |
 | frozenlist | 1.8.0 | Apache-2.0 | https://github.com/aio-libs/frozenlist | License field |
 | fsspec | 2026.7.0 | BSD-3-Clause | https://github.com/fsspec/filesystem_spec | License-Expression |
@@ -170,7 +171,9 @@ names no author is in the evidence column below.
 | jsonpatch | 1.33 | BSD-3-Clause | https://github.com/stefankoegl/python-json-patch.git | License field |
 | jsonpath-python | 1.1.6 | MIT | https://github.com/sean2077/jsonpath-python | License field |
 | jsonpointer | 3.1.1 | BSD-3-Clause | https://github.com/stefankoegl/python-json-pointer | License field |
+| jsonref | 1.1.0 | MIT | https://github.com/gazpachoking/jsonref | License field |
 | jsonschema | 4.26.0 | MIT | https://github.com/python-jsonschema/jsonschema | License-Expression |
+| jsonschema-path | 0.5.0 | Apache-2.0 | https://github.com/p1c2u/jsonschema-path | License field |
 | jsonschema-specifications | 2025.9.1 | MIT | https://github.com/python-jsonschema/jsonschema-specifications | License-Expression |
 | keyring | 25.7.0 | MIT | https://github.com/jaraco/keyring | License-Expression |
 | ldap3 | 2.9.1 | LGPL-3.0-only | https://github.com/cannatag/ldap3 | classifier; review accepted |
@@ -198,6 +201,7 @@ names no author is in the evidence column below.
 | odfpy | 1.4.1 | LGPL-2.1-or-later | https://github.com/eea/odfpy | override: odfpy-1.4.1 ships no licence file and its License field is empty; its trove classifiers name Apache, GPL and LGPL, but every library source under odf/ (e.g. odf/namespaces.py, odf/office.py) carries the same header - 'This library is free software; you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License ... version 2.1 ... or (at your option) any later version', Copyright (C) 2006-2013 Søren Roug, European Environment Agency. The imported library is therefore taken under LGPL-2.1-or-later.; review accepted; no licence file, attributed to Soren Roug |
 | olefile | 0.47 | BSD-2-Clause | https://www.decalage.info/python/olefileio | licence file text |
 | openai | 3.29.0 | Apache-2.0 | https://github.com/openai/openai-python | License-Expression |
+| openapi-pydantic | 0.6.0 | MIT | https://github.com/mike-oakley/openapi-pydantic | License field |
 | openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl | License field |
 | opentelemetry-api | 1.44.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python | License-Expression |
 | opentelemetry-exporter-otlp-proto-common | 1.44.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python | License-Expression |
@@ -215,6 +219,7 @@ names no author is in the evidence column below.
 | opentelemetry-util-http | 0.65b0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python-contrib | License-Expression; no licence file, attributed to OpenTelemetry Authors |
 | orjson | 3.12.0 | MPL-2.0 AND (Apache-2.0 OR MIT) | https://github.com/ijl/orjson | License-Expression; review accepted |
 | packaging | 25.0 | Apache-2.0 | https://github.com/pypa/packaging | licence file text |
+| pathable | 0.6.0 | Apache-2.0 | https://github.com/p1c2u/pathable | License field |
 | pathspec | 1.1.1 | MPL-2.0 | https://github.com/cpburnz/python-pathspec | classifier; review accepted |
 | pendulum | 3.2.0 | MIT | https://github.com/sdispater/pendulum | License field |
 | phonenumberslite | 9.0.41 | Apache-2.0 | https://github.com/daviddrysdale/python-phonenumbers | License-Expression |
@@ -251,6 +256,7 @@ names no author is in the evidence column below.
 | pyjwt | 2.15.1 | MIT | https://github.com/jpadilla/pyjwt | License-Expression |
 | pymupdf | 1.28.2 | AGPL-3.0-only | https://github.com/pymupdf/pymupdf | licence file text; review accepted |
 | pyparsing | 3.3.2 | MIT | https://github.com/pyparsing/pyparsing.git | License-Expression |
+| pyperclip | 1.11.0 | BSD-3-Clause | https://github.com/asweigart/pyperclip | licence file text |
 | python-dateutil | 2.9.0.post0 | Apache-2.0 | https://github.com/dateutil/dateutil | licence file text |
 | python-docx | 1.2.0 | MIT | https://github.com/python-openxml/python-docx | License field |
 | python-dotenv | 1.2.3 | BSD-3-Clause | https://github.com/theskumar/python-dotenv | License field |
@@ -322,7 +328,7 @@ names no author is in the evidence column below.
 
 ## Frontend image (npm)
 
-293 distributions.
+292 distributions.
 
 | Component | Version | Licence | Source | Evidence |
 |---|---|---|---|---|
@@ -484,7 +490,6 @@ names no author is in the evidence column below.
 | hast-util-to-text | 4.0.2 | MIT | https://github.com/syntax-tree/hast-util-to-text | package.json license |
 | hast-util-whitespace | 3.0.0 | MIT | https://github.com/syntax-tree/hast-util-whitespace | package.json license |
 | highlight.js | 11.11.1 | BSD-3-Clause | https://github.com/highlightjs/highlight.js | package.json license |
-| highlight.js | 11.12.0 | BSD-3-Clause | https://github.com/highlightjs/highlight.js | package.json license |
 | html-url-attributes | 3.0.1 | MIT | https://github.com/rehypejs/rehype-minify/tree/main/packages/html-url-attributes | package.json license |
 | icu-minify | 4.14.5 | MIT | https://github.com/amannn/next-intl | package.json license |
 | img-fx | 0.5.1 | MIT | https://github.com/Jakubantalik/img-fx | package.json license |
@@ -633,6 +638,10 @@ and data files.
 | tesseract-ocr, tesseract-ocr-eng, tesseract-ocr-pol (Debian packages) | as pinned by the base image's Debian release | system package, backend image | Apache-2.0 (engine and language data) | https://github.com/tesseract-ocr/tesseract | accepted | Attribution and the licence text. | Debian's /usr/share/doc/tesseract-ocr*/copyright is in the image; named here. |
 | oven/bun (Docker image) | 1 (Debian) | runtime image, frontend | Bun: MIT (with bundled components under their own licences, listed in Bun's LICENSE.md). Debian base: as for the python image. | https://hub.docker.com/r/oven/bun | accepted | Ship licence texts; for GPL and LGPL packages in the base, make their corresponding source available to recipients of the image. | As for the python image: /usr/share/doc/*/copyright in the image, Debian's source packages, the per-release SBOM (#1415). |
 | ghcr.io/astral-sh/uv (build stage only) | latest | build tool, not in the published image | Apache-2.0 OR MIT | https://github.com/astral-sh/uv | accepted | None for the published image: the binary is copied into the builder stage and installs the wheels; it is not in the final layer. | Not distributed. |
+| debian (Docker Official Image) | bookworm-slim | runtime image, browser | Each package under its own licence (GPL-2.0, GPL-3.0, LGPL-2.1, MIT, BSD and others). | https://hub.docker.com/_/debian | accepted | Ship licence texts and, for GPL and LGPL packages, make their corresponding source available to recipients of the image. | Debian keeps every package's licence under /usr/share/doc/<package>/copyright in the image and publishes the matching source packages (apt-get source; https://snapshot.debian.org). Distributed unmodified apart from the packages listed below; the per-release SBOM records the exact package set. |
+| chromium (Debian package) | as pinned by Debian bookworm | system package, browser image | BSD-3-Clause (Chromium), with bundled components under their own licences (LGPL-2.1, MPL-2.0, Apache-2.0, MIT and others), listed in chrome://credits | https://www.chromium.org/ | accepted | Licence texts and attribution; for LGPL components, their source available to recipients. | Debian's /usr/share/doc/chromium/copyright is in the image and chrome://credits lists every bundled component; source through Debian's source package; used unmodified. |
+| xvfb, socat, dumb-init, tzdata (Debian packages) | as pinned by Debian bookworm | system package, browser image | Xvfb: MIT/X11. socat: GPL-2.0. dumb-init: MIT. tzdata: public domain. | https://packages.debian.org/bookworm/ | accepted | Licence texts; socat (GPL-2.0) is run unmodified as a separate process, so its corresponding source available to recipients. | Debian's /usr/share/doc/<package>/copyright for each is in the image; source through Debian's source packages; none modified. |
+| fonts-liberation, fonts-noto, fonts-noto-cjk, fonts-noto-color-emoji (Debian packages) | as pinned by Debian bookworm | system package, browser image | Liberation: OFL-1.1. Noto: OFL-1.1 (Noto Color Emoji: OFL-1.1, its images Apache-2.0). | https://fonts.google.com/noto | accepted | OFL-1.1: the licence text travels with the fonts; the fonts are not sold on their own. | Debian's /usr/share/doc/fonts-*/copyright is in the image; installed as system fonts the browser renders pages with, never sold or redistributed apart from the image. |
 | Inter, Bricolage Grotesque, Geist Mono (web fonts) | Google Fonts v20, v9, v6 (frontend/src/app/fonts/README.md) | font, frontend image | OFL-1.1 | https://fonts.google.com | accepted | Distribute with the licence text and each family's copyright notice; do not sell the fonts on their own; do not use the reserved font names for a modified version. | frontend/src/app/fonts/OFL.txt carries the licence and all three copyright notices; frontend/scripts/collect-licenses.ts copies it into the frontend image at /app/licenses/OFL.txt; the fonts are served unmodified under their own names. |
 | Brand marks in frontend/src/lib/brand-glyphs.generated.ts | as generated by frontend/scripts/gen-brand-icons.ts | icons, frontend image | Simple Icons: CC0-1.0. Font Awesome Free icons: CC-BY-4.0. @lobehub/icons: MIT. The marks themselves are their owners' trademarks. | https://simpleicons.org, https://fontawesome.com/license, https://icons.lobehub.com | accepted | CC-BY-4.0 attribution for the Font Awesome icons; MIT notice for @lobehub/icons; trademark use limited to identifying the product each mark stands for. | NOTICE at the repository root and frontend/NOTICE name the three sources, their licences and the trademark position; the frontend one is copied into the image at /app/licenses/NOTICE. The console draws a mark only next to the product it identifies. |
 | Rare UI components vendored into frontend/src/components/ui/ | swamimalode07/rare-ui as of 2026-09-22 (animated-counter, notification-bell, task-list) | source, frontend image | MIT | https://github.com/swamimalode07/rare-ui | accepted | Keep the copyright notice and the permission notice with the copies or substantial portions of the software. | NOTICE at the repository root and frontend/NOTICE name the project, its copyright holder and the MIT text; frontend/scripts/collect-licenses.ts copies the latter into the frontend image at /app/licenses/NOTICE. Each file that came from it says so in its own header, with what was changed and why. The distribution method is why this is here rather than in the npm inventory: the project's own instructions are `shadcn add`, which copies a file into the tree rather than adding a dependency a lockfile would record. |

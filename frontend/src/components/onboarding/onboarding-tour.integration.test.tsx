@@ -19,7 +19,7 @@ import type { User } from "@/types";
 
 const nav = vi.hoisted(() => ({ pathname: "/dashboard" }));
 // One stable router across renders, so a test can assert where the tour sent the
-// reader — a fresh `push` per `useRouter()` call would record nothing.
+// reader - a fresh `push` per `useRouter()` call would record nothing.
 const router = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
@@ -33,8 +33,14 @@ vi.mock("next/navigation", () => ({
   useParams: () => ({}),
 }));
 
+const localeRouter = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock("@/lib/locale-navigation", () => ({
+  useRouter: () => localeRouter,
+  usePathname: () => "/dashboard",
+}));
+
 // The spotlight is the DOM/driver.js boundary; mocking it lets the test drive the
-// orchestration — which step's copy shows, and that Next advances — without
+// orchestration - which step's copy shows, and that Next advances - without
 // driver.js's real layout, which jsdom cannot provide. `waitForElement` resolves
 // at once so a targeted step highlights immediately.
 const spotlight = vi.hoisted(() => ({ highlight: vi.fn(), destroy: vi.fn() }));
@@ -84,14 +90,14 @@ function user(overrides: Partial<User> = {}): User {
 }
 
 function servePermissions(permissions: readonly string[]) {
-  // The engine resolves an example to open for each detail walk — an agent for
-  // the builder, a collection for the KB, an organization for members/roles — so
+  // The engine resolves an example to open for each detail walk - an agent for
+  // the builder, a collection for the KB, an organization for members/roles - so
   // `/agents`, `/kb` and `/orgs` have to answer with a list shape, not the
   // permission set every other GET returns.
   vi.mocked(apiClient.get).mockImplementation((path: string) => {
     if (path === "/agents") {
       return Promise.resolve({
-        items: [{ id: "agent-1", slug: "getting-started", name: "Getting Started" }],
+        items: [{ id: "agent-1", slug: "claude-code-like", name: "Claude Code like" }],
         total: 1,
       });
     }
@@ -143,6 +149,28 @@ describe("OnboardingTour", () => {
     expect(shownStep().popover?.progressText).toBe(`Step 1 of ${OWNER_LAUNCH}`);
   });
 
+  it("offers the console's languages on the welcome card, and only there (#2072)", async () => {
+    servePermissions(OWNER);
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
+
+    const description = document.createElement("div");
+    shownStep().popover?.onPopoverRender?.({ description } as never, {} as never);
+    const choices = Array.from(description.querySelectorAll("button"));
+    expect(description.querySelector('[role="group"]')).toHaveAttribute("aria-label", "Language");
+    expect(choices.find((b) => b.getAttribute("aria-pressed") === "true")?.textContent).toContain(
+      "English",
+    );
+    choices.find((b) => b.textContent?.includes("English"))?.click();
+    choices.find((b) => b.textContent?.includes("Polski"))?.click();
+    expect(localeRouter.push).toHaveBeenCalledTimes(1);
+    expect(localeRouter.push).toHaveBeenCalledWith("/dashboard", { locale: "pl" });
+
+    act(() => shownStep().popover?.onNextClick?.(undefined, {} as DriveStep, {} as never));
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Slice the dashboard"));
+    expect(shownStep().popover?.onPopoverRender).toBeUndefined();
+  });
+
   it("advances to the next highlight when Next is clicked", async () => {
     // The bug this replaces: a click on Next did nothing once a spotlight was up.
     servePermissions(OWNER);
@@ -150,7 +178,7 @@ describe("OnboardingTour", () => {
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
     act(() => shownStep().popover?.onNextClick?.(undefined, {} as DriveStep, {} as never));
-    await waitFor(() => expect(shownStep().popover?.title).toBe("Start here"));
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Slice the dashboard"));
     expect(shownStep().popover?.progressText).toBe(`Step 2 of ${OWNER_LAUNCH}`);
   });
 
@@ -202,7 +230,7 @@ describe("OnboardingTour", () => {
 
   it("reminds the reader about the '?' when the first run ends, either way out", async () => {
     // The tour never returns (completion is server truth), so leaving it —
-    // skipped or finished — is the one moment to say the "?" replays any page's
+    // skipped or finished - is the one moment to say the "?" replays any page's
     // tips. A "?" replay itself gets no reminder: it was opened from the "?".
     servePermissions(OWNER);
     vi.mocked(apiClient.patch).mockResolvedValue(user({ onboarding_completed_at: "2026-02-02" }));
@@ -211,13 +239,13 @@ describe("OnboardingTour", () => {
 
     act(() => shownStep().popover?.onCloseClick?.(undefined, {} as DriveStep, {} as never));
     expect(toast.info).toHaveBeenCalledWith(
-      "You can replay any page's tips whenever you like — just click the ? in its header.",
+      "You can replay any page's tips whenever you like - just click the ? in its header.",
     );
   });
 
   it("offers the section's create flow when a '?' walk runs to its end", async () => {
     // Every section's "?" ends by asking whether to make the thing the section
-    // is for — the re-entry into the interactive flows.
+    // is for - the re-entry into the interactive flows.
     servePermissions(OWNER);
     nav.pathname = "/skills";
     useOnboardingStore.setState({ isOpen: true, index: 99, mode: "page" });
@@ -250,7 +278,7 @@ describe("OnboardingTour", () => {
 
     act(() => shownStep().popover?.onCloseClick?.(undefined, {} as DriveStep, {} as never));
     expect(router.push).not.toHaveBeenCalledWith(ROUTES.DASHBOARD);
-    // And no "?" reminder either — this walk was opened from the "?" itself.
+    // And no "?" reminder either - this walk was opened from the "?" itself.
     expect(toast.info).not.toHaveBeenCalled();
   });
 

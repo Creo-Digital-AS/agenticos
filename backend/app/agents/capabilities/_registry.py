@@ -647,7 +647,7 @@ def load_builtins() -> None:
 
     from app.agents.capabilities import (  # noqa: F401 - imported for side effects
         artifacts,
-        browser_choice,
+        ask_user,
         browser_use,
         channel_tools,
         charts,

@@ -63,12 +63,18 @@ class BudgetScope(StrEnum):
     """
 
     AGENT = "agent"
+    GROUP = "group"
+    """A department's month, across every agent its members run (#2072)."""
     ORGANIZATION = "organization"
 
     @property
     def label(self) -> str:
         """How the refusal names it to the person reading it."""
-        return "Agent monthly" if self is BudgetScope.AGENT else "Organization monthly"
+        return {
+            BudgetScope.AGENT: "Agent monthly",
+            BudgetScope.GROUP: "Department monthly",
+            BudgetScope.ORGANIZATION: "Organization monthly",
+        }[self]
 
 
 class BudgetExceeded(Exception):
@@ -79,12 +85,22 @@ class BudgetExceeded(Exception):
     on a WebSocket, a failed row in run history, a message in Slack.
     """
 
-    def __init__(self, *, limit_usd: Decimal, spent_usd: Decimal, scope: BudgetScope) -> None:
+    def __init__(
+        self,
+        *,
+        limit_usd: Decimal,
+        spent_usd: Decimal,
+        scope: BudgetScope,
+        subject: str | None = None,
+    ) -> None:
         self.limit_usd = limit_usd
         self.spent_usd = spent_usd
         self.scope = scope
+        # A person can sit in several capped departments, so "Department monthly"
+        # alone would not say whose cap to go and ask about.
+        label = f"{subject} department monthly" if subject else scope.label
         super().__init__(
-            f"{scope.label} budget exhausted: ${spent_usd:.4f} spent of ${limit_usd:.2f} limit"
+            f"{label} budget exhausted: ${spent_usd:.4f} spent of ${limit_usd:.2f} limit"
         )
 
 
@@ -623,6 +639,14 @@ class SpendLimit:
     scope: BudgetScope
     limit_usd: Decimal
     period_spend: PeriodSpendLookup | None = None
+    subject_id: UUID | None = None
+    """Which department a `GROUP` limit is; a person can be under several."""
+    subject_name: str | None = None
+
+    @property
+    def key(self) -> str:
+        """What its baseline is cached under: two departments are two quantities."""
+        return f"{self.scope}:{self.subject_id}" if self.subject_id else str(self.scope)
 
 
 @dataclass
@@ -650,6 +674,19 @@ class RunSpendState:
 
     baselines: dict[str, Decimal] = field(default_factory=dict)
     check: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class RefusedAfterAnswer(Exception):
+    """A refusal raised after the model answered, carrying the answer it refused.
+
+    The answer was paid for. A capability that refuses a response as it arrives -
+    a guardrail screening a tool call's arguments - raises inside the request,
+    past :class:`BudgetGuard`'s chance to record it, so the run would be stored
+    as costing nothing for a call the provider billed. The guard records what
+    the refusal carries before letting it go.
+    """
+
+    response: ModelResponse | None = None
 
 
 @dataclass
@@ -713,9 +750,9 @@ class BudgetGuard(AbstractCapability[Any]):
         """
         if limit.period_spend is None:
             return Decimal(0)
-        if limit.scope not in self.run_state.baselines:
-            self.run_state.baselines[limit.scope] = await limit.period_spend()
-        return self.run_state.baselines[limit.scope]
+        if limit.key not in self.run_state.baselines:
+            self.run_state.baselines[limit.key] = await limit.period_spend()
+        return self.run_state.baselines[limit.key]
 
     async def _first_exceeded(self) -> SpendLimit | None:
         """The first ceiling the run has already reached, or `None` if it is clear.
@@ -750,7 +787,12 @@ class BudgetGuard(AbstractCapability[Any]):
         limit = await self._first_exceeded()
         if limit is not None:
             spent = await self._baseline_for(limit) + self.ledger.total_usd
-            raise BudgetExceeded(limit_usd=limit.limit_usd, spent_usd=spent, scope=limit.scope)
+            raise BudgetExceeded(
+                limit_usd=limit.limit_usd,
+                spent_usd=spent,
+                scope=limit.scope,
+                subject=limit.subject_name,
+            )
 
     async def can_afford_next_request(self) -> bool:
         """Whether the run may issue another model request under every cap.
@@ -773,10 +815,17 @@ class BudgetGuard(AbstractCapability[Any]):
         """Check the budget, make the request, then record what it cost."""
         await self.assert_within_budget()
 
-        response = await handler(request_context)
+        try:
+            response = await handler(request_context)
+        except RefusedAfterAnswer as refused:
+            if refused.response is not None:
+                self._record(refused.response)
+            raise
+        self._record(response)
+        return response
 
+    def _record(self, response: ModelResponse) -> None:
         model_name = getattr(response, "model_name", None) or "unknown"
         usage = getattr(response, "usage", None)
         if usage is not None:
             self.ledger.record(model_name, usage, self.provider)
-        return response
