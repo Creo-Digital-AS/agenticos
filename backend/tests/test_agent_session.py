@@ -108,6 +108,7 @@ from app.agents.subagent_runtime import (
     ResolvedSubagent,
     SubagentRuntime,
 )
+from app.agents.visual_reports import VisualReport, VisualReports
 from app.core.config import settings
 from app.core.exceptions import AuthenticationError, AuthorizationError, BadRequestError
 from app.db.models.agent_run import RunStatus
@@ -1793,7 +1794,7 @@ class TestStreamingAModelResponse:
                 yield event
 
         collected = timeline if timeline is not None else TurnTimeline()
-        await _frames(session, timeline=collected).request(_events())
+        await _frames(session, timeline=collected).request(_events(), set())
         return collected.thinking
 
     async def test_a_part_that_starts_with_text_already_in_it_forwards_that_text(self):
@@ -1921,6 +1922,31 @@ class TestStreamingAModelResponse:
 
         assert _sent_events(session) == [
             ("tool_call_delta", {"index": 1, "args_delta": '{"team": '})
+        ]
+
+    async def test_a_call_reusing_an_id_the_conversation_holds_is_renamed_first(self):
+        """Before the console hears of it, and in the part the response keeps, so a
+        provider counting from `call_0` each turn cannot make a drawing overwrite
+        the last one (#2171)."""
+        session = _session()
+        part = ToolCallPart("draw", {}, tool_call_id="call_0")
+
+        async def _events() -> AsyncIterator[Any]:
+            yield PartStartEvent(index=0, part=part)
+
+        await _frames(session).request(_events(), {"call_0"})
+
+        assert part.tool_call_id == "call_0~2"
+        assert _sent_events(session) == [
+            (
+                "part_start",
+                {
+                    "index": 0,
+                    "part_type": "ToolCallPart",
+                    "tool_name": "draw",
+                    "tool_call_id": "call_0~2",
+                },
+            )
         ]
 
     async def test_the_frame_that_says_the_answer_has_started(self):
@@ -3401,3 +3427,83 @@ class TestMentions:
 
         assert chat.prompt.await_args.kwargs["mentions"] == []
         assert run.await_args.kwargs["user_input"] == "hi"
+
+
+class TestVisualReports:
+    """How a drawing rendered in this tab reaches the `draw` call waiting on it (#2171)."""
+
+    def _session(self) -> AgentSession:
+        websocket = MagicMock()
+        websocket.send_json = AsyncMock()
+        return AgentSession(websocket, MagicMock(), MagicMock())
+
+    async def test_a_report_reaches_the_running_turn(self):
+        session = self._session()
+        reports = VisualReports()
+        session._visual_reports = reports
+        session._turn_task = asyncio.get_running_loop().create_future()
+
+        await session.handle_frame(
+            {"type": "visual_report", "tool_call_id": "toolu_1", "errors": ["boom", 3]}
+        )
+
+        assert await reports.wait("toolu_1", 1) == VisualReport(errors=("boom", "3"))
+        session._turn_task.cancel()
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"type": "visual_report", "tool_call_id": 7, "errors": []},
+            {"type": "visual_report", "tool_call_id": "toolu_1", "errors": "boom"},
+        ],
+    )
+    async def test_a_malformed_report_is_dropped(self, frame: dict[str, Any]):
+        session = self._session()
+        reports = VisualReports()
+        session._visual_reports = reports
+        session._turn_task = asyncio.get_running_loop().create_future()
+
+        await session.handle_frame(frame)
+
+        assert reports._futures == {}
+        session._turn_task.cancel()
+
+    async def test_a_report_between_turns_reaches_nothing(self):
+        session = self._session()
+        reports = VisualReports()
+        session._visual_reports = reports
+
+        await session.handle_frame({"type": "visual_report", "tool_call_id": "t", "errors": []})
+
+        assert reports._futures == {}
+
+    async def test_a_report_on_a_revoked_session_is_refused(self):
+        websocket = MagicMock(send_json=AsyncMock(), close=AsyncMock())
+        session = AgentSession(websocket, MagicMock(), MagicMock(), auth_token="live")
+        reports = VisualReports()
+        session._visual_reports = reports
+        session._turn_task = asyncio.get_running_loop().create_future()
+
+        with (
+            patch("app.services.agent_session.get_db_context") as db_context,
+            patch(
+                "app.services.agent_session.authenticate_socket_token",
+                new=AsyncMock(side_effect=AuthenticationError(message="Session ended")),
+            ),
+        ):
+            db_context.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            db_context.return_value.__aexit__ = AsyncMock(return_value=False)
+            await session.handle_frame({"type": "visual_report", "tool_call_id": "t", "errors": []})
+
+        assert reports._futures == {}
+        session._turn_task.cancel()
+
+    async def test_a_drawing_s_pictures_are_sent_to_the_tab(self):
+        session = self._session()
+        await session._visual_images("toolu_1", {"logo": "data:image/png;base64,AA=="})
+        sent = session.websocket.send_json.await_args.args[0]
+        assert sent["type"] == "visual_images"
+        assert sent["data"] == {
+            "tool_call_id": "toolu_1",
+            "images": {"logo": "data:image/png;base64,AA=="},
+        }

@@ -66,6 +66,7 @@ from app.agents.capabilities.system_reminders import (
     ReminderState,
     SystemReminders,
 )
+from app.agents.capabilities.visuals import WEB_REACH_RESOURCE, web_reach
 from app.agents.code_mode import CodeCalls, code_mode
 from app.agents.connect_on_use import CONNECT_ACCOUNT, ConnectOnUse
 from app.agents.deps import AgentDeps, ApprovalCallback
@@ -76,6 +77,7 @@ from app.agents.observability import instrument_agent, suppress_content
 from app.agents.run_reviewer import RunReviewer
 from app.agents.spec import AgentSpec
 from app.agents.steering import Steering
+from app.agents.tool_call_ids import UniqueToolCallIds
 from app.agents.tool_repair import CountedRepair, RepairTally
 from app.core.secret_kinds import ApiKeySecret, StorableSecret
 
@@ -289,6 +291,9 @@ def build_agent(
             # delete the bytes is the conversation, not a setting.
             MEDIA_ORGANIZATION_RESOURCE: organization_id,
             MEDIA_CONVERSATION_RESOURCE: conversation_id,
+            # Where the agent's web readers may go: a drawing fetches an image by
+            # address only from a host one of them would itself reach.
+            WEB_REACH_RESOURCE: web_reach(bindings),
         },
         secrets=secrets,
     )
@@ -419,6 +424,9 @@ def build_agent(
         # exactly the agent that will not: it is the one that reaches the ceiling
         # and gets refused by the provider.
         build_gauge(gauge),
+        # Every agent: a provider that numbers its calls afresh on each response
+        # would otherwise give a later drawing or approval an earlier one's id.
+        UniqueToolCallIds(),
     ]
 
     # Profile settings first, agent overrides second - the agent is the more
