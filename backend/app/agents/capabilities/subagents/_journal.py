@@ -231,6 +231,9 @@ class ActingDelegate:
     name: str
     task_id: str | None
     agent_id: UUID | None
+    # How deep the delegate is, so work it hands on - a coding agent's task -
+    # streams one level inside its panel rather than beside it.
+    depth: int
 
 
 def acting_delegate() -> ActingDelegate | None:
@@ -249,7 +252,10 @@ def acting_delegate() -> ActingDelegate | None:
     if delegation is None:
         return None
     return ActingDelegate(
-        name=delegation.name, task_id=delegation.public_id, agent_id=delegation.agent_id
+        name=delegation.name,
+        task_id=delegation.public_id,
+        agent_id=delegation.agent_id,
+        depth=delegation.depth,
     )
 
 

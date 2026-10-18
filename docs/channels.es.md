@@ -1,5 +1,5 @@
 ---
-source_sha: "07cb36a7d778"
+source_sha: "dcefccd16f75"
 ---
 
 # Poner un agent donde la gente ya está { #putting-an-agent-where-people-already-are }
@@ -748,6 +748,37 @@ decide.
 
 Limitado por llamante y no por dirección — una oficina detrás de un NAT no es un
 solo llamante — con `RATE_LIMIT_RUN_PER_MINUTE`.
+
+## Otros agents, por A2A { #a2a }
+
+El agent de otro sistema puede enviar tareas a un agent mediante el
+[protocolo Agent2Agent](https://a2a-protocol.org). Está desactivado para cada agent
+hasta que alguien que pueda publicarlo active **Agent2Agent (A2A)** en su pestaña
+**Availability**, que muestra las dos direcciones que hay que dar al otro lado:
+
+- la **agent card**, en `/api/v1/a2a/{agent_id}/.well-known/agent-card.json`,
+  legible sin clave — el nombre del agent, su descripción, su versión, su única
+  habilidad y cómo autenticarse;
+- el **endpoint** de tareas, `POST /api/v1/a2a/{agent_id}`, JSON-RPC 2.0.
+
+Quien llama envía una clave API de la organización, o un token de acceso OAuth que
+emitió este despliegue, como bearer token, y debe tener permiso para ejecutar el
+agent. `message/send` ejecuta la versión publicada como un run normal marcado `a2a`,
+así que se aplican el budget, la aprobación, la auditoría y Activity. El id de la
+tarea es el del run y su `contextId` es la conversación en la que se archiva el run,
+así que volver a enviarlo continúa esa conversación. Un run que se detiene en una
+aprobación responde `input-required`; se decide en la consola, y `tasks/get` lee
+dónde está desde entonces.
+
+Una tarea la lee quien la envió, o quien puede leer todos los runs
+(`runs:view`); para cualquier otro su id es desconocido. Un mensaje con `taskId` se
+rechaza en lugar de ejecutarse junto a la tarea que espera: para preguntar algo
+nuevo, se envía sin él, en el mismo `contextId`.
+
+Se responde de forma síncrona: `message/stream`, las notificaciones push y
+`tasks/cancel` se rechazan por su nombre, y la card dice que no se ofrece streaming.
+Un agent que no se sirve — desactivado, sin publicar, archivado o de otra
+organización — responde `404`, tanto la card como el endpoint.
 
 ---
 
@@ -1631,6 +1662,7 @@ que lo que se guarda es lo que su lector vio de verdad.
 | `@mention` en un canal | Lo mismo, con el handle quitado del prompt registrado |
 | Widget embebido | Lo mismo. El visitante es anónimo; el run y los turnos pertenecen al dueño del widget |
 | API HTTP | Lo mismo cuando la llamada lleva un `conversation_id`. Nada sin él — no hay ningún hilo en el que escribir un turno, y la fila del run sigue siendo el registro de que ocurrió |
+| A2A | Lo mismo. Cada tarea se archiva en una conversación, nueva o la que nombra su `contextId` |
 | Un run reanudado tras una aprobación | Su continuación — la respuesta y las llamadas que hizo, y las llamadas incluso cuando no hay respuesta, que es lo que tiene una continuación que vuelve a aparcarse en una segunda llamada con puerta. Ningún turno de usuario: retoma en la llamada en la que se detuvo, e inventar una pregunta sería poner palabras en boca de alguien |
 
 **Lo que se registra es lo que escribió la persona, no el prompt ensamblado a su

@@ -53,7 +53,7 @@ from app.agents.capabilities.channel_tools import CHANNEL_DIRECTORY_RESOURCE
 from app.agents.capabilities.compaction import ContextGauge
 from app.agents.capabilities.guardrails import GuardrailBlocked
 from app.agents.capabilities.planning import PLANNING_STORE_RESOURCE
-from app.agents.capabilities.sandbox import WORKSPACE_RESOURCE
+from app.agents.capabilities.sandbox import WORKSPACE_RESOURCE, WORKSPACE_SHARED_RESOURCE
 from app.agents.capabilities.sandbox._capability import build_workspace
 from app.agents.connect_on_use import ConnectionRequest, ConnectOnUse
 from app.agents.loop_guard import ToolLoopStopped
@@ -553,6 +553,58 @@ class TestPrepare:
 
         assert build.call_args.kwargs["audience"] == RunAudience(user_id=None)
         assert opened.await_args.kwargs["identity"].user_id is None
+
+    @pytest.mark.anyio
+    async def test_a_chat_in_a_project_works_in_the_projects_container(self):
+        """Whichever agent answers, and whatever scope its own binding asks for:
+        the project's files are what the person put there for any agent to use."""
+        ctx = _ctx()
+        service = AgentRunnerService(_db())
+        agent = MagicMock(id=uuid.uuid4(), current_version_id=uuid.uuid4())
+        project = MagicMock(
+            id=uuid.uuid4(),
+            description=None,
+            instructions="Cite sources.",
+            backend="state",
+            sandbox_connection_id=None,
+            runtime=None,
+        )
+        project.name = "Launch"
+
+        with (
+            patch.object(
+                service.registry,
+                "get_runnable_spec",
+                new=AsyncMock(
+                    return_value=(agent, AgentSpec(name="Writer"), agent.current_version_id)
+                ),
+            ),
+            patch.object(
+                service.models, "resolve", new=AsyncMock(return_value=MagicMock(label="gpt-4.1"))
+            ),
+            patch.object(service.skills, "resolve_for_agent", new=AsyncMock(return_value=[])),
+            patch(
+                "app.services.agent_runner.agent_run_repo.create_run",
+                new=AsyncMock(return_value=MagicMock(id=uuid.uuid4())),
+            ),
+            patch(
+                "app.services.agent_runner.build_toolsets_for_agent",
+                new=AsyncMock(return_value=ResolvedMcpToolsets([], [])),
+            ),
+            patch(
+                "app.services.agent_runner.ProjectService.for_run",
+                new=AsyncMock(return_value=project),
+            ),
+            patch("app.services.agent_runner.build_agent"),
+            patch.object(service.workspaces, "open", new=AsyncMock(return_value=None)) as opened,
+        ):
+            await service.prepare(ctx, agent.id, conversation_id=uuid.uuid4())
+
+        assert opened.await_args.kwargs["scope_override"] == "project"
+        assert opened.await_args.kwargs["identity"].project_id == project.id
+        opened_spec = opened.await_args.args[0]
+        assert [binding.id for binding in opened_spec.capabilities] == ["sandbox"]
+        assert "Cite sources." in opened_spec.instructions
 
     @pytest.mark.anyio
     async def test_a_fire_acting_as_its_creator_is_the_creator_on_their_terms(self):
@@ -2959,9 +3011,10 @@ class TestResume:
             patch.object(service.registry, "get", new=AsyncMock(return_value=MagicMock())),
             patch.object(
                 service.models, "resolve", new=AsyncMock(return_value=MagicMock(label="gpt-4.1"))
-            ),
+            ) as resolve,
             patch.object(service.skills, "resolve_for_agent", new=AsyncMock(return_value=[])),
         ):
+            self.resolve = resolve
             resumer = _ctx()
             # Kept for the tests that ask *whose* account the continuation spoke
             # through: the approver releasing a parked run is not its owner.
@@ -3104,6 +3157,30 @@ class TestResume:
         assert self.resumer.user_id != self.resumed_run.user_id, "the fixture must differ"
         assert build.call_args.kwargs["user_id"] == str(self.resumed_run.user_id)
         assert build.call_args.kwargs["audience"] == RunAudience(user_id=_THE_ASKER, room_key=None)
+
+    @pytest.mark.anyio
+    @pytest.mark.security
+    async def test_the_model_resolves_for_the_runs_own_person_not_the_approver(self):
+        """A ChatGPT sign-in is one person's subscription: an approver releasing a
+        member's run must not lend it theirs, nor be the one asked about the
+        member's."""
+        await self._resumed(
+            paused_state={
+                "messages": [],
+                "tool_call_ids": {},
+                "admitted_as": {
+                    "approval_mode": "follow_agent",
+                    "acts_for_sender": True,
+                    "audience_user_id": str(_THE_ASKER),
+                    "audience_room_key": None,
+                },
+            }
+        )
+
+        asked_for = self.resolve.await_args_list[0].args[0]
+        assert self.resumer.user_id != _THE_ASKER, "the fixture must differ"
+        assert asked_for.user_id == _THE_ASKER
+        assert asked_for.organization_id == self.resumer.organization_id
 
     @pytest.mark.anyio
     async def test_a_parked_fire_keeps_the_terms_it_was_admitted_on(self):
@@ -4251,7 +4328,7 @@ class TestTheWorkspaceReachesTheAgent:
     """
 
     @staticmethod
-    async def _prepare(spec, skills=()):
+    async def _prepare(spec, skills=(), shares=()):
         service = AgentRunnerService(_db())
         agent = MagicMock(id=uuid.uuid4(), current_version_id=uuid.uuid4())
         opened = MagicMock(id=uuid.uuid4(), exposure_id=None)
@@ -4282,6 +4359,12 @@ class TestTheWorkspaceReachesTheAgent:
                 "app.services.sandbox_workspace.workspace_repo.create",
                 new=AsyncMock(return_value=MagicMock(id=uuid.uuid4())),
             ),
+            # Whether anybody else may write in the conversation, and so work in
+            # its container - see `_workspace_shared`.
+            patch(
+                "app.services.agent_runner.conversation_share_repo.get_shares_for_conversation",
+                new=AsyncMock(return_value=shares),
+            ),
             patch("app.services.agent_runner.build_agent") as build,
         ):
             prepared = await service.prepare(_ctx(), agent.id, conversation_id=uuid.uuid4())
@@ -4296,6 +4379,23 @@ class TestTheWorkspaceReachesTheAgent:
 
         assert prepared.workspace is not None
         assert built.kwargs["resources"][WORKSPACE_RESOURCE] is prepared.workspace.workspace
+        # A chat nobody else may write in: a person's own sign-in may run in it.
+        assert built.kwargs["resources"][WORKSPACE_SHARED_RESOURCE] is False
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("permission", "shared"), [("edit", True), ("view", False)], ids=["editor", "reader"]
+    )
+    async def test_a_chat_shared_to_edit_has_a_shared_container(
+        self, permission: str, shared: bool
+    ):
+        """An editor's turns run in the same container, as the same user."""
+        spec = AgentSpec(name="Analyst", capabilities=[{"id": "sandbox", "config": {}}])
+        share = MagicMock(shared_with=uuid.uuid4(), permission=permission)
+
+        _, built = await self._prepare(spec, shares=[share])
+
+        assert built.kwargs["resources"][WORKSPACE_SHARED_RESOURCE] is shared
 
     @pytest.mark.anyio
     async def test_an_agent_without_one_is_handed_nothing(self):
@@ -4305,6 +4405,33 @@ class TestTheWorkspaceReachesTheAgent:
 
         assert prepared.workspace is None
         assert WORKSPACE_RESOURCE not in built.kwargs["resources"]
+
+
+class TestWhetherOthersWorkInTheWorkspace:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("scope", "conversation", "shared"),
+        [
+            ("project", True, True),
+            ("agent", True, True),
+            ("channel", False, True),
+            ("user", True, False),
+            ("run", True, False),
+            ("conversation", False, False),
+        ],
+    )
+    async def test_by_its_scope_alone(self, scope: str, conversation: bool, shared: bool):
+        service = AgentRunnerService(_db())
+        lookup = AsyncMock(return_value=[])
+        with patch(
+            "app.services.agent_runner.conversation_share_repo.get_shares_for_conversation",
+            new=lookup,
+        ):
+            answer = await service._workspace_shared(
+                _ctx(), scope, uuid.uuid4() if conversation else None
+            )
+        assert answer is shared
+        lookup.assert_not_awaited()
 
 
 class TestTheModelIsToldWhereTheSkillFilesWent:

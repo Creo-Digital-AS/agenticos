@@ -6,12 +6,23 @@ from decimal import Decimal
 from typing import Any, NamedTuple
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Integer, Numeric, distinct, func, or_, select, type_coerce
+from sqlalchemy import (
+    ColumnElement,
+    Integer,
+    Numeric,
+    and_,
+    distinct,
+    func,
+    or_,
+    select,
+    type_coerce,
+)
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.db.models.agent import Agent
 from app.db.models.agent_run import AgentRun, RunStatus
@@ -211,6 +222,7 @@ def _list_filters(
     include_archived: bool = False,
     archived_only: bool = False,
     hide_api: bool = False,
+    project_id: UUID | None = None,
 ) -> list[ColumnElement[bool]]:
     """The predicates both conversation listings narrow by.
 
@@ -234,6 +246,8 @@ def _list_filters(
     nothing rather than confirming the agent exists.
     """
     filters: list[ColumnElement[bool]] = []
+    if project_id is not None:
+        filters.append(Conversation.project_id == project_id)
     if hide_api:
         # Null for every conversation opened in the console or a channel.
         filters.append(or_(Conversation.origin.is_(None), Conversation.origin != "api"))
@@ -277,7 +291,9 @@ async def authors_of(db: AsyncSession, identity_ids: list[UUID]) -> dict[UUID, C
     return {identity.id: identity for identity in result.scalars().all()}
 
 
-def _reachable_by(user_id: UUID, participant_ids: Collection[UUID]) -> ColumnElement[bool]:
+def _reachable_by(
+    user_id: UUID, participant_ids: Collection[UUID], project_ids: Collection[UUID]
+) -> ColumnElement[bool]:
     """Whose conversation list a thread appears in.
 
     Theirs if they own it, and theirs if they are a *confirmed* participant of
@@ -291,10 +307,20 @@ def _reachable_by(user_id: UUID, participant_ids: Collection[UUID]) -> ColumnEle
     The default is therefore the narrow one. A caller that passes nothing gets
     owner-only, which fails safe - forgetting the participation step hides a
     thread rather than showing it to somebody who was removed.
+
+    Owning reaches only a chat outside any project. One in a project is
+    reached through the project, its starter's included: a person who lost the
+    project would otherwise still list a chat that answers 404 when opened.
+    `project_ids` are the projects this person may see, decided by the caller
+    on the projects as they stand - a predicate over them rather than a list of
+    their chats, which grows with every chat a busy project holds.
     """
-    if not participant_ids:
-        return Conversation.user_id == user_id
-    return or_(Conversation.user_id == user_id, Conversation.id.in_(participant_ids))
+    ways_in = [and_(Conversation.user_id == user_id, Conversation.project_id.is_(None))]
+    if participant_ids:
+        ways_in.append(Conversation.id.in_(participant_ids))
+    if project_ids:
+        ways_in.append(Conversation.project_id.in_(project_ids))
+    return or_(*ways_in)
 
 
 class ParticipationClaim(NamedTuple):
@@ -435,6 +461,82 @@ async def running_since(
     return dict(result.all())
 
 
+async def running_users(db: AsyncSession, conversation_ids: Collection[UUID]) -> dict[UUID, UUID]:
+    """Who started the run still at work in each of these conversations.
+
+    The same runs `running_since` counts, so a list saying a thread is busy and
+    one saying who is busy in it agree. The earliest, where two are running.
+    """
+    if not conversation_ids:
+        return {}
+    result = await db.execute(
+        select(AgentRun.conversation_id, AgentRun.user_id)
+        .where(
+            AgentRun.conversation_id.in_(list(conversation_ids)),
+            AgentRun.parent_run_id.is_(None),
+            AgentRun.status == RunStatus.RUNNING,
+            AgentRun.ended_at.is_(None),
+            AgentRun.started_at >= datetime.now(UTC) - RUNNING_HORIZON,
+            AgentRun.user_id.is_not(None),
+        )
+        .order_by(AgentRun.started_at.desc())
+    )
+    # Newest first, so the earliest run's person is the one left standing.
+    return dict(result.all())
+
+
+async def readers_of(
+    db: AsyncSession, conversation_ids: Collection[UUID]
+) -> dict[UUID, list[tuple[User, datetime]]]:
+    """Who has had each of these conversations open, and when last - newest first.
+
+    One query for a page. Read from the rows `mark_read` keeps for the unread
+    mark, which is exactly the record of somebody having had the thread open.
+    """
+    if not conversation_ids:
+        return {}
+    result = await db.execute(
+        select(ConversationLastRead.conversation_id, User, ConversationLastRead.read_at)
+        .join(User, User.id == ConversationLastRead.user_id)
+        .where(ConversationLastRead.conversation_id.in_(list(conversation_ids)))
+        .order_by(ConversationLastRead.read_at.desc())
+    )
+    readers: dict[UUID, list[tuple[User, datetime]]] = {}
+    for conversation_id, user, read_at in result.all():
+        readers.setdefault(conversation_id, []).append((user, read_at))
+    return readers
+
+
+async def messages_by_id(db: AsyncSession, message_ids: Collection[UUID]) -> dict[UUID, Message]:
+    """These messages, keyed by id; one query, and none for an empty set."""
+    if not message_ids:
+        return {}
+    result = await db.execute(select(Message).where(Message.id.in_(set(message_ids))))
+    return {message.id: message for message in result.scalars().all()}
+
+
+async def release_project_chats(db: AsyncSession, *, user_id: UUID) -> None:
+    """Take this person off the project chats they started, so the chats outlive them.
+
+    Called as their account goes: the `users` cascade deletes the rows that
+    still name them, and a project's chat is its members' to keep.
+    """
+    await db.execute(
+        sql_update(Conversation)
+        .where(Conversation.user_id == user_id, Conversation.project_id.is_not(None))
+        .values(user_id=None)
+    )
+    await db.flush()
+
+
+async def users_by_id(db: AsyncSession, user_ids: Collection[UUID]) -> dict[UUID, User]:
+    """These people, keyed by id; one query, and none for an empty set."""
+    if not user_ids:
+        return {}
+    result = await db.execute(select(User).where(User.id.in_(set(user_ids))))
+    return {user.id: user for user in result.scalars().all()}
+
+
 async def favourite_ids(
     db: AsyncSession, *, user_id: UUID, conversation_ids: Collection[UUID]
 ) -> set[UUID]:
@@ -559,7 +661,9 @@ async def get_conversations_by_user(
     sort_dir: str = "desc",
     favourites_first_for: UUID | None = None,
     participant_conversation_ids: Collection[UUID] = frozenset(),
+    visible_project_ids: Collection[UUID] = frozenset(),
     hide_api: bool = False,
+    project_id: UUID | None = None,
 ) -> list[Conversation]:
     """Get one organization's conversations, optionally narrowed to one user.
 
@@ -578,16 +682,21 @@ async def get_conversations_by_user(
     `participant_conversation_ids` widens a user's list to channel threads whose
     membership the caller has already confirmed against the platform - see
     :func:`_reachable_by` for why they arrive vetted rather than derived here.
+    `visible_project_ids` widens it to every chat in the projects the caller
+    decided this person may see.
     """
     query = select(Conversation).where(Conversation.organization_id == organization_id)
     if user_id:
-        query = query.where(_reachable_by(user_id, participant_conversation_ids))
+        query = query.where(
+            _reachable_by(user_id, participant_conversation_ids, visible_project_ids)
+        )
     for condition in _list_filters(
         search=search,
         agent_id=agent_id,
         include_archived=include_archived,
         archived_only=archived_only,
         hide_api=hide_api,
+        project_id=project_id,
     ):
         query = query.where(condition)
     orders = [] if favourites_first_for is None else [_favourited_by(favourites_first_for).desc()]
@@ -663,7 +772,9 @@ async def count_conversations(
     include_archived: bool = False,
     archived_only: bool = False,
     participant_conversation_ids: Collection[UUID] = frozenset(),
+    visible_project_ids: Collection[UUID] = frozenset(),
     hide_api: bool = False,
+    project_id: UUID | None = None,
 ) -> int:
     """Count one organization's conversations, optionally narrowed to one user.
 
@@ -676,13 +787,16 @@ async def count_conversations(
         Conversation.organization_id == organization_id
     )
     if user_id:
-        query = query.where(_reachable_by(user_id, participant_conversation_ids))
+        query = query.where(
+            _reachable_by(user_id, participant_conversation_ids, visible_project_ids)
+        )
     for condition in _list_filters(
         search=search,
         agent_id=agent_id,
         include_archived=include_archived,
         archived_only=archived_only,
         hide_api=hide_api,
+        project_id=project_id,
     ):
         query = query.where(condition)
     result = await db.execute(query)
@@ -696,6 +810,7 @@ async def create_conversation(
     user_id: UUID | None = None,
     title: str | None = None,
     origin: str | None = None,
+    project_id: UUID | None = None,
 ) -> Conversation:
     """Create a new conversation owned by an organization.
 
@@ -708,6 +823,7 @@ async def create_conversation(
         organization_id=organization_id,
         title=title,
         origin=origin,
+        project_id=project_id,
     )
     db.add(conversation)
     await db.flush()
@@ -1169,6 +1285,22 @@ async def get_messages_by_run(
     return list(result.scalars().all())
 
 
+async def last_answer_of_run(db: AsyncSession, run_id: UUID) -> str | None:
+    """The latest assistant turn one run wrote that says something, or `None`."""
+    result = await db.execute(
+        select(Message.content)
+        .where(
+            Message.run_id == run_id,
+            Message.role == "assistant",
+            Message.content.is_not(None),
+            Message.content != "",
+        )
+        .order_by(Message.ordinal.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def count_messages_by_run(db: AsyncSession, run_id: UUID) -> int:
     """Count the turns one run produced."""
     query = select(func.count(Message.id)).where(Message.run_id == run_id)
@@ -1197,6 +1329,8 @@ async def create_message(
     agent_version_id: UUID | None = None,
     run_id: UUID | None = None,
     channel_identity_id: UUID | None = None,
+    author_user_id: UUID | None = None,
+    reply_to_message_id: UUID | None = None,
     attachment_context: str | None = None,
 ) -> Message:
     """Create a new message."""
@@ -1206,6 +1340,8 @@ async def create_message(
         content=content,
         attachment_context=attachment_context,
         channel_identity_id=channel_identity_id,
+        author_user_id=author_user_id,
+        reply_to_message_id=reply_to_message_id,
         thinking=thinking,
         parts=parts,
         model_name=model_name,
@@ -1224,6 +1360,11 @@ async def create_message(
     db.add(message)
     await db.flush()
     await db.refresh(message)
+    # Nothing hangs off a message that was just written, so say so rather than
+    # leave both collections to a lazy load: a route serializing the new row
+    # read them outside the session's async context and answered 500.
+    set_committed_value(message, "tool_calls", [])
+    set_committed_value(message, "files", [])
 
     await db.execute(
         sql_update(Conversation)

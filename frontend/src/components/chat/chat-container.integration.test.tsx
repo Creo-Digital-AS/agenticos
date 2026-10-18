@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { messageOf } from "./composer-editor";
 import { ChatContainer } from "./chat-container";
+import { apiClient } from "@/lib/api-client";
 import {
   useAgentSelectionStore,
   useAuthStore,
@@ -425,6 +426,21 @@ describe("the chat container - an answer still being written after its person le
     });
 
     await vi.waitFor(() => expect(reads().length).toBeGreaterThan(before));
+  });
+
+  it("says the opened chat was seen, though nothing in it was unread", async () => {
+    // A project chat lists who has seen it, and a teammate's chat never reads as
+    // unread to anyone but its owner - so opening it has to count by itself.
+    useConversationStore.getState().setCurrentConversationId(LEFT);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatContainer />
+      </QueryClientProvider>,
+    );
+
+    await vi.waitFor(() =>
+      expect(apiClient.post).toHaveBeenCalledWith(`/conversations/${LEFT}/read`, {}),
+    );
   });
 
   it("reads again until the answer is there, when the run ended before it was saved", async () => {

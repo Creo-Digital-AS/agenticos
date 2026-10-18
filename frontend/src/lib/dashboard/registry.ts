@@ -61,6 +61,7 @@ export type WidgetId =
   | "routines"
   | "notifications"
   | "artifacts"
+  | "projects"
   | "recent-visuals";
 
 /** The closed set of card widths the grid supports (12 columns). */
@@ -553,6 +554,16 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     defaultRows: "r4",
     category: "workspace",
     seeAll: ROUTES.ARTIFACTS,
+  },
+  // The reader's projects, most recently changed first - what `GET /projects`
+  // itself asks, and nothing more.
+  projects: {
+    id: "projects",
+    gate: holds(Perm.projectsView),
+    defaultSpan: "s12",
+    defaultRows: "r2",
+    category: "workspace",
+    seeAll: ROUTES.PROJECTS,
   },
   // The drawings agents made for the caller (#2171). Gated on running agents, the
   // one thing that makes a drawing: `GET /visuals` lists only the caller's own.

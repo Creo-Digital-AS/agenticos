@@ -323,6 +323,7 @@ export const qk = {
       skip: number;
       limit: number;
       groupId: string;
+      projectId?: string;
     }) => ["artifacts", "list", query] as const,
     agents: () => ["artifacts", "agents"] as const,
     detail: (id: string) => ["artifacts", id] as const,
@@ -364,6 +365,10 @@ export const qk = {
      */
     recent: (limit: number) => ["conversations", "recent", limit] as const,
     messages: (id: string) => ["conversations", id, "messages"] as const,
+    /** One project's chats, paged - under `all()` so a chat's change refreshes it. */
+    inProject: (projectId: string) => ["conversations", "project", projectId] as const,
+    /** Which project a conversation is in - fixed once it exists. */
+    projectOf: (id: string) => ["conversations", "project-of", id] as const,
   },
   conversationShares: {
     all: () => ["conversation-shares"] as const,
@@ -484,6 +489,20 @@ export const qk = {
   localServices: {
     all: () => ["local-services"] as const,
     list: () => ["local-services", "list"] as const,
+  },
+  projects: {
+    all: () => ["projects"] as const,
+    list: (query: { search: string; skip: number; limit: number }) =>
+      ["projects", "list", query] as const,
+    detail: (id: string) => ["projects", id] as const,
+    files: (id: string) => ["projects", id, "files"] as const,
+    file: (id: string, path: string) => ["projects", id, "file", path] as const,
+    // The same file's bytes, keyed apart from its text: two bodies for one path.
+    bytes: (id: string, path: string) => ["projects", id, "bytes", path] as const,
+  },
+  externalAgents: {
+    all: () => ["external-agents"] as const,
+    list: () => ["external-agents", "list"] as const,
   },
   sandboxConnections: {
     all: () => ["sandbox-connections"] as const,
