@@ -2,7 +2,9 @@
 
 Notable changes to AgenticOS. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) with one exception:
+AgenticOS stays on major version 1, so a change a deployment has to act on ships
+in a MINOR release. Read a minor release's notes before upgrading.
 
 Two things are versioned separately from this file and worth knowing about:
 
@@ -16,6 +18,8 @@ Two things are versioned separately from this file and worth knowing about:
   that still exists. Schema changes are listed here by what they do.
 
 ## [Unreleased]
+
+## [1.9.0] - 2026-10-21
 
 ### Added
 

@@ -296,13 +296,14 @@ retranslated is how a stale translation stops being visible.
 
 ## Releases
 
-Versions follow [Semantic Versioning](https://semver.org) from 1.0.0 onwards; every
-release before it was `0.0.N`. A release is numbered by the largest change it ships,
+Versions follow [Semantic Versioning](https://semver.org) from 1.0.0 onwards, except
+that the major stays 1 (below); every release before 1.0.0 was `0.0.N`. CHANGELOG.md
+and `docs/release-notes.md` state that exception to operators. A release is numbered by the largest change it ships,
 judged by someone running a deployment, not by the size of the diff:
 
 | Bump | When the release contains |
 |---|---|
-| MAJOR | A change an existing deployment has to act on: a removed or renamed API route, field or setting, a spec that no longer loads or must be republished, a migration that drops data, a changed default that alters stored behaviour. The commit carries `!` and a `BREAKING CHANGE:` footer |
+| MAJOR | Not used: AgenticOS stays on major version 1. A change an existing deployment has to act on - a removed or renamed API route, field or setting, a spec that no longer loads or must be republished, a migration that drops data, a changed default that alters stored behaviour - ships as the next MINOR. Its commit still carries `!` and a `BREAKING CHANGE:` footer, and its changelog entry says what to do |
 | MINOR | Something new a member or operator can do: a feature, a capability or tool, an endpoint, a setting, a new screen. Backwards compatible |
 | PATCH | Fixes, documentation, dependency updates and refactors with no new behaviour |
 
@@ -321,5 +322,5 @@ judged by someone running a deployment, not by the size of the diff:
   the largest change in it. Stacked PRs are released in merge order, each with its
   own number.
 - An agent asked to release may pick a PATCH or MINOR number by the table above.
-  A MAJOR release, and any number the maintainer has named, is the maintainer's
-  decision.
+  Never propose 2.0.0 or any later major; a number the maintainer has named is
+  the maintainer's decision.
