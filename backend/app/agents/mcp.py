@@ -18,8 +18,6 @@ The transport (streamable HTTP or SSE) is inferred from each server's URL, so
 SSE-only servers such as Atlassian/Jira work alongside streamable-HTTP ones.
 """
 
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import importlib
@@ -33,6 +31,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import UUID
 
+# At import, not on the first turn: `pydantic_ai.mcp` brings in fastmcp's client,
+# and lazily that was a few hundred milliseconds - seconds on a host short of CPU -
+# inside the first chat turn each process served, before the model was asked.
+from pydantic_ai.mcp import MCPToolset, infer_transport_type_from_url
 from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.toolsets import WrapperToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
@@ -142,7 +144,7 @@ class McpServerSpec:
 @asynccontextmanager
 async def _mcp_transport(
     url: str, headers: dict[str, str] | None
-) -> AsyncGenerator[tuple[Any, Any], None]:
+) -> AsyncGenerator[tuple[Any, Any]]:
     """Open the right client transport for *url*, yielding `(read, write)`.
 
     The transport is inferred from the URL exactly as the toolset layer does it
@@ -157,8 +159,6 @@ async def _mcp_transport(
     into the client `create_mcp_http_client` builds, and the client is owned
     here so it closes with the transport (#1820).
     """
-    from pydantic_ai.mcp import infer_transport_type_from_url
-
     if infer_transport_type_from_url(url) == "sse":
         from mcp.client.sse import sse_client
 
@@ -274,8 +274,6 @@ def _make_toolset(spec: McpServerSpec) -> Any:
     model reading the refusal could have fixed the query or said it could not.
     Repeats stay bounded by the run's step limit.
     """
-    from pydantic_ai.mcp import MCPToolset
-
     # The in-process client carries the headers itself: the two are exclusive.
     server: Any = MCPToolset(
         spec.url,
