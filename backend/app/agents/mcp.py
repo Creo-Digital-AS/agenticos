@@ -29,6 +29,7 @@ from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 # At import, not on the first turn: `pydantic_ai.mcp` brings in fastmcp's client,
@@ -41,7 +42,8 @@ from pydantic_ai.toolsets import WrapperToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from app.agents.spec import McpApproval
-from app.core.sanitize import validate_webhook_url
+from app.core.config import settings
+from app.core.sanitize import resolve_pinned_url
 
 logger = logging.getLogger(__name__)
 
@@ -90,19 +92,56 @@ class McpProbeError(Exception):
     """
 
 
-async def validate_mcp_url(url: str) -> str:
+def mcp_private_hosts_for(server_url: str) -> frozenset[str]:
+    """The private host the connection at *server_url* may reach: its own, or none.
+
+    `MCP_ALLOWED_PRIVATE_HOSTS` names hosts, but a check made for one connection
+    admits only that connection's host. A public server's OAuth metadata names
+    its own authorization, registration and token endpoints, and without the
+    scoping it could name a listed private host and have this deployment send
+    requests there. Every check on the MCP path is given this set, built from
+    the URL the connection was saved with and never from an address the remote
+    server supplied.
+
+    An entry holding `*` or `/` is a glob or a CIDR range, which this list does
+    not support; such an entry matches nothing (`doctor` reports it).
+    """
+    try:
+        host = urlparse(server_url).hostname
+    except ValueError:
+        # Unparsable: admit nothing, and leave the refusal - one written in
+        # this repository - to the check that follows.
+        return frozenset()
+    if not host:
+        return frozenset()
+    named = {
+        entry.strip().lower()
+        for entry in settings.MCP_ALLOWED_PRIVATE_HOSTS
+        if "*" not in entry and "/" not in entry
+    }
+    return frozenset({host}) if host in named else frozenset()
+
+
+async def validate_mcp_url(url: str, *, server_url: str | None = None) -> str:
     """SSRF-check a URL before we talk to it (same policy as webhooks).
 
     For a URL an operator typed: the connection's own address, and the consent
     URL the OAuth flow hands to somebody's browser rather than fetching. Runs
     in a thread because validation resolves DNS.
 
+    `server_url` is the connection's own address, which decides the private
+    host the check admits (:func:`mcp_private_hosts_for`). Left out, *url* is
+    taken to be that address. A caller checking a URL the remote server named
+    must pass it, or the server could name a listed private host.
+
     Everything the OAuth flow *fetches* is chosen by the remote server, so it
     goes through :class:`app.core.pinned_http.PinnedAsyncClient` instead, which
     connects to the address it checked rather than handing the name back to be
     resolved again (#860).
     """
-    return await asyncio.to_thread(validate_webhook_url, url)
+    private_hosts = mcp_private_hosts_for(server_url or url)
+    await asyncio.to_thread(lambda: resolve_pinned_url(url, private_hosts=private_hosts))
+    return url
 
 
 @dataclass(frozen=True)

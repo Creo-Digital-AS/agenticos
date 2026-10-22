@@ -792,6 +792,19 @@ class Settings(BaseSettings):
     # as `MEM0_ALLOWED_HOSTS` does. Empty refuses browser automation outright.
     BROWSER_CDP_ALLOWED_HOSTS: list[str] = []
 
+    # Hosts an MCP connection may reach on a private address - a server on the
+    # deployment's own network, a VPN or a tailnet, whose name answers 10/8,
+    # 172.16/12, 192.168/16, shared-CGNAT 100.64/10 (Tailscale) or a unique-local
+    # IPv6 address. The SSRF guard is the wrong control for such a server: it
+    # admits only *public* addresses, so it refuses every one of them, and there
+    # was no way to say "this one". So the operator names the host, as
+    # `BROWSER_CDP_ALLOWED_HOSTS` does. Matching is exact and case-folded, with
+    # no globs, suffixes or CIDR, and the allowance is scoped to the connection's
+    # own host - a public server cannot name a listed one as its token endpoint.
+    # Loopback, link-local and metadata addresses stay refused. Empty refuses
+    # every private MCP address, as before.
+    MCP_ALLOWED_PRIVATE_HOSTS: list[str] = []
+
     # The browser a person signs in to a site with from Settings (#2129). An
     # agent's browser is named in its spec; signing in from Settings involves no
     # agent, so the deployment names the one it runs - the compose `browser`

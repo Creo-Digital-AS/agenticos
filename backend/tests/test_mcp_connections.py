@@ -46,6 +46,7 @@ from app.agents.mcp import (
     _mcp_transport,
     build_mcp_toolsets,
     fitted_tool_name,
+    mcp_private_hosts_for,
     prefix_collisions,
     probe_mcp_server,
     tool_prefix,
@@ -4750,7 +4751,11 @@ class TestOAuthRequestSafety:
 
         monkeypatch.setattr(mcp_oauth, "_send", fake_send)
         with pytest.raises(mcp_oauth.OAuthError) as exc_info:
-            await mcp_oauth._token_request("https://93.184.216.34/token", {"grant_type": "x"})
+            await mcp_oauth._token_request(
+                "https://93.184.216.34/token",
+                {"grant_type": "x"},
+                server_url="https://93.184.216.34/mcp",
+            )
 
         assert "redis" not in str(exc_info.value)
         assert "500" in str(exc_info.value)
@@ -4799,7 +4804,9 @@ class TestOAuthRefusalsDoNotQuoteTheServer:
             pytest.raises(mcp_oauth.OAuthError) as exc_info,
         ):
             await mcp_oauth._token_request(
-                "https://auth.example.com/token", {"grant_type": "refresh_token"}
+                "https://auth.example.com/token",
+                {"grant_type": "refresh_token"},
+                server_url="https://mcp.example.com/mcp",
             )
 
         shown = str(exc_info.value)
@@ -4821,7 +4828,9 @@ class TestOAuthRefusalsDoNotQuoteTheServer:
             pytest.raises(mcp_oauth.OAuthError) as exc_info,
         ):
             await mcp_oauth.register_client(
-                self._discovered(), "https://app.example.com/oauth/callback"
+                self._discovered(),
+                "https://app.example.com/oauth/callback",
+                server_url="https://mcp.example.com/mcp",
             )
 
         shown = str(exc_info.value)
@@ -4847,7 +4856,9 @@ class TestOAuthRefusalsDoNotQuoteTheServer:
             pytest.raises(mcp_oauth.OAuthError) as exc_info,
         ):
             await mcp_oauth._token_request(
-                "https://auth.example.com/token", {"grant_type": "authorization_code"}
+                "https://auth.example.com/token",
+                {"grant_type": "authorization_code"},
+                server_url="https://mcp.example.com/mcp",
             )
 
         shown = str(exc_info.value)
@@ -4900,7 +4911,9 @@ class TestAUrlNoRequestCanBeBuiltFor:
     def _serving(monkeypatch, handler) -> None:
         """Point every client `discover` opens at *handler* instead of a network."""
         real = mcp_oauth._client
-        monkeypatch.setattr(mcp_oauth, "_client", lambda: real(httpx2.MockTransport(handler)))
+        monkeypatch.setattr(
+            mcp_oauth, "_client", lambda **scope: real(httpx2.MockTransport(handler), **scope)
+        )
 
     @classmethod
     def _hinting_at_the_bad_port(cls, request: httpx2.Request) -> httpx2.Response:
@@ -5032,7 +5045,9 @@ class TestAUrlNoRequestCanBeBuiltFor:
             caplog.at_level(logging.WARNING, logger="app.agents.mcp_oauth"),
             pytest.raises(mcp_oauth.OAuthError) as exc_info,
         ):
-            await mcp_oauth._token_request(server.token_endpoint, {"grant_type": "refresh_token"})
+            await mcp_oauth._token_request(
+                server.token_endpoint, {"grant_type": "refresh_token"}, server_url=self._SERVER
+            )
 
         assert "a token endpoint" in str(exc_info.value)
         assert "URL too long" in caplog.text
@@ -5057,7 +5072,9 @@ class TestAUrlNoRequestCanBeBuiltFor:
             metadata=metadata,
         )
         with pytest.raises(mcp_oauth.OAuthError) as exc_info:
-            await mcp_oauth.register_client(server, "https://app.example.com/oauth/callback")
+            await mcp_oauth.register_client(
+                server, "https://app.example.com/oauth/callback", server_url=self._SERVER
+            )
 
         assert "a registration endpoint" in str(exc_info.value)
 
@@ -5071,12 +5088,286 @@ class TestAUrlNoRequestCanBeBuiltFor:
             caplog.at_level(logging.WARNING, logger="app.agents.mcp_oauth"),
             pytest.raises(mcp_oauth.OAuthError) as exc_info,
         ):
-            await mcp_oauth._token_request(endpoint, {"grant_type": "authorization_code"})
+            await mcp_oauth._token_request(
+                endpoint, {"grant_type": "authorization_code"}, server_url=self._SERVER
+            )
 
         shown = str(exc_info.value)
         assert "sh-9f2c" not in shown
         assert "auth.example.com" not in shown
         assert "sh-9f2c" in caplog.text
+
+
+class TestPrivateMcpHosts:
+    """`MCP_ALLOWED_PRIVATE_HOSTS` admits a connection's own private host, and
+    only that one: a public server naming a listed host as an OAuth endpoint
+    is refused, as is every host nobody listed."""
+
+    _PRIVATE = "sp.tailnet.test"
+    _PRIVATE_IP = "100.72.29.28"
+    _PUBLIC = "mcp.public.test"
+    _PUBLIC_IP = "93.184.216.34"
+
+    @classmethod
+    def _dns(cls, monkeypatch) -> None:
+        def fake_getaddrinfo(host: str, port: int, **_kwargs: object) -> list[tuple]:
+            ip = cls._PRIVATE_IP if host == cls._PRIVATE else cls._PUBLIC_IP
+            return [(2, 1, 6, "", (ip, port))]
+
+        monkeypatch.setattr("app.core.sanitize.socket.getaddrinfo", fake_getaddrinfo)
+
+    @classmethod
+    def _listed(cls, monkeypatch) -> None:
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", [cls._PRIVATE])
+        cls._dns(monkeypatch)
+
+    @staticmethod
+    def _serving(monkeypatch, documents: dict[str, dict[str, object]]) -> list[str]:
+        """Answer each `Host` + path from *documents*; record the addresses dialled."""
+        dialled: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            dialled.append(request.url.host)
+            body = documents.get(request.headers["Host"] + request.url.path)
+            return httpx2.Response(200, json=body) if body else httpx2.Response(404, json={})
+
+        real = mcp_oauth._client
+        monkeypatch.setattr(
+            mcp_oauth, "_client", lambda **scope: real(httpx2.MockTransport(handler), **scope)
+        )
+        return dialled
+
+    @staticmethod
+    def _issuer(host: str, **endpoints: str) -> dict[str, object]:
+        return {
+            "issuer": f"https://{host}",
+            "authorization_endpoint": f"https://{host}/authorize",
+            "token_endpoint": f"https://{host}/token",
+            "registration_endpoint": f"https://{host}/register",
+            "response_types_supported": ["code"],
+            **endpoints,
+        }
+
+    @pytest.mark.parametrize(
+        "entry",
+        [" Agenticos-SharePoint.taild84bfc.ts.net ", "agenticos-sharepoint.taild84bfc.ts.net"],
+    )
+    def test_an_entry_matches_its_host_whatever_its_case_and_spacing(self, monkeypatch, entry):
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", [entry])
+
+        assert mcp_private_hosts_for("https://agenticos-sharepoint.taild84bfc.ts.net/mcp") == {
+            "agenticos-sharepoint.taild84bfc.ts.net"
+        }
+
+    @pytest.mark.parametrize(
+        ("entry", "url"),
+        [
+            ("*.taild84bfc.ts.net", "https://agenticos-sharepoint.taild84bfc.ts.net/mcp"),
+            ("*.taild84bfc.ts.net", "https://*.taild84bfc.ts.net/mcp"),
+            ("100.64.0.0/10", "https://100.72.29.28/mcp"),
+            ("taild84bfc.ts.net", "https://agenticos-sharepoint.taild84bfc.ts.net/mcp"),
+        ],
+    )
+    def test_a_glob_cidr_or_suffix_matches_nothing(self, monkeypatch, entry, url):
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", [entry])
+
+        assert mcp_private_hosts_for(url) == frozenset()
+
+    @pytest.mark.parametrize("url", ["https://sp.tailnet.test/mcp", "not a url", "http://[::1"])
+    def test_nothing_is_admitted_for_an_unlisted_or_unreadable_url(self, monkeypatch, url):
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", ["sp.other.test"])
+
+        assert mcp_private_hosts_for(url) == frozenset()
+
+    @pytest.mark.anyio
+    async def test_a_listed_host_can_be_saved_and_an_unlisted_one_cannot(self, monkeypatch):
+        self._listed(monkeypatch)
+        url = f"https://{self._PRIVATE}/mcp?key=sh-secret"
+
+        assert await mcp_connection_service._checked_url(url) == url
+
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", [])
+        with pytest.raises(BadRequestError) as excinfo:
+            await mcp_connection_service._checked_url(url)
+        assert self._PRIVATE in excinfo.value.message
+        assert "sh-secret" not in excinfo.value.message
+
+    @pytest.mark.anyio
+    async def test_a_listed_server_discovers_and_reaches_its_own_endpoints(self, monkeypatch):
+        self._listed(monkeypatch)
+        server_url = f"https://{self._PRIVATE}/mcp"
+        dialled = self._serving(
+            monkeypatch,
+            {
+                f"{self._PRIVATE}/.well-known/oauth-protected-resource/mcp": {
+                    "resource": server_url,
+                    "authorization_servers": [f"https://{self._PRIVATE}"],
+                },
+                f"{self._PRIVATE}/.well-known/oauth-authorization-server": self._issuer(
+                    self._PRIVATE
+                ),
+                f"{self._PRIVATE}/register": {
+                    "client_id": "cid",
+                    "redirect_uris": ["https://app.example.com/cb"],
+                },
+                f"{self._PRIVATE}/token": {"access_token": "at", "token_type": "Bearer"},
+            },
+        )
+
+        server = await mcp_oauth.discover(server_url)
+        client_id, _ = await mcp_oauth.register_client(
+            server, "https://app.example.com/cb", server_url=server_url
+        )
+        token = await mcp_oauth.exchange_code(
+            token_endpoint=server.token_endpoint,
+            client_id=client_id,
+            client_secret=None,
+            code="code",
+            code_verifier="verifier",
+            redirect_uri="https://app.example.com/cb",
+            resource=server.resource,
+            server_url=server_url,
+        )
+
+        assert server.token_endpoint == f"https://{self._PRIVATE}/token"
+        assert token.access_token == "at"
+        assert set(dialled) == {self._PRIVATE_IP}
+
+    @pytest.mark.anyio
+    async def test_the_same_server_unlisted_is_refused_before_anything_is_sent(self, monkeypatch):
+        self._dns(monkeypatch)
+        dialled = self._serving(monkeypatch, {})
+
+        with pytest.raises(mcp_oauth.OAuthError):
+            await mcp_oauth.discover(f"https://{self._PRIVATE}/mcp")
+
+        assert dialled == []
+
+    @pytest.mark.anyio
+    async def test_a_public_server_cannot_name_a_listed_host_as_its_authorization_server(
+        self, monkeypatch
+    ):
+        self._listed(monkeypatch)
+        dialled = self._serving(
+            monkeypatch,
+            {
+                f"{self._PUBLIC}/.well-known/oauth-protected-resource/mcp": {
+                    "resource": f"https://{self._PUBLIC}/mcp",
+                    "authorization_servers": [f"https://{self._PRIVATE}"],
+                },
+                f"{self._PRIVATE}/.well-known/oauth-authorization-server": self._issuer(
+                    self._PRIVATE
+                ),
+            },
+        )
+
+        with pytest.raises(mcp_oauth.OAuthError):
+            await mcp_oauth.discover(f"https://{self._PUBLIC}/mcp")
+
+        assert self._PRIVATE_IP not in dialled
+
+    @pytest.mark.anyio
+    async def test_a_public_server_cannot_name_a_listed_host_as_its_consent_page(self, monkeypatch):
+        self._listed(monkeypatch)
+        self._serving(
+            monkeypatch,
+            {
+                f"{self._PUBLIC}/.well-known/oauth-protected-resource/mcp": {
+                    "resource": f"https://{self._PUBLIC}/mcp",
+                    "authorization_servers": [f"https://{self._PUBLIC}"],
+                },
+                f"{self._PUBLIC}/.well-known/oauth-authorization-server": self._issuer(
+                    self._PUBLIC, authorization_endpoint=f"https://{self._PRIVATE}/authorize"
+                ),
+            },
+        )
+
+        with pytest.raises(mcp_oauth.OAuthError, match="blocked address"):
+            await mcp_oauth.discover(f"https://{self._PUBLIC}/mcp")
+
+    @pytest.mark.anyio
+    async def test_a_public_server_cannot_name_a_listed_host_as_its_token_or_registration_endpoint(
+        self, monkeypatch
+    ):
+        self._listed(monkeypatch)
+        server_url = f"https://{self._PUBLIC}/mcp"
+        dialled = self._serving(
+            monkeypatch,
+            {
+                f"{self._PUBLIC}/.well-known/oauth-protected-resource/mcp": {
+                    "resource": server_url,
+                    "authorization_servers": [f"https://{self._PUBLIC}"],
+                },
+                f"{self._PUBLIC}/.well-known/oauth-authorization-server": self._issuer(
+                    self._PUBLIC,
+                    token_endpoint=f"https://{self._PRIVATE}/token",
+                    registration_endpoint=f"https://{self._PRIVATE}/register",
+                ),
+            },
+        )
+        server = await mcp_oauth.discover(server_url)
+
+        with pytest.raises(mcp_oauth.OAuthError, match="blocked address"):
+            await mcp_oauth.register_client(
+                server, "https://app.example.com/cb", server_url=server_url
+            )
+        with pytest.raises(mcp_oauth.OAuthError, match="blocked address"):
+            await mcp_oauth.exchange_code(
+                token_endpoint=server.token_endpoint,
+                client_id="cid",
+                client_secret=None,
+                code="code",
+                code_verifier="verifier",
+                redirect_uri="https://app.example.com/cb",
+                resource=server.resource,
+                server_url=server_url,
+            )
+
+        assert self._PRIVATE_IP not in dialled
+
+    @pytest.mark.anyio
+    async def test_a_stored_public_connection_does_not_refresh_at_a_listed_host(self, monkeypatch):
+        """The payload's `server_url` scopes the refresh, not its `token_endpoint`."""
+        self._listed(monkeypatch)
+        dialled = self._serving(monkeypatch, {})
+        connection = _oauth_connection(
+            _base_payload(
+                server_url=f"https://{self._PUBLIC}/mcp",
+                token_endpoint=f"https://{self._PRIVATE}/token",
+                access_token="stale",
+                refresh_token="rt",
+                expires_at=0.0,
+            )
+        )
+        monkeypatch.setattr(
+            mcp_connection_service.mcp_connection_repo,
+            "get_by_id_for_update",
+            AsyncMock(return_value=connection),
+        )
+
+        assert await _resolve_auth_headers(AsyncMock(), connection) is None
+        assert dialled == []
+
+    @pytest.mark.anyio
+    async def test_a_stored_listed_connection_refreshes_at_its_own_host(self, monkeypatch):
+        self._listed(monkeypatch)
+        dialled = self._serving(
+            monkeypatch,
+            {f"{self._PRIVATE}/token": {"access_token": "fresh", "token_type": "Bearer"}},
+        )
+
+        token = await mcp_oauth.refresh_tokens(
+            token_endpoint=f"https://{self._PRIVATE}/token",
+            client_id="cid",
+            client_secret=None,
+            refresh_token="rt",
+            resource=f"https://{self._PRIVATE}/mcp",
+            scope=None,
+            server_url=f"https://{self._PRIVATE}/mcp",
+        )
+
+        assert token.access_token == "fresh"
+        assert dialled == [self._PRIVATE_IP]
 
 
 class TestReadSchema:
@@ -5718,7 +6009,9 @@ class TestDiscoveredScopes:
             return httpx2.Response(404, json={})
 
         real = mcp_oauth._client
-        monkeypatch.setattr(mcp_oauth, "_client", lambda: real(httpx2.MockTransport(handler)))
+        monkeypatch.setattr(
+            mcp_oauth, "_client", lambda **scope: real(httpx2.MockTransport(handler), **scope)
+        )
 
     @pytest.mark.anyio
     async def test_the_servers_own_scope_wins_over_the_issuers_and_keeps_refresh(self, monkeypatch):

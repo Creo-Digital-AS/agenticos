@@ -16,6 +16,7 @@ import pytest
 
 from app.agents.mcp import McpToolInfo
 from app.agents.mcp_oauth import OAuthError
+from app.core.config import settings
 from app.core.sanitize import UrlRefusedError
 from app.db.models.mcp_server_check import CheckOutcome
 from app.services import mcp_audit
@@ -154,6 +155,16 @@ class TestOneServer:
         monkeypatch.setattr(socket, "getaddrinfo", private)
 
         assert (await _probe(_wire(_initialized()))).outcome is CheckOutcome.REFUSED
+
+    async def test_a_host_the_operator_named_is_called_at_its_private_address(self, monkeypatch):
+        def tailnet(host: str, port: object, *_args: object, **_kwargs: object):
+            return [(2, 1, 6, "", ("100.72.29.28", port or 443))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", tailnet)
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", ["mcp.example.com"])
+        monkeypatch.setattr(mcp_audit, "probe_mcp_server", AsyncMock(return_value=[]))
+
+        assert (await _probe(_wire(_initialized()))).outcome is CheckOutcome.OPEN
 
     async def test_a_gateway_that_fails_once_is_asked_again(self, monkeypatch):
         monkeypatch.setattr(mcp_audit, "_RETRY_AFTER_S", 0)

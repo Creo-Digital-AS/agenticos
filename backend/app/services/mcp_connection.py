@@ -228,6 +228,7 @@ async def _complete_mcp_flow(
         code_verifier=payload.code_verifier,
         redirect_uri=payload.redirect_uri,
         resource=payload.resource,
+        server_url=payload.server_url,
     )
     payload = _apply_token(payload, token)
     return payload, (payload.scope.split() if payload.scope else None)
@@ -438,6 +439,7 @@ async def _refresh_under_lock(db: AsyncSession, connection: McpConnection) -> st
             refresh_token=payload.refresh_token.get_secret_value(),
             resource=payload.resource,
             scope=payload.scope,
+            server_url=payload.server_url,
         )
     except OAuthError as exc:
         logger.warning("OAuth token refresh failed for %r: %s", connection.name, exc)
@@ -1044,7 +1046,9 @@ class McpConnectionService:
             # server with no registration endpoint (HubSpot) refuses here, and the
             # only way past is a client the operator registered by hand and passed
             # in - its redirect URL must be `redirect_uri` exactly.
-            registered_id, registered_secret = await mcp_oauth.register_client(server, redirect_uri)
+            registered_id, registered_secret = await mcp_oauth.register_client(
+                server, redirect_uri, server_url=url
+            )
             client_id = registered_id
             client_secret = SecretStr(registered_secret) if registered_secret else None
         elif client_secret is not None:

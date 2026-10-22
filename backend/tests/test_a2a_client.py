@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
 
 from app.agents import a2a_delegate as delegate_module
 from app.agents.a2a_delegate import a2a_delegate, latest_prompt, thread_of
+from app.core.config import settings
 from app.services import a2a_client
 from app.services.a2a_client import A2AClientError, card_address, fetch_card, send_message
 
@@ -131,6 +132,14 @@ class TestReadingACard:
 
     @pytest.mark.security
     async def test_an_address_inside_the_network_is_refused(self) -> None:
+        with pytest.raises(A2AClientError, match="not one this deployment may call"):
+            await fetch_card("https://internal.example.com", transport=_wire(httpx2.Response(200)))
+
+    @pytest.mark.security
+    async def test_a_host_listed_for_mcp_is_still_refused_here(self, monkeypatch) -> None:
+        """`MCP_ALLOWED_PRIVATE_HOSTS` is the MCP path's, and reaches no other client."""
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", ["internal.example.com"])
+
         with pytest.raises(A2AClientError, match="not one this deployment may call"):
             await fetch_card("https://internal.example.com", transport=_wire(httpx2.Response(200)))
 

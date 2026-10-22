@@ -38,7 +38,12 @@ from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import mcp_oauth
-from app.agents.mcp import McpToolInfo, probe_mcp_server, validate_mcp_url
+from app.agents.mcp import (
+    McpToolInfo,
+    mcp_private_hosts_for,
+    probe_mcp_server,
+    validate_mcp_url,
+)
 from app.core import catalog
 from app.core.config import settings
 from app.core.pinned_http import PinnedAsyncClient
@@ -225,7 +230,9 @@ async def probe_listing(
         return Probe(CheckOutcome.UNREACHABLE, detail="the host name does not resolve")
     try:
         async with PinnedAsyncClient(
-            timeout=httpx2.Timeout(timeout, connect=timeout), transport=transport
+            timeout=httpx2.Timeout(timeout, connect=timeout),
+            transport=transport,
+            private_hosts=mcp_private_hosts_for(url),
         ) as client:
             response = await _ask(client, url)
     except UrlRefusedError:

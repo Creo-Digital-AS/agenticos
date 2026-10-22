@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx2
 import pytest
 
+from app.core.config import settings
 from app.core.exceptions import BadRequestError
 from app.services.rag.connectors import (
     CONNECTOR_REGISTRY,
@@ -1094,6 +1095,18 @@ class TestTheConfigIsCheckedWhereItWasTyped:
 
         assert refusal is not None
         assert refusal.field == "root_url"
+        assert "private/internal" in refusal.message
+
+    async def test_a_host_listed_for_mcp_is_still_refused_as_a_start_url(
+        self, _dns: Callable[[dict[str, str]], None], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`MCP_ALLOWED_PRIVATE_HOSTS` is the MCP path's, and reaches no crawl."""
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", ["docs.example.com"])
+        _dns({"docs.example.com": "100.72.29.28"})
+
+        refusal = await WebConnector().validate_config(_config())
+
+        assert refusal is not None
         assert "private/internal" in refusal.message
 
     async def test_a_sitemap_inside_the_network_is_refused(

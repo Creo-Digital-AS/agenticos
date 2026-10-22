@@ -52,7 +52,7 @@ from mcp.shared.auth import (
 )
 from pydantic import AnyUrl, BaseModel, ValidationError
 
-from app.agents.mcp import CONNECT_TIMEOUT_SECS, validate_mcp_url
+from app.agents.mcp import CONNECT_TIMEOUT_SECS, mcp_private_hosts_for, validate_mcp_url
 from app.core.config import settings
 from app.core.pinned_http import PinnedAsyncClient
 from app.core.sanitize import UrlRefusedError
@@ -149,7 +149,11 @@ def _validation_detail(exc: ValueError) -> str:
     )
 
 
-def _client(transport: httpx2.AsyncBaseTransport | None = None) -> PinnedAsyncClient:
+def _client(
+    transport: httpx2.AsyncBaseTransport | None = None,
+    *,
+    private_hosts: frozenset[str] = frozenset(),
+) -> PinnedAsyncClient:
     """The only client this flow talks through.
 
     `PinnedAsyncClient` checks each request's URL and then dials the address
@@ -159,9 +163,14 @@ def _client(transport: httpx2.AsyncBaseTransport | None = None) -> PinnedAsyncCl
     it again, so a hostile server can answer public to the check and private to
     the request between them (#860).
 
+    `private_hosts` is :func:`app.agents.mcp.mcp_private_hosts_for` of the
+    connection's own URL - never of an endpoint the server named.
+
     `transport` is for a test that needs to see what would go on the wire.
     """
-    return PinnedAsyncClient(timeout=_HTTP_TIMEOUT, transport=transport)
+    return PinnedAsyncClient(
+        timeout=_HTTP_TIMEOUT, transport=transport, private_hosts=private_hosts
+    )
 
 
 async def _send(client: PinnedAsyncClient, request: httpx2.Request) -> httpx2.Response:
@@ -274,7 +283,7 @@ async def discover(server_url: str) -> DiscoveredServer:
     404: the `WWW-Authenticate` hint is the first of three, and the well-known
     URIs after it are derived from the URL an operator typed (#889).
     """
-    async with _client() as client:
+    async with _client(private_hosts=mcp_private_hosts_for(server_url)) as client:
         # 1. Probe the server unauthenticated to surface the WWW-Authenticate hint.
         www_auth_url: str | None = None
         www_auth_scope: str | None = None
@@ -347,7 +356,7 @@ async def discover(server_url: str) -> DiscoveredServer:
         # here, so it never passes through the pinned client - and cannot: the
         # browser resolves it itself. A point-in-time check is all there is.
         try:
-            await validate_mcp_url(str(asm.authorization_endpoint))
+            await validate_mcp_url(str(asm.authorization_endpoint), server_url=server_url)
         except UrlRefusedError as exc:
             logger.warning(
                 "Blocked MCP OAuth authorization endpoint %s: %s", asm.authorization_endpoint, exc
@@ -375,11 +384,14 @@ async def discover(server_url: str) -> DiscoveredServer:
         )
 
 
-async def register_client(server: DiscoveredServer, redirect_uri: str) -> tuple[str, str | None]:
+async def register_client(
+    server: DiscoveredServer, redirect_uri: str, *, server_url: str
+) -> tuple[str, str | None]:
     """Dynamically register this app; return `(client_id, client_secret)`.
 
     Public clients (no registration or no secret returned) get `None` for the
-    secret and use PKCE alone.
+    secret and use PKCE alone. `server_url` is the connection's own address,
+    which scopes the private host the request may reach.
     """
     metadata = client_metadata(redirect_uri, server.scope)
     try:
@@ -388,7 +400,7 @@ async def register_client(server: DiscoveredServer, redirect_uri: str) -> tuple[
         )
     except httpx2.InvalidURL as exc:
         raise _unusable_url(exc, "a registration endpoint") from exc
-    async with _client() as client:
+    async with _client(private_hosts=mcp_private_hosts_for(server_url)) as client:
         try:
             info = await handle_registration_response(await _send(client, request))
         except httpx2.HTTPError as exc:
@@ -453,6 +465,7 @@ async def exchange_code(
     code_verifier: str,
     redirect_uri: str,
     resource: str,
+    server_url: str,
 ) -> OAuthToken:
     """Exchange an authorization code for tokens (called from the callback)."""
     data = {
@@ -465,7 +478,7 @@ async def exchange_code(
     }
     if client_secret:
         data["client_secret"] = client_secret
-    return await _token_request(token_endpoint, data)
+    return await _token_request(token_endpoint, data, server_url=server_url)
 
 
 async def refresh_tokens(
@@ -476,6 +489,7 @@ async def refresh_tokens(
     refresh_token: str,
     resource: str,
     scope: str | None,
+    server_url: str,
 ) -> OAuthToken:
     """Refresh an expired access token using the stored refresh token."""
     data = {
@@ -488,11 +502,19 @@ async def refresh_tokens(
         data["client_secret"] = client_secret
     if scope:
         data["scope"] = scope
-    return await _token_request(token_endpoint, data)
+    return await _token_request(token_endpoint, data, server_url=server_url)
 
 
-async def _token_request(token_endpoint: str, data: dict[str, str]) -> OAuthToken:
-    async with _client() as client:
+async def _token_request(
+    token_endpoint: str, data: dict[str, str], *, server_url: str
+) -> OAuthToken:
+    """POST a token grant to *token_endpoint*.
+
+    The endpoint came from the server's metadata; `server_url` is the
+    connection's own address and decides the private host the request may
+    reach, so a public server naming a listed private host is refused.
+    """
+    async with _client(private_hosts=mcp_private_hosts_for(server_url)) as client:
         try:
             request = client.build_request(
                 "POST",
