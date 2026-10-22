@@ -1,5 +1,5 @@
 ---
-source_sha: "d22e9f561f9c"
+source_sha: "75d1719b39cd"
 ---
 
 # MCP — las herramientas que aquí nadie tiene que escribir { #mcp-the-tools-nobody-here-has-to-write }
@@ -58,6 +58,35 @@ Atlassian funciona junto a uno de HTTP en streaming sin nada que configurar.
     la plataforma se rompe y no como una dirección que corregir
     ([#861](https://github.com/vstorm-co/agenticos/issues/861)) — auto-alojar y
     pegar una URL de `localhost` es el caso ordinario, no el exótico.
+
+!!! note "Un servidor en tu propia red, una VPN o un tailnet"
+
+    El rechazo de arriba tiene una excepción, y la hace el operador:
+    `MCP_ALLOWED_PRIVATE_HOSTS` nombra hosts cuyos servidores MCP pueden resolver
+    a una dirección privada (`10/8`, `172.16/12`, `192.168/16`), de CGNAT
+    compartido (`100.64/10`, el rango de Tailscale) o IPv6 de ámbito local único.
+    Cada entrada es un nombre de host o una dirección IP exactos, comparados sin
+    distinguir mayúsculas, sin comodines, rangos CIDR ni sufijos; `doctor` señala
+    una entrada que nunca puede coincidir. Vacía, que es el valor por defecto,
+    rechaza cualquier dirección así, como hasta ahora.
+
+    La excepción se limita **al host propio de la conexión**. Guardar la URL, el
+    descubrimiento OAuth, el registro del cliente y cada petición de token admiten
+    solo el host con el que se guardó la conexión, así que un servidor público no
+    puede nombrar un host de la lista como su endpoint de autorización, registro o
+    token y apuntar este deployment hacia él.
+
+    Nunca se amplía a loopback, link-local ni a una dirección de metadatos —
+    `169.254.169.254`, `100.100.100.200` y el `100.100.100.100` propio de Tailscale
+    siguen rechazados — y un nombre que responde con una dirección admitida y otra
+    rechazada sigue rechazándose entero.
+
+    El compromiso es justo el que el ajuste existe para hacer: un host nombrado es
+    una excepción a la protección SSRF elegida por el operador, y cualquier miembro
+    que pueda añadir una conexión personal lo alcanza. Nombra solo servidores que
+    expondrías a esos miembros. El run de un agent marca la URL guardada por
+    nombre, como con cualquier conexión, así que la ventana de DNS rebinding
+    descrita abajo para una URL escrita también aplica aquí.
 
 ### Personal o de toda la organización { #personal-or-organization-wide }
 

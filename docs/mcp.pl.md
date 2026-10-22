@@ -1,5 +1,5 @@
 ---
-source_sha: "d22e9f561f9c"
+source_sha: "75d1719b39cd"
 ---
 
 # MCP — narzędzia, których nikt tutaj nie musi pisać { #mcp-the-tools-nobody-here-has-to-write }
@@ -58,6 +58,35 @@ niczego do konfigurowania.
     platformy, a nie jak adres do poprawienia
     ([#861](https://github.com/vstorm-co/agenticos/issues/861)) — self-hosting
     i wklejenie URL-a z `localhost` to przypadek zwyczajny, nie egzotyczny.
+
+!!! note "Serwer we własnej sieci, w VPN-ie albo w tailnecie"
+
+    Odrzucenie opisane wyżej ma jeden wyjątek i ustanawia go operator:
+    `MCP_ALLOWED_PRIVATE_HOSTS` wymienia hosty, których serwery MCP mogą się
+    rozwiązywać na adres prywatny (`10/8`, `172.16/12`, `192.168/16`), ze
+    współdzielonej puli CGNAT (`100.64/10`, zakres Tailscale) albo na unikalny
+    lokalny adres IPv6. Każdy wpis to dokładna nazwa hosta albo adres IP,
+    porównywane bez względu na wielkość liter, bez symboli wieloznacznych, zakresów
+    CIDR ani sufiksów; `doctor` wskazuje wpis, który nigdy nie może pasować. Pusta
+    lista, domyślna, odrzuca każdy taki adres tak jak dotąd.
+
+    Wyjątek obejmuje **tylko własny host połączenia**. Zapis URL-a, wykrywanie
+    OAuth, rejestracja klienta i każde żądanie tokena dopuszczają wyłącznie host,
+    z którym połączenie zostało zapisane. Publiczny serwer nie może więc wskazać
+    hosta z listy jako swojego endpointu autoryzacji, rejestracji albo tokena
+    i skierować tam tego wdrożenia.
+
+    Nigdy nie rozszerza się na adresy loopback, link-local ani adresy metadanych —
+    `169.254.169.254`, `100.100.100.200` i własny `100.100.100.100` Tailscale nadal
+    są odrzucane — a nazwa, która zwraca jeden dopuszczony i jeden odrzucony adres,
+    nadal jest odrzucana w całości.
+
+    Kompromis jest dokładnie tym, po co istnieje to ustawienie: wymieniony host to
+    wybrany przez operatora wyjątek od ochrony przed SSRF, a każdy członek, który
+    może dodać osobiste połączenie, do niego dotrze. Wymieniaj tylko serwery, które
+    pokazałbyś tym członkom. Run agenta łączy się z zapisanym URL-em po nazwie, jak
+    przy każdym połączeniu, więc opisane niżej okno DNS rebinding dla wpisanego
+    URL-a dotyczy także tego przypadku.
 
 ### Osobiste albo dla całej organizacji { #personal-or-organization-wide }
 

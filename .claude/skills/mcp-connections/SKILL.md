@@ -107,6 +107,15 @@ The **connection's own URL** is checked at save and resolved again at run time â
 point-in-time check (#840), bearable only because an operator typed it. A URL a *model*
 chose belongs in neither; it needs `safe_download`.
 
+`MCP_ALLOWED_PRIVATE_HOSTS` is the one way past the guard for a private address, and
+it is **scoped to the connection's own host**: `mcp_private_hosts_for(server_url)` in
+`app/agents/mcp.py` returns that host or nothing, and every check on the path is
+given it - `validate_mcp_url(url, server_url=...)`, `_client(private_hosts=...)`, and
+the `server_url` that `register_client`, `exchange_code` and `refresh_tokens` require.
+Build it from the URL the connection was saved with (`McpOAuthPayload.server_url`),
+never from an endpoint the server named, or a public server could name a listed host
+as its token endpoint. No other `PinnedAsyncClient` caller passes it.
+
 An organization's OAuth connection is still the consenting person's grant at the
 provider. Revoking their access there breaks the organization's server.
 

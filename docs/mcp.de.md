@@ -1,5 +1,5 @@
 ---
-source_sha: "d22e9f561f9c"
+source_sha: "75d1719b39cd"
 ---
 
 # MCP — die Tools, die hier niemand schreiben muss { #mcp-the-tools-nobody-here-has-to-write }
@@ -60,6 +60,35 @@ konfigurieren wäre.
     ([#861](https://github.com/vstorm-co/agenticos/issues/861)) — selbst zu hosten
     und eine `localhost`-URL einzufügen ist der gewöhnliche Fall, nicht der
     exotische.
+
+!!! note "Ein Server im eigenen Netzwerk, in einem VPN oder in einem Tailnet"
+
+    Die Ablehnung oben kennt eine Ausnahme, und der Betreiber macht sie:
+    `MCP_ALLOWED_PRIVATE_HOSTS` nennt Hosts, deren MCP-Server auf eine private
+    (`10/8`, `172.16/12`, `192.168/16`), Shared-CGNAT- (`100.64/10`, der Bereich
+    von Tailscale) oder Unique-Local-IPv6-Adresse auflösen dürfen. Jeder Eintrag
+    ist ein exakter Hostname oder eine IP-Adresse, ohne Rücksicht auf Groß- und
+    Kleinschreibung verglichen, ohne Wildcards, CIDR-Bereiche oder Suffixe;
+    `doctor` nennt einen Eintrag, der nie passen kann. Leer, der Standard, lehnt
+    jede solche Adresse ab wie bisher.
+
+    Die Ausnahme gilt **nur für den eigenen Host der Verbindung**. Das Speichern
+    der URL, die OAuth-Discovery, die Client-Registrierung und jede Token-Anfrage
+    lassen nur den Host zu, mit dem die Verbindung gespeichert wurde. Ein
+    öffentlicher Server kann also keinen gelisteten Host als seinen Authorization-,
+    Registration- oder Token-Endpoint nennen und dieses Deployment darauf richten.
+
+    Sie erweitert sich nie auf Loopback-, Link-Local- oder Metadaten-Adressen —
+    `169.254.169.254`, `100.100.100.200` und Tailscales eigene `100.100.100.100`
+    bleiben abgelehnt —, und ein Name, der eine zugelassene und eine abgelehnte
+    Adresse liefert, wird weiterhin als Ganzes abgelehnt.
+
+    Der Preis ist genau der, für den es die Einstellung gibt: Ein genannter Host
+    ist eine vom Betreiber gewählte Ausnahme vom SSRF-Schutz, und jedes Mitglied,
+    das eine persönliche Verbindung anlegen kann, erreicht ihn. Nennen Sie nur
+    Server, die Sie diesen Mitgliedern zeigen würden. Der Run eines Agents wählt
+    die gespeicherte URL per Name an, wie bei jeder Verbindung, also gilt das unten
+    beschriebene DNS-Rebinding-Fenster für eine getippte URL auch hier.
 
 ### Persönlich oder organisationsweit { #personal-or-organization-wide }
 

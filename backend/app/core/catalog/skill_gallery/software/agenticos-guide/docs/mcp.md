@@ -53,6 +53,32 @@ Atlassian works alongside a streamable-HTTP one with nothing to configure.
     ([#861](https://github.com/vstorm-co/agenticos/issues/861)) — self-hosting and
     pasting a `localhost` URL is the ordinary case, not the exotic one.
 
+!!! note "A server on your own network, a VPN or a tailnet"
+
+    The refusal above has one exception, and the operator makes it:
+    `MCP_ALLOWED_PRIVATE_HOSTS` names hosts whose MCP servers may resolve to a
+    private (`10/8`, `172.16/12`, `192.168/16`), shared-CGNAT (`100.64/10`,
+    Tailscale's range) or unique-local IPv6 address. Each entry is an exact host
+    name or IP address, compared case-insensitively, with no wildcards, CIDR
+    ranges or suffixes; `doctor` names an entry that can never match. Empty, the
+    default, refuses every such address as before.
+
+    The allowance is **scoped to the connection's own host**. Saving the URL, OAuth
+    discovery, client registration and every token request admit only the host the
+    connection was saved with, so a public server cannot name a listed host as its
+    authorization, registration or token endpoint and aim this deployment at it.
+
+    It never widens to loopback, link-local or a metadata address —
+    `169.254.169.254`, `100.100.100.200` and Tailscale's own `100.100.100.100`
+    stay refused — and a name answering one admitted address and one refused one
+    is still refused whole.
+
+    The trade-off is the one the setting exists to make: a named host is an
+    operator-chosen exception to the SSRF guard, and every member who can add a
+    personal connection can reach it. Name only servers you would expose to them.
+    An agent's run dials the saved URL by name, as it does for any connection, so
+    the DNS-rebinding window described below for a typed URL applies here too.
+
 ### Personal or organization-wide
 
 Two kinds, and the difference is the point. The connect dialog asks it as one
