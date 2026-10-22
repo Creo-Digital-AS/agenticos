@@ -19,6 +19,7 @@ dashboard says green while a terminal says red.
 """
 
 import asyncio
+import ipaddress
 from typing import TYPE_CHECKING
 
 import click
@@ -260,6 +261,41 @@ async def _browser_endpoints() -> tuple[str, str]:
     )
 
 
+def _never_matches(entry: str) -> bool:
+    """An allowlist entry no URL's host can equal: a glob, a range, a URL or a port."""
+    if any(mark in entry for mark in ("*", "/", "://")):
+        return True
+    if ":" not in entry:
+        return False
+    try:
+        ipaddress.ip_address(entry)
+    except ValueError:
+        return True
+    return False
+
+
+def _mcp_private_hosts() -> tuple[str, str]:
+    """Which private hosts an MCP connection may reach, and which entries cannot match.
+
+    `MCP_ALLOWED_PRIVATE_HOSTS` is compared exactly against a connection's host,
+    so `*.tailnet.ts.net`, `100.64.0.0/10`, `https://host` and `host:8443` each
+    look like an allowance and admit nothing. Said here, where an operator looks,
+    rather than as an SSRF refusal in the connection dialog. Not a failure: the
+    rest of the list still works, and nothing is less safe for it.
+    """
+    hosts = [host.strip().lower() for host in settings.MCP_ALLOWED_PRIVATE_HOSTS if host.strip()]
+    if not hosts:
+        return "unconfigured", "none - every private MCP server address is refused"
+    unmatched = [host for host in hosts if _never_matches(host)]
+    if unmatched:
+        return (
+            "not_checked",
+            f"{', '.join(unmatched)} will never match - list exact host names, "
+            "without a scheme, port, wildcard or range",
+        )
+    return "healthy", ", ".join(hosts)
+
+
 async def _sandbox_connections(db: AsyncSession) -> tuple[str, str]:
     """Whether every registered sandbox host can actually be reached.
 
@@ -416,6 +452,9 @@ async def _run(profile: str | None = None) -> int:
 
     status, detail = await _browser_endpoints()
     failures += _report("browser endpoints", status, detail)
+
+    status, detail = _mcp_private_hosts()
+    failures += _report("private mcp hosts", status, detail)
 
     if profile:
         info(f"\nAgainst the {profile} profile - technical safeguards only:")

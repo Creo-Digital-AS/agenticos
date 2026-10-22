@@ -427,6 +427,14 @@ class TestTheReportItself:
         assert cells.count("unset") == 4
         assert "none" in cells
 
+    def test_the_private_mcp_hosts_are_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(settings, "MCP_ALLOWED_PRIVATE_HOSTS", ["sp.taild84bfc.ts.net"])
+
+        cells = _cells(_settings_section())
+
+        assert "MCP_ALLOWED_PRIVATE_HOSTS" in cells
+        assert "sp.taild84bfc.ts.net" in cells
+
     def test_the_settings_say_which_mail_path_is_live(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

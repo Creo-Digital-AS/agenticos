@@ -235,6 +235,10 @@ def _settings_section() -> Section:
             "BROWSER_CDP_ALLOWED_HOSTS",
             ", ".join(settings.BROWSER_CDP_ALLOWED_HOSTS) or "none",
         ],
+        [
+            "MCP_ALLOWED_PRIVATE_HOSTS",
+            ", ".join(settings.MCP_ALLOWED_PRIVATE_HOSTS) or "none",
+        ],
         ["GOOGLE_CLIENT_ID", "set" if settings.GOOGLE_CLIENT_ID else "unset"],
     ]
     return Section(
