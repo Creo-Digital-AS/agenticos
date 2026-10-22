@@ -16,6 +16,24 @@ WEBHOOK_ALLOWED_SCHEMES = frozenset({"http", "https"})
 # Alibaba Cloud's 100.100.100.200.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# What a host the caller names in `private_hosts` may resolve to: the private
+# ranges a VPN or tailnet hands out, and nothing else. Loopback, link-local and
+# the rest stay refused whoever is named, so naming a host is never a way to
+# reach the deployment itself or a cloud metadata service.
+_ADMITTABLE_PRIVATE = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    _CGNAT_NETWORK,
+    ipaddress.ip_network("fc00::/7"),
+)
+
+# Inside the shared-CGNAT range, so admittable by range alone: Alibaba Cloud's
+# metadata service, and Tailscale's own on-host service address.
+_NEVER_ADMITTED = frozenset(
+    {ipaddress.ip_address("100.100.100.200"), ipaddress.ip_address("100.100.100.100")}
+)
+
 
 class UrlRefusedError(ValueError):
     """A URL this deployment will not request, refused in a message we wrote.
@@ -67,6 +85,35 @@ def _is_ip_blocked(ip_str: str) -> bool:
     )
 
 
+def _is_admitted_private(ip_str: str) -> bool:
+    """Whether a named private host may be reached at *ip_str*.
+
+    True only for an address in one of the private ranges a VPN or tailnet
+    uses, and never for loopback, link-local, multicast, unspecified, reserved
+    or a metadata address that happens to sit inside those ranges.
+    """
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if (
+        addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_unspecified
+        or addr.is_reserved
+        or addr in _NEVER_ADMITTED
+    ):
+        return False
+    return any(addr in network for network in _ADMITTABLE_PRIVATE)
+
+
+def _refused(hostname: str, ip_str: str, private_hosts: frozenset[str]) -> bool:
+    if hostname in private_hosts and _is_admitted_private(ip_str):
+        return False
+    return _is_ip_blocked(ip_str)
+
+
 @dataclass(frozen=True)
 class PinnedAddress:
     """The addresses a URL was checked at, so the same ones can be dialled.
@@ -89,6 +136,8 @@ class PinnedAddress:
 def resolve_pinned_url(
     url: str,
     allowed_schemes: frozenset[str] | None = None,
+    *,
+    private_hosts: frozenset[str] = frozenset(),
 ) -> PinnedAddress:
     """Refuse a URL that points inside the deployment's network, and pin it.
 
@@ -120,6 +169,12 @@ def resolve_pinned_url(
     Args:
         url: The URL to validate.
         allowed_schemes: Allowed URL schemes. Defaults to {"http", "https"}.
+        private_hosts: Exact, lower-case hostnames (or IP literals) that may
+            resolve to a private, shared-CGNAT or unique-local address. Never
+            loopback, link-local or a metadata address, and still every
+            address the name answers with must pass. Scoping the set is the
+            caller's job: it is the MCP path's operator allowlist, narrowed to
+            the one connection being served, and empty everywhere else.
 
     Returns:
         The hostname, port and validated addresses to connect to.
@@ -174,7 +229,7 @@ def resolve_pinned_url(
     except ValueError:
         pass
     else:
-        if _is_ip_blocked(str(addr)):
+        if _refused(hostname, str(addr), private_hosts):
             raise SSRFBlockedError(
                 f"Blocked: {hostname!r} resolves to a private/internal "
                 f"address. SSRF protection does not allow requests to internal networks."
@@ -192,7 +247,7 @@ def resolve_pinned_url(
     ips: list[str] = []
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip_str = str(sockaddr[0])
-        if _is_ip_blocked(ip_str):
+        if _refused(hostname, ip_str, private_hosts):
             raise SSRFBlockedError(
                 f"Blocked: {hostname!r} resolves to private/internal "
                 f"address {ip_str!r}. SSRF protection does not allow requests to "

@@ -378,6 +378,103 @@ class TestResolvePinnedUrl:
             resolve_pinned_url("ftp://93.184.216.34/x")
 
 
+# resolve_pinned_url - a private host the caller names
+
+
+_TAILNET_HOST = "agenticos-sharepoint.taild84bfc.ts.net"
+_NAMED = frozenset({_TAILNET_HOST})
+
+
+def _answering(*ips: str):
+    """Stub DNS so every name answers *ips*."""
+    return patch(
+        "app.core.sanitize.socket.getaddrinfo",
+        return_value=[(10 if ":" in ip else 2, 1, 6, "", (ip, 443)) for ip in ips],
+    )
+
+
+class TestPrivateHosts:
+    """`private_hosts` admits a VPN or tailnet address for a host the caller
+    named, and nothing that the guard exists to keep out (`MCP_ALLOWED_PRIVATE_HOSTS`)."""
+
+    def test_without_a_named_host_a_tailnet_address_is_refused_as_before(self):
+        with _answering("100.72.29.28"), pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp")
+
+    @pytest.mark.parametrize(
+        "ip", ["100.72.29.28", "10.0.0.5", "172.16.4.2", "192.168.1.9", "fd7a:115c:a1e0::1"]
+    )
+    def test_a_named_host_may_answer_a_private_address(self, ip):
+        with _answering(ip):
+            pinned = resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp", private_hosts=_NAMED)
+
+        assert pinned == PinnedAddress(hostname=_TAILNET_HOST, port=443, ips=(ip,))
+
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "fe80::1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "240.0.0.1",
+            "100.100.100.200",
+            "100.100.100.100",
+        ],
+    )
+    def test_a_named_host_still_may_not_answer_loopback_link_local_or_metadata(self, ip):
+        with _answering(ip), pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp", private_hosts=_NAMED)
+
+    def test_one_forbidden_answer_refuses_a_named_host_whole(self):
+        with _answering("100.72.29.28", "169.254.169.254"), pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp", private_hosts=_NAMED)
+
+    def test_an_unreadable_answer_for_a_named_host_is_refused(self):
+        with _answering("not-an-address"), pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp", private_hosts=_NAMED)
+
+    def test_a_host_nobody_named_is_refused_while_another_is_named(self):
+        with _answering("100.72.29.28"), pytest.raises(SSRFBlockedError):
+            resolve_pinned_url("https://other.taild84bfc.ts.net/mcp", private_hosts=_NAMED)
+
+    def test_a_named_ip_literal_is_admitted_and_an_unnamed_one_is_not(self):
+        url = "https://100.72.29.28/mcp"
+        assert resolve_pinned_url(url, private_hosts=frozenset({"100.72.29.28"})).ips == (
+            "100.72.29.28",
+        )
+        with pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(url, private_hosts=_NAMED)
+
+    def test_a_named_metadata_literal_is_still_refused(self):
+        with pytest.raises(SSRFBlockedError):
+            resolve_pinned_url(
+                "http://169.254.169.254/", private_hosts=frozenset({"169.254.169.254"})
+            )
+
+    def test_a_named_host_does_not_widen_the_public_answer(self):
+        with _answering("93.184.216.34"):
+            assert resolve_pinned_url(f"https://{_TAILNET_HOST}/mcp", private_hosts=_NAMED).ips == (
+                "93.184.216.34",
+            )
+
+    def test_the_refusal_names_the_host_and_never_the_url(self):
+        with _answering("127.0.0.1"), pytest.raises(UrlRefusedError) as excinfo:
+            resolve_pinned_url(
+                f"https://{_TAILNET_HOST}/mcp?token=sh-secret-value", private_hosts=_NAMED
+            )
+
+        assert _TAILNET_HOST in str(excinfo.value)
+        assert "sh-secret-value" not in str(excinfo.value)
+        assert "/mcp" not in str(excinfo.value)
+
+    def test_validate_webhook_url_admits_no_private_host(self):
+        with _answering("100.72.29.28"), pytest.raises(SSRFBlockedError):
+            validate_webhook_url(f"https://{_TAILNET_HOST}/mcp")
+
+
 class TestSSRFBlockedError:
     """The dedicated exception type preserves backward compatibility."""
 

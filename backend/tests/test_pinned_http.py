@@ -162,6 +162,49 @@ class TestARefusalReachesNoSocket:
         assert wire.sent == []
 
 
+class TestANamedPrivateHost:
+    """`private_hosts` reaches every check the client makes, and only the
+    client that was given it."""
+
+    async def test_a_named_host_is_dialled_at_its_private_address(self, monkeypatch):
+        _answers(monkeypatch, ["100.72.29.28"])
+        wire = _Wire(_ok)
+
+        async with PinnedAsyncClient(
+            timeout=httpx2.Timeout(5.0),
+            transport=wire,
+            private_hosts=frozenset({"mcp.tailnet.test"}),
+        ) as client:
+            await client.get("https://mcp.tailnet.test/mcp")
+
+        assert [request.url.host for request in wire.sent] == ["100.72.29.28"]
+
+    async def test_without_it_the_same_host_is_refused(self, monkeypatch):
+        _answers(monkeypatch, ["100.72.29.28"])
+        wire = _Wire(_ok)
+
+        async with PinnedAsyncClient(timeout=httpx2.Timeout(5.0), transport=wire) as client:
+            with pytest.raises(SSRFBlockedError):
+                await client.get("https://mcp.tailnet.test/mcp")
+
+        assert wire.sent == []
+
+    async def test_another_private_host_is_refused_by_the_same_client(self, monkeypatch):
+        """The named host may answer privately; a hop to any other host may not."""
+        _answers(monkeypatch, ["100.72.29.28"])
+        wire = _Wire(_ok)
+
+        async with PinnedAsyncClient(
+            timeout=httpx2.Timeout(5.0),
+            transport=wire,
+            private_hosts=frozenset({"mcp.tailnet.test"}),
+        ) as client:
+            with pytest.raises(SSRFBlockedError):
+                await client.get("https://other.tailnet.test/mcp")
+
+        assert wire.sent == []
+
+
 class TestRedirectsKeepTheLogicalUrl:
     async def test_a_relative_location_resolves_against_the_name_not_the_address(self, monkeypatch):
         """`next_request` is built from the URL we asked for. Built from the
