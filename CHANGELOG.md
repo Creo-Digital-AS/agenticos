@@ -19,6 +19,19 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Added
+
+- **MCP servers on a private network, a VPN or a tailnet.**
+  `MCP_ALLOWED_PRIVATE_HOSTS` names hosts whose MCP servers may resolve to a
+  private (`10/8`, `172.16/12`, `192.168/16`), shared-CGNAT (`100.64/10`) or
+  unique-local IPv6 address, which the SSRF guard otherwise refuses. Matching
+  is exact, with no globs or CIDR, and the allowance covers only the
+  connection's own host: saving the URL, OAuth discovery, registration and
+  every token request admit that host and no other, so a public server cannot
+  name a listed one as its endpoint. Loopback, link-local and metadata
+  addresses stay refused. Empty, the default, changes nothing. `doctor` names
+  an entry that can never match. See [MCP](docs/mcp.md#a-connection).
+
 ## [1.12.3] - 2026-10-22
 
 ### Fixed
