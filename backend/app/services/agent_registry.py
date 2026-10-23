@@ -34,6 +34,7 @@ from app.agents.capabilities import (
     all_capabilities,
 )
 from app.agents.capabilities import get as get_capability
+from app.agents.capabilities._generated import MEDIA_TOOL_NAMES
 from app.agents.capabilities.approval import ungateable_tool_problems
 from app.agents.capabilities.browser_use import (
     WebBrowserConfig,
@@ -398,6 +399,19 @@ def _tool_override_problems(binding: CapabilityBindingSpec, definition: Capabili
         problems.append(
             f"Capability '{binding.id}' renames a tool to {', '.join(taken)}, which the "
             "framework provides itself - two tools of that name abort the turn"
+        )
+
+    # A media tool's name is read as that tool's everywhere a step is shown, so
+    # another tool may not take it. Its own tool keeping it is no rename at all.
+    impostors = sorted(
+        override.name
+        for tool_id, override in binding.tool_overrides.items()
+        if override.name in MEDIA_TOOL_NAMES and override.name != tool_id
+    )
+    if impostors:
+        problems.append(
+            f"Capability '{binding.id}' renames a tool to {', '.join(impostors)}, the name "
+            "of the tool that stores generated media - only that tool may carry it"
         )
 
     return problems
@@ -1834,6 +1848,17 @@ class AgentRegistryService:
             return [
                 f"Capability '{binding.id}' needs a {requirement.kind.value} secret, but "
                 f"'{secret.name}' holds a {secret.kind}"
+            ]
+        # Kind is not enough: an OpenAI key bound to a Google binding is the same
+        # `api_key`, and would be sent in Google's auth header at every call. A
+        # `custom` key - every key stored before purposes existed, and any for a
+        # service the deployment does not name - is the author's word, as in the
+        # Builder's picker (#2258).
+        purpose = requirement.purpose_for(config)
+        if purpose is not None and secret.purpose not in (purpose, "custom"):
+            return [
+                f"Capability '{binding.id}' is set to use {purpose}, but '{secret.name}' "
+                f"is a key for {secret.purpose}"
             ]
         # A sign-in is accepted for the coding agent only because Codex runs on
         # one; switched to Claude Code, it would refuse every task at run time.

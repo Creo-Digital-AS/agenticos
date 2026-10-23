@@ -1,5 +1,5 @@
 ---
-source_sha: "7a029c284d40"
+source_sha: "513cb1cca129"
 ---
 
 # Einen Agent dorthin bringen, wo die Menschen schon sind { #putting-an-agent-where-people-already-are }
@@ -685,6 +685,30 @@ Eines liest sich notwendigerweise anders: ein Aufruf, der von einem MCP-Server
 kam, heißt im Dashboard *Linear · Create issue* und hier mit einem vermenschlichten
 Namen, denn die Zuordnung ist die Liste der Verbindungen der Organisation, und
 sie zu lesen braucht eine Session.
+
+**Ein generiertes Bild, gesprochene Sprache oder ein Video spielt auch auf der
+Seite** (#2309). Die Konsole liest eines über `/api/v1/generated/{filename}`, und
+das braucht eine Session, die ein Besucher nicht hat. Deshalb fügt das Socket
+einem Ergebnis mit einem generierten Bild, gesprochener Sprache oder einem Video,
+das eine von den eigenen Tools dieses Runs gespeicherte Datei nennt, beim Senden
+ein `token` hinzu, und die Seite liest die Datei über
+`/api/embed/<key>/generated/<file>?token=…`, das sie streamt und Byte-Bereiche für
+einen Player durchreicht.
+
+Das Token ist ein HMAC, unter dem `SECRET_KEY` des Deployments, über den Schlüssel
+der Seite, genau diese eine Datei und ein Ablaufdatum sechs Stunden voraus. Es
+öffnet nichts anderes: keine Datei einer anderen Unterhaltung, keine einer anderen
+Organisation, keinen anderen Namen. Ein falsches, abgelaufenes oder fehlendes Token
+bekommt dasselbe 404 wie eine fehlende Datei. Es wird hinzugefügt, wenn der Frame
+hinausgeht, also speichert das Transkript keines, und die Karte ist das Ergebnis
+dieses Schritts — sie erscheint nur, wo *Was jeder Schritt zurückgegeben hat* an
+ist. Eine Socket-Integration findet dieselbe Adresse im `url` des Payloads, als
+API-Pfad.
+
+Ein Ergebnis, das eine Datei nennt, die dieser Run nicht gespeichert hat,
+bekommt kein Token, wie auch immer das Tool heißt, das es zurückgab. Ein Link darf
+120-mal pro Minute abgerufen werden, genug für die Byte-Bereiche eines Players;
+darüber hinaus wird mit 429 geantwortet.
 
 **Ein Widget und ein rohes Socket tragen keine Schalter und bekommen diese
 Standardwerte**, abgelesen von `PageConfig` statt wiederholt — eine zweite Kopie
@@ -2738,7 +2762,8 @@ Dinge, die er zeigt und eine Kanal-Fußzeile nicht:
   denn unter dem Scope `agent` wird ein Workspace geteilt, und eine Datei zu finden,
   die man nie erstellt hat, liest sich wie ein Leck, bis etwas auf dem Bildschirm es
   erklärt. Eine Datei ist eine Kachel, und eine zu öffnen öffnet denselben Viewer,
-  den der Workspaces-Bildschirm benutzt — ein Bild, ein PDF, Markdown als Vorschau
+  den der Workspaces-Bildschirm benutzt — ein Bild, ein PDF, ein Player für Audio
+  und Video, Markdown als Vorschau
   oder Quelltext, und immer ein Download —, der `…/workspace/file` für Text und
   `…/workspace/raw` für Bytes liest. Bewusst über die *Unterhaltung* statt über die
   Workspace-ID: das ist es, was diese Dateien für jemanden erreichbar hält, mit dem

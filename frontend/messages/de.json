@@ -825,6 +825,56 @@
     "platformTools": "Werkzeuge, die dieser Agent aufrufen darf",
     "platformWritesBadge": "ändert etwas",
     "platformRemove": "Aus diesem Agent entfernen",
+    "speechProvider": "Provider",
+    "speechProviderPlaceholder": "Provider wählen",
+    "speechProviderDetail": "Die Provider aus dem Sprachkatalog, deren Schlüssel der Vault speichern kann.",
+    "speechModel": "Modell",
+    "speechModelPlaceholder": "Modell wählen",
+    "speechModelDetail": "Jedes Modell, mit dem dieser Provider sprechen kann.",
+    "speechModelUnknownProvider": "Dieses Binding nennt {provider}, der nicht sprechen kann. Wählen Sie oben einen Provider.",
+    "speechVoice": "Stimme",
+    "speechVoicePlaceholder": "Stimme wählen",
+    "speechVoiceDetail": "Die Voreinstellung - der Agent darf pro Clip zu einer anderen wechseln, unter den unten erlaubten Stimmen.",
+    "speechVoiceIdPlaceholder": "Stimmen-ID",
+    "speechAccountVoiceDetail": "{provider}-Stimmen gehören zu Ihrem Konto. Fügen Sie die ID einer Stimme aus Ihrer Stimmenbibliothek ein. Sie ist die Voreinstellung - der Agent darf pro Clip zu einer anderen wechseln, unter den unten erlaubten Stimmen.",
+    "speechOtherVoices": "Erlaubte Stimmen",
+    "speechOtherVoicesDetail": "Die einzigen Stimmen, zu denen der Agent wechseln darf, Clip für Clip - für einen Dialog oder für Erzähler und Figur.",
+    "speechAnyVoiceWarning": "{count, plural, =1 {Keine erlaubt: der Agent darf mit der einen Stimme dieses Modells sprechen.} other {Keine erlaubt: der Agent darf mit jeder der # Stimmen dieses Modells sprechen.}}",
+    "speechAnyAccountVoiceWarning": "Keine eingetragen: der Agent darf mit jeder Stimme in Ihrem {provider}-Konto sprechen, über ihre ID - geklonte Stimmen eingeschlossen.",
+    "speechOtherVoicesFull": "{count} weitere Stimmen sind das Maximum, das einem Agenten angeboten werden kann.",
+    "speechOtherVoiceId": "Stimmen-ID {position}",
+    "speechOtherVoiceNote": "Wofür Stimme {position} ist",
+    "speechOtherVoiceNotePlaceholder": "Wer es ist, z. B. Anna, die Erzählerin",
+    "speechOtherVoiceRemove": "Stimme {position} entfernen",
+    "speechOtherVoiceAdd": "Stimme hinzufügen",
+    "speechProvidersLoading": "Lese, was jeder Provider anbietet…",
+    "speechProvidersUnavailable": "Die Liste der Provider konnte nicht gelesen werden. Das Modell oben wird trotzdem verwendet.",
+    "videoProvider": "Provider",
+    "videoProviderPlaceholder": "Provider wählen",
+    "videoProviderDetail": "Die Provider aus dem Videokatalog, deren Schlüssel der Vault speichern kann.",
+    "videoModel": "Modell",
+    "videoModelPlaceholder": "Modell wählen",
+    "videoModelDetail": "Jedes Modell, mit dem dieser Provider Videos erzeugen kann.",
+    "videoModelUnknownProvider": "Dieses Binding nennt {provider}, der keine Videos erzeugen kann. Wählen Sie oben einen Provider.",
+    "videoResolution": "Auflösung",
+    "videoResolutionDetail": "Die Voreinstellung - der Agent darf pro Clip eine andere verlangen, bis zur höchsten Auflösung unten. Höher kostet mehr pro Sekunde.",
+    "videoMaxResolution": "Höchste Auflösung",
+    "videoMaxResolutionAny": "Beliebige Auflösung",
+    "videoMaxResolutionDetail": "Die einzige Grenze der Auflösung: der Agent darf alles bis zu ihr verlangen.",
+    "videoMaxResolutionAnyWarning": "Ohne höchste Auflösung darf der Agent jede Auflösung verlangen, die dieses Modell rendert, bis zu {highest}, und eine Sekunde in höherer Auflösung kostet mehr.",
+    "videoAspectRatio": "Seitenverhältnis",
+    "videoAspectRatioDetail": "Die Voreinstellung - der Agent darf pro Clip ein anderes Seitenverhältnis verlangen, das dieses Modell rendert.",
+    "videoLengthRange": "Dieses Modell erzeugt Clips von {min} bis {max} Sekunden.",
+    "videoLengthDecided": "Dieses Modell bestimmt seine Länge selbst, {min} bis {max} Sekunden.",
+    "videoProvidersLoading": "Lese, was jeder Provider anbietet…",
+    "videoProvidersUnavailable": "Die Liste der Provider konnte nicht gelesen werden. Das Modell oben wird trotzdem verwendet.",
+    "videoAudio": "Ton",
+    "videoAudioDetail": "Die Voreinstellung - der Agent darf pro Clip Ton an oder aus verlangen.",
+    "videoAudioDefault": "Voreinstellung des Providers",
+    "videoAudioOn": "An",
+    "videoAudioOff": "Aus",
+    "speechFormat": "Dateiformat",
+    "speechFormatDetail": "Die Formate, die dieser Provider liefert. mp3 ist kleiner, wav unkomprimiert.",
     "voiceDescription": "Wie man mit diesem Agent sprechen kann: ein Sprachanruf in Echtzeit oder Diktieren, das Sprache in Text umwandelt. Wirkt, sobald der Agent veröffentlicht ist.",
     "voicePair": "Transkriptionsmodell",
     "voicePairInherit": "Von der Organisation",
@@ -1558,6 +1608,13 @@
       "reviseVisual": "Hat ein Visual überarbeitet",
       "readingVisual": "Liest ein Visual",
       "readVisual": "Hat ein Visual gelesen",
+      "generateSpeech": "Sprache",
+      "generatingSpeech": "Nimmt Sprache auf",
+      "speechNotStored": "Die Sprache wurde aufgenommen, aber nicht gespeichert.",
+      "spokenBy": "Stimme: {voice}",
+      "generateVideo": "Video",
+      "generatingVideo": "Erzeugt ein Video",
+      "videoNotStored": "Das Video wurde erzeugt, aber nicht gespeichert.",
       "workingInText": "Arbeitet im Textmodus daran",
       "workedInText": "Im Textmodus bearbeitet",
       "suggestingNextSteps": "Schlägt nächste Schritte vor",
@@ -7516,6 +7573,22 @@
       "needs": "Ein API-Schlüssel des Bildanbieters im Vault. Jedes Bild rechnet dieser Anbieter ab.",
       "never": "Veröffentlicht nie ein Bild; es erscheint im Gespräch."
     },
+    "text_to_speech": {
+      "name": "Sprachausgabe",
+      "does": "Liest einen Text als Audioclip vor.",
+      "example1": "Ein Voice-over für ein Produktvideo",
+      "example2": "Eine gesprochene Fassung der Wochenzusammenfassung",
+      "needs": "Ein API-Schlüssel des Sprachanbieters im Vault. Jeden Clip rechnet dieser Anbieter ab, pro Zeichen.",
+      "never": "Verschickt nie Audio; der Clip erscheint im Gespräch."
+    },
+    "video_generation": {
+      "name": "Videoerzeugung",
+      "does": "Erzeugt ein kurzes Video aus einer Beschreibung oder aus einem Bild, mit dem es beginnt.",
+      "example1": "Ein zehnsekündiger Teaser für einen Produktstart",
+      "example2": "Eine animierte Fassung eines erzeugten Logos",
+      "needs": "Ein API-Schlüssel des Videoanbieters im Vault. Jeden Clip rechnet dieser Anbieter ab, pro Sekunde.",
+      "never": "Veröffentlicht nie ein Video; es erscheint im Gespräch."
+    },
     "knowledge": {
       "name": "Wissenssuche",
       "does": "Der Agent antwortet aus Ihren Dokumenten und sagt, aus welchem jede Antwort stammt.",
@@ -7884,6 +7957,78 @@
       "aspect_ratio": {
         "title": "Seitenverhältnis",
         "description": "Seitenverhältnis, z. B. 16:9 oder 1:1."
+      }
+    },
+    "text_to_speech": {
+      "provider": {
+        "title": "Provider",
+        "description": "Wessen Stimmen sprechen. Zur Auswahl stehen die Provider aus `app/core/catalog/text_to_speech_models.json`, deren Schlüssel der Vault speichern kann."
+      },
+      "model": {
+        "title": "Sprachmodell",
+        "description": "Welches Sprachmodell dieses Anbieters spricht. Ein Modell außerhalb des Katalogs wird hier abgelehnt statt mitten im Lauf."
+      },
+      "voice": {
+        "title": "Stimme",
+        "description": "Die Stimme, die spricht, sofern der Agent keine andere wählt; leer bedeutet die erste Stimme des Modells. ElevenLabs-Stimmen gehören zu Ihrem Konto, also fügen Sie für ElevenLabs die Stimmen-ID aus Ihrer Stimmenbibliothek ein."
+      },
+      "voices": {
+        "title": "Erlaubte Stimmen",
+        "description": "Die einzigen Stimmen, zu denen der Agent statt der obigen wechseln darf, für jeden Clip einzeln - für einen Dialog oder für Erzähler und Figur. Leer bedeutet, dass er jede Stimme des Modells wählen darf - bei ElevenLabs jede Stimmen-ID in Ihrem Konto."
+      },
+      "output_format": {
+        "title": "Dateiformat",
+        "description": "mp3 ist kleiner, wav unkomprimiert. Leer bedeutet das erste Format des Anbieters - Gemini liefert nur wav."
+      },
+      "max_characters": {
+        "title": "Längster Text",
+        "description": "Der meiste Text, den ein Aufruf sprechen darf, was die Kosten eines einzelnen Aufrufs begrenzt."
+      }
+    },
+    "video_generation": {
+      "provider": {
+        "title": "Provider",
+        "description": "Wessen Modell das Video erzeugt. Zur Auswahl stehen die Provider aus `app/core/catalog/video_models.json`, deren Schlüssel der Vault speichern kann."
+      },
+      "model": {
+        "title": "Videomodell",
+        "description": "Welches Videomodell dieses Providers den Clip erzeugt. Ein Modell außerhalb des Katalogs wird hier abgelehnt statt mitten im Lauf."
+      },
+      "resolution": {
+        "title": "Auflösung",
+        "description": "Die Auflösung, in der ein Clip entsteht, sofern der Agent keine andere verlangt; leer bedeutet die erste Auflösung des Modells. Höher kostet mehr pro Sekunde."
+      },
+      "max_resolution": {
+        "title": "Höchste Auflösung",
+        "description": "Die höchste Auflösung, die der Agent verlangen darf, mindestens die übliche; sie begrenzt die Kosten einer Sekunde. Leer bedeutet, dass der Agent jede Auflösung verlangen darf, die das Modell rendert."
+      },
+      "aspect_ratio": {
+        "title": "Seitenverhältnis",
+        "description": "Die Form eines Clips, sofern der Agent keine andere verlangt; leer bedeutet die erste des Modells."
+      },
+      "seconds": {
+        "title": "Länge",
+        "description": "Wie viele Sekunden ein Clip läuft, sofern der Agent keine andere Länge verlangt; leer bedeutet fünf oder den nächsten Wert, den das Modell erzeugt. Nicht für ein Modell, das seine Länge selbst bestimmt."
+      },
+      "max_seconds": {
+        "title": "Längster Clip",
+        "description": "Der längste Clip, den der Agent verlangen darf, was die Kosten eines Aufrufs begrenzt; leer bedeutet das eigene Limit des Modells. Nicht für ein Modell, das seine Länge selbst bestimmt."
+      },
+      "audio": {
+        "title": "Ton",
+        "description": "Ob Clips Ton haben, sofern der Agent nichts anderes verlangt, wo das Modell ihn optional macht; leer bedeutet die Voreinstellung des Providers."
+      },
+      "alibaba_workspace": {
+        "title": "Alibaba-Workspace",
+        "description": "Nur Alibaba: die Workspace-ID in Model Studio, über die Wan 3.0 aufgerufen wird. Leer bleibt es beim gemeinsamen DashScope-Endpunkt, den Alibaba für bestehende Integrationen weiterführt."
+      },
+      "alibaba_region": {
+        "title": "Alibaba-Region",
+        "description": "Nur Alibaba: die Region, in der der Workspace liegt."
+      },
+      "timeout_seconds": {
+        "title": "Zeitlimit",
+        "description": "Wie lange auf einen Clip gewartet wird, in Sekunden. Ein bis dahin nicht fertiger Job wird abgebrochen, wo der Provider es erlaubt, und mit seiner Schätzung gebucht."
       }
     },
     "knowledge": {

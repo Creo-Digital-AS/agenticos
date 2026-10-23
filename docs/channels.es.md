@@ -1,5 +1,5 @@
 ---
-source_sha: "7a029c284d40"
+source_sha: "513cb1cca129"
 ---
 
 # Poner un agent donde la gente ya está { #putting-an-agent-where-people-already-are }
@@ -650,6 +650,29 @@ Una cosa se lee distinto por necesidad: una llamada que vino de un servidor MCP 
 llama *Linear · Create issue* en el dashboard y aquí lleva un nombre humanizado,
 porque el mapeo es la lista de conexiones de la organización y leerla requiere una
 sesión.
+
+**Una imagen, un audio de voz o un vídeo generados también se reproducen en la
+página** (#2309). La consola los lee a través de `/api/v1/generated/{filename}`,
+que necesita una sesión, y un visitante no la tiene. Por eso, al enviar un
+resultado con una imagen, una voz o un vídeo generados que nombra un
+archivo guardado por las propias herramientas de esa ejecución, el socket le añade
+un `token`, y la página lee el archivo a través de
+`/api/embed/<key>/generated/<file>?token=…`, que lo transmite en streaming y deja
+pasar los rangos de bytes para un reproductor.
+
+El token es un HMAC, bajo la `SECRET_KEY` del despliegue, de la clave de la
+página, ese único archivo y una caducidad a seis horas vista. No abre nada más: ni
+el archivo de otra conversación, ni el de otra organización, ni ningún otro nombre.
+Un token incorrecto, caducado o ausente recibe el mismo 404 que un archivo que no
+existe. Se añade cuando sale el frame, así que la transcripción no guarda ninguno,
+y la tarjeta es el resultado de ese paso: solo aparece donde *Qué devolvió cada
+paso* está activado. Una integración por socket encuentra la misma dirección en el
+`url` del payload, como ruta de la API.
+
+Un resultado que nombra un archivo que esta
+ejecución no guardó no recibe token, se llame como se llame la herramienta que lo
+devolvió. Un enlace puede pedirse 120 veces por minuto, margen para los rangos de
+bytes de un reproductor; por encima de eso recibe un 429.
 
 **Un widget y un socket en crudo no llevan interruptores y reciben estos valores
 por defecto**, leídos de `PageConfig` en vez de repetidos — una segunda copia de
@@ -2583,6 +2606,7 @@ que un pie de canal no:
   `agent` un workspace se comparte y encontrar un fichero que nunca creaste se lee
   como una fuga hasta que algo en pantalla lo explica. Un fichero es una baldosa, y
   abrir uno abre el mismo visor que usa la pantalla Workspaces — una imagen, un PDF,
+  un reproductor de audio y vídeo,
   markdown como vista previa o como fuente, y siempre una descarga — leyendo
   `…/workspace/file` para el texto y `…/workspace/raw` para los bytes. A través de la
   *conversación* y no del id del workspace, deliberadamente: eso es lo que mantiene

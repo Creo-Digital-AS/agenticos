@@ -702,6 +702,22 @@ A bucket the deployment writes to needs `s3:PutObject`, `s3:GetObject`,
 For a local MinIO, `make docker-minio` starts one on `:9000` with
 `minioadmin` / `minioadmin`.
 
+### Generated media
+
+Images, speech and video agents generate are kept in the same store, under
+`generated_<org>/`, and each is recorded against its organization and the
+conversation it was made in. What an organization keeps is bounded twice. See
+[Data protection](data-protection.md#generated-media) for what is deleted when.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GENERATED_MEDIA_QUOTA_MB` | `5120` | Generated media one organization may keep, in MiB. Every file counts, including one made with no conversation - a preview or a test run, a channel `/btw` aside, an API run that names no conversation; the sweep deletes those after 7 days. Checked before each paid generation call: past it, the tool answers that the organization has used its storage and spends nothing. An admitted call holds an estimate of its file against the quota until the file is stored - 16 MiB for an image, 8 KiB per character of speech, 2 MiB per second of video - so a call whose estimate would carry the organization past it is refused, and concurrent runs or parallel calls in one response cannot all pass on the same figure. A file larger than its estimate counts at its real size. `0` is no quota |
+| `GENERATED_MEDIA_RETENTION_DAYS` | `90` | Age at which the daily `sweep-generated-media` job deletes a generated file and its record, whether or not its conversation is still there. `0` keeps them until their conversation or organization is deleted. A file with no conversation goes after 7 days either way |
+
+A file is served by streaming only the byte range a player asks for, from disk
+or by a ranged `GetObject`, so a long clip is never held whole in the API or the
+console's server.
+
 ### S3/MinIO sync
 
 | Variable | Default | Description |
@@ -930,7 +946,8 @@ the "who is holding a copy of that CSV" question the per-workspace page cannot
 answer.
 
 **Clicking a file opens it in a viewer, and it is the same viewer in the chat panel.**
-An image is a picture, a PDF is the browser's own PDF view, markdown offers *Preview*
+An image is a picture, a PDF is the browser's own PDF view, audio and video play in
+the browser's own player, markdown offers *Preview*
 and *Source* — both are the file, and a `#` that silently became large type is how
 somebody fails to notice their agent is writing markdown into something nothing reads
 as markdown — and anything else is its text. Download is always there, including for
@@ -945,9 +962,11 @@ conversation route is reached by fetching the conversation, so somebody a chat w
 *shared with* keeps access — and one module deciding what may be displayed, so the
 answer cannot differ by surface.
 
-Almost everything is served as an attachment. **Raster images and PDFs** are served
-for display: a raster because it cannot execute, a PDF because the browser renders it
-in its own viewer, which never gets the page's DOM.
+Almost everything is served as an attachment. **Raster images, PDFs, audio and video**
+(MP3, WAV, Ogg, Opus, M4A, MP4, WebM) are served for display: a raster because it
+cannot execute, a PDF because the browser renders it in its own viewer, which never
+gets the page's DOM, and audio and video because the browser hands them to its media
+pipeline, which plays them and runs nothing in the page.
 
 !!! danger "SVG and HTML are downloadable and never displayable"
 

@@ -37,6 +37,8 @@ export type StepKind =
   | "shell"
   | "chart"
   | "image"
+  | "audio"
+  | "video"
   | "knowledge"
   | "web"
   | "skill"
@@ -60,6 +62,8 @@ export type ToolRenderer =
   | "artifact"
   | "chart"
   | "generated-image"
+  | "generated-speech"
+  | "generated-video"
   | "web-search"
   | "rag"
   | "run-python"
@@ -300,6 +304,26 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     render: "generated-image",
     captionKey: "generatingImage",
     displayNameKey: "generateImage",
+    opensWhenDone: true,
+    opensOnSight: true,
+  },
+
+  // text_to_speech - the clip is the answer, so it opens wherever it lands, as an image does.
+  generate_speech: {
+    kind: "audio",
+    render: "generated-speech",
+    captionKey: "generatingSpeech",
+    displayNameKey: "generateSpeech",
+    opensWhenDone: true,
+    opensOnSight: true,
+  },
+
+  // video_generation - the clip is the answer, so it opens wherever it lands, as an image does.
+  generate_video: {
+    kind: "video",
+    render: "generated-video",
+    captionKey: "generatingVideo",
+    displayNameKey: "generateVideo",
     opensWhenDone: true,
     opensOnSight: true,
   },

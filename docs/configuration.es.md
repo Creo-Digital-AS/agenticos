@@ -1,5 +1,5 @@
 ---
-source_sha: "9480d24768a5"
+source_sha: "6ebeadc2957b"
 ---
 
 # Configuración { #configuration }
@@ -729,6 +729,23 @@ además `kms:Encrypt`, `kms:Decrypt` y `kms:GenerateDataKey` sobre la clave. Un
 MinIO local lo arranca `make docker-minio` en `:9000` con
 `minioadmin` / `minioadmin`.
 
+### Medios generados { #generated-media }
+
+Las imágenes, la voz y los vídeos que generan los agents se guardan en el mismo
+almacén, bajo `generated_<org>/`, y cada uno se registra con su organización y la
+conversación en la que se hizo. Lo que conserva una organización está acotado dos
+veces. Consulta [Protección de datos](data-protection.md#generated-media) para qué
+se borra y cuándo.
+
+| Variable | Por defecto | Descripción |
+|----------|---------|-------------|
+| `GENERATED_MEDIA_QUOTA_MB` | `5120` | Medios generados que puede conservar una organización, en MiB. Cuenta cada archivo, también uno creado sin conversación - de una vista previa o una ejecución de prueba, un inciso `/btw` en un canal, un run de la API que no nombra conversación; el barrido los borra a los 7 días. Se comprueba antes de cada llamada de generación de pago: superada, la herramienta responde que la organización ha agotado su almacenamiento y no gasta nada. Una llamada admitida reserva en la cuota una estimación de su archivo hasta que el archivo se guarda - 16 MiB por imagen, 8 KiB por carácter de voz, 2 MiB por segundo de vídeo -, así que se rechaza una llamada cuya estimación llevaría a la organización por encima, y las ejecuciones simultáneas o las llamadas paralelas en una misma respuesta no pueden pasar todas con la misma cifra. Un archivo mayor que su estimación cuenta por su tamaño real. `0` es sin cuota |
+| `GENERATED_MEDIA_RETENTION_DAYS` | `90` | Antigüedad a la que la tarea diaria `sweep-generated-media` borra un archivo generado y su registro, siga o no su conversación. `0` los conserva hasta que se borra su conversación u organización. Un archivo sin conversación se va a los 7 días en cualquier caso |
+
+Un archivo se sirve en streaming, solo el rango de bytes que pide un reproductor
+-desde disco o con un `GetObject` por rango-, así que un clip largo nunca se tiene
+entero ni en la API ni en el servidor de la consola.
+
 ### Sincronización con S3/MinIO { #s3minio-sync }
 
 | Variable | Por defecto | Descripción |
@@ -964,7 +981,8 @@ el lector puede ver: la pregunta de "quién tiene una copia de ese CSV" que la p
 por workspace no responde.
 
 **Al hacer clic en un archivo se abre en un visor, y es el mismo visor del panel del
-chat.** Una imagen es una imagen, un PDF es la vista PDF propia del navegador,
+chat.** Una imagen es una imagen, un PDF es la vista PDF propia del navegador, el audio y
+el vídeo suenan en el reproductor propio del navegador,
 markdown ofrece *Preview* y *Source* —ambos son el archivo, y un `#` que se convirtió
 en silencio en letra grande es como alguien no llega a notar que su agent escribe
 markdown dentro de algo que nada lee como markdown— y cualquier otra cosa es su
@@ -980,9 +998,12 @@ conversación se llega obteniendo la conversación, así que alguien con quien s
 *compartió* un chat conserva el acceso— y un solo módulo decide qué se puede mostrar,
 para que la respuesta no pueda variar según la superficie.
 
-Casi todo se sirve como adjunto. **Las imágenes ráster y los PDF** se sirven para
-mostrarse: la ráster porque no puede ejecutarse, el PDF porque el navegador lo
-renderiza en su propio visor, que nunca recibe el DOM de la página.
+Casi todo se sirve como adjunto. **Las imágenes ráster, los PDF, el audio y el
+vídeo** (MP3, WAV, Ogg, Opus, M4A, MP4, WebM) se sirven para mostrarse: la ráster
+porque no puede ejecutarse, el PDF porque el navegador lo renderiza en su propio
+visor, que nunca recibe el DOM de la página, y el audio y el vídeo porque el
+navegador los entrega a su reproductor, que los reproduce y no ejecuta nada en la
+página.
 
 !!! danger "SVG y HTML se pueden descargar y nunca mostrar"
 

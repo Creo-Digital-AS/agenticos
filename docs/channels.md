@@ -626,6 +626,26 @@ named *Linear · Create issue* in the dashboard and by a humanized name here,
 because the mapping is the organization's list of connections and reading it needs a
 session.
 
+**A generated image, clip of speech or video plays on the page too** (#2309).
+The console reads one through `/api/v1/generated/{filename}`, which needs a
+session, and a visitor has none. So as the socket sends a generated image,
+speech or video result naming a file that this run's own tools stored, it adds
+a `token`, and the page reads the file through
+`/api/embed/<key>/generated/<file>?token=…`, which streams it and passes byte
+ranges through for a player.
+
+The token is an HMAC, under the deployment's `SECRET_KEY`, of the page's key, that
+one file and an expiry six hours away. It opens nothing else: not another
+conversation's file, not another organization's, not any other name. A bad,
+expired or missing token gets the same 404 as a missing file. It is added as the
+frame leaves, so the transcript stores none, and the card is that step's result —
+it shows only where *What each step returned* is on. A socket integration finds
+the same address in the payload's `url`, as an API path.
+
+A result that names a file this run did not store gets no token, whatever the
+tool that returned it is called. One link may be fetched 120 times a minute, room
+for a player's byte ranges, and a link past that is answered 429.
+
 **A widget and a raw socket carry no switches and get these defaults**, read off
 `PageConfig` rather than repeated — a second copy of "off by default" is a copy
 that can disagree with the one somebody reads in the Builder. What `widget.js`
@@ -2447,7 +2467,8 @@ channel footer does not:
   which is most of them. It names whose files these are, because under `agent` scope
   one workspace is shared and finding a file you never created reads as a leak until
   something on screen explains it. A file is a tile, and opening one opens the same
-  viewer the Workspaces screen uses — a picture, a PDF, markdown as preview or
+  viewer the Workspaces screen uses — a picture, a PDF, a player for audio and
+  video, markdown as preview or
   source, and always a download — reading `…/workspace/file` for text and
   `…/workspace/raw` for bytes. Through the *conversation* rather than the
   workspace id, deliberately: that is what keeps these files reachable for

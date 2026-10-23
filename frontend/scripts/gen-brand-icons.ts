@@ -215,9 +215,13 @@ const PROVIDERS: Readonly<Record<string, Source>> = {
   anthropic: lobehub("anthropic"),
   azure: lobehub("azure"),
   bedrock: lobehub("bedrock"),
+  // BytePlus is ByteDance's cloud, and lobehub draws it with ByteDance's mark.
+  byteplus: lobehub("bytedance"),
   cerebras: lobehub("cerebras"),
   cohere: lobehub("cohere"),
   deepseek: lobehub("deepseek"),
+  // Text to speech's provider (#2259); a black mark, so it keeps the text colour.
+  elevenlabs: lobehub("elevenlabs"),
   fireworks: lobehub("fireworks"),
   github: lobehub("github"),
   google: lobehub("gemini"),

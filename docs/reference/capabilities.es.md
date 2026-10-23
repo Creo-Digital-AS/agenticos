@@ -1,5 +1,5 @@
 ---
-source_sha: "4e81cc4fde03"
+source_sha: "75c53c320348"
 ---
 
 # El catálogo de capabilities { #the-capability-catalog }
@@ -78,6 +78,8 @@ guarda archivos. El navegador web apunta al servicio de navegador del despliegue
 | `charts` | Gráficos | analysis | `create_chart` | — | — | tal cual |
 | `visuals` | Visuals | analysis | `draw`, `revise_visual`, `read_visual` | — | — | tal cual |
 | `image_generation` | Generación de imágenes | analysis | `generate_image` | — | obligatoria | tal cual |
+| `text_to_speech` | Texto a voz | analysis | `generate_speech` | — | obligatoria | tal cual |
+| `video_generation` | Generación de vídeo | analysis | `generate_video` | — | obligatoria | delegada |
 | `coding_agent` | Coding agent | analysis | `run_coding_agent` | `sandbox:execute` | obligatoria | delegada |
 | `subagents` | Subagents | reasoning | `task`, `check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`, `send_message_to_subagent`, `soft_cancel_task`, `hard_cancel_task`, `create_agent`, `delegate` | `agents:delegate` | — | delegada |
 | `planning` | Planificación | reasoning | `write_plan`, `read_plan`, `add_task`, `update_task_status`, `update_task_statuses`, `remove_task`, `add_subtask`, `set_dependency`, `get_available_tasks` | — | — | tal cual |
@@ -1134,12 +1136,172 @@ total como parcial (`cost_is_partial`) en vez de ocultar el gasto.
 **Adónde va la imagen.** Cada imagen generada se guarda **por organización** y se
 sirve de vuelta con [`GET /api/v1/generated/{filename}`](../architecture.md),
 acotada a la organización propia de quien llama: una frontera más amplia que la de
-un archivo subido a un chat, que pertenece a un solo usuario, porque no hay
-constancia de quién produjo una imagen. Cuando el agent tiene además un workspace
+un archivo subido a un chat, que pertenece a un solo usuario. Se registra con la
+conversación en la que se hizo y se borra con ella, cuenta contra la cuota de medios
+generados de la organización y se borra tras el periodo de retención
+([configuración](../configuration.md#generated-media)). Pasada la cuota, la
+herramienta lo responde antes de gastar nada. Cuando el agent tiene además un workspace
 (la capability `sandbox`), la misma imagen se escribe en él bajo `/output`, para que
 un paso `execute` posterior pueda construir con ella: montar un PDF, una diapositiva,
 una página. Un agent sin workspace sigue generando y mostrando imágenes; simplemente
 no tiene dónde construir con ellas.
+
+## Texto a voz { #text-to-speech }
+
+`generate_speech` — *Lee un texto en voz alta como clip de audio.*
+
+Lee un texto en voz alta con el provider de voz que elige el autor y se comporta
+como la generación de imágenes: el clip se guarda, aparece en la conversación como
+reproductor y se escribe en `output/` cuando hay un workspace abierto (#2259).
+
+| Configuración | Por defecto | Valores |
+|---|---|---|
+| `provider` | `openai` | `openai`, `elevenlabs`, `google` |
+| `model` | `gpt-4o-mini-tts` | Los modelos de ese provider, de `app/core/catalog/text_to_speech_models.json` |
+| `voice` | la primera del modelo | La voz por defecto del agente; puede cambiarla en cada clip dentro de `voices`. Una voz del catálogo para OpenAI y Gemini; un id de tu propia biblioteca de voces para ElevenLabs |
+| `voices` | ninguna: cualquier voz del modelo | Hasta 20 voces a las que el agente puede cambiar en cada clip, cada una con un `id` y, para una voz de la cuenta, una `note` de hasta 120 caracteres que dice quién es. Vacía permite todas las voces del modelo; en ElevenLabs, cualquier id de voz de la cuenta |
+| `output_format` | el primero del provider | `mp3`, `wav` (Gemini solo devuelve `wav`) |
+| `max_characters` | `5000` | 1–10 000; el máximo de texto que puede decir una llamada |
+
+**Providers, modelos, voces y precios son datos**, en el fichero del catálogo. Un
+provider es un [propósito de secreto](../secrets.md) con una clave de API simple -
+ElevenLabs no ejecuta modelos de chat, así que es un servicio en el vault y no un
+provider de modelos - y una entrada sin propósito, o cuya forma de API no tiene
+cliente, se descarta. Los antiguos `tts-1` y `tts-1-hd` de OpenAI hablan con nueve
+de sus trece voces, por eso las voces se listan por modelo.
+
+**Las voces de ElevenLabs pertenecen a la cuenta.** Sus voces por defecto
+compartidas caducan el 31-12-2026, así que el catálogo no lista ninguna y un
+binding nombra una de las voces propias de la cuenta por su id; publicar sin ella
+se rechaza.
+
+**La voz es un valor por defecto; las voces permitidas son el límite.** `voice`
+es la voz con la que habla el agente mientras no pida otra, y `voices` enumera
+las únicas demás a las que puede cambiar, para un diálogo o para un narrador y
+un personaje. Vacía, se permite cualquier voz del modelo; en ElevenLabs,
+cualquier id de voz de la cuenta, clonadas incluidas, y el Builder lo advierte.
+Las voces llegan al modelo como un `enum` en el parámetro `voice` de la
+herramienta, con la habitual como valor por defecto y la descripción de cada una
+del catálogo o, para una voz de la cuenta, la nota del autor. Una voz de cuenta
+abierta es texto libre cuyo formato se comprueba. Una voz de la lista que el
+modelo no tiene se rechaza al publicar, y una fuera de la lista se devuelve al
+modelo en la llamada.
+
+**El selector de claves muestra las claves del provider elegido.** El secreto es
+obligatorio para todos los providers y se declara obligatorio *cuando* `provider`
+es uno de ellos, lo que le dice al Builder que el provider es el propósito de la
+clave.
+
+**Un texto largo es un solo clip.** Un texto que supera el límite por petición del
+modelo se corta en un párrafo, una frase o una palabra y se dice en orden. Los
+trozos MP3 se unen uno tras otro; el WAV se pide a cada provider como PCM de
+24 kHz y se envuelve en una sola cabecera. `instructions` - tono, ritmo, acento -
+llegan a los modelos que las leen (`gpt-4o-mini-tts` de OpenAI, Gemini) y se
+omiten en los demás.
+
+**Al budget se le pregunta con el precio del clip.** La voz se vende por carácter,
+así que el catálogo guarda un precio fechado por millón de caracteres y el coste
+se conoce antes de la llamada. Se rechaza un clip que llevaría el run más allá de
+un límite; después se registra el coste y, si falla a medias, también los trozos
+ya dichos. Los modelos que facturan por tokens se comprueban con un precio por
+carácter de habla típica. Gemini, que devuelve su audio como PCM sin procesar, se
+contabiliza después a partir del audio que devolvió cada trozo - tokens de texto de
+entrada y 25 tokens de audio por segundo de salida -, así que una locución lenta
+cuesta lo que el provider factura por ella. Un precio fechado entra en vigor ese día: así queda registrada la
+duplicación de precios de Gemini el 01-01-2027.
+
+**Se registra mientras se dice, un clip cada vez.** Cada trozo de un texto largo
+se registra cuando llega su audio, así que un fallo o un run cancelado a medias
+sigue registrando los trozos que volvieron. La comprobación del budget no reserva
+nada, así que la herramienta hace una llamada cada vez. `instructions` tiene un
+límite de 1000 caracteres, va al provider con cada trozo y no se tarifica.
+
+**Tiene efectos secundarios**, por las mismas razones que la generación de
+imágenes: gasta dinero y produce una grabación que alguien puede publicar.
+
+**Los fallos van a quien puede arreglarlos.** El texto vacío, el que supera
+`max_characters` o el que rechaza el provider vuelve al modelo, igual que un
+provider que limita el tráfico o no responde. Una clave rechazada, una voz
+desconocida y un budget agotado se responden como resultado, porque solo el autor
+o el operador pueden arreglarlos; una voz elegida por el modelo que el provider no
+conoce vuelve al modelo. Solo se registra el código de error del provider; su
+texto de error nunca llega a los registros ni al modelo.
+
+## Generación de vídeo { #video-generation }
+
+`generate_video` — *Crea un vídeo corto a partir de una descripción escrita.*
+
+Crea un clip corto con el provider de vídeo que elige el autor y se comporta como
+la generación de imágenes: el clip se guarda, aparece en la conversación como
+reproductor y se escribe en `output/` cuando hay un workspace abierto (#2260).
+Puede empezar desde una imagen: el `filename` que devolvió `generate_image` en el
+mismo run o una ruta del workspace, donde una imagen generada también queda en
+`output/`, reconocida por sus bytes y no por su nombre. Un nombre de fichero por sí
+solo nunca llega a los ficheros generados de la organización: el run tiene que
+haber hecho la imagen.
+
+| Configuración | Por defecto | Valores |
+|---|---|---|
+| `provider` | `google` | `google`, `byteplus`, `xai`, `alibaba` |
+| `model` | `gemini-omni-1.1-flash` | Los modelos de ese provider, de `app/core/catalog/video_models.json` |
+| `resolution` | la primera del modelo | La de por defecto; el agente puede pedir otra en cada clip, hasta `max_resolution` |
+| `max_resolution` | ninguna: cualquiera que renderice el modelo | La más alta que el agente puede pedir; al menos `resolution` |
+| `aspect_ratio` | la primera del modelo | La de por defecto; el agente puede pedir cualquier proporción que renderice el modelo |
+| `seconds` | 5, o la más cercana del modelo | Dentro del rango del modelo; se rechaza para Gemini Omni, que decide su duración |
+| `max_seconds` | el clip más largo del modelo | El clip más largo que puede pedir el agente; se rechaza para Gemini Omni |
+| `audio` | la del provider | Por defecto activado o no; el agente puede pedir cualquiera de los dos en cada clip. Se rechaza cuando el sonido del modelo es fijo |
+| `alibaba_workspace` | ninguno: el endpoint compartido de DashScope | Solo Alibaba: el id del workspace de Model Studio, una etiqueta de host; Wan se llama entonces en `https://{workspace}.{region}.maas.aliyuncs.com/api/v1` |
+| `alibaba_region` | `ap-southeast-1` | Solo Alibaba: `ap-southeast-1`, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `cn-beijing`, `cn-hongkong` |
+| `timeout_seconds` | `600` | 60–1800 |
+
+**Lo que puede hacer cada modelo son datos.** El catálogo indica el rango de
+duración de cada modelo, sus proporciones, sus resoluciones, si sus clips llevan
+sonido y si puede empezar desde una imagen, y el Builder solo ofrece eso. BytePlus
+es un [propósito de secreto](../secrets.md) en el vault; Google, xAI y Alibaba
+Cloud ya son providers de modelos. Falta OpenAI: su API de vídeo se cerró el
+24-09-2026.
+
+**Los ajustes son valores por defecto; la resolución más alta es el límite.** La
+resolución, la proporción, la duración y el sonido de un binding son los del
+clip, salvo que el agente pida otros en la llamada. La duración se detiene en
+`max_seconds`, la proporción en las que renderiza el modelo y la resolución en
+`max_resolution`: vacía, el agente puede pedir cualquier resolución del modelo,
+y el Builder lo advierte, porque la resolución es lo que cuesta un segundo. El
+presupuesto se consulta con el precio de la resolución elegida. La proporción y
+la resolución llegan al modelo como un `enum` con la habitual por defecto, y el
+sonido solo se ofrece donde el modelo lo hace opcional.
+
+**Un clip es un trabajo que se espera como una imagen.** Gemini responde en la
+propia petición; BytePlus, xAI y Alibaba aceptan un trabajo que se consulta. En
+ambos casos la llamada espera uno o varios minutos, como mucho `timeout_seconds`.
+Un trabajo que lo supera se cancela donde el provider lo permite - en BytePlus,
+mientras sigue en cola - y la llamada recibe una respuesta en vez de reintentarse,
+porque xAI y Alibaba no documentan la cancelación y pueden terminar y facturar el
+trabajo. El clip se descarga antes de que caduque la dirección del provider, y la
+clave nunca va a un host de almacenamiento.
+
+**Al budget se le pregunta con el precio del clip.** Todos los providers facturan
+por segundo con una tarifa que fija la resolución, así que el catálogo guarda un
+precio fechado por segundo y resolución. Se rechaza un clip que llevaría el run
+más allá de un límite; después se registra la duración que informa el provider.
+Gemini Omni decide su duración y no la informa, así que allí el clip se tarifica y
+se registra con la duración máxima del modelo.
+
+**Tiene efectos secundarios**, por las mismas razones que la generación de
+imágenes, y más: un clip es la llamada individual más cara que hace un agente.
+
+**Los fallos van a quien puede arreglarlos.** Un prompt vacío, una duración o
+proporción que el modelo no hace y una imagen que no se puede leer vuelven al
+modelo con una indicación, igual que un provider que limita o está caído. Una
+clave rechazada, un presupuesto agotado, un prompt que la política de contenido
+del provider rechazó y un trabajo que pasa el límite de tiempo se responden como
+resultado: una indicación de reintento ante un rechazo invitaría a sortearlo. Un
+trabajo que pasa el límite de tiempo, o que se cancela con la ejecución, se
+contabiliza con su estimación en cuanto su solicitud pudo llegar al provider,
+porque el provider aún puede
+terminarlo y cobrarlo. Un clip hecho que no se pudo descargar también se
+contabiliza, y se responde como resultado en lugar de devolverse al modelo: un
+segundo intento se cobraría de nuevo.
 
 ## Coding agent { #coding-agent }
 

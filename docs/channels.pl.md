@@ -1,5 +1,5 @@
 ---
-source_sha: "7a029c284d40"
+source_sha: "513cb1cca129"
 ---
 
 # Postawić agenta tam, gdzie ludzie już są { #putting-an-agent-where-people-already-are }
@@ -642,6 +642,26 @@ Jedna rzecz z konieczności czyta się inaczej: wywołanie, które przyszło z s
 MCP, nazywa się w dashboardzie *Linear · Create issue*, a tutaj nosi nazwę
 uczłowieczoną, bo mapowanie to lista połączeń organizacji, a jej odczytanie
 wymaga sesji.
+
+**Wygenerowany obraz, nagranie mowy lub wideo działa także na stronie** (#2309).
+Konsola czyta je przez `/api/v1/generated/{filename}`, co wymaga sesji, a
+odwiedzający jej nie ma. Dlatego socket, wysyłając wynik z wygenerowanym
+obrazem, mową lub wideo, który wskazuje plik zapisany przez narzędzia tego
+samego uruchomienia, dodaje do niego `token`, a strona czyta plik przez
+`/api/embed/<key>/generated/<file>?token=…`, który przesyła go strumieniowo i
+przepuszcza zakresy bajtów dla odtwarzacza.
+
+Token to HMAC, pod `SECRET_KEY` wdrożenia, klucza strony, tego jednego pliku i
+terminu ważności sześć godzin naprzód. Nie otwiera niczego innego: ani pliku z
+innej rozmowy, ani z innej organizacji, ani żadnej innej nazwy. Zły, wygasły lub
+brakujący token dostaje to samo 404 co brakujący plik. Jest dodawany, gdy ramka
+wychodzi, więc transkrypt go nie przechowuje, a karta jest wynikiem tego kroku —
+widać ją tylko tam, gdzie włączone jest *Co zwrócił każdy krok*. Integracja przez
+socket znajduje ten sam adres w polu `url` payloadu, jako ścieżkę API.
+
+Wynik wskazujący plik, którego to uruchomienie nie zapisało, nie dostaje tokena,
+niezależnie od nazwy narzędzia, które go zwróciło. Jeden link można pobrać 120 razy
+na minutę, co wystarcza na zakresy bajtów odtwarzacza; ponad to dostaje 429.
 
 **Widget i surowy socket nie niosą żadnych przełączników i dostają te domyślne
 wartości**, odczytywane z `PageConfig`, a nie powtarzane — druga kopia
@@ -2565,7 +2585,8 @@ a których stopka kanałowa nie:
   `agent` jeden workspace jest współdzielony, a znalezienie pliku, którego nigdy
   się nie utworzyło, czyta się jak wyciek, dopóki coś na ekranie tego nie wyjaśni.
   Plik jest kafelkiem, a otwarcie go otwiera tę samą przeglądarkę, której używa
-  ekran Workspaces — obraz, PDF, markdown jako podgląd albo źródło i zawsze
+  ekran Workspaces — obraz, PDF, odtwarzacz audio i wideo, markdown jako podgląd
+  albo źródło i zawsze
   pobranie — czytając `…/workspace/file` dla tekstu i `…/workspace/raw` dla bajtów.
   Przez *rozmowę*, a nie przez id workspace'u, i to celowo: to właśnie trzyma te
   pliki osiągalnymi dla kogoś, komu czat udostępniono.

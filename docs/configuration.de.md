@@ -1,5 +1,5 @@
 ---
-source_sha: "9480d24768a5"
+source_sha: "6ebeadc2957b"
 ---
 
 # Konfiguration { #configuration }
@@ -750,6 +750,23 @@ zusätzlich `kms:Encrypt`, `kms:Decrypt` und `kms:GenerateDataKey` auf dem
 Schlüssel. Ein lokales MinIO startet `make docker-minio` auf `:9000` mit
 `minioadmin` / `minioadmin`.
 
+### Erzeugte Medien { #generated-media }
+
+Bilder, Sprache und Videos, die Agenten erzeugen, liegen im selben Speicher unter
+`generated_<org>/`, und jedes wird bei seiner Organisation und der Conversation
+erfasst, in der es entstand. Was eine Organisation behält, ist doppelt begrenzt.
+Was wann gelöscht wird, steht unter
+[Datenschutz](data-protection.md#generated-media).
+
+| Variable | Standard | Beschreibung |
+|----------|---------|-------------|
+| `GENERATED_MEDIA_QUOTA_MB` | `5120` | Wie viel erzeugte Medien eine Organisation behalten darf, in MiB. Jede Datei zählt, auch eine ohne Unterhaltung - aus einer Vorschau oder einem Testlauf, einem `/btw`-Einschub in einem Kanal, einem API-Run, der keine Unterhaltung nennt; der Sweep löscht diese nach 7 Tagen. Geprüft vor jedem bezahlten Erzeugungsaufruf: darüber antwortet das Tool, dass die Organisation ihren Speicher aufgebraucht hat, und gibt nichts aus. Ein zugelassener Aufruf hält eine Schätzung seiner Datei gegen das Kontingent, bis die Datei gespeichert ist - 16 MiB für ein Bild, 8 KiB je Zeichen Sprache, 2 MiB je Sekunde Video -, daher wird ein Aufruf abgelehnt, dessen Schätzung die Organisation darüber bringen würde, und gleichzeitige Läufe oder parallele Aufrufe in einer Antwort können nicht alle mit derselben Zahl durchkommen. Eine Datei, die größer ist als ihre Schätzung, zählt mit ihrer echten Größe. `0` ist kein Kontingent |
+| `GENERATED_MEDIA_RETENTION_DAYS` | `90` | Alter, ab dem der tägliche Job `sweep-generated-media` eine erzeugte Datei und ihren Eintrag löscht, ob ihre Conversation noch existiert oder nicht. `0` behält sie, bis ihre Conversation oder Organisation gelöscht wird. Eine Datei ohne Conversation geht in jedem Fall nach 7 Tagen |
+
+Eine Datei wird gestreamt ausgeliefert, nur im Bytebereich, den ein Player
+anfragt - von der Platte oder per `GetObject` mit Bereich -, sodass ein langer
+Clip weder in der API noch im Server der Konsole je ganz gehalten wird.
+
 ### S3/MinIO-Sync { #s3minio-sync }
 
 | Variable | Standard | Beschreibung |
@@ -1004,7 +1021,7 @@ die Seite je Workspace nicht beantworten kann.
 
 **Ein Klick auf eine Datei öffnet sie in einem Viewer, und es ist derselbe Viewer
 wie im Chat-Panel.** Ein Bild ist ein Bild, ein PDF ist die PDF-Ansicht des
-Browsers, Markdown bietet *Preview* und *Source* — beides ist die Datei, und ein
+Browsers, Audio und Video spielen im eigenen Player des Browsers, Markdown bietet *Preview* und *Source* — beides ist die Datei, und ein
 `#`, aus dem still große Schrift wurde, ist die Art, wie jemand nicht bemerkt,
 dass sein Agent Markdown in etwas schreibt, das nichts als Markdown liest —, und
 alles andere ist sein Text. Der Download ist immer da, auch für das, was sich gar
@@ -1021,10 +1038,12 @@ jemand, mit dem ein Chat *geteilt* wurde, den Zugriff behält — und weil ein M
 entscheidet, was angezeigt werden darf, damit die Antwort nicht je Oberfläche
 abweichen kann.
 
-Fast alles wird als Anhang ausgeliefert. **Rasterbilder und PDFs** werden zur
-Anzeige ausgeliefert: ein Raster, weil es nichts ausführen kann, ein PDF, weil
-der Browser es in seinem eigenen Viewer rendert, der nie das DOM der Seite
-bekommt.
+Fast alles wird als Anhang ausgeliefert. **Rasterbilder, PDFs, Audio und Video**
+(MP3, WAV, Ogg, Opus, M4A, MP4, WebM) werden zur Anzeige ausgeliefert: ein Raster,
+weil es nichts ausführen kann, ein PDF, weil der Browser es in seinem eigenen
+Viewer rendert, der nie das DOM der Seite bekommt, und Audio und Video, weil der
+Browser sie seiner Medienwiedergabe übergibt, die sie abspielt und nichts in der
+Seite ausführt.
 
 !!! danger "SVG und HTML sind herunterladbar und nie anzeigbar"
 

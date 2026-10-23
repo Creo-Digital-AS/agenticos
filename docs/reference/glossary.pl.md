@@ -1,5 +1,5 @@
 ---
-source_sha: "2945ea172195"
+source_sha: "6e9ccd7fcca1"
 ---
 
 # Słownik { #glossary }
@@ -87,9 +87,11 @@ w [Capabilities](capabilities.md).
 | Skille | `skills` |
 | Subagenci | `subagents` |
 | Przypomnienia instrukcji | `system_reminders` |
+| Zamiana tekstu na mowę | `text_to_speech` |
 | Myślenie | `thinking` |
 | Limity wyników narzędzi | `tool_output_limits` |
 | Wyszukiwanie narzędzi | `tool_search` |
+| Generowanie wideo | `video_generation` |
 | Wizualizacje | `visuals` |
 | Czytanie stron | `web_fetch` |
 | Wyszukiwanie w internecie | `web_research` |

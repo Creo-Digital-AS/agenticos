@@ -84,9 +84,11 @@ in [Capabilities](capabilities.md).
 | Skills | `skills` |
 | Subagents | `subagents` |
 | Instruction reminders | `system_reminders` |
+| Text to speech | `text_to_speech` |
 | Thinking | `thinking` |
 | Tool output limits | `tool_output_limits` |
 | Tool search | `tool_search` |
+| Video generation | `video_generation` |
 | Visuals | `visuals` |
 | Read web pages | `web_fetch` |
 | Web search | `web_research` |

@@ -825,6 +825,56 @@
     "platformTools": "Narzędzia, które agent może wywołać",
     "platformWritesBadge": "zmienia coś",
     "platformRemove": "Usuń z tego agenta",
+    "speechProvider": "Provider",
+    "speechProviderPlaceholder": "Wybierz providera",
+    "speechProviderDetail": "Providerzy z katalogu mowy, których klucz może przechowywać vault.",
+    "speechModel": "Model",
+    "speechModelPlaceholder": "Wybierz model",
+    "speechModelDetail": "Wszystkie modele, którymi ten provider może mówić.",
+    "speechModelUnknownProvider": "Ten binding wskazuje {provider}, który nie potrafi mówić. Wybierz providera powyżej.",
+    "speechVoice": "Głos",
+    "speechVoicePlaceholder": "Wybierz głos",
+    "speechVoiceDetail": "Wartość domyślna - agent może przełączyć się na inny głos dla każdego klipu, spośród głosów dozwolonych poniżej.",
+    "speechVoiceIdPlaceholder": "Id głosu",
+    "speechAccountVoiceDetail": "Głosy {provider} należą do Twojego konta. Wklej id jednego z nich ze swojej biblioteki głosów. To wartość domyślna - agent może przełączyć się na inny głos dla każdego klipu, spośród głosów dozwolonych poniżej.",
+    "speechOtherVoices": "Dozwolone głosy",
+    "speechOtherVoicesDetail": "Jedyne głosy, na które agent może się przełączyć, osobno dla każdego klipu - do dialogu albo dla narratora i postaci.",
+    "speechAnyVoiceWarning": "{count, plural, one {Żaden nie jest dozwolony: agent może mówić jedynym głosem tego modelu.} few {Żaden nie jest dozwolony: agent może mówić dowolnym z # głosów tego modelu.} many {Żaden nie jest dozwolony: agent może mówić dowolnym z # głosów tego modelu.} other {Żaden nie jest dozwolony: agent może mówić dowolnym z # głosów tego modelu.}}",
+    "speechAnyAccountVoiceWarning": "Lista jest pusta: agent może mówić dowolnym głosem z Twojego konta {provider}, podając jego id - także sklonowanym.",
+    "speechOtherVoicesFull": "{count} innych głosów to najwięcej, ile można zaoferować jednemu agentowi.",
+    "speechOtherVoiceId": "Id głosu {position}",
+    "speechOtherVoiceNote": "Do czego służy głos {position}",
+    "speechOtherVoiceNotePlaceholder": "Kto to jest, np. Anna, narratorka",
+    "speechOtherVoiceRemove": "Usuń głos {position}",
+    "speechOtherVoiceAdd": "Dodaj głos",
+    "speechProvidersLoading": "Sprawdzam, co oferuje każdy provider…",
+    "speechProvidersUnavailable": "Nie udało się odczytać listy providerów. Model powyżej nadal zostanie użyty.",
+    "videoProvider": "Provider",
+    "videoProviderPlaceholder": "Wybierz providera",
+    "videoProviderDetail": "Providerzy z katalogu wideo, których klucz może przechowywać vault.",
+    "videoModel": "Model",
+    "videoModelPlaceholder": "Wybierz model",
+    "videoModelDetail": "Wszystkie modele, którymi ten provider może tworzyć wideo.",
+    "videoModelUnknownProvider": "Ten binding wskazuje {provider}, który nie potrafi tworzyć wideo. Wybierz providera powyżej.",
+    "videoResolution": "Rozdzielczość",
+    "videoResolutionDetail": "Wartość domyślna - agent może poprosić o inną dla każdego klipu, do najwyższej rozdzielczości poniżej. Wyższa kosztuje więcej za sekundę.",
+    "videoMaxResolution": "Najwyższa rozdzielczość",
+    "videoMaxResolutionAny": "Dowolna rozdzielczość",
+    "videoMaxResolutionDetail": "Jedyny limit rozdzielczości: agent może poprosić o każdą do tej włącznie.",
+    "videoMaxResolutionAnyWarning": "Bez najwyższej rozdzielczości agent może poprosić o każdą rozdzielczość, którą renderuje ten model, aż do {highest}, a sekunda w wyższej rozdzielczości kosztuje więcej.",
+    "videoAspectRatio": "Proporcje obrazu",
+    "videoAspectRatioDetail": "Wartość domyślna - agent może poprosić o inne proporcje, które renderuje ten model, dla każdego klipu.",
+    "videoLengthRange": "Ten model tworzy klipy od {min} do {max} sekund.",
+    "videoLengthDecided": "Ten model sam decyduje o długości, od {min} do {max} sekund.",
+    "videoProvidersLoading": "Sprawdzam, co oferuje każdy provider…",
+    "videoProvidersUnavailable": "Nie udało się odczytać listy providerów. Model powyżej nadal zostanie użyty.",
+    "videoAudio": "Dźwięk",
+    "videoAudioDetail": "Wartość domyślna - agent może poprosić o włączenie albo wyłączenie dźwięku dla każdego klipu.",
+    "videoAudioDefault": "Domyślnie u providera",
+    "videoAudioOn": "Włączony",
+    "videoAudioOff": "Wyłączony",
+    "speechFormat": "Format pliku",
+    "speechFormatDetail": "Formaty, które zwraca ten provider. mp3 jest mniejszy, wav nieskompresowany.",
     "voiceTitle": "Głos",
     "voiceDescription": "Jak można rozmawiać z tym agentem: rozmowa głosowa na żywo albo dyktowanie, które zamienia mowę na tekst. Działa po opublikowaniu agenta.",
     "voicePair": "Model transkrypcji",
@@ -1558,6 +1608,13 @@
       "reviseVisual": "Poprawił wizual",
       "readingVisual": "Czyta wizual",
       "readVisual": "Przeczytał wizual",
+      "generateSpeech": "Mowa",
+      "generatingSpeech": "Nagrywa mowę",
+      "speechNotStored": "Mowę nagrano, ale jej nie zapisano.",
+      "spokenBy": "Głos: {voice}",
+      "generateVideo": "Wideo",
+      "generatingVideo": "Tworzy wideo",
+      "videoNotStored": "Wideo powstało, ale go nie zapisano.",
       "workingInText": "Pracuje nad tym w trybie tekstowym",
       "workedInText": "Popracował nad tym w trybie tekstowym",
       "suggestingNextSteps": "Proponuje następne kroki",
@@ -7408,6 +7465,22 @@
       "needs": "Klucz API dostawcy obrazów w vault. Każdy obraz rozlicza ten dostawca.",
       "never": "Nigdy nigdzie nie publikuje obrazu; pojawia się on w rozmowie."
     },
+    "text_to_speech": {
+      "name": "Zamiana tekstu na mowę",
+      "does": "Odczytuje tekst na głos jako nagranie audio.",
+      "example1": "Lektor do filmu o produkcie",
+      "example2": "Wersja dźwiękowa cotygodniowego podsumowania",
+      "needs": "Klucz API dostawcy mowy w vault. Każde nagranie rozlicza ten dostawca, za znak.",
+      "never": "Nigdy nigdzie nie wysyła nagrania; pojawia się ono w rozmowie."
+    },
+    "video_generation": {
+      "name": "Generowanie wideo",
+      "does": "Tworzy krótkie wideo z opisu albo z obrazu, od którego zaczyna.",
+      "example1": "Dziesięciosekundowa zapowiedź premiery produktu",
+      "example2": "Animowana wersja wygenerowanego logo",
+      "needs": "Klucz API dostawcy wideo w vault. Każdy klip rozlicza ten dostawca, za sekundę.",
+      "never": "Nigdy nigdzie nie publikuje wideo; pojawia się ono w rozmowie."
+    },
     "knowledge": {
       "name": "Wyszukiwanie wiedzy",
       "does": "Agent odpowiada na podstawie twoich dokumentów i podaje, z którego pochodzi każda odpowiedź.",
@@ -7786,6 +7859,78 @@
       "aspect_ratio": {
         "title": "Proporcje",
         "description": "Proporcje obrazu, np. 16:9 lub 1:1."
+      }
+    },
+    "text_to_speech": {
+      "provider": {
+        "title": "Provider",
+        "description": "Czyje głosy mówią. Do wyboru są providerzy z `app/core/catalog/text_to_speech_models.json`, których klucz może przechowywać vault."
+      },
+      "model": {
+        "title": "Model mowy",
+        "description": "Który z modeli mowy tego providera mówi. Model spoza katalogu jest odrzucany tutaj, a nie w trakcie działania."
+      },
+      "voice": {
+        "title": "Głos",
+        "description": "Głos, który mówi, jeśli agent nie wybierze innego; puste oznacza pierwszy głos modelu. Głosy ElevenLabs należą do Twojego konta, więc dla ElevenLabs wklej id głosu ze swojej biblioteki głosów."
+      },
+      "voices": {
+        "title": "Dozwolone głosy",
+        "description": "Jedyne głosy, na które agent może przełączyć się zamiast powyższego, osobno dla każdego klipu - do dialogu albo dla narratora i postaci. Puste oznacza, że może wybrać dowolny głos modelu - dla ElevenLabs dowolne id głosu z Twojego konta."
+      },
+      "output_format": {
+        "title": "Format pliku",
+        "description": "mp3 jest mniejszy, wav nieskompresowany. Puste oznacza pierwszy format providera - Gemini zwraca tylko wav."
+      },
+      "max_characters": {
+        "title": "Najdłuższy tekst",
+        "description": "Najwięcej tekstu, jaki może wypowiedzieć jedno wywołanie, co ogranicza koszt pojedynczego wywołania."
+      }
+    },
+    "video_generation": {
+      "provider": {
+        "title": "Provider",
+        "description": "Czyj model tworzy wideo. Do wyboru są providerzy z `app/core/catalog/video_models.json`, których klucz może przechowywać vault."
+      },
+      "model": {
+        "title": "Model wideo",
+        "description": "Który z modeli wideo tego providera tworzy klip. Model spoza katalogu jest odrzucany tutaj, a nie w trakcie działania."
+      },
+      "resolution": {
+        "title": "Rozdzielczość",
+        "description": "Rozdzielczość, w której powstaje klip, jeśli agent nie poprosi o inną; puste oznacza pierwszą rozdzielczość modelu. Wyższa kosztuje więcej za sekundę."
+      },
+      "max_resolution": {
+        "title": "Najwyższa rozdzielczość",
+        "description": "Najwyższa rozdzielczość, o jaką może poprosić agent, co najmniej zwykła; ogranicza koszt sekundy. Puste oznacza, że agent może poprosić o każdą rozdzielczość, którą renderuje model."
+      },
+      "aspect_ratio": {
+        "title": "Proporcje obrazu",
+        "description": "Kształt klipu, chyba że agent poprosi o inny; puste oznacza pierwszy kształt modelu."
+      },
+      "seconds": {
+        "title": "Długość",
+        "description": "Ile sekund trwa klip, chyba że agent poprosi o inną długość; puste oznacza pięć albo najbliższą wartość, jaką robi model. Nie dla modelu, który sam decyduje o długości."
+      },
+      "max_seconds": {
+        "title": "Najdłuższy klip",
+        "description": "Najdłuższy klip, o jaki może poprosić agent, co ogranicza koszt jednego wywołania; puste oznacza własny limit modelu. Nie dla modelu, który sam decyduje o długości."
+      },
+      "audio": {
+        "title": "Dźwięk",
+        "description": "Czy klipy mają dźwięk, jeśli agent nie poprosi inaczej, tam gdzie model robi go opcjonalnym; puste oznacza domyślne ustawienie providera."
+      },
+      "alibaba_workspace": {
+        "title": "Workspace Alibaby",
+        "description": "Tylko Alibaba: id workspace'u Model Studio, przez który wywoływany jest Wan 3.0. Puste - wspólny endpoint DashScope, który Alibaba utrzymuje dla istniejących integracji."
+      },
+      "alibaba_region": {
+        "title": "Region Alibaby",
+        "description": "Tylko Alibaba: region, w którym jest workspace."
+      },
+      "timeout_seconds": {
+        "title": "Limit czasu",
+        "description": "Jak długo czekać na klip, w sekundach. Zadanie niezakończone do tego czasu jest anulowane, jeśli provider na to pozwala, i księgowane według szacunku."
       }
     },
     "knowledge": {

@@ -71,6 +71,8 @@ browser is pointed at the deployment's browser service
 | `charts` | Charts | analysis | `create_chart` | — | — | as-is |
 | `visuals` | Visuals | analysis | `draw`, `revise_visual`, `read_visual` | — | — | as-is |
 | `image_generation` | Image generation | analysis | `generate_image` | — | required | as-is |
+| `text_to_speech` | Text to speech | analysis | `generate_speech` | — | required | as-is |
+| `video_generation` | Video generation | analysis | `generate_video` | — | required | handed off |
 | `coding_agent` | Coding agent | analysis | `run_coding_agent` | `sandbox:execute` | required | handed off |
 | `subagents` | Subagents | reasoning | `task`, `check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`, `send_message_to_subagent`, `soft_cancel_task`, `hard_cancel_task`, `create_agent`, `delegate` | `agents:delegate` | — | handed off |
 | `planning` | Planning | reasoning | `write_plan`, `read_plan`, `add_task`, `update_task_status`, `update_task_statuses`, `remove_task`, `add_subtask`, `set_dependency`, `get_available_tasks` | — | — | as-is |
@@ -1059,11 +1061,161 @@ rather than hiding the spend.
 **Where the image goes.** Every generated image is stored **per organization** and
 served back by [`GET /api/v1/generated/{filename}`](../architecture.md), scoped to
 the caller's own organization — a wider boundary than a chat upload, which is owned
-by one user, because there is no record of who produced an image. When the agent
+by one user. It is recorded against the conversation it was made in and deleted with
+it, counted against the organization's generated-media quota, and deleted after the
+retention period ([configuration](../configuration.md#generated-media)). Past the
+quota, the tool answers so before spending anything. When the agent
 also has a workspace (the `sandbox` capability), the same image is written into it
 under `/output`, so a later `execute` step can build with it — assemble a PDF, a
 slide, a page. An agent without a workspace still generates and shows images; it
 simply has nowhere to build with them.
+
+## Text to speech
+
+`generate_speech` — *Speak a text aloud as an audio clip.*
+
+Reads a text aloud through a speech provider the author picks, and behaves as
+image generation does: the clip is stored, shown in the conversation as a player,
+and written under `output/` when a workspace is open (#2259).
+
+| Config | Default | Values |
+|---|---|---|
+| `provider` | `openai` | `openai`, `elevenlabs`, `google` |
+| `model` | `gpt-4o-mini-tts` | That provider's models, from `app/core/catalog/text_to_speech_models.json` |
+| `voice` | the model's first | The default the agent speaks in; it may switch per clip within `voices`. A catalog voice for OpenAI and Gemini; an id from your own voice library for ElevenLabs |
+| `voices` | none: any voice the model has | Up to 20 voices the agent may switch to per clip, each an `id` and, for an account voice, a `note` of up to 120 characters saying who it is. Empty allows every voice the model has - for ElevenLabs, any voice id in the account |
+| `output_format` | the provider's first | `mp3`, `wav` (Gemini returns `wav` only) |
+| `max_characters` | `5000` | 1–10 000; the most text one call may speak |
+
+**Providers, models, voices and prices are data**, in the catalog file. A provider
+is a [secret purpose](../secrets.md) taking a plain API key - ElevenLabs runs no
+chat model, so it is a service in the vault rather than a model provider - and an
+entry whose purpose is missing, or whose API shape has no client, is dropped.
+OpenAI's older `tts-1` and `tts-1-hd` speak in nine of its thirteen voices, so
+voices are listed per model.
+
+**ElevenLabs voices belong to the account.** Its shared default voices expire on
+2026-12-31, so the catalog lists none and a binding names one of the account's own
+voices by id; publishing without one is refused.
+
+**The voice is a default; the allowed voices are the limit.** `voice` is the one
+the agent speaks in unless it asks for another, and `voices` lists the only
+others it may switch to - for a dialogue or a narrator and a character. Left
+empty, every voice the model has is allowed; on ElevenLabs, any voice id in the
+account, cloned voices included, and the Builder says so as a warning. The
+voices reach the model as an `enum` on the tool's `voice` parameter, with the
+usual one as the default and the catalog's description of each or, for an
+account voice, the author's note. An open account voice is a free string whose
+shape is checked. A listed voice the model lacks is refused at publish, and one
+outside the list is steered back to the model at call time.
+
+**The key picker shows the chosen provider's keys.** The secret is required for
+every provider, and declared as required *when* `provider` is one of them, which
+is what tells the Builder that the provider is the key's purpose.
+
+**A long text is one clip.** A text over the model's per-request limit is cut at a
+paragraph, a sentence or a word and spoken in order. MP3 pieces are joined end to
+end; WAV is requested as 24 kHz PCM from every provider and wrapped in one header.
+`instructions` - tone, pace, accent - reach the models that read them (OpenAI's
+`gpt-4o-mini-tts`, Gemini) and are dropped for the rest.
+
+**The budget is asked with the clip's price.** Speech is sold per character, so the
+catalog holds a dated price per million characters and the cost is known before
+the call. A run is refused a clip that would carry it past a cap, then the cost is
+booked; on a failure partway through, the pieces already spoken are booked too.
+Token-billed models are checked at a price per character of typical speech. Gemini,
+which reports its audio as raw PCM, is then booked from the audio each piece
+returned - text tokens in and 25 audio tokens a second out - so a slow delivery
+costs what the provider bills for it. A dated price
+takes effect on its day, which is how Gemini's doubling on 2027-01-01 is recorded.
+
+**Booked as it is spoken, one clip at a time.** Each piece of a long text is
+booked as its audio arrives, so a failure or a cancelled run partway through
+still books the pieces that came back. The budget check reserves nothing, so the
+tool runs one call at a time. `instructions` is capped at 1,000 characters,
+goes to the provider with every piece, and is not priced.
+
+**It is side-effecting**, for the reasons image generation is: it spends money and
+produces a recording a person may publish.
+
+**Failures go to whoever can fix them.** Empty text, text over `max_characters` or
+text the provider refuses is steered back to the model, as is a provider that is
+rate limiting or down, and so is a voice the model chose that the provider does
+not know. A refused key, an unknown usual voice and a spent budget are answered
+as the result, because only the author or the operator can fix them. Only the
+provider's error code is logged; its error text never reaches the logs or the
+model.
+
+## Video generation
+
+`generate_video` — *Make a short video from a written description.*
+
+Makes a short clip through a video provider the author picks, and behaves as
+image generation does: the clip is stored, shown in the conversation as a player,
+and written under `output/` when a workspace is open (#2260). It can start from an
+image - the `filename` `generate_image` returned in the same run, or a workspace
+path, where a generated image is also kept under `output/` - typed by its bytes,
+not its name. A file name alone never reaches the organization's generated files:
+the run must have made the image itself.
+
+| Config | Default | Values |
+|---|---|---|
+| `provider` | `google` | `google`, `byteplus`, `xai`, `alibaba` |
+| `model` | `gemini-omni-1.1-flash` | That provider's models, from `app/core/catalog/video_models.json` |
+| `resolution` | the model's first | The default; the agent may ask for another per clip, up to `max_resolution` |
+| `max_resolution` | none: any the model renders | The highest the agent may ask for; at least `resolution` |
+| `aspect_ratio` | the model's first | The default; the agent may ask for any shape the model renders |
+| `seconds` | 5, or the nearest the model makes | Within the model's range; refused for Gemini Omni, which decides its own |
+| `max_seconds` | the model's longest | The longest clip the agent may ask for; refused for Gemini Omni |
+| `audio` | provider default | The default, on or off; the agent may ask for either per clip. Refused where the model's sound is fixed |
+| `alibaba_workspace` | none: the shared DashScope endpoint | Alibaba only: the Model Studio workspace id, one host label; Wan is then called at `https://{workspace}.{region}.maas.aliyuncs.com/api/v1` |
+| `alibaba_region` | `ap-southeast-1` | Alibaba only: `ap-southeast-1`, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `cn-beijing`, `cn-hongkong` |
+| `timeout_seconds` | `600` | 60–1800 |
+
+**What each model can make is data.** The catalog states each model's length
+range, aspect ratios, resolutions, whether its clips carry sound and whether it
+starts from an image, and the Builder offers only those. BytePlus is a
+[secret purpose](../secrets.md) in the vault; Google, xAI and Alibaba Cloud are
+model providers already. OpenAI is absent: its video API was shut down on
+2026-09-24.
+
+**The settings are defaults; the highest resolution is the limit.** The
+resolution, shape, length and sound a binding sets are what a clip gets unless
+the agent asks for another, per call. Length stops at `max_seconds`, shape at
+what the model renders, and resolution at `max_resolution`: left empty, the
+agent may ask for any resolution the model renders, which the Builder says as a
+warning, since resolution is what a second costs. The budget is asked with the
+chosen resolution's price. Shape and resolution reach the model as an `enum`
+with the usual one as the default, and sound is offered only where the model
+makes it optional.
+
+**A clip is a job, waited for like a picture.** Gemini answers in the request;
+BytePlus, xAI and Alibaba take a job that is polled. Either way the call waits,
+for a minute or several, up to `timeout_seconds`. A job past it is cancelled
+where the provider allows it - BytePlus, while still queued - and the call is
+answered rather than retried, because xAI and Alibaba document no cancel and may
+still finish and bill the job. The clip is downloaded before the provider's
+address expires, and the key is never sent to a storage host.
+
+**The budget is asked with the clip's price.** Every provider bills by the second
+at a rate set by the resolution, so the catalog holds a dated price per second
+per resolution. A run is refused a clip that would carry it past a cap, then the
+length the provider reports is booked. Gemini Omni decides its own length and
+reports none, so a clip there is priced and booked at the model's longest.
+
+**It is side-effecting**, for the reasons image generation is, and more so: a
+clip is the most expensive single call an agent makes.
+
+**Failures go to whoever can fix them.** An empty prompt, a length or shape the
+model does not make and an image that cannot be read are steered back to the
+model, as is a provider that is rate limiting or down. A refused key, a spent
+budget, a prompt the provider's content policy refused and a job past the time
+limit are answered as the result: a retry prompt on a refusal would invite a way
+around it. A job past the time limit, or cancelled with the run, is booked at its
+estimate once its request may have reached the provider, since the provider may
+still finish and bill it.
+A clip that was made but could not be fetched is booked too, and answered rather
+than steered: a second attempt would be billed again.
 
 ## Coding agent { #coding-agent }
 

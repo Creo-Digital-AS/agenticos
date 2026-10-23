@@ -143,12 +143,12 @@ model instead.
 
 | By voice | Capabilities |
 |---|---|
-| As-is | clock (the time in the instructions is fixed when the call connects), context, knowledge, web research, web fetch, charts, artifacts, code execution, conversation search, memory files, mem0 memory, planning, tool output limits, image generation |
+| As-is | clock (the time in the instructions is fixed when the call connects), context, knowledge, web research, web fetch, charts, artifacts, code execution, conversation search, memory files, mem0 memory, planning, tool output limits, image generation, text to speech |
 | On screen | ask the user: in `/chat` the question card appears in the call view, read aloud as well, and the caller taps an answer or says it; a widget's or hosted page's call is not offered it |
 | Adapted | skills: loaded as instructions on demand, without the tools a text run uses to read them |
 | Dropped | tool search: the MCP tools it would have deferred are passed to the call directly |
 | Mapped | thinking: becomes the realtime model's own reasoning setting, where the model has one |
-| Handed off | sandbox, browser use, subagents, the coding agent, work while tools run: done by the agent's text model, see [Handing work off](#handing-work-off) |
+| Handed off | sandbox, browser use, subagents, the coding agent, video generation, work while tools run: done by the agent's text model, see [Handing work off](#handing-work-off) |
 
 The Builder's Voice card lists the capabilities this agent hands off in calls.
 

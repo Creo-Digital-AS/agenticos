@@ -183,6 +183,8 @@ export const qk = {
     // models qualify is a rule the SDK enforces, so the server answers it.
     imageModels: () => ["providers", "image-models"] as const,
     speechToTextModels: () => ["providers", "speech-to-text-models"] as const,
+    textToSpeechModels: () => ["providers", "text-to-speech-models"] as const,
+    videoModels: () => ["providers", "video-models"] as const,
     realtimeModels: () => ["providers", "realtime-models"] as const,
   },
   secrets: {
