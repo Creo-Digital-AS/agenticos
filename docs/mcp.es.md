@@ -1,5 +1,5 @@
 ---
-source_sha: "48dc500a62e5"
+source_sha: "9025a904cc03"
 ---
 
 # MCP — las herramientas que aquí nadie tiene que escribir { #mcp-the-tools-nobody-here-has-to-write }
@@ -200,7 +200,9 @@ La propia plantilla del Architect pide `writes` para el servidor
 de la plataforma, así que no crea nada sin la persona en cuyo nombre actúa. La
 vinculación de cualquier agent a ese servidor queda en al menos `writes`, también
 con `none`: sus herramientas actúan con la autoridad de quien pregunta, la de un
-Admin incluida.
+Admin incluida. Una lectura espera como un cambio: `read_conversation`, que entrega
+al modelo una conversación pasada entera - una página que el agent leyó podría si
+no hacer que la pida y la envíe fuera.
 
 En el Builder, los ajustes de un servidor lo dicen por
 grupos: sus **lecturas** y las herramientas que **cambian cosas** se ejecutan sin
@@ -1031,21 +1033,40 @@ permiso que faltaba.
 | Herramienta | Necesita |
 |---|---|
 | `whoami` | — |
-| `list_agents`, `get_agent`, `list_capabilities` | `agents:view` |
-| `create_agent_draft` | `agents:edit` |
+| `list_agents`, `get_agent`, `list_capabilities`, `list_models`, `search_mcp_servers` | `agents:view` |
+| `create_agent_draft`, `update_agent_draft`, `test_agent_draft` | `agents:edit` |
+| `publish_agent` | `agents:publish` sobre ese agent |
 | `discard_agent_draft` | `agents:edit`, sobre un borrador tuyo que nunca se publicó |
 | `run_agent` | `agents:run` |
-| `list_runs`, `get_run`, `get_spend` | `runs:view` |
+| `list_routines` | `agents:view` |
+| `create_routine`, `run_routine_now` | `agents:run` sobre el agent |
+| `update_routine`, `delete_routine` | quien creó la rutina, o `agents:edit` sobre su agent |
+| `list_runs`, `get_run`, `read_conversation`, `get_spend` | `runs:view` |
 | `list_knowledge_bases`, `search_knowledge` | `collections:view` |
 | `list_embedding_models` | — |
 | `create_knowledge_base`, `add_document` | `collections:edit` |
 | `list_skills` | `skills:view` |
+| `create_skill` | `skills:edit` |
 | `list_members` | `members:view` |
 | `invite_member` | `members:manage` y `roles:manage` |
+| `list_my_connections`, `set_my_language`, `set_my_profile` | — (los de quien llama) |
 
-A propósito no hay: publicar un agent, tocar credenciales ni borrar nada salvo
-un borrador de agent que quien llama creó y nunca publicó: deshacer un borrador
-creado por error. Un borrador creado aquí lo publica una persona en la consola. Las aplicaciones conectadas
+Aquí se puede construir un agent de principio a fin: esbozarlo, editarlo, probarlo
+como borrador sin publicar con `test_agent_draft` - un run de prueba, con
+presupuesto y registrado, rechazado con el motivo cuando el borrador no se
+publicaría - y publicarlo con `publish_agent`, que hace las mismas comprobaciones
+que el botón **Publish** de la consola. El `cron_expression` de una rutina se
+evalúa en UTC. `set_my_language` cambia el idioma de la consola de quien llama
+(`en`, `pl` o `de`) en cada dispositivo en el que inicia sesión, y
+`set_my_profile` guarda su rol y en qué trabaja, lo que desde entonces se le dice
+a cada agent.
+
+`create_skill` guarda como [skill](skills.md) un procedimiento que funcionó,
+para «haz un skill de esto».
+
+A propósito no hay: tocar credenciales ni borrar nada salvo un borrador de agent
+que quien llama creó y nunca publicó - deshacer un borrador creado por error - o
+una rutina. Las aplicaciones conectadas
 aparecen en **Settings → MCP clients**, donde desconectar una termina su acceso y
 el de cada token que tiene. Las llamadas que cambian
 algo esperan aprobación, como explica [la sección de arriba](#which-calls-wait-for-a-person).
@@ -1064,15 +1085,21 @@ con los propios registros de la plataforma. En el Builder es la primera tarjeta 
   nadie está detrás del run - un widget público, una programación que no actúa por
   nadie - el enlace no está.
 - **Los cambios esperan aprobación.** `writes`, el valor predeterminado, retiene
-  cada herramienta que cambia algo (`create_agent_draft`, `run_agent`,
-  `invite_member` y las demás) hasta que la persona la apruebe; `all` retiene
-  también la lectura. `none` no se ofrece: estas herramientas actúan con la
-  autoridad de una persona.
+  cada herramienta que cambia algo (`create_agent_draft`, `publish_agent`,
+  `create_routine`, `run_agent`, `invite_member` y las demás) hasta que la persona
+  la apruebe; `all` retiene también la lectura. `none` no se ofrece: estas
+  herramientas actúan con la autoridad de una persona. La única escritura que nunca
+  espera es `set_my_language`: cambia el idioma de la consola de quien pregunta,
+  por su palabra, y una tarjeta de aprobación para «cambia a inglés» sería toda la
+  conversación. `set_my_profile` espera como las demás, porque lo que guarda se le
+  dice a cada agente que la persona ejecuta, y una página que un agente leyó no
+  debe poder escribirlo sin que se vea.
 - **Las herramientas se pueden acotar** en los ajustes de la tarjeta, que listan
   cada herramienta y marcan las que cambian algo.
 
-La plantilla **Claude Code like** lo enlaza así, de modo que un agent nuevo creado a
-partir de ella consulta la plataforma desde el principio.
+La plantilla **AgenticOS** lo enlaza así, igual que cada agent creado desde cero,
+de modo que un agent consulta la plataforma desde el principio - y configura una
+rutina o cambia el idioma de la consola cuando se lo piden.
 
 ## Lo que MCP no te da { #what-mcp-does-not-get-you }
 

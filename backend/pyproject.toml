@@ -700,6 +700,7 @@ include = [
     # reasoning to a stranger.
     "app/services/run_stream.py",
     "app/services/run_reaper.py",
+    "app/services/run_heartbeat.py",
     "app/repositories/agent_workspace.py",
     "app/repositories/local_service.py",
     "app/repositories/sandbox_connection.py",
@@ -727,6 +728,8 @@ include = [
     # Approvals and questions offered as buttons in a chat, and the Slack app
     # around the bot (#2064, #2067, #2068).
     "app/services/channels/prompts.py",
+    # Next steps offered as buttons, a press of which is the next message (#2301).
+    "app/services/channels/next_steps.py",
     "app/services/channels/slack_answer.py",
     "app/services/channels/slack_app.py",
     "app/services/channels/slack_manifest.py",
@@ -1006,6 +1009,19 @@ include = [
     "app/services/browser_sign_in.py",
     "app/services/browser_sign_in_session.py",
     "app/api/routes/v1/browser_sign_ins.py",
+    # What the platform does for people on its own initiative, all of it in
+    # background jobs, and the suggestions it leaves them (#2301).
+    "app/services/proactive/**",
+    "app/services/suggestions.py",
+    "app/services/role_packs.py",
+    "app/repositories/suggestion.py",
+    "app/api/routes/v1/me_suggestions.py",
+    "app/worker/tasks/proactive_tasks.py",
+    # Watches over a person's own connections, and the presets they start from.
+    "app/services/watches.py",
+    "app/services/watch_presets.py",
+    "app/repositories/watch.py",
+    "app/api/routes/v1/me_watches.py",
 ]
 # Mirrors `[tool.coverage.run] omit` - one definition of "ours", asserted equal
 # by tests/test_coverage_gate.py.
@@ -1163,6 +1179,7 @@ include = [
     # reasoning to a stranger.
     "app/services/run_stream.py",
     "app/services/run_reaper.py",
+    "app/services/run_heartbeat.py",
     "app/repositories/agent_workspace.py",
     "app/repositories/local_service.py",
     "app/repositories/sandbox_connection.py",
@@ -1190,6 +1207,8 @@ include = [
     # Approvals and questions offered as buttons in a chat, and the Slack app
     # around the bot (#2064, #2067, #2068).
     "app/services/channels/prompts.py",
+    # Next steps offered as buttons, a press of which is the next message (#2301).
+    "app/services/channels/next_steps.py",
     "app/services/channels/slack_answer.py",
     "app/services/channels/slack_app.py",
     "app/services/channels/slack_manifest.py",
@@ -1499,6 +1518,19 @@ include = [
     "app/services/browser_sign_in.py",
     "app/services/browser_sign_in_session.py",
     "app/api/routes/v1/browser_sign_ins.py",
+    # What the platform does for people on its own initiative, all of it in
+    # background jobs, and the suggestions it leaves them (#2301).
+    "app/services/proactive/**",
+    "app/services/suggestions.py",
+    "app/services/role_packs.py",
+    "app/repositories/suggestion.py",
+    "app/api/routes/v1/me_suggestions.py",
+    "app/worker/tasks/proactive_tasks.py",
+    # Watches over a person's own connections, and the presets they start from.
+    "app/services/watches.py",
+    "app/services/watch_presets.py",
+    "app/repositories/watch.py",
+    "app/api/routes/v1/me_watches.py",
 ]
 branch = true
 omit = [

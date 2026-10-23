@@ -1,5 +1,5 @@
 ---
-source_sha: "48dc500a62e5"
+source_sha: "9025a904cc03"
 ---
 
 # MCP — narzędzia, których nikt tutaj nie musi pisać { #mcp-the-tools-nobody-here-has-to-write }
@@ -196,7 +196,9 @@ Własny szablon Architekta prosi
 o `writes` dla serwera platformy, więc nie tworzy niczego bez osoby, w której
 imieniu działa. Powiązanie każdego agenta z tym serwerem trzyma co najmniej
 `writes`, także przy `none`: jego narzędzia działają z uprawnieniami osoby, która
-pyta, również administratora.
+pyta, również administratora. Jeden odczyt czeka jak zmiana: `read_conversation`,
+który oddaje modelowi całą wcześniejszą rozmowę - strona przeczytana przez agenta
+mogłaby inaczej kazać mu ją pobrać i wysłać dalej.
 
 W Builderze
 ustawienia serwera mówią to osobno dla grup: **Odczyt** i **Zmiany** działają bez
@@ -1002,22 +1004,38 @@ odmowa wraca jako błąd narzędzia nazywający brakujące uprawnienie.
 | Narzędzie | Wymaga |
 |---|---|
 | `whoami` | — |
-| `list_agents`, `get_agent`, `list_capabilities` | `agents:view` |
-| `create_agent_draft` | `agents:edit` |
+| `list_agents`, `get_agent`, `list_capabilities`, `list_models`, `search_mcp_servers` | `agents:view` |
+| `create_agent_draft`, `update_agent_draft`, `test_agent_draft` | `agents:edit` |
+| `publish_agent` | `agents:publish` na tym agencie |
 | `discard_agent_draft` | `agents:edit`, dla twojego draftu, który nigdy nie był opublikowany |
 | `run_agent` | `agents:run` |
-| `list_runs`, `get_run`, `get_spend` | `runs:view` |
+| `list_routines` | `agents:view` |
+| `create_routine`, `run_routine_now` | `agents:run` na agencie |
+| `update_routine`, `delete_routine` | twórca rutyny albo `agents:edit` na jej agencie |
+| `list_runs`, `get_run`, `read_conversation`, `get_spend` | `runs:view` |
 | `list_knowledge_bases`, `search_knowledge` | `collections:view` |
 | `list_embedding_models` | — |
 | `create_knowledge_base`, `add_document` | `collections:edit` |
 | `list_skills` | `skills:view` |
+| `create_skill` | `skills:edit` |
 | `list_members` | `members:view` |
 | `invite_member` | `members:manage` i `roles:manage` |
+| `list_my_connections`, `set_my_language`, `set_my_profile` | — (własne wywołującego) |
 
-Celowo nie ma tu publikowania agenta, dotykania poświadczeń ani usuwania
-czegokolwiek poza draftem agenta, który wywołujący sam utworzył i nigdy nie
-opublikował - to cofnięcie draftu utworzonego przez pomyłkę. Draft utworzony
-tutaj publikuje osoba w konsoli. Podłączone aplikacje są
+Agenta da się tu zbudować od początku do końca: utworzyć szkic, edytować go,
+wypróbować jako nieopublikowany draft przez `test_agent_draft` - run testowy,
+liczony do budżetu i zapisywany, odrzucany z podaniem powodu, gdy draft by się nie
+opublikował - i opublikować przez `publish_agent`, które wykonuje te same
+sprawdzenia co przycisk **Publish** w konsoli. `cron_expression` rutyny jest
+liczony w UTC. `set_my_language` przełącza język konsoli wywołującego (`en`, `pl`
+albo `de`) na każdym urządzeniu, na którym się loguje, a `set_my_profile`
+zapisuje jego rolę i to, czym się zajmuje, co od tej pory słyszy każdy agent.
+`create_skill` zapisuje procedurę, która zadziałała, jako [skill](skills.md) - na
+„zrób z tego skill”.
+
+Celowo nie ma tu dotykania poświadczeń ani usuwania czegokolwiek poza draftem
+agenta, który wywołujący sam utworzył i nigdy nie opublikował - to cofnięcie
+draftu utworzonego przez pomyłkę - albo rutyną. Podłączone aplikacje są
 widoczne w **Ustawienia → Klienci MCP**, gdzie odłączenie kończy ich dostęp razem
 z każdym tokenem. Wywołania, które coś
 zmieniają, czekają na zatwierdzenie, jak wyjaśnia [sekcja wyżej](#which-calls-wait-for-a-person).
@@ -1036,14 +1054,21 @@ nazwana jak to wdrożenie; jej włączenie wiąże go jako
   stoi - publiczny widget, harmonogram działający w niczyim imieniu - bindingu nie
   ma.
 - **Zmiany czekają na zatwierdzenie.** Domyślne `writes` wstrzymuje każde
-  narzędzie, które coś zmienia (`create_agent_draft`, `run_agent`, `invite_member`
-  i pozostałe), do zgody osoby; `all` wstrzymuje też odczyt. `none` nie jest
-  oferowane: te narzędzia działają z uprawnieniami człowieka.
+  narzędzie, które coś zmienia (`create_agent_draft`, `publish_agent`,
+  `create_routine`, `run_agent`, `invite_member` i pozostałe), do zgody osoby;
+  `all` wstrzymuje też odczyt. `none` nie jest oferowane: te narzędzia działają z
+  uprawnieniami człowieka. Jedyny zapis, który nigdy nie czeka, to
+  `set_my_language`: zmienia język konsoli pytającego, na jego słowo, a karta
+  zatwierdzenia dla „przełącz na angielski” byłaby całą rozmową.
+  `set_my_profile` czeka jak pozostałe, bo to, co zapisuje, słyszy każdy agent,
+  którego ta osoba uruchamia, a strona przeczytana przez agenta nie może tego
+  zapisać niezauważenie.
 - **Narzędzia można zawęzić** w ustawieniach karty, które pokazują każde narzędzie
   i oznaczają te, które coś zmieniają.
 
-Szablon **Claude Code like** wiąże go właśnie tak, więc świeży agent z niego od razu
-sięga do platformy.
+Szablon **AgenticOS** wiąże go właśnie tak, podobnie jak każdy agent tworzony od
+zera, więc agent od razu sięga do platformy - i ustawia rutynę albo przełącza język
+konsoli, gdy się go o to poprosi.
 
 ## Czego MCP ci nie daje { #what-mcp-does-not-get-you }
 

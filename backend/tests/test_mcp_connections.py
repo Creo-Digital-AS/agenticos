@@ -87,6 +87,7 @@ from app.services.mcp_connection import (
     _apply_token,
     _resolve_auth_headers,
     connection_scope,
+    watched_connection_spec,
 )
 from app.services.organization_secret import OrganizationSecretService
 from app.services.portals import exceptions as portals_exceptions
@@ -531,6 +532,48 @@ class TestApprovalMarks:
 
         assert named["send"].tool_def.metadata[ACCOUNT] == "Work"
         assert ACCOUNT not in unnamed["send"].tool_def.metadata
+
+    @pytest.mark.anyio
+    @pytest.mark.security
+    async def test_an_ungated_write_runs_unasked_under_every_policy_and_only_it(self):
+        """The platform's language switch (#2301): its own server names it, and no
+        other tool - the publish beside it above all - slips through with it."""
+        from pydantic_ai.toolsets.abstract import ToolsetTool
+
+        from app.agents.mcp import NEEDS_APPROVAL, ApprovalMarked
+
+        inner = MagicMock()
+        inner.get_tools = AsyncMock(
+            return_value={
+                name: ToolsetTool(
+                    toolset=inner,
+                    tool_def=_mcp_tool(name, False),
+                    max_retries=1,
+                    args_validator=MagicMock(),
+                )
+                for name in ("agenticos_set_my_language", "agenticos_publish_agent")
+            }
+        )
+
+        marked = await ApprovalMarked(
+            inner, policy="all", ungated=frozenset({"agenticos_set_my_language"})
+        ).get_tools(MagicMock())
+
+        assert marked["agenticos_set_my_language"].tool_def.metadata[NEEDS_APPROVAL] is False
+        assert marked["agenticos_publish_agent"].tool_def.metadata[NEEDS_APPROVAL] is True
+
+    def test_only_the_platform_s_own_server_names_ungated_tools(self):
+        from app.agents.mcp import (
+            PLATFORM_UNGATED_TOOLS,
+            McpServerSpec,
+            _make_toolset,
+            platform_spec,
+        )
+
+        platform = platform_spec("aos_key", allowed_tools=None, approval="writes")
+        assert platform.ungated == PLATFORM_UNGATED_TOOLS
+        assert McpServerSpec(name="notion", url="https://mcp.notion.com/mcp").ungated == frozenset()
+        assert _make_toolset(platform).ungated == frozenset({"agenticos_set_my_language"})
 
 
 class TestToolOrigins:
@@ -1876,6 +1919,28 @@ class TestConnectingOneMidRun:
         )
 
         assert outcome == "unreachable"
+
+
+class TestAWatchedConnection:
+    """#2301: one of a person's own connections, as the server a watch reads."""
+
+    @pytest.mark.anyio
+    async def test_it_carries_the_persons_credential_and_their_narrowing(self):
+        conn = _connection(catalog_key="github", label="Work", allowed_tools=["list_prs"])
+        conn.auth_token = _seal_into(conn, "secret-token")
+
+        spec = await watched_connection_spec(AsyncMock(), conn)
+
+        assert spec is not None
+        assert spec.name == "github" and spec.account == "Work"
+        assert spec.headers == {"Authorization": "Bearer secret-token"}
+        assert spec.allowed_tools == ["list_prs"]
+
+    @pytest.mark.anyio
+    async def test_a_custom_server_goes_by_its_name_and_a_dead_credential_by_nothing(self):
+        assert (await watched_connection_spec(AsyncMock(), _connection())).name == "github"
+        dead = _connection(auth_token="enc:not-valid-ciphertext")
+        assert await watched_connection_spec(AsyncMock(), dead) is None
 
 
 class TestAuthHeaders:

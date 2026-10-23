@@ -303,15 +303,18 @@ class Settings(BaseSettings):
     # stops calling a run at work: a longer turn would go on unseen, and someone
     # reopening the thread could ask again over an answer still being written.
     CHAT_DETACHED_TURN_MINUTES: float = Field(default=60.0, gt=0, le=120)
-    # How long a run may sit `running` before the sweep decides its process
-    # died. The row is committed before the model is called (#12), so a worker
-    # killed mid-run leaves it `running` with nothing left to finish it - in
-    # Activity for ever, and blocking any trigger whose resume it was. Six
-    # hours is far past anything this platform executes in one run, and the
-    # ceiling does not have to be exact: a live run the sweep flips anyway is
+    # How often the process executing a run stamps it alive, and how long a
+    # `running` run may go without a sign of life before the sweep decides its
+    # process died. The row is committed before the model is called (#12), so a
+    # process killed mid-run leaves it `running` with nothing left to finish it
+    # - "Working" in the chat, in Activity for ever, and blocking any trigger
+    # whose resume it was. The beat makes a short ceiling safe however long a
+    # model takes; eight missed beats is a dead process, not a busy one. It
+    # does not have to be exact either: a live run the sweep flips anyway is
     # flipped back by its own terminal write, which lands later and wins.
     # Zero or below switches the sweep off.
-    STALE_RUN_REAPED_AFTER_HOURS: float = 6.0
+    RUN_HEARTBEAT_SECONDS: float = Field(default=15.0, gt=0)
+    STALE_RUN_REAPED_AFTER_SECONDS: float = 120.0
     ALGORITHM: str = "HS256"
     FRONTEND_URL: str = "http://localhost:3000"
     PUBLIC_BASE_URL: str = "http://localhost:8000"
@@ -827,6 +830,23 @@ class Settings(BaseSettings):
     def validate_map_tiles(self) -> Settings:
         """A tile setting that cannot be served is refused at startup, not at the first map."""
         self.map_tiles()
+        return self
+
+    @model_validator(mode="after")
+    def validate_run_heartbeat(self) -> Settings:
+        """A stale-run ceiling a live run's own heartbeat cannot beat is refused at startup.
+
+        A run's first beat lands one interval after it starts, so a ceiling no
+        longer than a few intervals ends live runs mid-call - and a routine can
+        then start another on top of the one still answering (Codex on #2324).
+        Three intervals is the least that survives one missed beat.
+        """
+        ceiling = self.STALE_RUN_REAPED_AFTER_SECONDS
+        if 0 < ceiling < 3 * self.RUN_HEARTBEAT_SECONDS:
+            raise ValueError(
+                "STALE_RUN_REAPED_AFTER_SECONDS must be at least three "
+                "RUN_HEARTBEAT_SECONDS, or zero to switch the sweep off"
+            )
         return self
 
     # The proxy the deployment's own browser reaches every site through - the
