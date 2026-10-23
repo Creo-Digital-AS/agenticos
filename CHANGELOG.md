@@ -19,6 +19,16 @@ Two things are versioned separately from this file and worth knowing about:
 
 ## [Unreleased]
 
+### Fixed
+
+- **A URL whose host name cannot be encoded is refused, not a 500 (#2352).** A
+  host with an empty label (`a..b`) or a label longer than 63 characters made
+  the resolver's IDNA codec raise an error the outbound guard did not catch, so
+  saving an MCP connection with such a URL answered 500 "An unexpected error
+  occurred". The guard now refuses it with "The URL's host name is not valid",
+  a 400 like every other refusal, for every caller. The MCP catalog audit and
+  the browser's endpoint lookup treat such a name as one that does not resolve.
+
 ### Security
 
 - **OpenTelemetry moves to 1.45.1 (0.66b1 for the instrumentation packages).**
