@@ -18,6 +18,7 @@ import { useOrganizationList } from "@/hooks/use-organizations";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useSkills } from "@/hooks/use-skills";
 import { stripLocale } from "@/lib/active-route";
+import { runsAgents } from "@/lib/model-profiles";
 import {
   FLOWS,
   stepsForFlow,
@@ -150,7 +151,11 @@ function useOrgSnapshot(): {
     agentLimitReached: isAtAgentLimit(agentCeiling.ceiling),
     counts: {
       agent: settled(agents.isLoading, agents.isFetching, agents.total),
-      model: settled(models.isLoading, models.isFetching, models.profiles.length),
+      model: settled(
+        models.isLoading,
+        models.isFetching,
+        models.profiles.filter(runsAgents).length,
+      ),
       skill: settled(skills.isLoading, skills.isFetching, skills.total),
       kb: settled(kb.isLoading, kb.isFetching, kb.kbs.length),
       // Either scope: the connect step ends when the reader connects one, org or
@@ -166,8 +171,10 @@ function useOrgSnapshot(): {
       routine: settled(routines.isLoading, false, routines.total),
     },
     // A profile is runnable when it is keyed by a vault secret, or self-hosted at
-    // a `base_url` with no key — the same rule the model resolver enforces. A key
-    // stored with no profile, or a profile whose key was deleted, is not. The
+    // a `base_url` with no key — the same rule the model resolver enforces — and
+    // names a model an agent can run on: a speech or embedding profile is not one
+    // the model step could pick (#2487). A key stored with no profile, or a
+    // profile whose key was deleted, is not. The
     // knowledge, skill and MCP flags are simply whether the organization holds one,
     // the fork each section's step branches on. A published agent is the one the
     // chat can address — a draft has no version to run — the same `status` check
@@ -175,7 +182,7 @@ function useOrgSnapshot(): {
     liveState: stateSettled
       ? {
           hasRunnableModel: models.profiles.some(
-            (profile) => profile.secret_id !== null || !!profile.base_url,
+            (profile) => runsAgents(profile) && (profile.secret_id !== null || !!profile.base_url),
           ),
           hasKnowledgeBase: kb.kbs.length > 0,
           hasSkill: skills.total > 0,

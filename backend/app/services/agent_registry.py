@@ -136,6 +136,8 @@ from app.services.file_storage import (
     avatar_filename,
     get_file_storage,
 )
+from app.services.model_outputs import model_outputs, not_chat_refusal
+from app.services.model_profile import MAX_FALLBACK_DEPTH
 from app.services.notifications import NotificationService
 from app.services.resource_usage import groups_sharing
 from app.services.sandbox_connection import SandboxConnectionService
@@ -1530,14 +1532,14 @@ class AgentRegistryService:
         if spec.model_profile_id is None:
             problems.add(["No model selected - pick one before publishing"])
         else:
-            problems.add(await self._model_profile_problems(ctx, spec.model_profile_id))
+            problems.add(await self.model_profile_problems(ctx, spec.model_profile_id))
         # And each reviewer's, refused here rather than when a run first reaches
         # its cadence and finds nothing to review with.
         for reviewer in spec.reviewers:
             if reviewer.model_profile_id is None:
                 problems.add([f"Reviewer '{reviewer.name}': pick the model it reviews with"])
             else:
-                problems.add(await self._model_profile_problems(ctx, reviewer.model_profile_id))
+                problems.add(await self.model_profile_problems(ctx, reviewer.model_profile_id))
             if not reviewer.instructions.strip():
                 problems.add([f"Reviewer '{reviewer.name}': say what it looks for"])
 
@@ -1597,9 +1599,9 @@ class AgentRegistryService:
         else:
             problems.add(await _browser_problems(config, has_secret=binding.secret_id is not None))
             if isinstance(config, WebBrowserConfig) and config.step_model_profile_id is not None:
-                problems.add(await self._model_profile_problems(ctx, config.step_model_profile_id))
+                problems.add(await self.model_profile_problems(ctx, config.step_model_profile_id))
             if isinstance(config, FollowUpsConfig) and config.model_profile_id is not None:
-                problems.add(await self._model_profile_problems(ctx, config.model_profile_id))
+                problems.add(await self.model_profile_problems(ctx, config.model_profile_id))
             problems.add(ungateable_tool_problems(binding, definition, config))
         # A tool_approval key that matches nothing is the dangerous kind of
         # typo: it is not an error at run time, it is silence - the tool the
@@ -1616,14 +1618,40 @@ class AgentRegistryService:
         problems.add(await self._secret_problems(ctx, binding, definition))
         return problems
 
-    async def _model_profile_problems(self, ctx: AuthContext, profile_id: UUID) -> list[str]:
-        """Whether a named model profile is still this organization's to run on."""
+    async def model_profile_problems(self, ctx: AuthContext, profile_id: UUID) -> list[str]:
+        """Whether a named model profile is still this organization's to run on.
+
+        And whether it is a model anything can run *on*: a profile can name a
+        text-to-speech or embedding model, and an agent on it fails on its first
+        turn (#2487). Refused only where the catalogs know what the model is - an
+        unknown model is allowed. Its fallbacks too: a provider failure hands the
+        run to the next one in the chain, and a speech model there turns an outage
+        into a run that fails anyway.
+        """
         profile = await credential_repo.get_profile(
             self.db, profile_id, organization_id=ctx.organization_id
         )
         if profile is None:
             return ["The selected model profile no longer exists"]
-        return []
+        outputs = model_outputs(profile.provider, profile.model, base_url=profile.base_url)
+        if not outputs.chat:
+            return [not_chat_refusal(profile.label, profile.model, outputs)]
+        problems: list[str] = []
+        fallback_ids = [UUID(pid) for pid in profile.fallback_profile_ids[:MAX_FALLBACK_DEPTH]]
+        fallbacks = await credential_repo.get_profiles_by_ids(
+            self.db, fallback_ids, organization_id=ctx.organization_id
+        )
+        # In the chain's order. One that no longer exists is skipped at run
+        # time, not refused here.
+        for fallback in (fallbacks[pid] for pid in fallback_ids if pid in fallbacks):
+            found = model_outputs(fallback.provider, fallback.model, base_url=fallback.base_url)
+            if not found.chat:
+                problems.append(
+                    f"Model '{profile.label}' falls back to '{fallback.label}' "
+                    f"({fallback.model}), which is {found.kind}, not a chat model - "
+                    "remove it from the fallbacks"
+                )
+        return problems
 
     async def _collection_problems(
         self, ctx: AuthContext, collection_ids: Sequence[UUID]
@@ -2147,7 +2175,7 @@ class AgentRegistryService:
         # already checked - so only a profile it *did* name is a reference that
         # can be broken, or borrowed from another organization.
         if specialist.model_profile_id is not None:
-            problems.add(await self._model_profile_problems(ctx, specialist.model_profile_id))
+            problems.add(await self.model_profile_problems(ctx, specialist.model_profile_id))
         # Its instructions are filled the way the parent's are, so a typo in a
         # variable is refused here too rather than sent to the model as braces.
         problems.merge(_variable_problems(specialist.to_agent_spec(fallback_model_profile_id=None)))
