@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { getErrorMessage } from "@/lib/api-error";
 import { apiClient } from "@/lib/api-client";
+import { invalidateSpeechSettings } from "@/lib/dictation-api";
 import { qk } from "@/lib/query-keys";
 import type { AgentEnvironment, AgentEnvironmentList } from "@/types/agents";
 
@@ -21,14 +22,19 @@ export function useAgentEnvironments(agentId: string | null) {
   const queryClient = useQueryClient();
   const base = `/agents/${agentId}/environments`;
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.environments.list(agentId ?? ""),
     queryFn: () => apiClient.get<AgentEnvironmentList>(base),
     enabled: agentId !== null,
   });
 
+  // Dictation readiness and channel voice notes read the version an
+  // environment pins, so moving a pin changes their answer too.
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") });
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") }),
+      invalidateSpeechSettings(queryClient),
+    ]);
 
   const create = useMutation({
     mutationFn: (input: { name: string; version_id?: string; tracks_latest?: boolean }) =>
@@ -92,6 +98,8 @@ export function useAgentEnvironments(agentId: string | null) {
   return {
     environments: data?.items ?? [],
     isLoading,
+    error,
+    refetch,
     create,
     promote,
     setReleaseMode,

@@ -13,11 +13,12 @@ anything not in it.
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, computed_field
 
 from app.agents.model_resolver import ModelApi
 from app.core.secret_kinds import SecretKind
 from app.schemas.base import BaseSchema, TimestampSchema
+from app.services.model_outputs import listed_model_outputs
 
 
 class ProviderInfo(BaseSchema):
@@ -122,6 +123,32 @@ class ModelProfileRead(BaseSchema, TimestampSchema):
         ),
     )
 
+    @computed_field  # type: ignore[prop-decorator]  # pydantic's documented form
+    @property
+    def output_modalities(self) -> list[str]:
+        """What the model emits - `["text"]`, `["audio"]` - where the platform knows.
+
+        Empty means not known, which is every custom endpoint (a `base_url`,
+        whatever the provider) and most models:
+        absent is *not* text-only, the same rule as a provider listing's field.
+        """
+        return list(
+            listed_model_outputs(self.provider, self.model, base_url=self.base_url).modalities
+        )
+
+    @computed_field  # type: ignore[prop-decorator]  # pydantic's documented form
+    @property
+    def chat_capable(self) -> bool:
+        """Whether an agent can run on this model (#2487).
+
+        False only for a model the platform knows is something else - a
+        text-to-speech, transcription, image, video or embedding model. Agent and
+        chat model pickers leave those out; the profile stays listed so it can be
+        removed. A model it cannot classify is true, and so is every profile
+        with a `base_url`: the catalogs describe the vendor's API, not that server.
+        """
+        return listed_model_outputs(self.provider, self.model, base_url=self.base_url).chat
+
 
 class ModelProfileList(BaseSchema):
     items: list[ModelProfileRead]
@@ -143,6 +170,14 @@ class ProviderModelRead(BaseSchema):
             '`["text", "image"]`. Empty means the listing says nothing, which is most of '
             "them: absent is *not* text-only, so a client filtering on it must treat an empty "
             "list as unknown rather than as a refusal."
+        ),
+    )
+    chat_capable: bool = Field(
+        default=True,
+        description=(
+            "Whether an agent can run on this model. False only for one the platform knows "
+            "is something else - text to speech, transcription, image, video or embeddings - "
+            "which a picker for an agent's model leaves out (#2487). Unknown is true."
         ),
     )
 
@@ -186,6 +221,115 @@ class SpeechToTextProviderRead(BaseSchema):
 
 class SpeechToTextProviderList(BaseSchema):
     items: list[SpeechToTextProviderRead]
+    total: int
+    languages: list[str] = Field(
+        default_factory=list,
+        description="ISO-639-1 codes a recording may be pinned to.",
+    )
+
+
+class RealtimeModelRead(BaseSchema):
+    """One realtime model, for the Voice card's picker."""
+
+    id: str
+    name: str
+    description: str
+    transport: Literal["webrtc", "relay"]
+    voices: list[str]
+    default_voice: str
+    supports_thinking: bool
+    input_sample_rate: int
+    output_sample_rate: int
+
+
+class RealtimeProviderRead(BaseSchema):
+    """One provider that can hold a voice conversation, and what may be chosen on it."""
+
+    provider: str
+    name: str
+    secret_kind: str = Field(description="The vault kind a key for this provider must be")
+    deployment: bool = Field(
+        description="Whether the model is an Azure deployment name plus a base model"
+    )
+    models: list[RealtimeModelRead]
+
+
+class RealtimeProviderList(BaseSchema):
+    items: list[RealtimeProviderRead]
+    total: int
+
+
+class TextToSpeechVoiceRead(BaseSchema):
+    """One voice a provider offers to every account."""
+
+    id: str = Field(description="The id stored on the binding")
+    name: str = Field(description="What to show")
+    description: str = Field(description="How it sounds, where the provider says")
+
+
+class TextToSpeechModelRead(BaseSchema):
+    """One model that speaks."""
+
+    id: str = Field(description="The id stored on the binding")
+    name: str = Field(description="What to show")
+    description: str = Field(description="When to reach for this one rather than another")
+    max_characters: int = Field(
+        description="The most text one request takes; longer is sent in parts"
+    )
+    takes_instructions: bool = Field(description="Whether it reads a direction on how to speak")
+    voices: list[TextToSpeechVoiceRead] = Field(
+        description="The voices this model can speak in. Empty where voices belong to the account"
+    )
+
+
+class TextToSpeechProviderRead(BaseSchema):
+    """One provider that can speak, and what may be chosen on it."""
+
+    provider: str = Field(description="The catalog id, e.g. `elevenlabs`")
+    name: str = Field(description="What to show")
+    formats: list[str] = Field(description="Audio formats it returns, by file extension")
+    account_voices: bool = Field(
+        description="Whether voices belong to the account, so a binding names one by id"
+    )
+    models: list[TextToSpeechModelRead]
+
+
+class TextToSpeechProviderList(BaseSchema):
+    items: list[TextToSpeechProviderRead]
+    total: int
+
+
+class VideoModelRead(BaseSchema):
+    """One model that makes video, and what it can make."""
+
+    id: str = Field(description="The id stored on the binding")
+    name: str = Field(description="What to show")
+    description: str = Field(description="When to reach for this one rather than another")
+    min_seconds: int = Field(description="The shortest clip it makes")
+    max_seconds: int = Field(description="The longest clip it makes")
+    duration_choosable: bool = Field(
+        description="Whether a call may ask for a length; where not, the model decides"
+    )
+    aspect_ratios: list[str] = Field(
+        description="Aspect ratios it renders; the first is the default"
+    )
+    resolutions: list[str] = Field(description="Resolutions it renders; the first is the default")
+    audio: Literal["always", "optional", "never"] = Field(
+        description="Whether a clip carries sound: always, on request, or never"
+    )
+    first_frame: bool = Field(description="Whether it can start from an image")
+
+
+class VideoProviderRead(BaseSchema):
+    """One provider that can make video, and what may be chosen on it."""
+
+    provider: str = Field(description="The catalog id, e.g. `byteplus`")
+    name: str = Field(description="What to show")
+    models: list[VideoModelRead]
+
+
+class VideoProviderList(BaseSchema):
+    items: list[VideoProviderRead]
     total: int
 
 

@@ -18,7 +18,11 @@ const KNOWN_SURFACES = new Set([
   "slack",
   "telegram",
   "mattermost",
+  "a2a",
+  "teams",
   "schedule",
+  "follow_ups",
+  "proactive",
 ]);
 
 /**

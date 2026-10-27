@@ -254,11 +254,12 @@ class TestRunNotifications:
         assert [approval.tool_id for approval in passed] == ["send_email"]
 
     @pytest.mark.anyio
-    async def test_a_web_run_notifies_nobody_even_when_it_completes_or_fails(self):
+    @pytest.mark.parametrize("surface", [RunSurface.WEB, RunSurface.FOLLOW_UPS])
+    async def test_a_web_or_helper_run_notifies_nobody_on_completion_or_failure(self, surface):
         """A chat user watching the stream already sees the outcome on screen -
         the whole reason `run_completed`/`run_failed` exist is for the surfaces
         that would otherwise stop silently."""
-        run = MagicMock(surface=RunSurface.WEB.value)
+        run = MagicMock(surface=surface.value)
         for status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
             with patch(
                 "app.services.agent_runner.NotificationService", new=_notifier()
@@ -300,7 +301,7 @@ class TestRunNotifications:
     @pytest.mark.anyio
     async def test_a_completed_run_off_web_notifies_its_initiator(self):
         agent = MagicMock()
-        run = MagicMock(surface=RunSurface.SCHEDULE.value)
+        run = MagicMock(surface=RunSurface.SLACK.value)
         with patch(
             "app.services.agent_runner.NotificationService", new=_notifier()
         ) as notifications:
@@ -315,6 +316,46 @@ class TestRunNotifications:
             )
 
         notifications.return_value.run_completed.assert_awaited_once_with(run, agent=agent)
+
+    @pytest.mark.anyio
+    async def test_a_completed_routine_leaves_telling_its_creator_to_the_routine(self):
+        """The routine says it with its name and the start of the answer (#2301);
+        a second, emptier notification beside it would be noise."""
+        run = MagicMock(surface=RunSurface.SCHEDULE.value)
+        with patch(
+            "app.services.agent_runner.NotificationService", new=_notifier()
+        ) as notifications:
+            await AgentRunnerService(MagicMock())._notify(
+                run,
+                agent=MagicMock(),
+                spec=AgentSpec(name="Support"),
+                status=RunStatus.COMPLETED,
+                error=None,
+                budget_scope=None,
+            )
+
+        notifications.return_value.run_completed.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_a_run_stopped_for_looping_off_web_is_reported_as_failed_with_why(self):
+        agent = MagicMock()
+        run = MagicMock(surface=RunSurface.SCHEDULE.value)
+        with patch(
+            "app.services.agent_runner.NotificationService", new=_notifier()
+        ) as notifications:
+            notifications.return_value.run_failed = AsyncMock()
+            await AgentRunnerService(MagicMock())._notify(
+                run,
+                agent=agent,
+                spec=AgentSpec(name="Support"),
+                status=RunStatus.LOOP_STOPPED,
+                error="Stopped: the agent called `search` 4 times in a row.",
+                budget_scope=None,
+            )
+
+        notifications.return_value.run_failed.assert_awaited_once_with(
+            run, agent=agent, error="Stopped: the agent called `search` 4 times in a row."
+        )
 
     @pytest.mark.anyio
     async def test_a_failed_run_off_web_carries_its_error(self):

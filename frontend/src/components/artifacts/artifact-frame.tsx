@@ -4,9 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { FileX } from "lucide-react";
 import { useTranslations } from "next-intl";
 
-import { EmptyState, LoadingState } from "@/components/states";
+import { EmptyState } from "@/components/states";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ui";
 import { useArtifactView } from "@/hooks/use-artifacts";
+import type { ArtifactTheme } from "@/types/artifact";
 import { cn } from "@/lib/utils";
 
 /**
@@ -54,7 +56,7 @@ export function requestedLink(event: MessageEvent, frame: HTMLIFrameElement | nu
  * open, and taking the newer address would swap the one the reader is checking
  * for one they never saw, just before they click.
  */
-function useLinkRequests(frame: React.RefObject<HTMLIFrameElement | null>) {
+export function useLinkRequests(frame: React.RefObject<HTMLIFrameElement | null>) {
   const [pending, setPending] = useState<string | null>(null);
   useEffect(() => {
     const listen = (event: MessageEvent) => {
@@ -68,6 +70,8 @@ function useLinkRequests(frame: React.RefObject<HTMLIFrameElement | null>) {
 }
 
 interface ArtifactFrameViewProps {
+  /** App preference, independent of the console; authored CSS stays in control. */
+  theme?: ArtifactTheme;
   /** A signed content address the server minted for this viewer. */
   url: string;
   title: string;
@@ -76,8 +80,12 @@ interface ArtifactFrameViewProps {
 }
 
 /** The page itself, in its sandbox. Shared by the console and the public link. */
-export function ArtifactFrameView({ url, title, className }: ArtifactFrameViewProps) {
-  const t = useTranslations("artifacts");
+export function ArtifactFrameView({
+  url,
+  title,
+  className,
+  theme = "light",
+}: ArtifactFrameViewProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [pending, setPending] = useLinkRequests(frame);
   return (
@@ -85,36 +93,50 @@ export function ArtifactFrameView({ url, title, className }: ArtifactFrameViewPr
       <iframe
         ref={frame}
         src={url}
+        style={{ colorScheme: theme }}
         title={title}
         sandbox={ARTIFACT_SANDBOX}
         referrerPolicy="no-referrer"
         className={cn("h-full min-h-[32rem] w-full rounded-lg border bg-white", className)}
       />
-      <ConfirmDialog
-        open={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) setPending(null);
-        }}
-        title={t("openLinkTitle")}
-        description={
-          <>
-            {t("openLinkWhy")}
-            <span className="text-foreground mt-2 block font-mono text-xs break-all">
-              {pending}
-            </span>
-          </>
-        }
-        confirmLabel={t("openLink")}
-        onConfirm={() => {
-          if (pending !== null) window.open(pending, "_blank", "noopener,noreferrer");
-          setPending(null);
-        }}
-      />
+      <LinkRequestDialog pending={pending} onDone={() => setPending(null)} />
     </>
   );
 }
 
+/** The address a framed page asked to open, read by a person before it opens. */
+export function LinkRequestDialog({
+  pending,
+  onDone,
+}: {
+  pending: string | null;
+  onDone: () => void;
+}) {
+  const t = useTranslations("artifacts");
+  return (
+    <ConfirmDialog
+      open={pending !== null}
+      onOpenChange={(open) => {
+        if (!open) onDone();
+      }}
+      title={t("openLinkTitle")}
+      description={
+        <>
+          {t("openLinkWhy")}
+          <span className="text-foreground mt-2 block font-mono text-xs break-all">{pending}</span>
+        </>
+      }
+      confirmLabel={t("openLink")}
+      onConfirm={() => {
+        if (pending !== null) window.open(pending, "_blank", "noopener,noreferrer");
+        onDone();
+      }}
+    />
+  );
+}
+
 interface ArtifactFrameProps {
+  theme?: ArtifactTheme;
   artifactId: string;
   /** A kept version to show, or null for the current one. */
   versionId: string | null;
@@ -129,11 +151,25 @@ interface ArtifactFrameProps {
  * version was pruned or access was withdrawn a moment ago - both are "this is not
  * available", and neither is worth a retry.
  */
-export function ArtifactFrame({ artifactId, versionId, title, className }: ArtifactFrameProps) {
+export function ArtifactFrame({
+  artifactId,
+  versionId,
+  title,
+  className,
+  theme,
+}: ArtifactFrameProps) {
   const t = useTranslations("artifacts");
+  const ts = useTranslations("states");
   const view = useArtifactView(artifactId, versionId, true);
 
-  if (view.isLoading) return <LoadingState variant="skeleton-panel" rows={4} />;
+  if (view.isLoading)
+    return (
+      <Skeleton
+        role="status"
+        aria-label={ts("loading")}
+        className={cn("h-full min-h-[32rem] w-full rounded-lg border", className)}
+      />
+    );
   if (view.data === undefined) {
     return (
       <EmptyState
@@ -143,5 +179,7 @@ export function ArtifactFrame({ artifactId, versionId, title, className }: Artif
       />
     );
   }
-  return <ArtifactFrameView url={view.data.url} title={title} className={className} />;
+  return (
+    <ArtifactFrameView url={view.data.url} title={title} className={className} theme={theme} />
+  );
 }

@@ -72,6 +72,8 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     documents,
     documentsTotal,
     hasMoreDocuments,
+    ingestion,
+    ingestionPending,
     syncSources,
     orgIntegrations,
     connectors,
@@ -83,6 +85,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     uploadProgress,
     error,
     refresh,
+    refreshIngestion,
     loadMoreDocuments,
     updateIngestion,
     updateEmbeddings,
@@ -90,6 +93,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     deleteDocument,
     deleteCollection,
     createSyncSource,
+    updateSyncSource,
     cloneSyncSource,
     triggerSyncSource,
     deleteSyncSource,
@@ -103,6 +107,12 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [creatingSource, setCreatingSource] = useState(false);
+  // Kept after the wizard closes, so it does not turn back into the create
+  // form while it animates out; opening it to connect is what clears it.
+  const [editingSource, setEditingSource] = useState<SyncSourceRead | null>(null);
+  // Bumped each time the wizard opens, so a save that finishes after it was
+  // dismissed and reopened does not close the newer one.
+  const wizardSession = useRef(0);
   const [viewerDoc, setViewerDoc] = useState<KBDocument | null>(null);
   const [ingestionOpen, setIngestionOpen] = useState(false);
   const [embeddingOpen, setEmbeddingOpen] = useState(false);
@@ -161,7 +171,9 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     refresh();
   }, [refresh]);
 
-  usePollWhileIngesting(documents, refresh);
+  // The loaded documents alone stop the poll as soon as their page has settled,
+  // which a large batch does long before the rest of it (#2486).
+  usePollWhileIngesting(documents, refreshIngestion, ingestionPending);
 
   const handleFiles = async (files: FileList | null) => {
     if (!mayEdit || !files || files.length === 0) return;
@@ -215,6 +227,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
         documentsTotal={documentsTotal}
         loadedVectors={loadedVectors}
         hasMoreDocuments={hasMoreDocuments}
+        ingestion={ingestion}
       />
 
       {/* Reached only with a `kb` in hand, so this is a refresh that failed, with
@@ -337,7 +350,16 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
             syncSourcesFailed={sectionFailures.syncSources}
             connectorsFailed={sectionFailures.connectors}
             mayEdit={mayEdit}
-            onConnect={() => setWizardOpen(true)}
+            onConnect={() => {
+              wizardSession.current += 1;
+              setEditingSource(null);
+              setWizardOpen(true);
+            }}
+            onEdit={(source) => {
+              wizardSession.current += 1;
+              setEditingSource(source);
+              setWizardOpen(true);
+            }}
             onTrigger={(sourceId) => triggerSyncSource(sourceId)}
             onDisconnect={setDisconnectingSource}
             onRetry={() => refresh()}
@@ -464,6 +486,17 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
         connectorsFailed={sectionFailures.connectors}
         orgIntegrationsFailed={sectionFailures.orgIntegrations}
         submitting={creatingSource}
+        editing={editingSource}
+        onUpdate={async (sourceId, data) => {
+          const session = wizardSession.current;
+          setCreatingSource(true);
+          try {
+            await updateSyncSource(sourceId, data);
+            if (wizardSession.current === session) setWizardOpen(false);
+          } finally {
+            setCreatingSource(false);
+          }
+        }}
         onSubmit={async (data) => {
           setCreatingSource(true);
           try {

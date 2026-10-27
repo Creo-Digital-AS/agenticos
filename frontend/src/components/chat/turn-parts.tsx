@@ -5,6 +5,8 @@ import { useTranslations } from "next-intl";
 
 import { useLinger, useSmoothText } from "@/hooks/use-smooth-text";
 import { toolEntry } from "@/lib/tool-catalog";
+import { drawnUnderTheAnswer } from "@/lib/turn-extras";
+import { isVisualTool } from "@/lib/visuals";
 import { cn } from "@/lib/utils";
 import { useInChatScope } from "@/stores/chat-scope-context";
 import type { DelegateRef } from "@/lib/delegations";
@@ -16,6 +18,7 @@ import { TurnBrowses } from "./browser-card";
 import { MarkdownContent } from "./markdown-content";
 import { RichText } from "./mention-chip";
 import { ToolCallCard } from "./tool-call-card";
+import { TurnVisuals } from "./visual-panel";
 import { YouFace } from "./you-face";
 import { useTurnElapsed, WorkFold, WorkingLine } from "./work-fold";
 
@@ -74,7 +77,7 @@ export function TurnParts({
   const elapsed = useTurnElapsed(startedAt, isStreaming);
   // A browse is shown in the turn whether or not the steps around it fold:
   // inside a folded run it would be a live browser nobody can see is running.
-  const render = (run: PartRun, browses = true) =>
+  const render = (run: PartRun, browses = true, afterWork = false) =>
     run.kind === "tools" ? (
       <div key={run.parts[0].id} className="w-full">
         {/* The rail folds its own earlier steps away, but it cannot see what is
@@ -98,6 +101,7 @@ export function TurnParts({
           ))}
         </AgentSteps>
         {browses && <TurnBrowses calls={browseCalls([run])} />}
+        {browses && <TurnVisuals calls={visualCalls([run])} />}
       </div>
     ) : run.part.type === "thinking" ? (
       <ThinkingBlock
@@ -125,6 +129,7 @@ export function TurnParts({
         showCursor={isStreaming && run.isLast}
         isUser={isUser}
         onCiteClick={onCiteClick}
+        afterWork={afterWork}
       />
     );
 
@@ -132,19 +137,27 @@ export function TurnParts({
     return (
       <>
         {runs.some(isWork) && <WorkingLine elapsedMs={elapsed} />}
-        {runs.map((run) => render(run))}
+        {runs.map((run, index) => render(run, true, index > 0 && isWork(runs[index - 1]!)))}
       </>
     );
   }
   const split = foldWork(runs, stopped);
-  if (split === null) return <>{runs.map((run) => render(run))}</>;
+  if (split === null) {
+    return (
+      <>{runs.map((run, index) => render(run, true, index > 0 && isWork(runs[index - 1]!)))}</>
+    );
+  }
   return (
     <>
       <WorkFold steps={split.steps} durationMs={durationMs ?? elapsed} stopped={stopped}>
         {split.folded.map((run) => render(run, false))}
       </WorkFold>
       <TurnBrowses calls={browseCalls(split.folded)} />
-      {split.shown.map((run) => render(run))}
+      <TurnVisuals calls={visualCalls(split.folded)} />
+      {split.shown.map((run, index) =>
+        // The first thing after the fold opens the answer, as anything after a step does.
+        render(run, true, index === 0 || isWork(split.shown[index - 1]!)),
+      )}
     </>
   );
 }
@@ -282,6 +295,7 @@ export function TextBubble({
   isUser,
   onCiteClick,
   mentions,
+  afterWork = false,
 }: {
   text: string;
   showCursor: boolean;
@@ -289,6 +303,8 @@ export function TextBubble({
   onCiteClick?: (index: number) => void;
   /** What the person picked with `@`, shown where it sits in their text. */
   mentions?: readonly Mentionable[];
+  /** It follows the turn's steps or thoughts, so it opens the answer. */
+  afterWork?: boolean;
 }) {
   const visible = useSmoothText(text, showCursor && !isUser);
   // The narrow chat beside a page reads at the size of the page around it.
@@ -325,6 +341,9 @@ export function TextBubble({
       className={cn(
         "prose-sm max-w-none leading-relaxed",
         compact ? "text-[13.5px]" : "text-[15px]",
+        // A little more air after the steps than between two rows of them: the
+        // answer starts here, and set as tight as a step it read as one more.
+        afterWork && !compact && "pt-1",
         showCursor && "stream-in",
       )}
     >
@@ -369,6 +388,8 @@ export function runsOf(parts: MessagePart[]): PartRun[] {
   const runs: PartRun[] = [];
   for (const part of parts) {
     if (part.type === "tool" && part.toolCall) {
+      // Drawn under the answer instead - buttons, a card - by `TurnExtras`.
+      if (drawnUnderTheAnswer(part.toolCall.name)) continue;
       const open = runs.at(-1);
       if (open?.kind === "tools") open.parts.push(part);
       else runs.push({ kind: "tools", parts: [part], isLast: false });
@@ -427,6 +448,21 @@ export function browseCalls(runs: PartRun[]): ToolCall[] {
           driving = true;
           return [call];
         })
+      : [],
+  );
+}
+
+/**
+ * The calls that draw in these runs, in the order they were made. Like a browse,
+ * a drawing is shown whether or not the steps around it fold: it is what the
+ * turn produced, not a step of the work.
+ */
+export function visualCalls(runs: PartRun[]): ToolCall[] {
+  return runs.flatMap((run) =>
+    run.kind === "tools"
+      ? run.parts.flatMap((part) =>
+          part.toolCall && isVisualTool(part.toolCall.name) ? [part.toolCall] : [],
+        )
       : [],
   );
 }

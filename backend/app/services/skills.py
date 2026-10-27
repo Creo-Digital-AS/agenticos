@@ -6,8 +6,6 @@ This module owns storage and access; turning skills into something an agent can
 read is the skills *capability*.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Sequence
 from enum import StrEnum
@@ -40,7 +38,7 @@ from app.schemas.skill import (
     skill_name_refusal,
 )
 from app.services import skill_library
-from app.services.access import SKILL, resolve_access, visible_resource_ids
+from app.services.access import SKILL, accessible_ids, resolve_access, visible_resource_ids
 from app.services.resource_usage import agents_using, groups_sharing, shared_with_group
 from app.services.sharing import SharingService
 
@@ -297,10 +295,15 @@ class SkillService:
         groups = await groups_sharing(
             self.db, ctx, resource_type=SKILL, resource_ids=[skill.id for skill in items]
         )
+        editable = await accessible_ids(self.db, ctx, items, Perm.SKILLS_EDIT, resource_type=SKILL)
         return SkillList(
             items=[
                 _summary(skill, bundled_names).model_copy(
-                    update={"used_by": used[skill.id], "shared_groups": groups[skill.id]}
+                    update={
+                        "used_by": used[skill.id],
+                        "shared_groups": groups[skill.id],
+                        "can_edit": skill.id in editable,
+                    }
                 )
                 for skill in items
             ],

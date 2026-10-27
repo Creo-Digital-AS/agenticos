@@ -1,5 +1,5 @@
 ---
-source_sha: "de38073f9286"
+source_sha: "eaabf21a65fd"
 ---
 
 # Auf einem Server deployen { #deploy-to-a-server }
@@ -15,6 +15,9 @@ einer kann eigene Container starten, und einer ist ein Postgres, das pgvector
 haben muss - was bereits mehr ist, als ein `git push`-Deploy-Ziel abbildet, und
 eine Anleitung, die etwas anderes vorgäbe, würde ein Deployment beschreiben, das
 niemand betrieben hat.
+
+Über einen Host hinaus - ein verwaltetes Postgres, mehrere API-Hosts, mehrere
+Deployments - führt [Über einen Host hinaus skalieren](scaling.md).
 
 !!! tip "Lesen Sie zuerst die [Produktions-Checkliste](configuration.md#production-checklist)"
 
@@ -33,8 +36,9 @@ niemand betrieben hat.
 | **Einen Reverse Proxy** | [Traefik](#option-a-traefik) oder [Nginx](#option-b-nginx). Er terminiert TLS |
 | **Keinen Provider-Key** | Chat-Modelle und Embeds werden beide pro Organisation im Vault des Produkts hinterlegt. Die Umgebung hält für keines von beiden Zugangsdaten — siehe [Datenschutz](data-protection.md#nothing-leaves-by-default) |
 
-Der Host braucht außerdem die Ports 80 und 443 offen, und sonst nichts. Postgres,
-Redis und die Prefect-API sind auf keiner Schnittstelle veröffentlicht.
+Der Host braucht außerdem die Ports 80 und 443 offen, und sonst nichts. Postgres
+und Redis sind auf keiner Schnittstelle veröffentlicht, und der Worker bedient
+nichts.
 
 ### Warum zwei Hostnamen { #why-two-hostnames }
 
@@ -55,8 +59,7 @@ Auf einem im Leerlauf befindlichen Deployment gemessen, nicht geschätzt:
 |---|---|---|
 | `app` (2 uvicorn workers) | ~1,0 GB | 2,5 GB bei den standardmäßigen 4 Workern |
 | `db` | ~1,3 GB mit dem Tuning unten | 2 GB |
-| `prefect-runner` | 241 MiB | 1,5 GB |
-| `prefect-server` | 245 MiB | 768 MB |
+| `worker` (ein Ingest-Kindprozess) | 387 MiB | 2,5 GB (`WORKER_MEMORY_LIMIT`) |
 | `frontend` | ~300 MB | 1 GB |
 | `redis` | 9 MiB | 512 MB |
 
@@ -72,6 +75,25 @@ ein festgefahrenes Geschwister ersetzt. Ein Worker ist die Einstellung, die es z
 vermeiden gilt: eine blockierte Event Loop ist dann das gesamte Deployment, bis
 es sich selbst beendet.
 
+Ein Host, dem CPU fehlt, zeigt ein anderes Symptom: Zeilen `Child process [N] died`
+im Log von `app` ohne Watchdog-Urteil darüber, während jede Seite langsam ist. Das
+sind Worker, die uvicorns Supervisor getötet hat, weil sie seinen Ping zu spät
+beantwortet haben, keine Worker, die ausgefallen sind. Er wartet
+[`UVICORN_WORKER_HEALTHCHECK_TIMEOUT`](configuration.md#a-worker-whose-event-loop-has-stopped-turning)
+Sekunden, standardmäßig 60. Prüfe den CPU-Steal des Hosts, bevor du den Wert erhöhst.
+
+Zwei Einstellungen halten ein langsames Deployment diagnostizierbar:
+
+- **Jedes Log ist begrenzt.** Jeder Dienst in den Produktions-Compose-Dateien
+  schreibt höchstens fünf Dateien zu 20 MB. Docker behält das Log eines
+  Containers standardmäßig, bis der Container entfernt wird, und nichts auf dem
+  Host rotiert es.
+- **Postgres zeichnet auf, was jede Anweisung kostet.** Der Dienst `db` lädt
+  `pg_stat_statements` beim Start vor, und eine Migration legt die Erweiterung
+  an. Wo die Datenbankrolle sie nicht anlegen darf, protokolliert die Migration
+  einen Hinweis und läuft weiter. `agenticos cmd doctor` gibt in jedem Fall eine
+  Zeile `query statistics` aus.
+
 !!! note "Die Datenbank ist auf ihr eigenes Limit hin abgestimmt"
 
     `docker-compose-prod.yml` betreibt Postgres mit `shared_buffers=512MB` gegen ein
@@ -79,6 +101,13 @@ es sich selbst beendet.
     ein paralleler Scan über die Vektoren einer Collection erschöpft, mit der Meldung
     `could not resize shared memory segment`. Verschieben Sie das Limit, verschieben
     Sie das Tuning mit; sie stehen aus diesem Grund nebeneinander.
+
+    Außerdem setzt sie `max_connections=200`, denn die Pools können mehr
+    öffnen als die 100 von Postgres ab Werk: zwei Pools zu 15 je uvicorn-Worker,
+    also 120 bei den standardmäßigen vier, und 30 weitere für den
+    Hintergrund-Worker. Erhöhen Sie den Wert mit `UVICORN_WORKERS` oder
+    `DB_POOL_SIZE`, sonst lehnt Postgres Verbindungen mit „too many clients“ ab,
+    bevor ein Pool sie einreihen oder die Last abwerfen kann.
 
 ## Die Namen auf den Host zeigen lassen { #point-the-names-at-the-host }
 
@@ -129,7 +158,7 @@ veröffentlicht.
 
 | | |
 |---|---|
-| `ghcr.io/vstorm-co/agenticos-backend` | Die API, der Prefect-Runner und die Migrationen - ein Image, drei Kommandos |
+| `ghcr.io/vstorm-co/agenticos-backend` | Die API, der Worker und die Migrationen - ein Image, drei Kommandos |
 | `ghcr.io/vstorm-co/agenticos-frontend` | Die Konsole |
 
 Beide werden von `.github/workflows/images.yml` für `linux/amd64` und
@@ -231,7 +260,7 @@ annahm.
 
     Es ist die eine Einstellung in `traefik/traefik.yml`, die es sich zu lesen lohnt,
     bevor Sie ihn betreiben. Nur `app` und `frontend` tragen `traefik.enable=true`,
-    also sind Postgres, Redis, der Prefect-Server und der Sandbox-Daemon von nichts
+    also sind Postgres, Redis, der Worker und der Sandbox-Daemon von nichts
     außerhalb des Hosts erreichbar — und das ist eine Eigenschaft davon, *nicht
     gelabelt zu sein*, sie überlebt also, dass jemand einen Dienst hinzufügt, ohne an
     den Proxy zu denken.
@@ -269,7 +298,7 @@ terminiert.
     `agenticos` — und das Hochfahren des Frontends meldete dann die fünf
     Backend-Container als **Waisen**, mit Composes eigenem Vorschlag, das Kommando
     erneut mit `--remove-orphans` auszuführen. Diesem Rat zu folgen stoppt die API,
-    die Datenbank, Redis und beide Prefect-Dienste. Die `make`-Targets und
+    die Datenbank, Redis und den Worker. Die `make`-Targets und
     `scripts/deploy.sh` übergeben `-p agenticos-frontend`, die Warnung ist damit weg.
     Die Compose-Dateien legen auch keine Containernamen fest - jedes Projekt benennt
     seine eigenen, zwei Stacks auf einem Host können einander also nicht die
@@ -319,7 +348,7 @@ Produkt hinzugefügt, pro Organisation, aus dem Vault.
     innerhalb des Hosts nicht sehen kann.
 
 Dann, einmal, von Hand: melden Sie sich an, laden Sie jemanden ein (was `SMTP_*`
-nachweist) und schicken Sie Claude Code like eine Nachricht (was den Provider-Key
+nachweist) und schicken Sie AgenticOS eine Nachricht (was den Provider-Key
 und den WebSocket nachweist). Jedes davon übt einen Pfad aus, den hier sonst
 nichts prüft.
 
@@ -350,10 +379,10 @@ sudo chown 10001:10001 /var/lib/agenticos/sandbox-workspaces
 
 Ein Deploy bringt sie dann hoch: `scripts/deploy.sh` übergibt `--profile sandbox`,
 wenn `SANDBOXD_TOKEN` in `backend/.env` einen Wert hat, der Host selbst sagt also,
-ob er eine betreibt. Es exportiert außerdem `DOCKER_GID`, vom Socket gelesen —
-jede Compose-Datei hier interpoliert es in das `group_add` der Sandbox, und sein
-Standardwert `0` ist auf so gut wie keiner Linux-Distribution der Eigentümer des
-Sockets. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
+ob er eine betreibt. Wie `make` und Quickstart exportiert es `DOCKER_GID` in
+`group_add` der Sandbox: die Socket-Gruppe unter Linux (Symlinks werden verfolgt)
+oder `0` bei Docker Desktop, wo der eingebundene Socket der VM gehört. Ein explizites
+`DOCKER_GID` in der Umgebung oder auf der `make`-Befehlszeile hat Vorrang. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
 über eine Sandbox-*Connection*, die jemand in der Konsole anlegt, und
 `http://sandboxd:8080` wird als die eigene dieses Deployments erkannt.
 
@@ -366,6 +395,21 @@ Sockets. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
     liest das Skript den Token, statt ein Flag entgegenzunehmen.
 
 ## Eine Änderung deployen { #deploying-a-change }
+
+### Die Grenze des Verlaufsformats in 1.25.0 { #retry-history-upgrade }
+
+Version 1.25.0 übernimmt die Tool-Ergebnisse `retried` und separate Nachrichten
+`retry-feedback` aus Pydantic AI 2.61. Vorhandene Verläufe und Run-Checkpoints
+werden ohne Datenbankmigration oder erneutes Veröffentlichen der Agenten gelesen.
+Verläufe mit diesen Teilen benötigen den neuen Leser: Ein älteres Backend kann diese
+Nachrichtenformen nicht wiedergeben.
+
+Aktualisieren Sie alle API- und Worker-Prozesse zusammen. Lassen Sie alte Prozesse
+auslaufen oder stoppen Sie sie, bevor neue Arbeit annehmen. Mischen Sie keine
+älteren und neueren Backend-Replikate an derselben Datenbank. Sobald eines der neuen Retry-Formate gespeichert wurde,
+wird ein reiner Code-Rollback über diese Grenze nicht unterstützt;
+der neue Leser muss bleiben oder ein Datenbank-Snapshot von vor dem Upgrade
+wiederhergestellt werden.
 
 ### Von Hand { #by-hand }
 
@@ -478,7 +522,6 @@ Ein Volume zählt, und welches, ist nicht offensichtlich:
 |---|---|---|
 | `postgres_data` | alles — Agents, Unterhaltungen, versiegelte Zugangsdaten | **ja** |
 | `media_data` | hochgeladene Dateien, vor der Ingestion | ja |
-| `prefect_data` | die Datenbank von Prefect: Deployments, Run-Historie, wartende Runs | nein |
 
 Der Cache hat überhaupt kein Volume mehr. Rate-Limit-Buckets, Dedupe-Claims der
 Kanäle und Mitgliedschaftsantworten tragen alle eine TTL und bauen sich selbst

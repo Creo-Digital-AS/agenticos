@@ -6,8 +6,6 @@ is something a mocked session is happy to pretend it did. Storage is a real
 local directory, so a version's bytes can be seen to land and to leave.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -23,6 +21,7 @@ from app.core.exceptions import AuthorizationError
 from app.core.permissions import OrgRoleName
 from app.db.models.agent import Agent
 from app.db.models.artifact import Artifact, ArtifactMediaType, ArtifactVersion
+from app.db.models.background_job import BackgroundJob
 from app.db.models.notification import Notification, NotificationEventType
 from app.db.models.organization import Organization, OrganizationMember
 from app.db.models.resource_grant import GrantLevel, ResourceGrant, Visibility
@@ -577,7 +576,13 @@ class TestRetention:
 
         remaining = (await db.execute(select(Artifact.id))).scalars().all()
         assert list(remaining) == [recent.artifact_id]
-        assert not await storage.exists(old_path)
+        assert await storage.exists(old_path)
+        cleanup = (
+            await db.scalars(
+                select(BackgroundJob).where(BackgroundJob.kind == "cleanup-external-state")
+            )
+        ).one()
+        assert cleanup.payload["required_paths"] == [old_path]
         grants = await db.scalar(
             select(func.count())
             .select_from(ResourceGrant)
@@ -693,3 +698,70 @@ class TestFollowing:
 
         assert await self._notices(db, reader.id) == []
         assert not await artifact_repo.is_following(db, artifact_id=artifact.id, user_id=reader.id)
+
+
+class TestAProjectsApps:
+    """`project_id` narrows the listing to the apps a run in the project's chats wrote."""
+
+    async def test_only_apps_a_run_in_the_project_published_are_listed(
+        self, db: AsyncSession, storage: LocalFileStorage
+    ) -> None:
+        from app.db.models.agent_run import AgentRun, RunStatus
+        from app.db.models.conversation import Conversation
+        from app.db.models.project import Project
+
+        organization, user, agent = await _tenant(db)
+        project = Project(organization_id=organization.id, owner_user_id=user.id, name="Treasury")
+        db.add(project)
+        await db.flush()
+        inside = Conversation(
+            organization_id=organization.id, user_id=user.id, project_id=project.id
+        )
+        outside = Conversation(organization_id=organization.id, user_id=user.id)
+        db.add_all([inside, outside])
+        await db.flush()
+        runs = {}
+        for name, conversation in (("in", inside), ("out", outside)):
+            run = AgentRun(
+                organization_id=organization.id,
+                agent_id=agent.id,
+                conversation_id=conversation.id,
+                status=RunStatus.COMPLETED.value,
+            )
+            db.add(run)
+            await db.flush()
+            runs[name] = run
+        made_here = await artifacts.publish_with(
+            db,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            owner_user_id=user.id,
+            run_id=runs["in"].id,
+            name="cash-report",
+            title="Cash report",
+            media_type=HTML,
+            data=b"<p>cash</p>",
+        )
+        await artifacts.publish_with(
+            db,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            owner_user_id=user.id,
+            run_id=runs["out"].id,
+            name="elsewhere",
+            title="Elsewhere",
+            media_type=HTML,
+            data=b"<p>else</p>",
+        )
+
+        items, total = await artifact_repo.list_visible(
+            db,
+            organization_id=organization.id,
+            user_id=user.id,
+            see_all=True,
+            shared_ids=[],
+            project_id=project.id,
+        )
+
+        assert total == 1
+        assert [item.id for item in items] == [made_here.artifact_id]

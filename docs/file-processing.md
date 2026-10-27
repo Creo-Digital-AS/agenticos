@@ -356,6 +356,23 @@ One of the two used to omit the key rather than send it null, so a client
 normalising the answer got a different shape from each
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
 
+**Wait for `complete`, not for vectors.** `GET /rag/collections/{name}/info`
+reports `indexing_status` from the collection's tracked documents: `indexing`
+while any of them is still `processing` - queued or being ingested - and
+`complete` once none is. `processing_count`, `indexed_count` and `failed_count`
+say how many documents are in each state. A failed document is in a terminal
+state, so it does not hold the collection at `indexing`; it shows in
+`failed_count`. The field used to be the constant `complete`, and
+`total_vectors` grows while the worker works through a batch, so a script
+waiting on either queried a half-built collection
+([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` answers the same for one knowledge base, counting
+the documents its page lists rather than everything under its collection name,
+which another base may share; the knowledge base page shows that state beside
+the document count. A document left `processing` keeps either answer at
+`indexing` until it is deleted or, for a synced document, until its source syncs
+again.
+
 !!! danger "The task is started after the request's transaction commits"
 
     It is handed over with `spawn_after_commit`, **not** `spawn`, and started by the
@@ -374,10 +391,11 @@ flow's work.**
 **One loop owns the process's pools, and everything else builds its own
 engine.** The API's lifespan claims them at startup: it serves every request and
 disposes them at shutdown, so it is the one loop whose connections they may
-cache. Off that loop `get_db_context` behaves like `get_worker_db_context` — a
-`NullPool` engine for the call, disposed at the end — because it is reached from
-Prefect flows (the report, MCP refresh, invitation and approval tasks, the
-channel loops) and from an agent's embedding resolver, each on a loop of its own
+cache. The worker claims them the same way for its one loop, and so does each
+ingestion child for its own. Off the owning loop `get_db_context` behaves like
+`get_worker_db_context` — a `NullPool` engine for the call, disposed at the end —
+because it is reached from the channel loops and from an agent's embedding
+resolver, each on a loop of its own
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
 An agent's knowledge search follows the same rule for its vector store: the
@@ -581,7 +599,7 @@ variable.
 
 That degradation is announced rather than assumed. The resolution carries which
 of the five sources it landed on, and ingestion writes every degraded one into
-the Prefect run's log, a collection that simply names no key included. Before
+the worker's log, a collection that simply names no key included. Before
 issue #306 the ingestion worker was the one caller that never asked the resolver
 at all, so every uploaded document was embedded with the deployment's model and a
 deployment-wide key whatever its collection had chosen; that key is gone.
@@ -964,14 +982,16 @@ credential is configured for this collection"*, *"Organization monthly budget
 exhausted: $40.15 spent of $40.00 limit"*.
 
 What is **not** stored is the failing client's own text. A provider SDK, `httpx`,
-`boto3` and the Google Drive client all put the request they were making into
-their exception message, which routinely means an endpoint, an internal host, a
-bucket, or a URL with a key in its query string — and unlike an HTTP error body,
-a column is read again weeks later by anyone who opens the failed document. That
-text is not lost: every one of these call sites logs it with `logger.exception`,
-so the worker log has the message and the traceback, and a Prefect flow that
-re-raises has both in its run. `app/services/rag/failures.py` is where the two
-are separated.
+`boto3` and the Google Drive client all put the request they were making into their
+exception message, which routinely means an endpoint, an internal host, a bucket, or
+a URL with a key in its query string — and unlike an HTTP error body, a column is
+read again weeks later by anyone who opens the failed document.
+
+That text is not lost: every one of these call sites logs it with
+`logger.exception`, so the worker log has the message and the traceback, and a job
+that re-raises has its type, message and last frames on its row in
+`background_jobs`, where only the deployment's owner reads them.
+`app/services/rag/failures.py` is where the column and the log are separated.
 
 The log is a smaller audience than the column, not a safe one — treat a worker
 log as something only operators read, and see [#440] for why the redaction
@@ -1245,9 +1265,11 @@ consequence is the same (#982).
 
 Cloning says it too, and for the reason above: it is the only way to change a
 source's audience from this product's own UI. Repointing an existing one is a
-`PATCH` on `collection_name`, which no screen sends today - there is no source
-editor - so it is reachable through the API and the CLI, where the audit entry
-above is what records it.
+`PATCH` on `collection_name` to `/rag/sync/sources/{id}`. The source editor on a
+knowledge base's **Sync** tab does not send one, and that base's own
+`PATCH /kb/{kb_id}/sync-sources/{source_id}` refuses a `collection_name` naming
+another base - so repointing is reachable through the API and the CLI, where the
+audit entry above is what records it.
 
 ### What a new connector owes
 
@@ -1362,7 +1384,7 @@ search.
 
 ## From a channel
 
-A file sent to a Slack, Telegram or Mattermost bot enters here, not beside here.
+A file sent to a Slack, Teams, Telegram or Mattermost bot enters here, not beside here.
 The adapter fetches it with the bot's own credential, it goes through the same
 validation a browser upload does, and it becomes the same `ChatFile` row — so the
 routing above applies unchanged and a channel cannot become the lenient path.

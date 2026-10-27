@@ -13,6 +13,8 @@ import { providerMarkIn } from "@/test-utils/brand-marks";
 const listedProfiles = vi.fn<() => ModelProfile[]>(() => []);
 const listedSecrets = vi.fn<() => { id: string; purpose: string }[]>(() => []);
 const listedModels = vi.fn<() => ProviderModel[]>(() => []);
+const refusedModels = vi.fn<() => string[]>(() => []);
+const loadingModels = vi.fn(() => false);
 const mutateAsync = vi.fn();
 /**
  * Two permissions, and this picker needs both. Choosing a model creates an
@@ -32,9 +34,20 @@ vi.mock("@/hooks", () => ({
   usePermissions: () => ({
     can: (permission: Permission) => held.permissions.includes(permission),
   }),
-  useProviderModels: () => ({ models: listedModels(), source: "curated", isLoading: false }),
+  useProviderModels: () => ({
+    models: listedModels(),
+    refused: refusedModels(),
+    source: "curated",
+    isLoading: loadingModels(),
+  }),
   useSecretPurposes: () => ({ purposes: PURPOSES, isLoading: false }),
   useSecrets: () => ({ secrets: listedSecrets(), create: { mutate: vi.fn(), isPending: false } }),
+}));
+
+// The real one signs in with ChatGPT through the vault. What is asserted here is
+// only that the picker renders it in place of a key field.
+vi.mock("@/components/vault/chatgpt-sign-in", () => ({
+  InlineChatGPTSignIn: () => <p>ChatGPT sign-in form</p>,
 }));
 
 const purpose = (
@@ -84,6 +97,8 @@ beforeEach(() => {
   listedProfiles.mockReturnValue([]);
   listedSecrets.mockReturnValue([]);
   listedModels.mockReturnValue([]);
+  refusedModels.mockReturnValue([]);
+  loadingModels.mockReturnValue(false);
   held.permissions = [Perm.connectionsManage, Perm.secretsEdit];
 });
 
@@ -136,6 +151,175 @@ describe("the chat's two-step model picker", () => {
     expect(mutateAsync).not.toHaveBeenCalled();
   });
 
+  it("waits for provider metadata before reusing an unknown native profile", async () => {
+    listedProfiles.mockReturnValue([profile("saved", "openrouter", "acme/painter")]);
+    loadingModels.mockReturnValue(true);
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ChatModelPicker value={null} agentModel={null} onChange={onChange} />,
+    );
+    await pickProvider("OpenRouter");
+    await typeModel("acme/painter");
+    expect(screen.getByRole("button", { name: "Run on this model" })).toBeDisabled();
+    loadingModels.mockReturnValue(false);
+    refusedModels.mockReturnValue(["acme/painter"]);
+    rerender(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/acme\/painter is not a chat model/)).toBeInTheDocument();
+  });
+
+  it("does not wait for vendor metadata for an existing custom endpoint", async () => {
+    listedProfiles.mockReturnValue([
+      { ...profile("local", "openai", "whisper-1"), base_url: "http://local/v1" },
+    ]);
+    loadingModels.mockReturnValue(true);
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+    await pickProvider("OpenAI");
+    await typeModel("whisper-1");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+    expect(onChange).toHaveBeenCalledWith("local");
+  });
+
+  it.each([true, false])(
+    "reuses only a custom duplicate while provider metadata is pending: native first %s",
+    async (nativeFirst) => {
+      const native = profile("native", "openrouter", "acme/painter");
+      const custom = {
+        ...profile("custom", "openrouter", "acme/painter"),
+        base_url: "http://local/v1",
+      };
+      listedProfiles.mockReturnValue(nativeFirst ? [native, custom] : [custom, native]);
+      loadingModels.mockReturnValue(true);
+      const onChange = vi.fn();
+      render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+      await pickProvider("OpenRouter");
+      await typeModel("acme/painter");
+      await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+      expect(onChange).toHaveBeenCalledWith("custom");
+      expect(mutateAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  it("will not run the conversation on a speech model the organization keeps", async () => {
+    // The profile exists for text to speech; reusing it would point the chat at a
+    // model that cannot answer, and minting another collides on its label (#2487).
+    listedProfiles.mockReturnValue([
+      { ...profile("tts", "openai", "gpt-4o-mini-tts"), chat_capable: false },
+    ]);
+    listedSecrets.mockReturnValue([{ id: "s1", purpose: "openai" }]);
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+
+    await pickProvider("OpenAI");
+    await typeModel("gpt-4o-mini-tts");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+
+    expect(
+      screen.getByText(
+        "gpt-4o-mini-tts is not a chat model, so this conversation cannot run on it. Choose another model.",
+      ),
+    ).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("refuses a saved profile the listing marks after the profiles loaded", async () => {
+    // The profiles can arrive before the provider listing, and a profile the
+    // server marked then reads as unknown; the listing that follows decides.
+    listedProfiles.mockReturnValue([profile("painter", "openrouter", "acme/painter")]);
+    refusedModels.mockReturnValue(["acme/painter"]);
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+
+    await pickProvider("OpenRouter");
+    await typeModel("acme/painter");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+
+    expect(
+      screen.getByText(
+        "acme/painter is not a chat model, so this conversation cannot run on it. Choose another model.",
+      ),
+    ).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("reuses a saved profile on a custom endpoint whatever the vendor listing says", async () => {
+    // The listing is the provider's own API; somebody's own server is not it.
+    listedProfiles.mockReturnValue([
+      { ...profile("local", "openai", "whisper-1"), base_url: "http://vllm:8000/v1" },
+    ]);
+    refusedModels.mockReturnValue(["whisper-1"]);
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+
+    await pickProvider("OpenAI");
+    await typeModel("whisper-1");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+
+    expect(onChange).toHaveBeenCalledWith("local");
+  });
+
+  it.each([false, true])(
+    "prefers a compatible duplicate regardless of label order: %s",
+    async (localFirst) => {
+      const publicProfile = { ...profile("public", "openai", "whisper-1"), chat_capable: false };
+      const local = { ...profile("local", "openai", "whisper-1"), base_url: "http://vllm:8000/v1" };
+      listedProfiles.mockReturnValue(localFirst ? [local, publicProfile] : [publicProfile, local]);
+      refusedModels.mockReturnValue(["whisper-1"]);
+      const onChange = vi.fn();
+      render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+      await pickProvider("OpenAI");
+      await typeModel("whisper-1");
+      await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+      expect(onChange).toHaveBeenCalledWith("local");
+      expect(mutateAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a speech model the listing names before creating a profile for it", async () => {
+    refusedModels.mockReturnValue(["gpt-4o-mini-tts"]);
+    listedSecrets.mockReturnValue([{ id: "s1", purpose: "openai" }]);
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+
+    await pickProvider("OpenAI");
+    await typeModel("gpt-4o-mini-tts");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+
+    expect(
+      screen.getByText(
+        "gpt-4o-mini-tts is not a chat model, so this conversation cannot run on it. Choose another model.",
+      ),
+    ).toBeInTheDocument();
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("will not run the conversation on a speech model it has just added either", async () => {
+    // The suggestions leave it out, but the field is free text: the server
+    // classifies the profile it creates, and that answer is checked too.
+    listedSecrets.mockReturnValue([{ id: "s1", purpose: "openai" }]);
+    mutateAsync.mockResolvedValue({
+      ...profile("tts", "openai", "gpt-4o-mini-tts"),
+      chat_capable: false,
+    });
+    const onChange = vi.fn();
+    render(<ChatModelPicker value={null} agentModel={null} onChange={onChange} />);
+
+    await pickProvider("OpenAI");
+    await typeModel("gpt-4o-mini-tts");
+    await userEvent.click(screen.getByRole("button", { name: "Run on this model" }));
+
+    expect(
+      await screen.findByText(
+        "gpt-4o-mini-tts is not a chat model, so this conversation cannot run on it. Choose another model.",
+      ),
+    ).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("creates a profile on the provider's vault key for a new model id", async () => {
     listedSecrets.mockReturnValue([{ id: "s-openai", purpose: "openai" }]);
     mutateAsync.mockResolvedValue(profile("p-new", "openai", "gpt-6"));
@@ -181,6 +365,24 @@ describe("the chat's two-step model picker", () => {
 
     expect(screen.getByRole("button", { name: "Add a key: OpenAI" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open the Vault/ })).toBeInTheDocument();
+  });
+
+  it("offers a ChatGPT sign-in, not a key field, for a subscription", async () => {
+    // There is no key to paste: the credential is an OAuth grant.
+    PURPOSES.push({
+      ...purpose("openai_codex", "ChatGPT (Codex subscription)", "model_provider"),
+      kind: "openai_codex",
+    });
+    try {
+      render(<ChatModelPicker value={null} agentModel={null} onChange={vi.fn()} />);
+
+      await pickProvider("ChatGPT");
+
+      expect(screen.getByText("ChatGPT sign-in form")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Add a key/ })).toBeNull();
+    } finally {
+      PURPOSES.pop();
+    }
   });
 
   it("offers nothing once the provider has a key", async () => {

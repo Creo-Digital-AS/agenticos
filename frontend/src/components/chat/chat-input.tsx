@@ -13,6 +13,8 @@ import { createPortal } from "react-dom";
 
 import { AttachmentCard, PendingAttachmentCard } from "./attachment-card";
 import { AttachmentRow } from "./attachment-row";
+import { ReplyingTo } from "./reply-quote";
+import { useChatStore } from "@/stores";
 import { ComposerSheet } from "./composer-sheet";
 
 /**
@@ -50,11 +52,31 @@ import {
 } from "@/lib/mentions";
 import type { Mentionable } from "@/types/mention";
 import { FileDropOverlay } from "@/components/files";
-import { cn } from "@/lib/utils";
 import { useChanged } from "@/hooks/use-changed";
 import { useFileDrop } from "@/hooks/use-file-drop";
 import { useTranslations } from "next-intl";
 import type { UseMicrophoneResult } from "voice-glow";
+import { wordCount, type DictationActions, type DictationState } from "@/hooks/use-dictation";
+import type { ComposerDictation as DictationEngine } from "@/lib/dictation-api";
+
+import { movesOn } from "./dictation-strip";
+
+/**
+ * Dictation for the selected agent, as the composer needs it.
+ *
+ * The recording itself lives in the page (`useDictation` beside the microphone),
+ * because the glow around the box reads its phase; this component only shows
+ * it, and inserts what comes back.
+ */
+export interface ComposerDictation {
+  /**
+   * `server` when the selected agent's Dictation switch sends recordings to a
+   * provider it can reach; `browser`, the browser's own recognition, otherwise.
+   */
+  engine: DictationEngine;
+  state: DictationState;
+  actions: DictationActions;
+}
 
 /**
  * Past this many characters, a paste is a file rather than a message.
@@ -108,7 +130,10 @@ interface ChatInputProps {
   hints?: boolean;
   disabled?: boolean;
   isProcessing?: boolean;
-  /** When set, a stop control replaces the send button while processing. */
+  /** A live or parked run can be stopped even while the composer is disabled. */
+  canStop?: boolean;
+  stopDisabled?: boolean;
+  /** When set, a stop control replaces the send button for a stoppable run. */
   onStop?: () => void;
   /** Local actions for slash commands. Wire from <ChatContainer>. */
   slashContext?: SlashCommandContext;
@@ -136,6 +161,8 @@ interface ChatInputProps {
    * stay inside this `<form>` to submit it.
    */
   controlsSlot?: ReactNode;
+  /** Opens the project picker from the `+`; absent where a chat cannot change project. */
+  onProject?: () => void;
   /**
    * Icons drawn before the microphone: what the conversation is using, and the
    * model it runs on. Icons, because a line of readings and a model's name took
@@ -143,10 +170,40 @@ interface ChatInputProps {
    */
   actionsSlot?: ReactNode;
   /**
+   * Drawn in Send's place while there is nothing to send - the call button, so
+   * an empty box offers a call and a written one sends it (#2301).
+   */
+  idleSlot?: ReactNode;
+  /**
+   * The socket is down: the box says it is reconnecting where it would ask for a
+   * message - the one place a person looks when they cannot send (#2301).
+   */
+  offline?: boolean;
+  /**
+   * The selected agent's dictation engine and, for `server`, the recording.
+   * Absent, the microphone is the browser's own speech recognition.
+   */
+  dictation?: ComposerDictation;
+  /**
+   * Hears when the browser's own recognition starts listening, with how to stop
+   * it, and when it stops - for the page's dictation pill (#54).
+   */
+  onListeningChange?: (stop: (() => void) | null) => void;
+  /**
    * Files handed in from outside the composer - the AI Architect's screenshot of
    * the page (#2063) - attached as if picked, once per `id`.
    */
   incoming?: IncomingFiles | null;
+  /** Called as the person types, so a shared chat can say they are. */
+  onTyping?: () => void;
+  /** Whether the box holds words of the person's own, as it changes. */
+  onDraftChange?: (drafting: boolean) => void;
+  /**
+   * Projects `@` offers beside what the agent reaches, before the first message;
+   * picking one starts the chat in it rather than mentioning it.
+   */
+  projects?: Mentionable[];
+  onPickProject?: (projectId: string) => void;
 }
 
 /** Files to attach from outside the composer, once per `id`, and words to go with them. */
@@ -166,23 +223,40 @@ export function ChatInput({
   onSend,
   disabled,
   isProcessing,
+  canStop = isProcessing,
+  stopDisabled = false,
   onStop,
   slashContext,
   commands,
   attachmentSlot,
   mic,
   controlsSlot,
+  onProject,
   actionsSlot,
+  idleSlot,
+  offline = false,
+  dictation,
+  onListeningChange,
   incoming = null,
   agentId = null,
   mentionsFromDraft = false,
   hints = false,
+  onTyping,
+  onDraftChange,
+  projects,
+  onPickProject,
 }: ChatInputProps) {
   const tErrors = useTranslations("errors");
   const t = useTranslations("chat.input");
+  // The message this turn will answer, chosen with Reply on it.
+  const replyTo = useChatStore((state) => state.replyTo);
+  const setReplyTo = useChatStore((state) => state.setReplyTo);
   const tCommands = useTranslations("chat.commands");
+  const tDictation = useTranslations("chat.dictation");
   const { chatMaxUploadSizeMb } = usePublicConfig();
   const [message, setMessage] = useState("");
+  const drafting = message.trim().length > 0;
+  useEffect(() => onDraftChange?.(drafting), [drafting, onDraftChange]);
   const [attachedFiles, setAttachedFiles] = useState<Attachment[]>([]);
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [isListening, setIsListening] = useState(false);
@@ -192,8 +266,75 @@ export function ChatInput({
   // caller wired a context - without one, commands have nothing to do.
   const [paletteIndex, setPaletteIndex] = useState(0);
   const editorRef = useRef<ComposerEditorHandle>(null);
+  // Reply was just chosen on a message: the person goes on to type the answer.
+  useEffect(() => {
+    if (replyTo) editorRef.current?.focus();
+  }, [replyTo]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const server = dictation?.engine === "server" ? dictation : null;
+  const phase = server?.state.phase ?? "idle";
+  // The box is the recording's while it runs and while its text is on the way:
+  // nothing typed then would survive the insertion, and nothing may be sent.
+  const dictating = phase === "requesting" || phase === "recording" || phase === "transcribing";
+  // Where the person was in the text when they pressed the mic, and the text it
+  // points into; the transcript lands there, replacing a selection.
+  const [caret, setCaret] = useState<{ from: number; to: number; text: string } | null>(null);
+  const [placeCaret, setPlaceCaret] = useState<{ at: number } | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+
+  if (useChanged(phase)) {
+    if (phase === "recording") setAnnouncement(tDictation("announceRecording"));
+    else if (phase === "transcribing") setAnnouncement(tDictation("announceTranscribing"));
+  }
+  const remaining = phase === "recording" ? (server?.state.remaining ?? null) : null;
+  if (useChanged(remaining !== null) && remaining !== null) {
+    setAnnouncement(tDictation("announceLeft", { count: remaining }));
+  }
+  // Once per transcript: inserted during render, so the text and the caret
+  // never show a frame apart.
+  const transcript = server?.state.transcript ?? null;
+  if (useChanged(transcript?.id ?? null) && transcript !== null && caret !== null) {
+    // The box is writable while a failed recording waits for Retry, so the text
+    // can change between the press and the transcript. The saved offsets point
+    // into text that is gone then, and the transcript goes at the end instead.
+    const kept = message === caret.text;
+    const from = kept ? caret.from : message.length;
+    const to = kept ? caret.to : message.length;
+    const before = message.slice(0, from);
+    const after = message.slice(to);
+    const join = before.length > 0 && !/\s$/.test(before) ? " " : "";
+    const gap = after.length > 0 && !/^\s/.test(after) ? " " : "";
+    const inserted = join + transcript.text + gap;
+    setMessage(before + inserted + after);
+    setCaret(null);
+    setPlaceCaret({ at: from + inserted.length });
+    setAnnouncement(tDictation("announceInserted", { count: wordCount(transcript.text) }));
+  }
+
+  // After the render that holds the text: focus the box and put the caret
+  // after what was inserted, ready to edit it.
+  useEffect(() => {
+    if (placeCaret === null) return;
+    const frame = requestAnimationFrame(() => editorRef.current?.setCaret(placeCaret.at));
+    return () => cancelAnimationFrame(frame);
+  }, [placeCaret]);
+
+  // Focus went to <body> with the bar, which unmounts when dictation ends without
+  // a transcript; back to the box, beside the strip that says what happened.
+  const wasDictating = useRef(false);
+  useEffect(() => {
+    const ended = wasDictating.current && !dictating;
+    wasDictating.current = dictating;
+    if (ended && document.activeElement === document.body) editorRef.current?.focus();
+  }, [dictating]);
+
+  const startDictation = () => {
+    const end = { from: message.length, to: message.length };
+    setCaret({ ...(editorRef.current?.selection() ?? end), text: message });
+    void server?.actions.start();
+  };
 
   const showPalette = !!slashContext && message.startsWith("/") && !message.includes("\n");
   // `@`-mentions (#2189): what was picked, and the one being typed at the caret.
@@ -206,8 +347,11 @@ export function ChatInput({
   const mentionOpen = mentionQuery !== null && agentId !== null && !showPalette;
   const offered = useMentionables(agentId, mentionsFromDraft);
   const mentionMatches = useMemo(
-    () => (mentionOpen && mentionQuery ? matching(offered.items, mentionQuery.query) : []),
-    [mentionOpen, mentionQuery, offered.items],
+    () =>
+      mentionOpen && mentionQuery
+        ? matching([...offered.items, ...(projects ?? [])], mentionQuery.query)
+        : [],
+    [mentionOpen, mentionQuery, offered.items, projects],
   );
   if (useChanged(`${mentionMatches.length}|${mentionQuery?.query ?? ""}`)) setMentionIndex(0);
   // Another agent's servers and knowledge are not this one's, so a switch drops
@@ -226,11 +370,22 @@ export function ChatInput({
   const typed = (text: string, at: number) => {
     setMessage(text);
     setMentionQuery(mentionAt(text, at));
+    if (text.trim()) onTyping?.();
   };
 
   const full = mentions.length >= MAX_MENTIONS;
   const pickMention = (item: Mentionable) => {
     if (mentionQuery === null) return;
+    if (item.kind === "project") {
+      // Not a word in the message: the chat moves into the project, and the
+      // `@` typed to find it goes.
+      setMentionQuery(null);
+      const rest = message.slice(mentionQuery.start + 1 + mentionQuery.query.length);
+      setMessage(message.slice(0, mentionQuery.start) + rest.replace(/^ /, ""));
+      caretAfterPick.current = mentionQuery.start;
+      onPickProject?.(item.id);
+      return;
+    }
     if (full && !mentions.includes(item)) return;
     setMentionQuery(null);
     const next = insertMention(message, mentionQuery, item);
@@ -280,6 +435,7 @@ export function ChatInput({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (dictating) return;
     if (showPalette && filteredCommands[paletteIndex]) {
       runSlashCommand(filteredCommands[paletteIndex]);
       return;
@@ -302,6 +458,16 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // The note under the box saying the text landed goes with the next key.
+    if (server?.state.inserted && movesOn(e.key)) server.actions.dismissInserted();
+    if (dictating) {
+      // Enter finishes the recording rather than sending; Escape is the form's.
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (phase === "recording") server?.actions.stop();
+      }
+      return;
+    }
     if (mentionOpen) {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -358,6 +524,22 @@ export function ChatInput({
       handleSubmit(e);
     }
   };
+
+  // Through a ref: `useMicrophone` answers a new object every render, and a stop
+  // that changed with it was handed to the page on every render while the browser
+  // listened - which re-rendered this, which handed it over again, without end.
+  const micRef = useRef(mic);
+  useLayoutEffect(() => {
+    micRef.current = mic;
+  });
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.stop();
+    micRef.current?.stop();
+    setIsListening(false);
+  }, []);
+  useEffect(() => {
+    onListeningChange?.(isListening ? stopListening : null);
+  }, [isListening, stopListening, onListeningChange]);
 
   const toggleMic = useCallback(() => {
     if (isListening) {
@@ -534,7 +716,20 @@ export function ChatInput({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="relative">
+    <form
+      onSubmit={handleSubmit}
+      onKeyDown={(e) => {
+        // From the box or from the bar, wherever focus is while dictating.
+        if (dictating && e.key === "Escape") {
+          e.preventDefault();
+          server?.actions.cancel();
+        }
+      }}
+      className="relative"
+    >
+      <span role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </span>
       <FileDropOverlay
         active={isDragging}
         title={t("dropFilesAttach")}
@@ -579,6 +774,8 @@ export function ChatInput({
           </AttachmentRow>,
         )}
 
+      {replyTo && <ReplyingTo reply={replyTo} onCancel={() => setReplyTo(null)} />}
+
       {/* The text has the box to itself, and every control is on one row under
           it. The buttons used to sit *beside* the textarea, which is fine on
           one line and wrong on ten: the send button drifted to the vertical
@@ -593,7 +790,7 @@ export function ChatInput({
         onChange={typed}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
-        placeholder={t("placeholder")}
+        placeholder={offline ? t("reconnecting") : t("placeholder")}
         idle={
           hints && !disabled ? (
             <ComposerHints
@@ -603,6 +800,7 @@ export function ChatInput({
           ) : undefined
         }
         disabled={disabled}
+        readOnly={dictating}
         // What a phone's keyboard offers: a return key that reads as a line
         // break where Enter makes one. 16px text, never less: iOS zooms the
         // page into any field smaller than that when it is focused (#2066).
@@ -611,7 +809,10 @@ export function ChatInput({
 
       {/* `min-w-0` and a shrinkable right group: at 390px the controls used to
           run 27px past the composer's own edge, measured on an iPhone 15. */}
-      <div className="flex items-center gap-1.5 pt-0.5 pb-1">
+      {/* Inert rather than hidden while dictating: the composer does not change
+          under the page's dictation pill, and the agent the recording goes to
+          must not change under it either. */}
+      <div className="flex items-center gap-1.5 pt-0.5 pb-1" inert={dictating}>
         <input
           ref={fileInputRef}
           type="file"
@@ -622,7 +823,9 @@ export function ChatInput({
         />
         <ComposerSheet
           onAttach={() => fileInputRef.current?.click()}
-          onVoice={toggleMic}
+          // The agent's engine: the browser's recogniser, or a recording sent
+          // to its provider.
+          onVoice={server ? startDictation : toggleMic}
           onCommand={
             slashContext
               ? () => {
@@ -631,6 +834,7 @@ export function ChatInput({
                 }
               : undefined
           }
+          onProject={onProject}
           disabled={disabled || isUploading}
         />
         {isUploading && <Spinner className="text-muted-foreground h-4 w-4 shrink-0" />}
@@ -640,14 +844,16 @@ export function ChatInput({
 
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {actionsSlot}
+          {/* Beside Send and the call, as in ChatGPT; the `+` offers it too. A
+              server recording takes the box over with its own bar, so this
+              button only ever starts one. */}
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            onClick={toggleMic}
+            onClick={server ? startDictation : toggleMic}
             disabled={disabled}
-            // It starts from the `+`, and shows here only to stop.
-            className={cn("h-9 w-9 shrink-0", !isListening && "hidden")}
+            className="h-9 w-9 shrink-0"
             title={isListening ? t("stopRecording") : t("voiceInput")}
             aria-label={isListening ? t("stopRecording") : t("voiceInput")}
           >
@@ -658,17 +864,20 @@ export function ChatInput({
             )}
           </Button>
 
-          {isProcessing && onStop ? (
+          {canStop && onStop ? (
             <Button
               type="button"
               size="icon"
               onClick={onStop}
+              disabled={stopDisabled}
               className="h-9 w-9 shrink-0 rounded-lg"
               title={t("stopGenerating")}
             >
               <span className="h-3 w-3 rounded-[3px] bg-current" aria-hidden="true" />
               <span className="sr-only">{t("stopGenerating")}</span>
             </Button>
+          ) : idleSlot && !isProcessing && !message.trim() && attachedFiles.length === 0 ? (
+            idleSlot
           ) : (
             <Button
               type="submit"

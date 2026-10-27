@@ -42,6 +42,7 @@ const state = {
   catalog: [] as ProviderCapabilities[],
   secrets: [] as Secret[],
   models: [] as { id: string; name: string; context_length?: number | null }[],
+  refused: [] as string[],
   source: "live" as "live" | "curated" | null,
   loadingModels: false,
   createProfile: { mutateAsync: vi.fn(), isPending: false },
@@ -56,6 +57,7 @@ vi.mock("@/hooks", () => ({
   useSecrets: () => ({ secrets: state.secrets }),
   useProviderModels: () => ({
     models: state.models,
+    refused: state.refused,
     source: state.source,
     isLoading: state.loadingModels,
   }),
@@ -75,6 +77,16 @@ vi.mock("@/components/vault/inline-secret", () => ({
       </button>
     );
   },
+}));
+
+// The real one signs in with ChatGPT. What this form needs from it is the same
+// callback, under a label that says which of the two it rendered.
+vi.mock("@/components/vault/chatgpt-sign-in", () => ({
+  InlineChatGPTSignIn: ({ onCreated }: { onCreated: (id: string) => void }) => (
+    <button type="button" onClick={() => onCreated("s-chatgpt")}>
+      Sign in instead
+    </button>
+  ),
 }));
 
 function purpose(id: string, label: string): SecretPurpose {
@@ -135,6 +147,7 @@ beforeEach(() => {
   ];
   state.secrets = [];
   state.models = [{ id: "gpt-5", name: "GPT-5", context_length: 400_000 }];
+  state.refused = [];
   state.source = "live";
   state.loadingModels = false;
   state.createProfile = { mutateAsync: vi.fn().mockResolvedValue({ id: "p-1" }), isPending: false };
@@ -384,6 +397,64 @@ describe("the add-model form", () => {
     expect(onCreated).toHaveBeenCalledWith({ id: "p-1" });
   });
 
+  it("waits for provider metadata before adding a native model", async () => {
+    state.secrets = [secret()];
+    state.loadingModels = true;
+    mount();
+    await pickProvider("OpenAI");
+    await userEvent.click(screen.getByLabelText("Model"));
+    await userEvent.type(screen.getByPlaceholderText("Search models…"), "unclassified-model");
+    await userEvent.click(screen.getByText("not in the list"));
+    expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
+    // A custom server's names are independent of the vendor listing.
+    await userEvent.type(screen.getByLabelText("Endpoint"), "http://local/v1");
+    expect(screen.getByRole("button", { name: "Add model" })).toBeEnabled();
+  });
+
+  it("refuses a model the listing says is not a chat model before creating it", async () => {
+    // Hidden from the suggestions, but the field is free text, and what this
+    // creates is selected as a model to talk to (#2487).
+    state.secrets = [secret()];
+    state.refused = ["gpt-4o-mini-tts"];
+    const { onCreated } = mount();
+    await pickProvider("OpenAI");
+    await userEvent.click(screen.getByLabelText("Model"));
+    await userEvent.type(screen.getByPlaceholderText("Search models…"), "gpt-4o-mini-tts");
+    await userEvent.click(screen.getByText("not in the list"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    expect(
+      screen.getByText(
+        "gpt-4o-mini-tts is not a chat model - an agent cannot run on it. Choose a chat model.",
+      ),
+    ).toBeInTheDocument();
+    expect(state.createProfile.mutateAsync).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  it("does not select a profile the server says is not a chat model", async () => {
+    state.secrets = [secret()];
+    state.createProfile = {
+      mutateAsync: vi.fn().mockResolvedValue({ id: "p-1", chat_capable: false }),
+      isPending: false,
+    };
+    const { onCreated } = mount();
+    await pickProvider("OpenAI");
+    await userEvent.click(screen.getByLabelText("Model"));
+    await userEvent.type(screen.getByPlaceholderText("Search models…"), "gpt-4o-mini-tts");
+    await userEvent.click(screen.getByText("not in the list"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    expect(
+      await screen.findByText(
+        "gpt-4o-mini-tts is not a chat model - an agent cannot run on it. Choose a chat model.",
+      ),
+    ).toBeInTheDocument();
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+
   it("puts a refusal under the field that caused it", async () => {
     // Every refusal this endpoint gives is about the model id, and an unhandled
     // rejection here is Next's full-screen overlay for what is a typo.
@@ -555,6 +626,25 @@ describe("pointing a model somewhere other than the provider's own API", () => {
     expect(state.createProfile.mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ base_url: "https://gateway.acme/v1" }),
     );
+  });
+
+  it("leaves a listing-refused id alone on an endpoint of the reader's", async () => {
+    // The listing is the provider's own API; an OpenAI-compatible server may
+    // serve a chat model under the same id (#2487).
+    state.secrets = [secret()];
+    state.refused = ["whisper-1"];
+    const { onCreated } = mount();
+    await pickProvider("OpenAI");
+    await userEvent.click(screen.getByLabelText("Model"));
+    await userEvent.type(screen.getByPlaceholderText("Search models…"), "whisper-1");
+    await userEvent.click(screen.getByText("not in the list"));
+    await userEvent.type(screen.getByLabelText("Endpoint"), "http://vllm:8000/v1");
+    await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    expect(state.createProfile.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "whisper-1", base_url: "http://vllm:8000/v1" }),
+    );
+    expect(onCreated).toHaveBeenCalledWith({ id: "p-1" });
   });
 
   it("sends null when it was left empty, not an empty string", async () => {
@@ -975,6 +1065,32 @@ describe("choosing which of OpenAI's APIs a model's requests go to", () => {
     expect(screen.getByLabelText("API")).toHaveTextContent("Chat Completions");
     // Azure's Responses API depends on the key's api_version, so its hint says so.
     expect(screen.getByText(/recent api_version on the Azure key/)).toBeInTheDocument();
+  });
+});
+
+describe("a provider nobody can type a key for", () => {
+  it("offers a ChatGPT sign-in where a key field would be, and runs on what it stores", async () => {
+    // A key field here would take a token the person does not have: the
+    // credential is an OAuth grant, and only a sign-in produces one.
+    state.purposes = [
+      { ...purpose("openai_codex", "ChatGPT (Codex subscription)"), kind: "openai_codex" },
+    ];
+    state.catalog = [
+      capabilities("openai_codex", "ChatGPT (Codex subscription)", { secret_kind: "openai_codex" }),
+    ];
+    const { onCreated } = mount();
+    await pickProvider("ChatGPT");
+    await userEvent.click(screen.getByLabelText("Model"));
+    await userEvent.click(screen.getByRole("option", { name: /gpt-5/ }));
+
+    expect(screen.queryByRole("button", { name: "Store a key" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Sign in instead" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    expect(state.createProfile.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai_codex", secret_id: "s-chatgpt" }),
+    );
+    expect(onCreated).toHaveBeenCalled();
   });
 });
 

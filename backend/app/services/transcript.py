@@ -22,8 +22,6 @@ answer for a person appending a turn, the wrong one here: archiving a thread
 must not make the run inside it unaccountable.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import Collection, Mapping, Sequence
@@ -33,8 +31,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic_ai.messages import (
+    ERROR_OUTCOMES,
     ModelMessage,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -48,6 +46,8 @@ if TYPE_CHECKING:
 
     from app.db.models.agent_run import AgentRun
     from app.db.models.chat_file import ChatFile
+
+STOPPED_TOOL_RESULT = "Not performed: the run was stopped."
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,8 @@ class RecordedToolCall:
     result: str | None = None
 
 
-def tool_retry_notice(part: RetryPromptPart) -> str:
-    """What a tool that asked the model to try again may tell a reader.
+def tool_failure_notice(part: ToolReturnPart) -> str:
+    """What a failed or retried tool call may tell a reader.
 
     A retry's content is written by whichever tool raised: `web_search` turns a
     search provider's failure into a `ModelRetry` built out of the `httpx` or
@@ -96,13 +96,12 @@ def tool_retry_notice(part: RetryPromptPart) -> str:
 
     The tool's *name* still goes out, because it is what makes the frame worth
     sending: a card that resolves saying which step failed is the difference
-    from one that spins for ever. `tool_name` is optional on the part - output
-    validation raises a retry that names no tool - hence the two forms.
+    from one that spins for ever. A return with an empty upstream tool name
+    still gets a generic notice.
     """
     called = f"The {part.tool_name} call" if part.tool_name else "A tool call"
-    return (
-        f"{called} failed and the model was asked to try again. The server log has the full error."
-    )
+    retry = " and the model was asked to try again" if part.outcome == "retried" else ""
+    return f"{called} failed{retry}. The server log has the full error."
 
 
 def tool_result_text(content: Any) -> str:
@@ -123,14 +122,14 @@ def tool_result_text(content: Any) -> str:
         return content
     try:
         return json.dumps(content, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # `default=` is consulted for a *value* json cannot write and never for a
         # key, so a mapping keyed by a tuple raises `TypeError` and escaped this
         # fallback - taking the stream down on a tool call that had succeeded.
         return str(content)
 
 
-def _result_text(part: ToolReturnPart | RetryPromptPart) -> str:
+def _result_text(part: ToolReturnPart) -> str:
     """What the row stores as the call's outcome.
 
     A return is the tool's own answer and is stored whole. A retry's content is
@@ -142,9 +141,11 @@ def _result_text(part: ToolReturnPart | RetryPromptPart) -> str:
     it (#695). The model is untouched either way: Pydantic AI carries the part
     into the next request itself, and this function only decides what is stored.
     """
-    if isinstance(part, RetryPromptPart):
-        logger.warning("Tool call %s asked the model to retry: %s", part.tool_call_id, part.content)
-        return tool_retry_notice(part)
+    if part.outcome in ERROR_OUTCOMES:
+        logger.warning(
+            "Tool call %s returned %s: %s", part.tool_call_id, part.outcome, part.content
+        )
+        return tool_failure_notice(part)
     return tool_result_text(part.content)
 
 
@@ -157,7 +158,7 @@ def tool_calls_in(messages: Sequence[ModelMessage]) -> list[RecordedToolCall]:
     shows one `send_email` twice is one nobody can use to decide whether the
     agent behaved.
 
-    A `RetryPromptPart` counts as a result. A call the model was told to retry
+    A retried `ToolReturnPart` counts as a result. A call the model was told to retry
     did happen and did fail, and dropping it would leave the transcript showing
     an argument list with no outcome - which reads as "still running" for ever.
 
@@ -178,7 +179,7 @@ def tool_calls_in(messages: Sequence[ModelMessage]) -> list[RecordedToolCall]:
                     tool_name=part.tool_name,
                     args=part.args_as_dict(raise_if_invalid=False),
                 )
-            elif isinstance(part, ToolReturnPart | RetryPromptPart) and part.tool_call_id in calls:
+            elif isinstance(part, ToolReturnPart) and part.tool_call_id in calls:
                 results[part.tool_call_id] = _result_text(part)
     return [
         RecordedToolCall(
@@ -214,7 +215,7 @@ def settled_calls_in(messages: Sequence[ModelMessage]) -> dict[str, str]:
         part.tool_call_id: _result_text(part)
         for message in messages
         for part in message.parts
-        if isinstance(part, ToolReturnPart | RetryPromptPart) and part.tool_call_id not in called
+        if isinstance(part, ToolReturnPart) and part.tool_call_id not in called
     }
 
 
@@ -343,6 +344,15 @@ class TranscriptService:
                         # records which chat account asked, and a second route to
                         # the same fact is a second route to getting it wrong.
                         channel_identity_id=run.channel_identity_id,
+                        # Whoever started the run typed it - unless it ran as a
+                        # surface's publisher for a visitor, or a chat account
+                        # says who instead.
+                        author_user_id=(
+                            None
+                            if run.initiated_by_publisher_fallback
+                            or run.channel_identity_id is not None
+                            else run.user_id
+                        ),
                     )
                     await self._attach(asked.id, attachments)
                 for tool_call_id, result in (settled or {}).items():
@@ -447,16 +457,18 @@ class TranscriptService:
         # The *difference*, not the run row's figure: a run that parked and was
         # resumed writes two assistant turns and the row is cumulative, so
         # stamping both with it would count the parked half twice.
-        spent_in, spent_out, spent_usd = await conversation_repo.attributed_to_run(self.db, run.id)
+        spent = await conversation_repo.attributed_to_run(self.db, run.id)
         message = await conversation_repo.create_message(
             self.db,
             conversation_id=conversation_id,
             role="assistant",
             content=answer,
             model_name=model_label,
-            input_tokens=run.input_tokens - spent_in,
-            output_tokens=run.output_tokens - spent_out,
-            cost_usd=run.cost_usd - spent_usd,
+            input_tokens=run.input_tokens - spent.input_tokens,
+            output_tokens=run.output_tokens - spent.output_tokens,
+            cache_read_tokens=run.cache_read_tokens - spent.cache_read_tokens,
+            cache_write_tokens=run.cache_write_tokens - spent.cache_write_tokens,
+            cost_usd=run.cost_usd - spent.cost_usd,
             # Not a difference: one unpriced request makes the whole run's figure a
             # floor, and every turn of it is short by an amount nobody can split.
             cost_is_partial=run.cost_is_partial,
@@ -489,3 +501,8 @@ class TranscriptService:
                     result=call.result,
                     completed_at=now,
                 )
+
+        if answer.strip():
+            from app.services.follow_ups import queue_next_steps
+
+            queue_next_steps(self.db, message.id, run.organization_id)

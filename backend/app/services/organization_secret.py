@@ -2,15 +2,17 @@
 
 Everything above this deals in secret ids; everything below deals in ciphertext.
 There is deliberately no method that returns a plaintext to a caller who could
-keep one. Three methods unseal, and each hands what it opened straight to the thing
+keep one. Five methods unseal, and each hands what it opened straight to the thing
 that had to have it: :meth:`OrganizationSecretService.resolve_for_bindings`, called
 by the runner; :meth:`OrganizationSecretService.listing_key`, which returns a
-bearer token for one outbound catalog request; and
-:meth:`OrganizationSecretService.oauth_app`, which hands an OAuth client's secret to
-the provider's own token endpoint inside the connect flow and to nowhere else.
+bearer token for one outbound catalog request;
+:meth:`OrganizationSecretService.transcription_key`, which returns the key a
+transcription request names; :meth:`OrganizationSecretService.voice_call_key`,
+which opens the key a voice call was held with only to hang that call up (#54);
+and :meth:`OrganizationSecretService.oauth_app`, which hands
+an OAuth client's secret to the provider's own token endpoint inside the connect
+flow and to nowhere else.
 """
-
-from __future__ import annotations
 
 from typing import cast
 from uuid import UUID
@@ -38,8 +40,8 @@ from app.db.models.organization_secret import OrganizationSecret
 from app.db.models.resource_grant import Visibility
 from app.repositories import member_repo, organization_secret_repo, resource_grant_repo
 from app.schemas.resource_grant import as_visibility
-from app.schemas.secret import SecretRead, SecretUsage
-from app.services.access import SECRET, resolve_access, visible_resource_ids
+from app.schemas.secret import SecretSummary, SecretUsage
+from app.services.access import SECRET, accessible_ids, resolve_access, visible_resource_ids
 from app.services.notifications import NotificationService
 
 # The two credentials a connect flow spends: identical fields, separate kinds,
@@ -75,7 +77,7 @@ class OrganizationSecretService:
 
     async def list_secrets(
         self, ctx: AuthContext, *, purposes: list[str] | None = None
-    ) -> list[SecretRead]:
+    ) -> list[SecretSummary]:
         """The secrets this caller may see, with who put each one there and what
         it is holding up.
 
@@ -136,7 +138,10 @@ class OrganizationSecretService:
             organization_id=ctx.organization_id,
             secret_ids=[secret.id for secret in secrets],
         )
-        rows: list[SecretRead] = []
+        editable = await accessible_ids(
+            self.db, ctx, secrets, Perm.SECRETS_EDIT, resource_type=SECRET
+        )
+        rows: list[SecretSummary] = []
         for secret in secrets:
             owner = people.get(secret.owner_user_id) if secret.owner_user_id else None
             author = people.get(secret.created_by_user_id) if secret.created_by_user_id else None
@@ -144,8 +149,9 @@ class OrganizationSecretService:
             author = author or member_repo.MemberIdentity(email=None, avatar_url=None)
             used = usage.get(secret.id, [])
             rows.append(
-                SecretRead(
+                SecretSummary(
                     id=secret.id,
+                    can_edit=secret.id in editable,
                     name=secret.name,
                     description=secret.description,
                     kind=SecretKind(secret.kind),
@@ -386,6 +392,82 @@ class OrganizationSecretService:
                 return value.api_key.get_secret_value()
         return None
 
+    async def usable_transcription_key(
+        self, organization_id: UUID, secret_id: UUID, *, provider: str, shared: bool
+    ) -> OrganizationSecret | None:
+        """The named key, if a recording on `provider` may be sent with it - never opened.
+
+        Usable means it is still in this organization's vault, it is an API key,
+        and its purpose is the provider - a key is never sent to a service it
+        was not issued by. A `shared` key, one the platform spends for everybody
+        (an organization's default, a bot's), must also still be
+        organization-visible: a key made private after it was chosen stops
+        paying for other people's recordings rather than going on doing so.
+
+        Existence only, so a readiness check can ask without a plaintext
+        leaving the vault.
+        """
+        row = await organization_secret_repo.get(
+            self.db, secret_id, organization_id=organization_id
+        )
+        if row is None or row.kind != SecretKind.API_KEY.value or row.purpose != provider:
+            return None
+        if shared and row.visibility != Visibility.ORG.value:
+            return None
+        return row
+
+    async def transcription_key(
+        self, organization_id: UUID, secret_id: UUID, *, provider: str, shared: bool
+    ) -> str | None:
+        """The bearer token a transcription request is sent with, for the key it names.
+
+        The key is the one the speech-to-text settings named next to the pair
+        (`speech_to_text_settings`); nothing here chooses one. The plaintext
+        goes to the provider with the recording and nowhere else.
+
+        Takes an organization id rather than an `AuthContext`, because a channel
+        bot transcribes before there is a sender to build one for.
+
+        Returns:
+            The key, or `None` when it is not usable
+            (:meth:`usable_transcription_key`) - gone, of another kind or
+            purpose, or no longer organization-visible where it has to be.
+        """
+        row = await self.usable_transcription_key(
+            organization_id, secret_id, provider=provider, shared=shared
+        )
+        if row is None:
+            return None
+        value = unseal_secret(
+            row.sealed_secret,
+            kind=SecretKind.API_KEY,
+            scope=VaultScope.organization(organization_id),
+            key_version=row.key_version,
+        )
+        # `usable_transcription_key` only answers with API keys, and
+        # `unseal_secret` refuses an envelope whose kind is not the one named,
+        # so this is one - the cast says so.
+        return cast(ApiKeySecret, value).api_key.get_secret_value()
+
+    async def voice_call_key(self, organization_id: UUID, secret_id: UUID) -> StorableSecret | None:
+        """The key a voice call is held with, to hang it up (#54).
+
+        A narrow reader: the plaintext goes to the provider's hang-up endpoint
+        and nowhere else. Takes an organization id because the reaper has no
+        caller to build a context for. `None` when the key is gone.
+        """
+        row = await organization_secret_repo.get(
+            self.db, secret_id, organization_id=organization_id
+        )
+        if row is None:
+            return None
+        return unseal_secret(
+            row.sealed_secret,
+            kind=SecretKind(row.kind),
+            scope=VaultScope.organization(organization_id),
+            key_version=row.key_version,
+        )
+
     async def oauth_app(self, ctx: AuthContext, *, kind: SecretKind) -> OAuthAppSecret:
         """Unseal the organization's OAuth client credentials for a token exchange.
 
@@ -493,6 +575,20 @@ class OrganizationSecretService:
             scope=VaultScope.organization(organization_id),
             key_version=row.key_version,
         )
+
+    async def get_usable(
+        self, ctx: AuthContext, secret_id: UUID, *, kind: SecretKind
+    ) -> OrganizationSecret:
+        """A secret of `kind` the caller may see, for naming on something that sends it.
+
+        Raises:
+            NotFoundError: If the caller may not see it, or it is another kind - the
+                two read alike, as everywhere secrets are referenced.
+        """
+        secret = await self._get(ctx, secret_id)
+        if secret.kind != kind.value:
+            raise NotFoundError(message="Secret not found", details={"secret_id": str(secret_id)})
+        return secret
 
     async def _get(
         self, ctx: AuthContext, secret_id: UUID, *, perm: Perm = Perm.SECRETS_VIEW

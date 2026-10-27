@@ -91,6 +91,7 @@ decides which fields exist.
 | `github_oauth_app` | A GitHub OAuth App's public client id and its secret |
 | `git_token` | An access token for git over HTTPS, and the one host it may be sent to |
 | `entra_app` | A Microsoft Entra app registration's tenant id, client id and client secret |
+| `openai_codex` | A ChatGPT sign-in: an access token, a refresh token and the account id |
 | `none` | Not a secret — the marker for an endpoint needing no credential |
 
 `github_oauth_app` is spent by the platform rather than picked by a person — the
@@ -99,6 +100,19 @@ GitHub connect flow reads it server-side to run the token exchange — so it mus
 never silently used for the whole organization's connection, and with two org-visible
 apps stored the connect is refused (naming both) rather than keyed to whichever name
 sorts first.
+
+The same rule - **org-visible only** - covers the API key the organization's
+speech-to-text default and a channel bot's own transcription pair are sent with:
+the platform spends it for every member's dictation and every voice note a bot
+receives, so a member's private key is refused when either is saved, and a key
+made private afterwards stops being used. Unlike `github_oauth_app`, these keys
+are named by id, so several may be stored side by side.
+
+The speech key picker names visible keys that cannot be selected because they
+are private or shared only with selected people, and explains that they must be
+shared with the organization first. A ChatGPT sign-in is identified separately:
+it provides model access through a ChatGPT subscription and cannot replace an
+OpenAI API key for voice features. The picker never changes a credential's access automatically.
 
 `git_token` carries its host because a Git sync source sends the token to a URL
 whoever edits the source chooses. Bound to the host the token was added with, the
@@ -112,6 +126,12 @@ it `Sites.Selected` on the one site the source reads — see [SharePoint and One
 setup](howto/configure-sync-sources.md#sharepoint-and-onedrive-setup). Its hint is
 the last four characters of the client id, which is public, rather than of the
 secret.
+
+`openai_codex` is the one kind nobody types. It is stored by [signing in with
+ChatGPT](models.md#running-on-a-chatgpt-subscription), and it changes while it is
+used: each refresh spends the refresh token, so the new pair is sealed back under
+the same id. Its hint is the last four characters of the account id. When a sign-in
+stops working, **Reconnect** signs in again in its place.
 
 `aws_credentials` is the clearest case for kinds existing at all: the access key id
 is not secret and the secret access key is, and a single field cannot express that.
@@ -135,9 +155,35 @@ the floor also catches a truncated paste while the form is still open.
 the secret the run resolved to, which is how "which key is costing the most" gets
 an answer.
 
+**Speech to text.** An API key whose purpose is the provider, named by id next to
+the provider and model wherever speech to text is set up: the organization's
+default, an agent's override and a channel bot's own pair. Nothing looks a key
+up at run time. The organization's and a bot's key must be org-visible; an
+agent's follows the lending rule - the publisher must be able to view it. Each
+transcription's [usage record](ml-services.md#what-is-recorded) names the key it
+was sent with. See [which engine a recording reaches](ml-services.md#which-engine-a-recording-reaches).
+A key's list of the agents using it does not show this use.
+
+**Voice calls.** The key a [voice call](voice.md) is held with is named on the
+agent's Voice card, beside the realtime provider and model. Its purpose must be
+the provider and its kind the provider's: an `api_key`, or an `azure_openai`
+secret for Azure, which also carries the endpoint and API version. It follows
+the lending rule - the publisher must be able to view it - and nothing looks a
+key up at run time. The key is unsealed to open a call and never reaches the
+browser: the server answers the WebRTC offer and no client secret is minted.
+To hang up a call whose process died, the voice sweep reads it through
+`OrganizationSecretService.voice_call_key`, a reader whose plaintext goes to the
+provider's hang-up endpoint and nowhere else. A call row keeps only the key's
+id, and a deleted key leaves the agent unable to take calls until another is
+chosen.
+
 **Capabilities.** A capability declares that it needs a credential of a given
 *kind* — never an instance. Code says "I need an API key"; a binding's `secret_id`
-says which one. See
+says which one. Where the binding names the service the key is for - the provider
+it chose, or the one service the capability uses, such as mem0 - publishing
+refuses a key stored for another service, since it would be sent to the wrong
+provider at every call. A `custom` key, which every key stored before purposes
+existed is, is accepted. See
 [the capability catalog](reference/capabilities.md#what-a-binding-may-change).
 
 **MCP connections.** Bearer tokens and OAuth payloads, sealed to the organization
@@ -178,6 +224,8 @@ own key for:
 | Logfire | Per-agent [observability](reference/spec.md#observability) — traces to a project of its own |
 | LlamaParse | PDF parsing, billed to the organization's own key |
 | mem0 | [`memory_mem0`](reference/capabilities.md#memory-mem0) — the whole capability, which keeps an agent's semantic memories in a mem0 service (cloud or self-hosted) rather than here. Nothing is stored in this deployment, so mem0 bills its own embedding out of band and sending memories to mem0's cloud is a data-residency choice the Builder names. A self-hosted `base_url` must be https and on the `MEM0_ALLOWED_HOSTS` allowlist, so the vault key is never sent to an agent-controlled origin. There is no operator console for these memories: mem0 has its own store, its own listing and its own delete. |
+| ElevenLabs | [`text_to_speech`](reference/capabilities.md#text-to-speech) — speech in the voices on the organization's ElevenLabs account |
+| BytePlus ModelArk | [`video_generation`](reference/capabilities.md#video-generation) — ByteDance's Seedance video models |
 
 ## What never happens
 

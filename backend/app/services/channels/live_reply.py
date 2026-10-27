@@ -18,8 +18,6 @@ Telegram all rate-limit. One edit a second, and only when the text actually
 changed, keeps it readable and keeps us a good citizen of a server we do not own.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -29,14 +27,13 @@ import anyio
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
+    ERROR_OUTCOMES,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
-    ToolReturnPart,
 )
 
 from app.agents.browser_events import BrowserEvent
@@ -68,6 +65,8 @@ _DOING: dict[str, str] = {
     "web_fetch": "Reading a web page…",
     "browse_web": "Browsing the web…",
     "generate_image": "Drawing an image…",
+    "generate_speech": "Recording the audio…",
+    "generate_video": "Making the video…",
     "publish_artifact": "Building a page…",
     "search_conversations": "Looking through earlier conversations…",
     "read_context": "Reading the background notes…",
@@ -412,7 +411,7 @@ def channel_stream(reply: AnswerSink) -> RunStream:
                             call_id = event.tool_call_id
                             if call_id in followers:
                                 followers.pop(call_id).cancel()
-                            failed = isinstance(event.part, RetryPromptPart)
+                            failed = event.part.outcome in ERROR_OUTCOMES
                             await reply.step(
                                 AnswerStep(
                                     call_id,
@@ -420,7 +419,7 @@ def channel_stream(reply: AnswerSink) -> RunStream:
                                     "error" if failed else "complete",
                                     sources=(
                                         step_sources(event.part.content)
-                                        if isinstance(event.part, ToolReturnPart)
+                                        if event.part.outcome == "success"
                                         else ()
                                     ),
                                 )

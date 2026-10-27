@@ -50,6 +50,7 @@ function serve(spend: Partial<CostSummary>) {
     by_provider: [],
     by_key: [],
     by_day: [],
+    cache_by_agent_model: [],
     ...spend,
   });
 }
@@ -123,6 +124,28 @@ describe("the vendor and key facets", () => {
 
     expect(await screen.findByText("OpenAI · production")).toBeVisible();
     expect(row("OpenAI · production")).toHaveTextContent("$2.0000");
+  });
+
+  it("shows where the prompt cache did not hold, under the breakdown", async () => {
+    serve({
+      cache_by_agent_model: [
+        {
+          agent_id: "a-1",
+          agent_slug: "clerk",
+          agent_name: "Billing clerk",
+          model_label: "gpt-4.1",
+          busts: 3,
+          expiries: 0,
+          missed_tokens: 12000,
+          run_count: 2,
+        },
+      ],
+    });
+
+    render(<SpendTab period={PERIOD} />, { wrapper });
+
+    expect(await screen.findByText("Prompt cache")).toBeVisible();
+    expect(screen.getByText("gpt-4.1")).toBeVisible();
   });
 
   it("still accounts for a key that has since been deleted", async () => {
@@ -221,7 +244,7 @@ describe("the agent facet, which is the tab's opening view", () => {
 
     render(<SpendTab period={PERIOD} />, { wrapper });
 
-    expect(await screen.findByRole("table")).toBeVisible();
+    await screen.findAllByText("Billing clerk");
     expect(row("Billing clerk")).toBeVisible();
     expect(row("Billing clerk")).toHaveTextContent("5");
     expect(row("Billing clerk")).toHaveTextContent("$1.2500");
@@ -232,7 +255,7 @@ describe("the agent facet, which is the tab's opening view", () => {
 
     render(<SpendTab period={PERIOD} />, { wrapper });
 
-    expect(await screen.findByRole("table")).toBeVisible();
+    await screen.findAllByText("Billing clerk");
     expect(row("Billing clerk")).toBeVisible();
     expect(screen.getByText("Researcher")).toBeVisible();
   });
@@ -244,7 +267,7 @@ describe("the agent facet, which is the tab's opening view", () => {
 
     render(<SpendTab period={PERIOD} />, { wrapper });
 
-    expect(await screen.findByRole("table")).toBeVisible();
+    await screen.findAllByText("Billing clerk");
     expect(row("Billing clerk")).toBeVisible();
     expect(screen.getByTitle(/3 runs in this row could not be priced/)).toBeVisible();
   });
@@ -254,7 +277,7 @@ describe("the agent facet, which is the tab's opening view", () => {
 
     render(<SpendTab period={PERIOD} />, { wrapper });
 
-    expect(await screen.findByRole("table")).toBeVisible();
+    await screen.findAllByText("Billing clerk");
     expect(row("Billing clerk")).toBeVisible();
     expect(screen.queryByTitle(/could not be priced/)).toBeNull();
   });
@@ -342,4 +365,14 @@ describe("the export beside the facets", () => {
       to: "2026-08-14T23:59:59.999Z",
     });
   });
+});
+
+it("loads four figures, the spend chart and the breakdown in their own frames", () => {
+  vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+  const { container } = render(<SpendTab period={PERIOD} />, { wrapper });
+  for (const title of ["Spend over time", "Where the money went"]) {
+    expect(screen.getByText(title)).toBeInTheDocument();
+  }
+  expect(container.querySelector(".lg\\:grid-cols-4")?.children).toHaveLength(4);
+  expect(container.querySelectorAll(".shadow-card")).toHaveLength(6);
 });

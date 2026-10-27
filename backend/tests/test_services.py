@@ -120,9 +120,11 @@ class TestUserServicePostgresql:
             patch("app.services.user.OrganizationService") as mock_org_svc,
             patch("app.services.user.get_email_service") as mock_email,
         ):
+            mock_repo.has_accounts = AsyncMock(return_value=True)
+            mock_repo.claim_first_account = AsyncMock(return_value=False)
             mock_repo.get_by_email = AsyncMock(return_value=None)
             mock_repo.create = AsyncMock(return_value=mock_user)
-            mock_org_svc.return_value.create_personal_org = AsyncMock()
+            mock_org_svc.return_value.settle_new_account = AsyncMock()
             mock_email.return_value.send_welcome = AsyncMock()
 
             user_in = UserCreate(
@@ -514,10 +516,12 @@ class TestUserServicePostgresql:
             # against a real database (#1421).
             patch("app.services.user.personal_data_repo") as mock_personal,
             patch("app.services.user.PersonalDataService") as mock_purge,
+            patch("app.services.user.GeneratedMediaService") as mock_generated,
             patch.object(user_service, "_release_owned_rows", new=AsyncMock()),
         ):
             mock_personal.attachment_paths_of = AsyncMock(return_value=[])
             mock_purge.return_value.purge = AsyncMock()
+            mock_generated.return_value.forget_user = AsyncMock()
             mock_org_repo.list_created_by = AsyncMock(return_value=[])
             mock_repo.get_by_id_for_update = AsyncMock(return_value=mock_user)
             mock_repo.delete = AsyncMock(return_value=mock_user)
@@ -538,6 +542,7 @@ class TestUserServicePostgresql:
             patch("app.services.user.organization_repo") as mock_org_repo,
             patch("app.services.user.personal_data_repo") as mock_personal,
             patch("app.services.user.PersonalDataService") as mock_purge,
+            patch("app.services.user.GeneratedMediaService") as mock_generated,
             patch("app.services.user.spawn_after_commit") as spawned,
             patch.object(user_service, "_release_owned_rows", new=AsyncMock()),
         ):
@@ -546,11 +551,49 @@ class TestUserServicePostgresql:
             mock_repo.delete = AsyncMock(return_value=mock_user)
             mock_personal.attachment_paths_of = AsyncMock(return_value=["chat/a/receipt.pdf"])
             mock_purge.return_value.purge = AsyncMock()
+            mock_generated.return_value.forget_user = AsyncMock()
 
             await user_service.delete(mock_user.id)
 
         assert spawned.call_count == 1
         assert spawned.call_args.kwargs["name"] == "delete-account-attachments"
+
+    @pytest.mark.anyio
+    async def test_deleting_an_account_forgets_what_its_agents_generated(
+        self, user_service: UserService, mock_user: MockUser
+    ):
+        """The person's own conversations cascade with the account, which would leave
+        their generated media conversation-less and readable by the organization.
+        Forgotten after the project chats are handed to the team, so those keep
+        theirs (#2310)."""
+        order: list[str] = []
+
+        async def released(*_args: object, **_kwargs: object) -> None:
+            order.append("released")
+
+        async def forgot(user_id: object) -> None:
+            order.append("forgot")
+
+        with (
+            patch("app.services.user.user_repo") as mock_repo,
+            patch("app.services.user.organization_repo") as mock_org_repo,
+            patch("app.services.user.personal_data_repo") as mock_personal,
+            patch("app.services.user.PersonalDataService") as mock_purge,
+            patch("app.services.user.GeneratedMediaService") as mock_generated,
+            patch.object(user_service, "_release_owned_rows", new=released),
+        ):
+            mock_org_repo.list_created_by = AsyncMock(return_value=[])
+            mock_repo.get_by_id_for_update = AsyncMock(return_value=mock_user)
+            mock_repo.delete = AsyncMock(return_value=mock_user)
+            mock_personal.attachment_paths_of = AsyncMock(return_value=[])
+            mock_purge.return_value.purge = AsyncMock()
+            mock_generated.return_value.forget_user = AsyncMock(side_effect=forgot)
+
+            await user_service.delete(mock_user.id)
+
+        mock_generated.assert_called_once_with(user_service.db)
+        mock_generated.return_value.forget_user.assert_awaited_once_with(mock_user.id)
+        assert order == ["released", "forgot"]
 
     @pytest.mark.anyio
     async def test_delete_not_found(self, user_service: UserService):
@@ -668,10 +711,12 @@ class TestUserServicePostgresql:
             # against a real database (#1421).
             patch("app.services.user.personal_data_repo") as mock_personal,
             patch("app.services.user.PersonalDataService") as mock_purge,
+            patch("app.services.user.GeneratedMediaService") as mock_generated,
             patch.object(user_service, "_release_owned_rows", new=AsyncMock()),
         ):
             mock_personal.attachment_paths_of = AsyncMock(return_value=[])
             mock_purge.return_value.purge = AsyncMock()
+            mock_generated.return_value.forget_user = AsyncMock()
             mock_org_repo.list_created_by = AsyncMock(return_value=[])
             mock_repo.get_by_id_for_update = AsyncMock(return_value=mock_user)
             mock_repo.app_admin_ids_for_update = AsyncMock(return_value=[uuid4(), uuid4()])
@@ -717,10 +762,12 @@ class TestUserServicePostgresql:
             # against a real database (#1421).
             patch("app.services.user.personal_data_repo") as mock_personal,
             patch("app.services.user.PersonalDataService") as mock_purge,
+            patch("app.services.user.GeneratedMediaService") as mock_generated,
             patch.object(user_service, "_release_owned_rows", new=AsyncMock()),
         ):
             mock_personal.attachment_paths_of = AsyncMock(return_value=[])
             mock_purge.return_value.purge = AsyncMock()
+            mock_generated.return_value.forget_user = AsyncMock()
             mock_org_repo.list_created_by = AsyncMock(return_value=[])
             mock_repo.get_by_id_for_update = AsyncMock(return_value=mock_user)
             mock_repo.app_admin_ids_for_update = AsyncMock(return_value=[lone_admin])
@@ -729,3 +776,20 @@ class TestUserServicePostgresql:
             await user_service.admin_delete(mock_user.id, acting_admin_id=lone_admin)
 
             mock_repo.delete.assert_awaited_once()
+
+
+@pytest.fixture(autouse=True)
+def discard_welcome_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Coroutine
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.background import spawn_after_commit
+
+    def defer(session: AsyncSession, coro: Coroutine[object, object, object], *, name: str) -> None:
+        if name == "welcome-email":
+            coro.close()
+        else:
+            spawn_after_commit(session, coro, name=name)
+
+    monkeypatch.setattr("app.services.user.spawn_after_commit", defer)

@@ -1,5 +1,5 @@
 ---
-source_sha: "27fe488f738b"
+source_sha: "e084d213e2b5"
 ---
 
 # Procesamiento de archivos { #file-processing }
@@ -382,6 +382,23 @@ Una de las dos omitía la clave en lugar de enviarla nula, así que un cliente q
 normalizara la respuesta recibía una forma distinta de cada una
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
 
+**Espera a `complete`, no a los vectores.** `GET /rag/collections/{name}/info`
+deriva `indexing_status` de los documentos registrados de la colección:
+`indexing` mientras alguno siga en `processing` - en cola o en ingesta - y
+`complete` cuando ya no queda ninguno. `processing_count`, `indexed_count` y
+`failed_count` indican cuántos documentos hay en cada estado. Un documento
+fallido está en un estado final, así que no mantiene la colección en
+`indexing`; aparece en `failed_count`. El campo era antes la constante
+`complete`, y `total_vectors` crece mientras el worker procesa un lote, así que
+un script que esperara cualquiera de los dos consultaba una colección a medio
+construir ([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` responde lo mismo para una base de conocimiento y
+cuenta los documentos que lista su página, no todo lo que hay bajo su nombre de
+colección, que otra base puede compartir; la página de la base de conocimiento
+muestra ese estado junto al número de documentos. Un documento que se queda en
+`processing` mantiene ambas respuestas en `indexing` hasta que se elimine o, si
+es un documento sincronizado, hasta que su fuente vuelva a sincronizarse.
+
 !!! danger "La tarea se inicia después de que la transacción de la petición haga commit"
 
     Se entrega con `spawn_after_commit`, **no** con `spawn`, y la inicia la
@@ -402,10 +419,10 @@ descarta junto con el trabajo del flow.**
 **Un solo bucle es dueño de los pools del proceso, y todo lo demás construye su
 propio engine.** El lifespan de la API los reclama al arrancar: atiende cada
 petición y los descarta al apagarse, así que es el único bucle cuyas conexiones
-pueden cachear. Fuera de ese bucle `get_db_context` se comporta como
-`get_worker_db_context` — un engine con `NullPool` para la llamada, descartado al
-final — porque se llega a él desde flows de Prefect (el informe, el refresco de
-MCP, las tareas de invitación y de aprobación, los bucles de canal) y desde el
+pueden cachear. El worker los reclama igual para su único bucle, y cada proceso
+hijo de ingesta para el suyo. Fuera del bucle dueño `get_db_context` se comporta
+como `get_worker_db_context` — un engine con `NullPool` para la llamada,
+descartado al final — porque se llega a él desde los bucles de canal y desde el
 resolvedor de embeddings de un agent, cada uno en un bucle propio
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
@@ -620,7 +637,7 @@ deployment a la que caer, así que el rechazo nunca aconseja una variable.
 
 Esa degradación se anuncia en vez de darse por supuesta. La resolución lleva en
 cuál de las cinco fuentes cayó, y la ingesta escribe cada caso degradado en el
-log del run de Prefect, incluida una colección que sencillamente no nombra
+log del worker, incluida una colección que sencillamente no nombra
 ninguna clave. Antes de la incidencia #306 el worker de ingesta era el único
 llamante que nunca preguntaba al resolvedor, así que cada documento subido se
 embebía con el modelo del deployment y una clave de todo el deployment eligiera
@@ -1043,12 +1060,15 @@ exhausted: $40.15 spent of $40.00 limit"*.
 
 Lo que **no** se guarda es el texto del cliente que falló. Un SDK de provider,
 `httpx`, `boto3` y el cliente de Google Drive ponen la petición que hacían en su
-mensaje de excepción, a menudo un endpoint, un host interno, un bucket o una URL
-con una clave en su query string — y, a diferencia de un cuerpo de error HTTP,
-una columna la relee semanas después quien abra el documento fallido. No se
-pierde: todas estas llamadas lo registran con `logger.exception`, así que el log
-del worker tiene el mensaje y la traza, y un flow de Prefect que relanza los
-tiene en su run. `app/services/rag/failures.py` es donde se separan ambos.
+mensaje de excepción, a menudo un endpoint, un host interno, un bucket o una URL con
+una clave en su query string — y, a diferencia de un cuerpo de error HTTP, una
+columna la relee semanas después quien abra el documento fallido.
+
+No se pierde: todas estas llamadas lo registran con `logger.exception`, así que el
+log del worker tiene el mensaje y la traza, y un job que relanza tiene su tipo, su
+mensaje y los últimos frames en su fila de `background_jobs`, donde solo los lee el
+propietario del despliegue. `app/services/rag/failures.py` es donde se separan la
+columna y el log.
 
 El log es un público más pequeño que la columna, no uno seguro — trata el log de
 un worker como algo que solo leen los operadores, y consulta [#440] para ver por
@@ -1345,9 +1365,11 @@ consecuencia es la misma (#982).
 
 Clonar también lo dice, y por el motivo de arriba: es la única forma de cambiar la
 audiencia de una fuente desde la propia UI de este producto. Reapuntar una
-existente es un `PATCH` sobre `collection_name`, que hoy no envía ninguna pantalla
-- no hay un editor de fuentes - así que se llega a ello por la API y por la CLI,
-donde la entrada de auditoría de arriba es lo que lo registra.
+existente es un `PATCH` sobre `collection_name` a `/rag/sync/sources/{id}`. El
+editor de fuentes de la pestaña **Sync** de una base de conocimiento no lo envía,
+y el `PATCH /kb/{kb_id}/sync-sources/{source_id}` propio de esa base rechaza un
+`collection_name` que nombre otra base - así que se llega a ello por la API y por
+la CLI, donde la entrada de auditoría de arriba es lo que lo registra.
 
 ### Qué debe traer un conector nuevo { #what-a-new-connector-owes }
 
@@ -1470,7 +1492,7 @@ mejor búsqueda semántica.
 
 ## Desde un canal { #from-a-channel }
 
-Un archivo enviado a un bot de Slack, Telegram o Mattermost entra por aquí, no al
+Un archivo enviado a un bot de Slack, Teams, Telegram o Mattermost entra por aquí, no al
 lado de aquí. El adaptador lo trae con la credencial del propio bot, pasa por la
 misma validación que una subida desde el navegador y se convierte en la misma fila
 `ChatFile` — así que el enrutado de arriba aplica sin cambios y un canal no puede

@@ -27,13 +27,10 @@ COMPOSE_LOCAL := -f docker-compose.yml -f docker-compose.override.yml
 # so a host that will not have that removes `sandbox` from here.
 COMPOSE_DEV_PROFILES ?= --profile sandbox
 
-# The group that owns the Docker socket, which the sandbox service takes as a
-# supplementary group to reach it. Every compose file interpolates
-# `${DOCKER_GID:-0}` and nothing set it, so the service came up in group 0 - root
-# on the host, and not the socket's owner on any Linux distribution shipping a
-# `docker` group. Read from the socket, because the socket is what knows; empty
-# on a host without one, where the default is as good as anything (#1506).
-export DOCKER_GID := $(shell stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock 2>/dev/null)
+# Docker Desktop proxies the socket through its VM as group 0; the Mac's
+# symlink/socket group is unrelated. Linux uses the socket's actual owner.
+# Keep an explicit environment or command-line override for custom daemons.
+export DOCKER_GID ?= $(shell if [ "$$(uname -s)" = Linux ]; then stat -Lc '%g' /var/run/docker.sock 2>/dev/null; else echo 0; fi)
 
 # The sandbox service refuses to start without a token, deliberately: it can run
 # commands on this host, so an empty default would be a shared secret of "".
@@ -58,6 +55,12 @@ sandbox-runtimes:
 # Idempotent — re-run anytime. Migrations are no-ops when already at head;
 # admin seeding is a separate target (`make seed`) so re-running `make dev`
 # doesn't keep retrying user creation.
+# `up` pulls an image it does not build only when that tag is not on the host. That
+# is enough because the images are pinned to exact versions: a bump is a new tag,
+# so it reaches a laptop on the next `make dev`. A moving tag would not - a cached
+# `sandboxd:0.2` once served an older API than the backend's client spoke, and
+# every command failed as a lost session (#2484). `--pull missing` would add
+# nothing, and would override `pull_policy: never` on the images built here.
 dev: sandbox-token
 	@echo "▶ Building the backend image and starting the stack (migrations run as the \`migrate\` service)…"
 	@if ! docker compose $(COMPOSE_LOCAL) $(COMPOSE_DEV_PROFILES) up -d --build; then \
@@ -171,8 +174,8 @@ PROD_FILES := -f docker-compose-prod.yml $(if $(filter traefik,$(PROXY)),-f dock
 # name from the directory, so both invocations were `agenticos` - and the
 # frontend one then reported the five backend containers as **orphans**, with
 # compose's own suggestion to "run this command with the --remove-orphans flag to
-# clean it up". Following that advice takes the API, the database, Redis and both
-# Prefect services down. The volumes survive; nothing else does.
+# clean it up". Following that advice takes the API, the database, Redis and the
+# worker down. The volumes survive; nothing else does.
 PROD_FRONTEND_FILES := -p agenticos-frontend -f docker-compose-prod.frontend.yml $(if $(filter traefik,$(PROXY)),-f docker-compose-prod.frontend.traefik.yml)
 PROD_PROXY_NOTE := $(if $(filter traefik,$(PROXY)),Traefik routes it once the certificate is issued,configure your nginx host with nginx/nginx.conf)
 
@@ -645,6 +648,13 @@ load-seed:
 	uv run --directory backend python ../loadtest/seed.py \
 		--stub-url $(LOAD_STUB_URL) --documents $(LOAD_DOCUMENTS)
 
+# The whole run from an empty database - migrate, bootstrap, stub, API, worker,
+# seed, scenario - and the thresholds as its exit status. What
+# `.github/workflows/load.yml` runs; `LOAD_SCALE`, `LOAD_REPORT` and the rest are
+# in `loadtest/cold_run.sh`.
+load-cold:
+	bash loadtest/cold_run.sh
+
 # `API_PID` and `DATABASE_URL` are optional; without them the run measures
 # requests and says which probes it could not take.
 load-test:
@@ -719,9 +729,9 @@ docs-slug-check:
 	uv run --directory backend --group docs pytest -q \
 		tests/test_check_docs_i18n.py::test_the_slug_derivation_matches_the_renderer
 
-# Two decks are published pages, and the only copies: the 14-slide open-source
+# Two decks are published pages, and the only copies: the 17-slide open-source
 # introduction at `docs/presentation/index.html` (served at /presentation/) and the
-# 44-slide product tour at `docs/presentation/tour/index.html` (/presentation/tour/),
+# 47-slide product tour at `docs/presentation/tour/index.html` (/presentation/tour/),
 # which shares the introduction's `media/` and `fonts/`. Both are guided decks that
 # show one slide at a time, so printing either page gives one page, not a deck.
 # This checks what the README promises - each deck's slide count - and that every
@@ -731,7 +741,7 @@ docs-slug-check:
 # CONTENT_OS points at the content toolkit behind the `content-deck` skill, which is
 # not in this repository; `scripts/gen` runs its tools with the toolkit's Python.
 CONTENT_OS ?= $(HOME)/PycharmProjects/content-os
-PRESENTATIONS := docs/presentation/index.html:14 docs/presentation/tour/index.html:44
+PRESENTATIONS := docs/presentation/index.html:17 docs/presentation/tour/index.html:47
 presentation:
 	@test -x "$(CONTENT_OS)/scripts/gen" || { echo "content toolkit not found at $(CONTENT_OS); set CONTENT_OS="; exit 1; }
 	@for entry in $(PRESENTATIONS); do \
@@ -961,7 +971,8 @@ help:
 	@echo "  make format        Auto-format code (ruff + prettier)"
 	@echo "  make check         Every CI job except e2e - before opening a pull request"
 	@echo ""
-	@echo "Load and resilience (NFA-004, never in CI - see docs/load-testing.md):"
+	@echo "Load and resilience (NFA-004, nightly in CI - see docs/load-testing.md):"
+	@echo "  make load-cold        The whole run from an empty database, thresholds as exit status"
 	@echo "  make load-stub-model  The slow-on-purpose model the suite measures against"
 	@echo "  make load-seed        Build the fixture: an agent, a collection, a routine"
 	@echo "  make load-test        Offer the workload and print the report"

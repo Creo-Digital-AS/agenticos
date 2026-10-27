@@ -66,6 +66,24 @@ const open = () => userEvent.click(row());
  * produced: a chart, a question waiting on an answer, code that ran, a file written.
  */
 describe("a tool call in the transcript", () => {
+  it("serializes an object result only when opened and retains it across unrelated renders", async () => {
+    const serialize = vi.fn(() => ({ detail: "Large tool result" }));
+    const result = { toJSON: serialize };
+    const toolCall: ToolCall = {
+      id: "large",
+      name: "post_invoice",
+      args: {},
+      status: "completed",
+      result,
+    };
+    const { rerender } = render(<ToolCallCard toolCall={toolCall} mcpServers={servers.list} />);
+    expect(serialize).not.toHaveBeenCalled();
+    await open();
+    expect(serialize).toHaveBeenCalledTimes(1);
+    rerender(<ToolCallCard toolCall={{ ...toolCall }} mcpServers={servers.list} />);
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Large tool result/)).toBeInTheDocument();
+  });
   it("narrates what the agent is doing while the tool runs", () => {
     card({ name: "search_documents", status: "running", result: undefined });
 
@@ -420,6 +438,28 @@ describe("a tool call in the transcript", () => {
       "src",
       "/api/generated/x_image.png",
     );
+  });
+
+  it("plays generated speech on sight, since the clip is the answer", () => {
+    const { container } = card({
+      name: "generate_speech",
+      result: JSON.stringify({
+        kind: "generated_speech",
+        filename: "x_speech.mp3",
+        voice: "marin",
+      }),
+    });
+
+    expect(container.querySelector("audio")).toHaveAttribute("src", "/api/generated/x_speech.mp3");
+  });
+
+  it("plays a generated video on sight, since the clip is the answer", () => {
+    const { container } = card({
+      name: "generate_video",
+      result: JSON.stringify({ kind: "generated_video", filename: "x_video.mp4", prompt: "rain" }),
+    });
+
+    expect(container.querySelector("video")).toHaveAttribute("src", "/api/generated/x_video.mp4");
   });
 
   it("keeps a published page to one line, its card being under the answer", async () => {

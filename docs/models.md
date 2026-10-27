@@ -34,9 +34,61 @@ An agent's spec names one by `model_profile_id`, and the run resolves it.
     field that cannot express "that one" is a field people work around by editing
     the spec by hand.
 
+### A profile an agent cannot run on
+
+A profile can name a model that cannot hold a conversation: a text-to-speech model
+such as `gpt-4o-mini-tts`, a realtime voice model, a transcription model, an image
+model, a video model or an embedding model. An agent on one fails on its first turn. Text to speech, image
+generation and transcription do not use profiles: each feature names its own
+provider and model.
+
+The platform knows these models from its own catalogs (the realtime voice, text-to-speech,
+transcription, image, video and embedding lists). `GET /providers/model-profiles`
+marks each profile with `chat_capable` and `output_modalities`, and
+`GET /providers/{provider}/models` marks each suggestion with `chat_capable`.
+Those two fields also read a provider listing that states what each model emits
+(OpenRouter and the Hugging Face router do), when the API process has already
+fetched it. That listing only changes what a picker offers. It never refuses a
+publish, because another API process may not have fetched it. The console also
+updates saved profiles when a listing arrives later. Provider aliases such as
+`openai_codex` and `google_cloud` use the corresponding vendor catalogs. Then:
+
+- The Builder's model panel, the reviewer and specialist pickers, the follow-ups
+  and browser step model fields and the knowledge-base image-description picker do
+  not offer such a model. If an agent already names one, the Builder still shows
+  it, marked as not a chat model. For a member who can manage connections, the
+  Builder also lists the others, marked and not selectable, so they can be
+  removed.
+- The chat's model picker and the Builder's form for adding a model do not
+  suggest such a model, and refuse one that is typed in.
+- Publish refuses such a model as the agent's model, a reviewer's, a specialist's,
+  the browser step model or the follow-ups model, and names it. It also refuses a
+  profile whose fallbacks include such a model. The same check runs on rollback,
+  on the draft check, on the Builder's test run and when a capability is enabled
+  from chat. A stored version on such a model still loads, but it cannot be
+  restored while its profile names a non-chat model or lists one as a fallback.
+  Point that profile at a chat model, or publish a new version.
+- A run leaves such a fallback out of its chain, the same as a deleted one, when
+  it was added to the profile after publish.
+- A conversation that names such a model in place of the agent's own, from the
+  chat or through the API, is refused before the run starts.
+- A model that the catalogs do not classify, such as an Ollama model or a model
+  released this morning, is allowed. An unknown model is not a refusal. A profile
+  with its own endpoint (`base_url`) is never classified, whatever its model id:
+  the catalogs describe the provider's own API, and an OpenAI-compatible server
+  can serve a chat model under any name.
+
+The proactivity model picker follows the same rule. The stable catalog check also
+runs when proactivity is configured and whenever a profile is resolved for an
+ordinary text request, including image description at configuration and worker
+time. Old configurations still load; replace an incompatible model before using
+them. Switching off remains possible. Azure deployment names are not classified
+from the catalog's base-model IDs.
+
 ### Fallbacks
 
-A profile may list fallback profiles, tried in order. One provider's outage should
+A profile may list fallback profiles, tried in order. Only the first three are
+used by the runner and checked at publish. One provider's outage should
 not take an organization's agents down when it has a second key or a second
 provider configured.
 
@@ -56,12 +108,16 @@ Per profile, and overridable per agent through the spec's `model_settings`:
 `temperature`, `top_p`, `max_tokens`, `parallel_tool_calls`, `timeout`. See
 [the spec reference](reference/spec.md#model-settings).
 
-**Prompt caching is on by default** for Anthropic and OpenRouter profiles. Every
-request of a run re-sends the instructions, the tool schemas and the whole
-history, so each request marks the instructions, the tools and its last message
-as cache breakpoints and reads the one before it from cache. A profile turns any
-of them off by setting it to `false` - `anthropic_cache_messages`,
-`openrouter_cache_instructions` and so on.
+**Prompt caching is on by default**, through Pydantic AI's provider-neutral
+`cache` setting. Every request of a run re-sends the instructions, the tool
+schemas and the whole history, so the stable prefix and the conversation are
+marked as cache breakpoints and each request reads the one before it from cache.
+It applies wherever a provider takes explicit caching - Anthropic, Bedrock's
+Anthropic and Nova models, OpenRouter's Anthropic and Gemini models, OpenAI from
+GPT-5.6 - and changes nothing on one that caches by itself, such as Google. A
+profile turns it off with `cache: false`, or caches only the instructions and
+tools with `cache: {"messages": false}`. A provider-specific flag a profile
+already sets, such as `anthropic_cache_messages`, still wins for that profile.
 
 Reasoning effort is **not** here. It is the
 [`thinking` capability](reference/capabilities.md#thinking), because "reason
@@ -101,7 +157,7 @@ wants it sets `openai_store` to `true` in its settings.
 
 ## Providers
 
-Twenty-seven, which is everything Pydantic AI ships that a chat profile can point
+Twenty-eight, which is everything Pydantic AI ships that a chat profile can point
 at.
 
 There is no per-provider builder here. Pydantic AI infers the provider class and
@@ -186,8 +242,9 @@ authenticate with.
 | Azure OpenAI | `azure` | key **+** endpoint **+** pinned API version |
 | AWS Bedrock | `bedrock` | access key id, secret key, region, optional session token |
 | Google Vertex AI | `google_cloud` | service account JSON |
+| ChatGPT (Codex subscription) | `openai_codex` | a ChatGPT sign-in, stored by signing in rather than typed |
 
-These three are the reason a secret has a *kind* at all. A form that collected one
+The first three are the reason a secret has a *kind* at all. A form that collected one
 opaque token for Azure would collect something fillable-in-correctly that still
 fails at the first run. See [secret kinds](secrets.md#kinds).
 
@@ -199,6 +256,49 @@ fails at the first run. See [secret kinds](secrets.md#kinds).
     [Responses or Chat Completions](#responses-or-chat-completions).
 
     `google_cloud` is built as `google-cloud`. Neither changes what you store.
+
+### Running on a ChatGPT subscription
+
+`openai_codex` runs OpenAI models on the Codex backend through a ChatGPT
+subscription, rather than through a metered API key. It is meant for **personal
+use**: the sign-in is one person's subscription, and every run on a profile that
+uses it counts against that person's ChatGPT limits.
+
+Nobody can type the credential. You sign in with ChatGPT instead:
+
+1. Under **Vault → add a secret** (or **Agents → add a model**, with **ChatGPT
+   (Codex subscription)** selected), choose **Sign in with ChatGPT**. A ChatGPT
+   sign-in opens in a new tab.
+2. Approve it. ChatGPT then sends the browser to `http://localhost:1455/...`,
+   which does not load. That is expected: OpenAI pins that address for every
+   client other than its own.
+3. Copy the whole address from the address bar and paste it back into the form.
+
+The code in that address works once, only for the person who started the
+sign-in, and only within 15 minutes.
+
+The access token expires and is refreshed while models run. Each refresh spends
+the refresh token, so the new pair is sealed back into the same vault secret
+straight away. Two runs refreshing at the same moment can still race. The one
+that loses is refused, and the fix is **Reconnect** on the secret, which signs in
+again without changing its id.
+
+!!! warning "What a ChatGPT sign-in is not"
+
+    - **It is not the Codex CLI's `auth.json`.** That file holds the CLI's own
+      grant. Refresh tokens are single-use, so whichever of the two refreshed
+      first would sign the other out.
+    - **It is not an organization credential.** A secret is created private by
+      default, and a model on it runs only for somebody who may see the sign-in in
+      the vault and is asking themselves. For anybody else - a visitor on a public
+      page or an embed, a caller with an API key - and for background work such as
+      describing a document's images, the model is refused, and a fallback on it is
+      skipped.
+    - **The spend shown is not your bill.** A run is priced at the OpenAI API
+      rates for the same model, which is what a [budget](governance.md#budgets)
+      can reason about. The subscription itself is billed by OpenAI at a flat rate.
+    - **Some settings are ignored.** The Codex backend drops `max_tokens`,
+      `temperature` and `top_p`.
 
 ### Deliberately absent
 
@@ -236,14 +336,14 @@ they are all derived from is the first:
 
 Every key in either catalog file has to name a provider `PROVIDERS` has. So does
 every entry in the image catalog. And every provider has to appear on this page.
-Adding the twenty-eighth is one edit plus whatever that test then asks for.
+Adding the twenty-ninth is one edit plus whatever that test then asks for.
 
 Two crossings are worth knowing about, because they are lookups that can answer
 nothing:
 
-- The price snapshot spells three providers differently — `xai` is `x-ai`,
-  `bedrock` is `aws`, `google_cloud` is `google` — and `_PRICE_PROVIDER_ALIASES`
-  bridges them.
+- The price snapshot spells four providers differently — `xai` is `x-ai`,
+  `bedrock` is `aws`, `google_cloud` is `google`, and `openai_codex` is priced as
+  `openai` — and `_PRICE_PROVIDER_ALIASES` bridges them.
 - The image catalog carries its own `provider` and `prefix` pair, which is a third
   vocabulary again.
 
@@ -319,6 +419,7 @@ which is the null described below.
 |---|---|
 | `anthropic` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-haiku-4-5` |
 | `openai` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex` |
+| `openai_codex` | the same four as `openai` |
 | `google` | `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` |
 | `deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | `xai` | `grok-4.5`, `grok-4.3` |
@@ -418,17 +519,56 @@ The child run row a delegation writes names the model that answered it, so the c
 dashboard groups a delegated turn under the model that actually ran rather than
 under the parent's.
 
+## Realtime models
+
+A [voice call](voice.md) does not use a model profile. Its model is a pick from
+a catalog this deployment ships, `backend/app/core/catalog/realtime_models.json`,
+read by `backend/app/services/realtime_models.py` and served to the Builder at
+`GET /api/v1/providers/realtime-models`. The key is named on the agent's Voice
+section as a vault secret, not on a profile. That is the same shape speech to
+text uses: a catalog pick plus an explicit key.
+
+Each entry names a provider, its models, and for each model:
+
+| Field | What it decides |
+|---|---|
+| `transport` | `webrtc` (the browser talks to the provider; this deployment holds a sideband) or `relay` (the audio passes through this deployment's socket) |
+| `input_sample_rate`, `output_sample_rate` | The PCM rates the browser records and plays at, over the relay |
+| `voices`, `default_voice` | What the Voice section offers, and what an empty choice means |
+| `supports_thinking` | Whether the agent's thinking capability maps onto the model's own reasoning setting |
+| `context_window` | Where a reconnect switches from replaying the turns to a summary of the older ones |
+| `pricing` | `kind` (`tokens` or `per_minute`), `worst_case_usd_per_minute` for the check before a call, and `usd_per_minute` for a per-minute model |
+
+OpenAI's `gpt-realtime` family runs over WebRTC and is the only provider tested
+live. Azure OpenAI, Gemini Live and xAI run over the relay and are **not
+verified live**. GPT-Live is not in the catalog: it cannot take history after a
+session starts, so a reconnect could not continue a call.
+
+**Azure is a deployment plus a base model.** A deployment's name is chosen by
+its owner and says nothing about what it runs, so the Voice section takes the
+deployment name as free text and the catalog model it runs as `base_model`. The
+base model decides the voices and the price: an Azure call's tokens are priced
+as that model on OpenAI. The endpoint and API version come from the
+`azure_openai` secret.
+
+**Prices.** Token-priced models are priced per response from the same bundled
+snapshot as text runs. A per-minute model (xAI) is billed for connected time at
+the catalog's `usd_per_minute`. A token-priced model the snapshot cannot price
+is refused when a call starts, rather than run with a budget it cannot enforce.
+
 ## Recap
 
 - A **profile** is a named model plus a named key, and agents point at profiles so
   that rotating either touches one row.
-- **27 providers**, and the only thing this platform knows about each is the
+- **28 providers**, and the only thing this platform knows about each is the
   credential shape — construction is Pydantic AI's job.
 - The model id is **free text**, because no list is authoritative.
 - **Context length** is read once and stored, because the price snapshot is wrong
   about it in the direction that breaks a run.
 - **Cost** comes from a bundled snapshot, an unknown model is recorded as unpriced
   rather than free, and a keyless provider records no spend at all.
+- **Realtime models** for voice calls are a catalog pick plus a named key, with
+  no profile; only OpenAI's are verified live.
 
 ## Setting one up
 

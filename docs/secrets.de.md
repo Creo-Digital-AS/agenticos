@@ -1,5 +1,5 @@
 ---
-source_sha: "965ad3ad82f8"
+source_sha: "aaf9f300decf"
 ---
 
 # Secrets und der Vault { #secrets-and-the-vault }
@@ -104,6 +104,7 @@ existieren.
 | `github_oauth_app` | Die öffentliche Client-ID einer GitHub OAuth App und deren Secret |
 | `git_token` | Ein Zugriffstoken für git über HTTPS und der eine Host, an den es gesendet werden darf |
 | `entra_app` | Tenant-ID, Client-ID und Client Secret einer App-Registrierung in Microsoft Entra |
+| `openai_codex` | Eine ChatGPT-Anmeldung: ein Access-Token, ein Refresh-Token und die Account-ID |
 | `none` | Kein Secret — die Markierung für einen Endpunkt, der keine Zugangsdaten braucht |
 
 `github_oauth_app` wird von der Plattform ausgegeben und nicht von einer Person
@@ -114,6 +115,21 @@ werden nie stillschweigend für die Verbindung der ganzen Organisation verwendet
 und bei zwei gespeicherten org-sichtbaren Apps wird die Verbindung abgelehnt
 (unter Nennung beider), statt an denjenigen Namen gebunden zu werden, der zuerst
 sortiert.
+
+Dieselbe Regel - **nur organisationsweit sichtbar** - gilt für den
+API-Schlüssel, mit dem die Spracherkennungs-Voreinstellung der Organisation und
+das eigene Transkriptionspaar eines Kanal-Bots gesendet werden: Die Plattform
+gibt ihn für das Diktat jedes Mitglieds und jede Sprachnachricht aus, die ein
+Bot empfängt, daher wird der private Schlüssel eines Mitglieds beim Speichern
+beider abgelehnt, und ein Schlüssel, der danach privat wird, wird nicht mehr
+benutzt. Anders als `github_oauth_app` werden diese Schlüssel per ID benannt,
+sodass mehrere nebeneinander gespeichert sein dürfen.
+
+Die Schlüsselauswahl nennt sichtbare Schlüssel, die privat oder nur für
+ausgewählte Personen freigegeben sind, und erklärt die nötige Freigabe für
+die Organisation. Eine ChatGPT-Anmeldung wird gesondert gekennzeichnet:
+Sie ermöglicht den Modellzugriff über ein ChatGPT-Abonnement und ersetzt keinen
+OpenAI-API-Schlüssel für Sprachfunktionen. Die Auswahl ändert niemals automatisch den Zugriff.
 
 `git_token` trägt seinen Host, weil eine Git-Sync-Quelle das Token an eine URL
 sendet, die wählt, wer die Quelle bearbeitet. An den Host gebunden, mit dem es
@@ -128,6 +144,13 @@ Sites sie lesen kann, und ein Token sagt nicht, welche das sind. Gewähren Sie i
 OneDrive einrichten](howto/configure-sync-sources.md#sharepoint-and-onedrive-setup).
 Ihr Hinweis sind die letzten vier Zeichen der Client-ID, die öffentlich ist, statt
 die des Secrets.
+
+`openai_codex` ist die eine Art, die niemand eintippt. Sie wird durch [Anmelden mit
+ChatGPT](models.md#running-on-a-chatgpt-subscription) gespeichert, und sie ändert
+sich, während sie verwendet wird: Jede Erneuerung verbraucht das Refresh-Token,
+deshalb wird das neue Paar unter derselben ID wieder versiegelt. Ihr Hinweis sind
+die letzten vier Zeichen der Account-ID. Wenn eine Anmeldung nicht mehr
+funktioniert, meldet **Reconnect** sich an ihrer Stelle erneut an.
 
 `aws_credentials` ist der klarste Fall dafür, dass es Arten überhaupt gibt: die
 Access Key ID ist nicht geheim und der Secret Access Key ist es, und ein einzelnes
@@ -154,9 +177,40 @@ außerdem eine abgeschnittene Einfügung ab, solange das Formular noch offen ist
 dem Secret zugerechnet, auf das der Run aufgelöst hat, und so bekommt "welcher
 Key kostet am meisten" eine Antwort.
 
+**Spracherkennung.** Ein API-Schlüssel, dessen Zweck der Anbieter ist, per ID
+neben Anbieter und Modell benannt, wo immer Spracherkennung eingerichtet wird:
+in der Voreinstellung der Organisation, in der Überschreibung eines Agents und
+im eigenen Paar eines Kanal-Bots. Zur Laufzeit wird kein Schlüssel gesucht. Der
+Schlüssel der Organisation und eines Bots muss organisationsweit sichtbar sein;
+der eines Agents folgt der Leihregel - der Veröffentlichende muss ihn sehen
+können. Der [Nutzungseintrag](ml-services.md#what-is-recorded) jeder
+Transkription nennt den Schlüssel, mit dem sie gesendet wurde. Siehe
+[welche Engine eine Aufnahme erreicht](ml-services.md#which-engine-a-recording-reaches).
+Die Liste der Agents, die einen Schlüssel nutzen, zeigt diese Verwendung nicht.
+
+**Sprachanrufe.** Der Schlüssel, mit dem ein [Sprachanruf](voice.md) geführt
+wird, ist auf der Karte Stimme (Voice) des Agents benannt, neben Realtime-Provider
+und Modell. Sein Zweck muss der Provider sein und seine Art die des Providers:
+ein `api_key` oder, für Azure, ein `azure_openai`-Secret, das auch Endpunkt und
+API-Version trägt. Er folgt der Leihregel - der Veröffentlichende muss ihn sehen
+können -, und zur Laufzeit wird kein Schlüssel gesucht. Der Schlüssel wird
+entsiegelt, um einen Anruf zu öffnen, und erreicht nie den Browser: Der Server
+beantwortet das WebRTC-Angebot, und es wird kein Client-Secret ausgestellt.
+
+Um einen Anruf aufzulegen, dessen Prozess gestorben ist, liest der Voice-Sweep
+ihn über `OrganizationSecretService.voice_call_key`, einen Leser, dessen
+Klartext an den Auflege-Endpunkt des Providers geht und nirgendwohin sonst. Eine
+Zeile eines Anrufs behält nur die Id des Schlüssels, und ein gelöschter
+Schlüssel lässt den Agent keine Anrufe annehmen, bis ein anderer gewählt ist.
+
 **Capabilities.** Eine Capability erklärt, dass sie Zugangsdaten einer
 bestimmten *Art* braucht — nie eine Instanz. Der Code sagt "ich brauche einen API
-Key"; die `secret_id` eines Bindings sagt, welchen. Siehe
+Key"; die `secret_id` eines Bindings sagt, welchen. Wo das Binding den Dienst
+nennt, für den der Key ist - den gewählten Provider oder den einen Dienst der
+Capability, etwa mem0 -, lehnt das Veröffentlichen einen Key ab, der für einen
+anderen Dienst gespeichert ist, weil er bei jedem Aufruf an den falschen Provider
+ginge. Ein `custom`-Key, und das ist jeder vor den Zwecken gespeicherte Key, wird
+angenommen. Siehe
 [den Capability-Katalog](reference/capabilities.md#what-a-binding-may-change).
 
 **MCP-Verbindungen.** Bearer-Token und OAuth-Nutzlasten, versiegelt an die
@@ -202,6 +256,8 @@ Organisation ihren eigenen Key mitbringen darf:
 | Logfire | [Observability](reference/spec.md#observability) pro Agent — Traces in ein eigenes Projekt |
 | LlamaParse | PDF-Parsing, abgerechnet auf den eigenen Key der Organisation |
 | mem0 | [`memory_mem0`](reference/capabilities.md#memory-mem0) — die ganze Capability, die die semantischen Erinnerungen eines Agents in einem mem0-Dienst hält (Cloud oder selbst gehostet) statt hier. In diesem Deployment wird nichts gespeichert, also rechnet mem0 sein eigenes Embedding außerhalb ab, und Erinnerungen in die Cloud von mem0 zu senden ist eine Entscheidung über Datenresidenz, die der Builder benennt. Eine selbst gehostete `base_url` muss https sein und auf der Erlaubnisliste `MEM0_ALLOWED_HOSTS` stehen, sodass der Vault-Key nie an einen vom Agent kontrollierten Origin gesendet wird. Für diese Erinnerungen gibt es keine Betreiberkonsole: mem0 hat seinen eigenen Speicher, seine eigene Auflistung und sein eigenes Löschen. |
+| ElevenLabs | [`text_to_speech`](reference/capabilities.md#text-to-speech) — Sprache in den Stimmen des ElevenLabs-Kontos der Organisation |
+| BytePlus ModelArk | [`video_generation`](reference/capabilities.md#video-generation) — die Seedance-Videomodelle von ByteDance |
 
 ## Was nie passiert { #what-never-happens }
 

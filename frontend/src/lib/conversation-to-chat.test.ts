@@ -82,6 +82,22 @@ describe("conversationMessageToChatMessage", () => {
     expect(message.timestamp).toEqual(new Date("2026-07-31T12:00:00Z"));
   });
 
+  it("carries who typed a user turn, and nothing where nobody is named", () => {
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+
+    expect(conversationMessageToChatMessage(raw({ role: "user", sender: anna })).sender).toEqual(
+      anna,
+    );
+    expect(conversationMessageToChatMessage(raw({ sender: null })).sender).toBeUndefined();
+    expect(conversationMessageToChatMessage(raw({ sender_gone: true })).senderGone).toBe(true);
+    expect(
+      conversationMessageToChatMessage(
+        raw({ reply_to: { message_id: "m-0", role: "user", excerpt: "x", sender: null } }),
+      ).replyTo,
+    ).toEqual({ messageId: "m-0", role: "user", excerpt: "x", sender: undefined });
+    expect(conversationMessageToChatMessage(raw({})).senderGone).toBeUndefined();
+  });
+
   it("draws a person's mentions as the chips they picked, never as timeline blocks", () => {
     const user = conversationMessageToChatMessage(
       raw({
@@ -385,4 +401,27 @@ describe("a stored tool call that never finished", () => {
 
     expect(message.toolCalls?.map((call) => call.status)).toEqual(["awaiting_approval"]);
   });
+});
+
+describe("a replayed turn spoken in a call (#54)", () => {
+  it("keeps its turn id and whether the caller talked over it", () => {
+    const spoken = conversationMessageToChatMessage(
+      raw({ turn_id: "c1:3:assistant", interrupted: true }),
+    );
+    expect(spoken.turnId).toBe("c1:3:assistant");
+    expect(spoken.interrupted).toBe(true);
+  });
+
+  it("marks nothing on a typed turn", () => {
+    const typed = conversationMessageToChatMessage(raw({ turn_id: null, interrupted: false }));
+    expect(typed.turnId).toBeUndefined();
+    expect(typed.interrupted).toBeUndefined();
+  });
+});
+
+it("keeps the persisted submission correlation for reconnect reconciliation", () => {
+  expect(
+    conversationMessageToChatMessage(raw({ role: "user", client_message_id: "nonce" }))
+      .clientMessageId,
+  ).toBe("nonce");
 });

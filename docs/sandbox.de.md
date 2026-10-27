@@ -1,5 +1,5 @@
 ---
-source_sha: "904d3115d4e7"
+source_sha: "c1532e388d78"
 ---
 
 # Der Sandbox { #the-sandbox }
@@ -51,6 +51,57 @@ ausgeliefert als `ghcr.io/vstorm-co/sandboxd`; das Backend spricht über HTTP mi
 ihm, mit dem Token in `SANDBOXD_TOKEN`. Die beiden anderen Sandbox-Backends, die
 ein Spec benennen kann — `daytona` und `state` — sind ein gehosteter Dienst und ein
 Dokument in Postgres, und keines von beiden hat mit dem oben Genannten zu tun.
+
+### Dienst und Backend ändern sich gemeinsam { #the-service-and-the-backend-move-together }
+
+Der Dienst und der Client des Backends stammen aus demselben Release von
+`pydantic-ai-backend`, und ein Client ruft Routen auf, die nur sein eigenes
+Release bedient. Deshalb pinnt jede Compose-Datei das Image auf genau die Version
+in `backend/uv.lock`, und ein Backend-Test schlägt fehl, wenn die Compose-Dateien
+oder das Lizenzinventar eine andere nennen. Heben Sie Lock, Compose-Dateien und
+Inventar in einer Änderung an. Ein neuer Pin ist ein Tag, den der Host noch nicht
+hat, also ziehen `make dev` und `scripts/deploy.sh` ihn beim nächsten Start.
+
+Ein beweglicher Tag hat das schon einmal kaputt gemacht (#2484). Ein
+zwischengespeichertes `sandboxd:0.2` bediente eine ältere API, als der Client
+sprach, und jeder Befehl scheiterte mit `sandboxd session '…' is gone`, obwohl die
+Sitzung lebte. Die Plattform unterscheidet die beiden Fälle jetzt. Trägt eine 404
+das nackte `{"detail":"Not Found"}` von FastAPI statt des dienst-eigenen
+`No such session`, liest die Plattform den Index des Dienstes unter `/`. Fehlt
+im Index eine Route, die der Client braucht, schlägt der Tool-Aufruf fehl, und
+der Agent erfährt:
+
+```text
+The sandbox service does not serve /sessions/{session_id}/run,
+/sessions/{session_id}/runs/{run_id}/stop - its version does not match this
+platform (expected <version>). Run ghcr.io/vstorm-co/sandboxd:<version> and
+redeploy it
+```
+
+Dieselbe Prüfung behandelt einen `409` beim Verbinden einer vor dem Upgrade
+gespeicherten Sitzungsreferenz: Ein alter Dienst kann sie trotz bestehender Sitzung
+ablehnen. Nur ein bestätigter fehlender Endpunkt macht daraus einen Versionsfehler;
+normale Konflikte und nicht erreichbare Indizes behalten ihren ursprünglichen Fehler.
+
+Die Meldung lässt die Adresse des Dienstes weg, die Mitglieder und das Modell
+womöglich nicht sehen dürfen; das Backend protokolliert sie als
+`sandboxd_version_mismatch`. Die Sitzung wird nicht als verloren gemeldet, aber
+die Unterhaltung vergisst ihre gespeicherte Referenz darauf: Ein älterer Dienst
+verweigert das Anhängen an eine lebende Sitzung per Referenz. Der nächste Zug
+öffnet die Sitzung über ihren Namen, also findet die Unterhaltung nach dem
+Upgrade dieselbe Sitzung wieder, wenn der Dienst sie behalten hat.
+
+`agenticos cmd doctor` macht dieselbe Prüfung für jede registrierte Verbindung und
+nennt das Image, das laufen muss. Deployen Sie den Stack, der den Dienst
+betreibt, neu: `scripts/deploy.sh` in Produktion (es startet das Profil `sandbox`,
+wenn `SANDBOXD_TOKEN` gesetzt ist), `make dev` auf dem Laptop. `make prod` lässt
+den Dienst in Ruhe, weil es dieses Profil nicht startet; auf einem so gestarteten
+Stack ziehen und erstellen Sie ihn selbst neu:
+
+```bash
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox pull sandboxd
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox up -d sandboxd
+```
 
 !!! danger "Der Token ist root-äquivalent"
 
@@ -134,6 +185,7 @@ Was einen Tenant vom anderen trennt:
 |---|---|
 | Gebaut auf | `python:3.12-slim` |
 | Sprachen | Python 3.12; Node 24.19.0 LTS mit npm 11 und `tsx` für TypeScript |
+| Coding Agents | Claude Code 2.1.288 und Codex 0.160.0, für den [Coding Agent](reference/capabilities.md#coding-agent) |
 | Werkzeuge | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo` |
 | Lesen | **liteparse** (`lit`) — PDFs und Bilder zu Text oder Markdown, OCR eingeschlossen; `poppler-utils` für den schnellen Weg über die Textebene und eine Seitenzahl |
 | Dokumente | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless für die Konvertierung und die Altformate |
@@ -369,13 +421,14 @@ wenn ein Betreiber die Schaltfläche drückt.
 
 ## Wann ein Container erscheint { #when-a-container-appears }
 
-**Bei der ersten Workspace-Operation, was nicht dasselbe ist wie der erste
-Tool-Aufruf des Agents.** Ein Run stellt bereit, was jemand angehängt hat, und
-materialisiert die Skills des Agents, *bevor* das Modell aufgerufen wird, und beides
-öffnet die Session verzögert — ein Container kann also für einen Zug existieren, in
-dem der Agent nie nach der Shell gegriffen hat. Gut zu wissen beim Lesen einer
-Session-Liste: ein Sandbox, dessen Aktivitätslog nichts als Schreibvorgänge enthält,
-ist einer, den noch nichts angefordert hat.
+**Bei der ersten Workspace-Operation: einem Tool, das der Agent dort aufruft, oder
+einer angehängten Datei, die in den Workspace gelegt wird.** Die Skills des Agents
+werden in diesem Moment in den Workspace geschrieben, kurz bevor die Operation
+läuft, und nicht schon, während der Run vorbereitet wird. Ein Zug, der den Sandbox
+nie benutzt, öffnet also keine Session und startet keinen Container. Ein Zug, der
+ihn benutzt, findet die Skills bereits auf der Platte. In einer Session-Liste kann
+trotzdem ein Sandbox stehen, dessen Aktivitätslog nur Schreibvorgänge enthält: einer,
+in den eine Datei gelegt wurde und der danach unbenutzt blieb.
 
 ## Was in einem getan wurde, und wo dieser Nachweis liegt { #what-was-done-in-one-and-where-that-record-lives }
 
@@ -438,7 +491,21 @@ also etwas, wohin er blättern kann.
 geholt und gebaut, statt in der ersten Anfrage von jemandem — ein Build sind zehn
 Sekunden und mehr. Images werden zwischengespeichert, ein Host zahlt also einmal.
 
-Was zu warten bleibt: die erste Session, die *während* eines Prewarms geöffnet wird,
+Ein Deployment baut sie noch früher. `scripts/deploy.sh` führt das
+`python -m pydantic_ai_backends.remote.prepare` der Bibliothek in einem einmaligen
+Container des neuen sandboxd-Images aus, bevor der alte Dienst ersetzt wird. Ein
+Release, das eine Runtime ändert, bezahlt den Build also, während der alte Dienst
+noch bedient. Vorher wartete am 18.10.2026 der erste Chat mit Sandbox nach einem
+solchen Release minutenlang, und jede Session-Anfrage bekam 409, bis der Build
+fertig war. Ein fehlgeschlagener Build wird dort dreimal versucht und beim Start
+zweimal. Eine Runtime, die danach noch nicht gebaut ist, wird wie bisher bei
+Bedarf gebaut, und das Deploy-Log nennt sie.
+
+Solange eine Session auf einen solchen Build wartet, sagt der Chat das über dem
+Eingabefeld: „Die Sandbox wird vorbereitet“. Das Öffnen wartet bis zu zehn Minuten
+darauf, nicht die 30 Sekunden einer gewöhnlichen Anfrage.
+
+Was zu warten bleibt: eine Runtime, die das Deployment nicht vorbereiten konnte,
 und ein Host, dessen Image-Cache geleert wurde.
 `SANDBOXD_PERSIST_CONTAINERS: true` beseitigt dann den größten Teil des Rests — eine
 geschlossene Session behält ihren Container, die nächste Session auf diesem Workspace
@@ -485,7 +552,7 @@ Was bleibt, ausgesprochen statt angedeutet:
 ## Was der Dateibrowser zeigt, und was er auslässt { #what-the-file-browser-shows-and-what-it-leaves-out }
 
 **Documents** (`/documents`) listet auf, was ein Agent **für eine Person** aufbewahrt, was nicht
-dieselbe Menge ist wie das, was auf dem Volume liegt. Zwei Präfixe fallen aus jeder
+dieselbe Menge ist wie das, was auf dem Volume liegt. Drei Präfixe fallen aus jeder
 Auflistung, die eine Person liest - der Liste aller Dateien, den Dateien eines
 Ordners, dem Panel einer Unterhaltung und den Dateizahlen:
 
@@ -497,9 +564,22 @@ Ordners, dem Panel einer Unterhaltung und den Dateizahlen:
   die richtige Beschwerde über die falsche Sache war (#1064).
 - das Spill-Verzeichnis — wohin die überlaufende Ausgabe eines Tools geschrieben
   wurde.
+- `.agenticos/` — die Ereignisse einer Coding-Aufgabe und die Sitzung, die die
+  nächste fortsetzt.
+
+Ebenso die Ordner, die eine Toolchain füllt, wo immer sie liegen: `.venv`, `venv`,
+`node_modules`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`,
+`.tox`, `.git`, `.next` und `.cache`. Ein Coding Agent, der eine FastAPI-App
+aufsetzte, brachte tausend davon auf die Seite, zwischen das Dutzend Dateien, das
+er schrieb.
 
 Eine Zählung muss sie ebenfalls weglassen, sonst ist ein Workspace, der vier Dateien
 meldet, während eine sichtbar ist, eine Zahl, die niemand prüfen kann.
+**Alle Dateien** gruppiert, was übrig bleibt, nach dem Workspace, der es hält,
+das neueste zuerst, unter der Unterhaltung, zu der es gehört: lose Dateien und
+Anhänge als Zeilen, jeder Ordner der obersten Ebene als eine Zeile mit seinen
+ersten Dateien, und ein Link zum Ordner für den Rest. Die neuesten Dateien stehen
+als Vorschau über den Gruppen, und eine Suche listet ihre Treffer flach.
 
 ### Wessen Workspace es ist, und wer ihn sonst sehen kann { #whose-workspace-it-is-and-who-else-can-see-it }
 
@@ -529,16 +609,18 @@ ihn davon ab.
 
 ### Einen Container aufzulisten kostet Roundtrips, deshalb sind zwei Dinge begrenzt { #listing-a-container-costs-round-trips-so-two-things-are-bounded }
 
-Das `ls` des Archivs liest ein Verzeichnis, die Auflistung läuft also: in die Breite
-zuerst, höchstens sechs Ebenen tief, mit Halt bei 2.000 Einträgen — denn ein Host,
-der ein `node_modules` hält, darf aus einem Workspace nicht zehntausend Zeilen
-machen.
+Das `ls` des Archivs liest ein Verzeichnis, die Auflistung fragt den Host deshalb
+nach seinem `tree`: eine Anfrage, in die Breite zuerst auf der eigenen Platte des
+Hosts durchlaufen, höchstens sechs Ebenen tief, mit Halt bei 2.000 Einträgen — denn
+ein Host, der ein `node_modules` hält, darf aus einem Workspace nicht zehntausend
+Zeilen machen.
 
 **Beide Grenzen werden gemeldet.** Die Seite eines Workspace sagt klar, dass dies
 nicht jede Datei ist, denn ein Baum, der ohne Ankündigung aufhört, ist einer, den
 jemand als alles liest, was der Agent aufbewahrt.
 
-Ein Verzeichnis, das nicht antwortet, wird geloggt und übersprungen. Nur wenn die
+Ein Verzeichnis, das nicht antwortet, wird übersprungen, und die Auflistung meldet
+sich als unvollständig. Nur wenn die
 *Wurzel* sich weigert, wird der Workspace unlesbar, denn ein Ordner, den der Agent
 weg-chmodet hat, ist kein Host, den niemand lesen kann.
 
@@ -584,6 +666,23 @@ Woche.
 Eine Unterhaltung zu löschen räumt ihren Workspace über das Produkt ab, hier geht es
 also um das, was niemand löscht, und nicht darum, was sie tun.
 
+Dieses Aufräumen hängt nicht davon ab, ob der Anbieter gerade antwortet. Das
+Löschen schreibt in derselben Transaktion einen Grabstein für jede entfernte
+Sandbox, und ein Destroy entfernt ihn, sobald der Anbieter ihn bestätigt. Ist der
+Sandbox-Host down, wird ein Daytona-Schlüssel abgelehnt oder startet der Worker
+dazwischen neu, versucht es der Sweep `sandbox-destroy-retry` des Workers erneut.
+Die Pause verdoppelt sich jedes Mal, von 2 Minuten bis 6 Stunden, bis der Destroy
+gelingt. Hinter einer Daytona-Sandbox steht keine TTL, also beendet nur das sie.
+
+Auch eine abgeschaltete Verbindung bekommt ihre Sandboxes entfernt, denn
+Abschalten stoppt neue Arbeit, nicht die Rechnung. Eine Verbindung mit
+verbliebenen Tombstones lässt sich nicht löschen: Die Tombstones gingen mit ihr,
+und sie sind die einzige Aufzeichnung dessen, was beim Anbieter noch läuft. Kann
+der Sweep nie gelingen, weil die Zugangsdaten der Verbindung gelöscht oder
+widerrufen wurden, lösche die Sandboxes in der Konsole des Anbieters. Lösche dann
+die Verbindung erneut und bestätige das: Ihre Tombstones werden vergessen, und
+ihre Anzahl landet im Audit-Log.
+
 ## Zusammenfassung { #recap }
 
 - Der API-Container **hält keinen Docker-Socket**. `sandboxd` tut es, und ein
@@ -596,3 +695,5 @@ also um das, was niemand löscht, und nicht darum, was sie tun.
   Plattform**, hält einen Pfad und nie eine Nutzlast, und überlebt den Agent.
 - **Dateien werden unbegrenzt aufbewahrt**, sofern Sie `SANDBOXD_WORKSPACE_TTL` nicht
   setzen. Der Plattenverbrauch wächst nur.
+
+Das Backend `state` zählt Dateien und leere Verzeichnisse zum Speicherlimit, auch beim abschließenden Zusammenführen gleichzeitiger Änderungen. Passen einzeln akzeptierte Dokumente nicht gemeinsam hinein, bleibt das gemeinsame Dokument unverändert und der spätere Stand wird als Wiederherstellungskopie unter **Documents** bestätigt. Der Run speichert einen Fehler mit der Workspace-ID der Kopie; eine Projektänderung meldet einen Konflikt statt Erfolg. Projektkopien erfordern sowohl Anzeige- als auch Nutzungszugriff. Ein Fremdschlüssel löscht die Kopie zusammen mit ihrer Quelle, auch bei gleichzeitiger Datenlöschung. Wird das Limit unter die Größe eines bestehenden Dokuments gesenkt, darf dieses weiterhin schrumpfen.

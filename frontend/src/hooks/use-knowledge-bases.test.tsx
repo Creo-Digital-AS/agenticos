@@ -46,15 +46,23 @@ function serveDetail({
   sources = [{ id: "s-1", name: "Drive" }],
   integrations = [{ id: "s-org", name: "Shared Drive" }],
   connectors = [{ type: "gdrive" }],
+  ingestion = () => ({
+    indexing_status: "complete",
+    processing_count: 0,
+    indexed_count: 1,
+    failed_count: 0,
+  }),
 }: {
   documents?: unknown[];
   documentsTotal?: number;
   sources?: unknown[] | Error;
   integrations?: unknown[] | Error;
   connectors?: unknown[] | Error;
+  ingestion?: () => unknown;
 } = {}) {
   vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
     if (path.includes("/documents")) return { items: documents, total: documentsTotal };
+    if (path.endsWith("/ingestion")) return ingestion();
     if (path.endsWith("/sync-sources")) {
       if (sources instanceof Error) throw sources;
       return { items: sources, total: sources.length };
@@ -606,6 +614,16 @@ describe("one collection's page", () => {
     expect(apiClient.patch).not.toHaveBeenCalled();
   });
 
+  it("reloads nothing for the ingest poll with no collection open", async () => {
+    // Rather than invalidating `["kb", "null", ...]`, which no query is keyed under.
+    const { result } = renderHook(() => useKBDetail(null), { wrapper });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+
+    await result.current.refreshIngestion();
+
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it("refuses to save parsing settings with no collection open", async () => {
     // Rather than PATCHing `/kb/null`, which answers 404 and reads as a bug.
     const { result } = renderHook(() => useKBDetail(null), { wrapper });
@@ -637,6 +655,41 @@ describe("one collection's page", () => {
     expect(apiClient.delete).toHaveBeenCalledWith("/kb/kb-1/documents/d-2");
     await waitFor(() => expect(result.current.documents.map((doc) => doc.id)).toEqual(["d-1"]));
     expect(result.current.documentsTotal).toBe(1);
+  });
+
+  it("re-reads the indexing state after a deletion", async () => {
+    // A settled page has no poll to notice that the failed document is gone.
+    let failed = 1;
+    serveDetail({
+      ingestion: () => ({
+        indexing_status: "complete",
+        processing_count: 0,
+        indexed_count: 1,
+        failed_count: failed,
+      }),
+    });
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+    await waitFor(() => expect(result.current.ingestion?.failed_count).toBe(1));
+
+    failed = 0;
+    await act(async () => {
+      await result.current.deleteDocument("d-1");
+    });
+
+    await waitFor(() => expect(result.current.ingestion?.failed_count).toBe(0));
+  });
+
+  it("shows no indexing state it could not read, but keeps it pending", async () => {
+    // Pending, so the ingest poll reads it again rather than stopping on a blip.
+    serveDetail({
+      ingestion: () => {
+        throw new Error("Bad gateway");
+      },
+    });
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+
+    await waitFor(() => expect(result.current.ingestionPending).toBe(true));
+    expect(result.current.ingestion).toBeNull();
   });
 
   it("reports a refused deletion", async () => {
@@ -953,6 +1006,81 @@ describe("the sync sources feeding a collection", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it("saves an edit and puts the answer in the source's place", async () => {
+    serveDetail({
+      sources: [
+        { id: "s-1", name: "Drive" },
+        { id: "s-2", name: "Bucket" },
+      ],
+    });
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+    await waitFor(() => expect(result.current.syncSources).toHaveLength(2));
+    vi.mocked(apiClient.patch).mockResolvedValue({ id: "s-1", name: "Drive v2" });
+
+    await act(async () => {
+      await result.current.updateSyncSource("s-1", { name: "Drive v2" });
+    });
+
+    expect(apiClient.patch).toHaveBeenCalledWith("/kb/kb-1/sync-sources/s-1", {
+      name: "Drive v2",
+    });
+    await waitFor(() =>
+      expect(result.current.syncSources.map((s) => s.name)).toEqual(["Drive v2", "Bucket"]),
+    );
+    expect(toast.success).toHaveBeenCalledWith("Sync source updated");
+  });
+
+  it("raises a refused edit without announcing it", async () => {
+    // Same contract as the create: the wizard marks the field the refusal names.
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+    vi.mocked(apiClient.patch).mockRejectedValue(new Error("That folder id is not one"));
+
+    await expect(result.current.updateSyncSource("s-1", { config: {} })).rejects.toThrow(
+      "That folder id is not one",
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unread source list unread after an edit", async () => {
+    // Nothing cached to replace a row in, and inventing a one-row list would
+    // say the collection has one source.
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+    client.removeQueries({ queryKey: qk.kb.syncSources("kb-1") });
+    vi.mocked(apiClient.patch).mockResolvedValue({ id: "s-1", name: "Drive v2" });
+
+    await act(async () => {
+      await result.current.updateSyncSource("s-1", { name: "Drive v2" });
+    });
+
+    expect(client.getQueryData(qk.kb.syncSources("kb-1"))).toBeUndefined();
+  });
+
+  it("keeps an edit answered after the switch out of the next organization's list", async () => {
+    useOrgStore.setState({ activeOrgId: "org-a" });
+    serveDetail();
+    const { result } = renderHook(() => useKBDetail("kb-1"), { wrapper });
+    await waitFor(() => expect(result.current.syncSources).toHaveLength(1));
+
+    let answer: (value: unknown) => void = () => {};
+    vi.mocked(apiClient.patch).mockImplementation(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    let writing: Promise<unknown>;
+    await act(async () => {
+      writing = result.current.updateSyncSource("s-1", { name: "Late" });
+      await waitFor(() => expect(apiClient.patch).toHaveBeenCalled());
+    });
+
+    await act(async () => {
+      useOrgStore.setState({ activeOrgId: "org-b" });
+      answer({ id: "s-1", name: "Late" });
+      await writing!;
+    });
+
+    const cached = client.getQueryData<SyncSourceList>(qk.kb.syncSources("kb-1"))?.items ?? [];
+    expect(cached.map((s) => s.name)).not.toContain("Late");
+  });
+
   it("moves a cloned org integration out of the offer list and into the collection's", async () => {
     // Otherwise it is offered again and cloning it twice produces two sources
     // pulling the same folder.
@@ -1150,6 +1278,7 @@ describe("the sync sources feeding a collection", () => {
 
     await act(async () => {
       await result.current.createSyncSource({ name: "x", connector_type: "g", config: {} });
+      await result.current.updateSyncSource("s", { name: "x" });
       await result.current.cloneSyncSource("s", "c", "n");
       await result.current.triggerSyncSource("s");
       await result.current.deleteSyncSource("s");
@@ -1157,5 +1286,6 @@ describe("the sync sources feeding a collection", () => {
 
     expect(apiClient.post).not.toHaveBeenCalled();
     expect(apiClient.delete).not.toHaveBeenCalled();
+    expect(apiClient.patch).not.toHaveBeenCalled();
   });
 });

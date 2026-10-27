@@ -41,8 +41,6 @@ Turning it on now means choosing a model profile whose key the organization
 pays for, which is a decision somebody should make rather than inherit.
 """
 
-from __future__ import annotations
-
 import logging
 from enum import StrEnum
 from uuid import UUID
@@ -525,7 +523,7 @@ class IngestionConfigService:
         Raises:
             NotFoundError: If the named profile is not this organization's, or
                 image description is on and the organization has no default.
-            BadRequestError: If the profile has no usable credential behind it.
+            BadRequestError: If the profile is not a chat model or has no usable credential.
         """
         if not config.describe_images:
             return None

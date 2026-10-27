@@ -21,8 +21,6 @@ approval panel, `ask_user`. A frame that needs somebody to answer it needs a
 somebody, and only the surface knows whether it has one.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -37,16 +35,17 @@ from pydantic_ai import (
     TextPartDelta,
 )
 from pydantic_ai.messages import (
-    RetryPromptPart,
+    ERROR_OUTCOMES,
     TextPart,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
 )
 
+from app.agents.tool_call_ids import fresh_call_id, used_call_ids
 from app.services.agent_chat import display_output
 from app.services.chat_timeline import TurnTimeline
-from app.services.transcript import tool_result_text, tool_retry_notice
+from app.services.transcript import tool_failure_notice, tool_result_text
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +100,9 @@ class RunFrames:
                 self.timeline.next_response()
                 await self.emit("model_request_start", {})
                 async with node.stream(agent_run.ctx) as request_stream:
-                    await self.request(request_stream)
+                    await self.request(
+                        request_stream, used_call_ids(agent_run.ctx.state.message_history)
+                    )
             elif Agent.is_call_tools_node(node):
                 await self.emit("call_tools_start", {})
                 async with node.stream(agent_run.ctx) as handle_stream:
@@ -120,8 +121,12 @@ class RunFrames:
                 # raises instead, and reaches the client as `error`.
                 await self.emit("final_result", {"output": display_output(agent_run.result.output)})
 
-    async def request(self, request_stream: Any) -> None:
+    async def request(self, request_stream: Any, used: set[str]) -> None:
         """Forward model-request events: text, reasoning, tool deltas, final-result start.
+
+        `used` is every tool call id the conversation already holds. A call that
+        reuses one is renamed on its start event, before the console hears of it -
+        see `app/agents/tool_call_ids.py`.
 
         `timeline` records exactly what was sent as `text_delta` and
         `thinking_delta`, and where each block sat, so a turn that never finishes
@@ -135,6 +140,8 @@ class RunFrames:
                     "part_type": type(event.part).__name__,
                 }
                 if isinstance(event.part, ToolCallPart):
+                    # In place: the part is the one the finished response holds.
+                    event.part.tool_call_id = fresh_call_id(event.part.tool_call_id, used)
                     # The name and id let a client show the call while its
                     # arguments stream - which, for a `write_file` carrying a
                     # whole report, can take minutes before `tool_call` exists.
@@ -205,13 +212,14 @@ class RunFrames:
                 # inside the stream, which reached the user as
                 # "❌ Error: 'FunctionToolResultEvent' object has no attribute
                 # 'result'" on every tool call in web chat.
-                if isinstance(tool_event.part, RetryPromptPart):
+                if tool_event.part.outcome in ERROR_OUTCOMES:
                     logger.warning(
-                        "Tool call %s asked the model to retry: %s",
+                        "Tool call %s returned %s: %s",
                         tool_event.tool_call_id,
+                        tool_event.part.outcome,
                         tool_event.part.content,
                     )
-                    content = tool_retry_notice(tool_event.part)
+                    content = tool_failure_notice(tool_event.part)
                 else:
                     content = tool_result_text(tool_event.part.content)
                 call = pending.get(tool_event.tool_call_id)

@@ -72,11 +72,15 @@ class ChannelToolsConfig(BaseModel):
         "is answering in, what the channel is for, and what was said in it. "
         "Chosen per bound bot under 'Where this agent is available', not here."
     ),
-    # Not offered in the Toolbox, and publishing refuses a spec that carries it.
+    # Not offered in the Toolbox; `_without_unselectable` in agent_registry
+    # drops this binding when an agent is created or its draft is saved.
     # An agent bound to two Mattermost servers and three Slack workspaces has
     # five answers to "may it read what was said here", and a switch in the spec
     # has one. See `README.md`.
     selectable=False,
+    # A voice call is made from `/chat`, a widget or a hosted page, never on a
+    # channel, so there is no channel for these lookups to describe (#54).
+    voice="never",
     # Declared under the ids approval and renaming key on. All four are reads of
     # what the bot can already see, so none is side-effecting - but
     # `read_channel_history` is the one worth a `tool_approval` override on a

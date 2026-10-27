@@ -46,6 +46,54 @@ the token in `SANDBOXD_TOKEN`. The other two sandbox backends a spec can name �
 `daytona` and `state` — are a hosted service and a document in Postgres, and
 neither involves any of the above.
 
+### The service and the backend move together
+
+The service and the backend's client come from the same `pydantic-ai-backend`
+release, and a client calls routes that only its own release serves. So every
+compose file pins the image at exactly the version in `backend/uv.lock`, and a
+backend test fails when the compose files or the licence inventory name another.
+Bump the lock, the compose files and the inventory in one change. A new pin is
+a tag the host does not have yet, so `make dev` and `scripts/deploy.sh` pull it
+on the next start.
+
+A moving tag broke this before (#2484). A cached `sandboxd:0.2` served an older
+API than the client spoke, and every command failed as `sandboxd session '…' is
+gone`, although the session was alive. The platform now tells the two apart. When
+a 404 carries FastAPI's bare `{"detail":"Not Found"}` rather than the service's
+own `No such session`, it reads the service's index at `/`. If the index lacks a
+route the client needs, the tool call fails and the agent is told:
+
+```text
+The sandbox service does not serve /sessions/{session_id}/run,
+/sessions/{session_id}/runs/{run_id}/stop - its version does not match this
+platform (expected <version>). Run ghcr.io/vstorm-co/sandboxd:<version> and
+redeploy it
+```
+
+The same check handles a `409` while attaching a session reference saved before
+the upgrade: an old service may reject that reference even though the session
+still exists. Only a confirmed missing endpoint turns the conflict into a version
+mismatch; ordinary conflicts and unavailable indexes keep their original error.
+
+The message leaves out the service's address, which members and the model may
+not be allowed to see; the backend logs it as `sandboxd_version_mismatch`. The
+session is not reported as lost, but the conversation forgets its recorded
+reference to it: an older service refuses to attach to a live session by
+reference. The next turn opens the session by name, so after the upgrade the
+conversation picks up the same session if the service kept it.
+
+`agenticos cmd doctor` makes the same check against every registered
+connection, and names the image to run. Redeploy the stack that runs the
+service: `scripts/deploy.sh` in production (it starts the `sandbox` profile when
+`SANDBOXD_TOKEN` is set), `make dev` on a laptop. `make prod` leaves the service
+alone, because it does not start that profile; on a stack started that way,
+pull and recreate it yourself:
+
+```bash
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox pull sandboxd
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox up -d sandboxd
+```
+
 !!! danger "The token is root-equivalent"
 
     Whoever holds it can start containers on that host. Treat it as the Docker
@@ -119,6 +167,7 @@ What separates one tenant from another:
 |---|---|
 | Built on | `python:3.12-slim` |
 | Languages | Python 3.12; Node 24.19.0 LTS with npm 11 and `tsx` for TypeScript |
+| Coding agents | Claude Code 2.1.288 and Codex 0.160.0, for the [coding agent](reference/capabilities.md#coding-agent) |
 | Tools | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo` |
 | Reading | **liteparse** (`lit`) — PDFs and images to text or markdown, OCR included; `poppler-utils` for the fast text-layer path and a page count |
 | Documents | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless for conversion and the legacy formats |
@@ -335,12 +384,13 @@ presses the button.
 
 ## When a container appears
 
-**On the first workspace operation, which is not the same as the agent's first
-tool call.** A run stages what somebody attached and materialises the agent's
-skills *before* the model is called, and either one opens the session lazily — so
-a container can exist for a turn in which the agent never reached for the shell.
-Worth knowing when reading a session list: a sandbox whose activity log holds
-nothing but writes is one nothing asked for yet.
+**On the first workspace operation: a tool the agent calls there, or a file
+somebody attached being staged into it.** The agent's skills are written into the
+workspace at that moment, just before the operation runs, and not while the run is
+prepared, so a turn that never uses the sandbox opens no session and starts no
+container. A turn that does use it finds the skills on disk already. A session
+list can still show a sandbox whose activity log holds only writes: one that had a
+file attached and then sat unused.
 
 ## What was done in one, and where that record lives
 
@@ -398,7 +448,20 @@ requests, so a pager over three hundred operations has something to page to.
 service starts** rather than inside somebody's first request — a build is ten
 seconds and upwards. Images are cached, so a host pays once.
 
-What is left to wait for: the first session opened *during* a prewarm, and a host
+A deploy builds them even earlier. `scripts/deploy.sh` runs the library's
+`python -m pydantic_ai_backends.remote.prepare` in a one-off container of the new
+sandboxd image, before the old service is replaced. A release that changes a
+runtime therefore pays for the build while the old service is still serving.
+Before this, on 2026-10-18 the first sandboxed chat after such a release waited
+minutes, and every session request answered 409 until the build was done. A
+build that fails is tried three times there and twice at start-up. A runtime
+still not built is built on demand, as before, and the deploy log names it.
+
+While a session waits on such a build, the chat says so above the composer:
+"Preparing the sandbox". Opening waits up to ten minutes for it, not the 30
+seconds of an ordinary request.
+
+What is left to wait for: a runtime the deploy could not prepare, and a host
 whose image cache was cleared. `SANDBOXD_PERSIST_CONTAINERS: true` then removes
 most of the rest — a closed session keeps its container, so the next session on
 that workspace starts without a build and with whatever the agent installed last
@@ -440,7 +503,7 @@ What remains, stated rather than implied:
 ## What the file browser shows, and what it leaves out
 
 **Documents** (`/documents`) lists what an agent is keeping **for a person**, which is not the
-same set as what is on the volume. Two prefixes are dropped from every listing a
+same set as what is on the volume. Three prefixes are dropped from every listing a
 person reads - the list of every file, one folder's files, a conversation's panel,
 and the file counts:
 
@@ -450,9 +513,20 @@ and the file counts:
   somebody accepts. They were removed once because the listing was mostly them,
   which was the right complaint about the wrong thing (#1064).
 - the spill directory — where a tool's overflowing output was written.
+- `.agenticos/` — a coding task's events and the session the next one continues.
+
+So are the folders a toolchain fills, wherever they sit: `.venv`, `venv`,
+`node_modules`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`,
+`.tox`, `.git`, `.next` and `.cache`. A coding agent that set up one FastAPI app
+put a thousand of them on the page, among the dozen files it wrote.
 
 A count has to drop them too, or a workspace reporting four files where one is
 visible is a count nobody can check.
+**All files** groups what is left by the workspace that holds it, newest first,
+under the conversation it belongs to: loose files and attachments as rows, each
+top-level folder as one row naming its first files, and a link to the folder for
+the rest. The newest files are previewed above the groups, and a search lists its
+matches flat.
 
 ### Whose workspace it is, and who else can see it
 
@@ -481,7 +555,8 @@ itself is indistinguishable from a person, and nothing stops it.
 
 ### Listing a container costs round trips, so two things are bounded
 
-The archive's `ls` reads one directory, so the listing walks: breadth-first, six
+The archive's `ls` reads one directory, so the listing asks the host for its
+`tree` instead: one request, walked breadth-first on the host's own disk, six
 levels deep at most, stopping at 2,000 entries — because a host holding a
 `node_modules` must not turn one workspace into ten thousand rows.
 
@@ -489,8 +564,8 @@ levels deep at most, stopping at 2,000 entries — because a host holding a
 every file, because a tree that stops without saying so is one somebody reads as
 everything the agent is keeping.
 
-A directory that will not answer is logged and skipped. Only the *root* refusing
-makes the workspace unreadable, because one folder the agent chmod'ed away is not a
+A directory that will not answer is skipped, and the listing reports itself
+incomplete. Only the *root* refusing makes the workspace unreadable, because one folder the agent chmod'ed away is not a
 host nobody can read.
 
 And an image's thumbnail is a `read_bytes` for that file: the suffix and the size
@@ -532,6 +607,22 @@ are the work, and an agent's user expects them next week.
 Deleting a conversation purges its workspace through the product, so this is about
 what nobody deletes rather than about what they do.
 
+That purge does not depend on the provider answering at that moment. The
+deletion writes a tombstone naming each remote sandbox in the same transaction,
+and a destroy removes the tombstone once the provider confirms it. When the
+sandbox host is down, a Daytona key is rejected, or the worker restarts in
+between, the worker's `sandbox-destroy-retry` sweep tries again. The pause
+doubles each time, from 2 minutes up to 6 hours, until the destroy succeeds. A
+Daytona sandbox has no TTL behind it, so this is the only thing that ends one.
+
+A connection that is switched off still has its sandboxes destroyed, because
+off stops new work and not the bill. A connection with tombstones left cannot
+be deleted: the tombstones would go with it, and they are the only record of
+what is still running on the provider. When the sweep can never succeed - the
+connection's credential was deleted or revoked - delete the sandboxes in the
+provider's console. Then delete the connection again and confirm that you did:
+its tombstones are forgotten, and how many goes in the audit log.
+
 ## Recap
 
 - The API container **holds no Docker socket**. `sandboxd` does, and a sandbox is
@@ -544,3 +635,5 @@ what nobody deletes rather than about what they do.
   and never a payload, and outlives the agent.
 - **Files are kept indefinitely** unless you set `SANDBOXD_WORKSPACE_TTL`. Disk use
   only grows.
+
+The `state` backend counts files and empty directories against its storage ceiling, including the final concurrent merge. If individually accepted snapshots cannot fit together, the shared document stays unchanged and the later snapshot is committed as a recovery copy in **Documents**. The run records a failure with the recovery workspace ID; a project mutation returns a conflict instead of success. Project copies require both view and use access. A source foreign key removes each copy when its source is deleted, including concurrent erasure. Lowering the setting below an existing document still allows that document to shrink.

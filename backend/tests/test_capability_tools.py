@@ -5,8 +5,6 @@ fail for different reasons: a broken registry means an agent cannot be built, a
 broken tool means it is built and then answers wrongly.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from decimal import Decimal
@@ -519,6 +517,42 @@ class TestKnowledgeFormatting:
         assert "policy.pdf" in formatted
         assert "page 3" in formatted
         assert "Refunds within 30 days." in formatted
+
+    def test_a_markdown_hit_names_no_page(self):
+        """A stored `page_num` of 1 on a Markdown chunk is structural, not a page (#2489)."""
+        result = MagicMock(score=0.9, content="Searches the collections.", expanded_content=None)
+        result.metadata = {"filename": "capabilities.pl.md", "filetype": "md", "page_num": 1}
+        formatted = _format_results([result])
+        assert "Source: capabilities.pl.md (score" in formatted
+        assert "capabilities.pl.md, page" not in formatted
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "## Knowledge\nSearches.",
+            "# code comment\nprint('example')\n```python\n```",
+            "# code comment\nprint('example')\n~~~python\n~~~~",
+            "# code comment\nprint('example')",
+        ],
+    )
+    def test_a_fragment_cannot_prove_a_section_boundary(self, content):
+        """A header-like line may be code whose opening fence is in a previous chunk."""
+        result = MagicMock(score=0.9, content=content, expanded_content=None)
+        result.metadata = {"filename": "capabilities.md", "filetype": "md", "page_num": 1}
+        formatted = _format_results([result])
+        assert "Source: capabilities.md (score" in formatted
+        assert ", section" not in formatted
+
+    def test_expanded_text_does_not_invent_a_section_locator(self):
+        result = MagicMock(
+            score=0.9,
+            content="## Knowledge\nSearches.",
+            expanded_content="## Overview\nBefore.\n\n## Knowledge\nSearches.",
+        )
+        result.metadata = {"filename": "capabilities.md", "filetype": "md", "page_num": 1}
+        formatted = _format_results([result])
+        assert "Source: capabilities.md, with surrounding text (score" in formatted
+        assert ", section" not in formatted
 
     def test_the_model_is_told_to_cite_inline(self):
         """Without this instruction models append a bibliography nobody reads."""

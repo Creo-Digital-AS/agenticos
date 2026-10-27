@@ -113,6 +113,8 @@ export interface OrgState {
   hasOrgMcp: boolean;
   hasPublishedAgent: boolean;
   hasRunnableAgent: boolean;
+  /** Below the organization's agent limit, or no limit: New agent is enabled. */
+  hasRoomForAgent: boolean;
 }
 
 /**
@@ -571,6 +573,16 @@ export const FLOWS: Record<FlowId, CreationFlow> = {
       // and on yes pointed at that button, gated on the `connections:manage` the
       // button itself carries. The connection lands in the picker's own cache and
       // the step advances in place, no trip to another page to make or return from.
+      // This platform's own server needs no connection, and so no
+      // `connections:manage`: every author is shown it, whatever the organization
+      // has connected - the fork below is about the others.
+      {
+        id: "flow-agent-platform-mcp",
+        page: AGENT_BUILDER,
+        target: "agent-platform-mcp",
+        activate: "agent-tab-mcp",
+        permission: Perm.agentsView,
+      },
       {
         id: "flow-agent-mcp",
         page: AGENT_BUILDER,
@@ -814,7 +826,10 @@ export const FLOWS: Record<FlowId, CreationFlow> = {
         // hold - so a Member accepting this hand-off built a draft, lost the tail to
         // the filter, and never returned to the chat walk the fork exists to unblock.
         // Without publish they get the descriptive tour instead, which works.
-        include: (state, can) => !state.hasPublishedAgent && can(Perm.agentsPublish),
+        // At the agent limit New agent is disabled, and the create-agent coach
+        // would wait on it with no way forward.
+        include: (state, can) =>
+          !state.hasPublishedAgent && state.hasRoomForAgent && can(Perm.agentsPublish),
         question: true,
         opensFlow: "create-agent",
       },

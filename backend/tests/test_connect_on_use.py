@@ -5,8 +5,6 @@ the *same run* can do afterwards: the service's tools have to appear on the step
 after the call and be callable there, not on the next message.
 """
 
-from __future__ import annotations
-
 import asyncio
 
 import pytest
@@ -14,7 +12,6 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
-    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -237,7 +234,7 @@ async def test_a_service_nobody_offered_is_steered_back_to_the_ones_there_are():
         part.content
         for message in messages
         for part in message.parts
-        if isinstance(part, RetryPromptPart)
+        if (isinstance(part, ToolReturnPart) and part.outcome == "retried")
     ]
     assert retries == ["There is no service 'jira' to connect. Use one of: \"notion\"."]
 

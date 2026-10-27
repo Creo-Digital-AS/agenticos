@@ -22,6 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import Auth, SandboxConnectionSvc, require
+from app.api.public_api import PUBLIC
 from app.core.permissions import Perm
 from app.schemas.sandbox_connection import (
     SandboxConnectionCreate,
@@ -44,7 +45,7 @@ router = APIRouter()
 @router.get(
     "",
     response_model=SandboxConnectionList,
-    dependencies=[Depends(require(Perm.CONNECTIONS_VIEW))],
+    dependencies=[PUBLIC, Depends(require(Perm.CONNECTIONS_VIEW))],
 )
 async def list_connections(service: SandboxConnectionSvc, ctx: Auth) -> Any:
     """Every place this organization's agents may be given a workspace."""
@@ -104,7 +105,7 @@ async def store_local_credential(service: SandboxConnectionSvc, ctx: Auth) -> An
 @router.get(
     "/runtimes",
     response_model=SandboxRuntimeCatalog,
-    dependencies=[Depends(require(Perm.CONNECTIONS_VIEW))],
+    dependencies=[PUBLIC, Depends(require(Perm.CONNECTIONS_VIEW))],
 )
 async def list_runtimes(service: SandboxConnectionSvc, ctx: Auth) -> Any:
     """Every runtime the sandbox library ships.
@@ -161,16 +162,26 @@ async def update_connection(
     response_model=None,
     dependencies=[Depends(require(Perm.CONNECTIONS_MANAGE))],
 )
-async def delete_connection(connection_id: UUID, service: SandboxConnectionSvc, ctx: Auth) -> None:
+async def delete_connection(
+    connection_id: UUID,
+    service: SandboxConnectionSvc,
+    ctx: Auth,
+    forget_pending_destroys: bool = False,
+) -> None:
     """Forget a host. The workspaces keyed to it keep their rows, which are what
-    record where an agent did its work."""
-    await service.delete(ctx, connection_id)
+    record where an agent did its work.
+
+    Refused while sandboxes on it still wait to be destroyed on the provider.
+    `forget_pending_destroys=true` says they were deleted there by hand: they are
+    forgotten, the count is audited, and the connection goes.
+    """
+    await service.delete(ctx, connection_id, forget_pending_destroys=forget_pending_destroys)
 
 
 @router.get(
     "/{connection_id}/policy",
     response_model=SandboxPolicyRead,
-    dependencies=[Depends(require(Perm.CONNECTIONS_VIEW))],
+    dependencies=[PUBLIC, Depends(require(Perm.CONNECTIONS_VIEW))],
 )
 async def read_policy(connection_id: UUID, service: SandboxConnectionSvc, ctx: Auth) -> Any:
     """What the service allows, asked of the service.

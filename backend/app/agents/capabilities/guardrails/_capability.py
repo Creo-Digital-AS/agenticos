@@ -33,8 +33,6 @@ from whoever consumes the stream until the part is complete, and releases it
 through the same detector the output guardrail runs.
 """
 
-from __future__ import annotations
-
 import logging
 import re
 from collections.abc import AsyncIterable, Callable
@@ -574,6 +572,17 @@ def output_screen(config: GuardrailsConfig) -> ScreenedStream | None:
     )
 
 
+def tool_args_screen(config: GuardrailsConfig) -> TextDetector | None:
+    """Screen structured arguments, including native structured helper outputs."""
+    return _edge_detector(
+        redact_secrets_on=config.redact_secrets_args,
+        redact_pii_on=config.redact_pii_args,
+        phone_regions=parse_phone_regions(config.phone_regions),
+        keywords=_keywords(config.blocked_keywords_args),
+        edge="tool_args",
+    )
+
+
 def build_guardrails(config: GuardrailsConfig) -> CombinedCapability[object] | None:
     """The harness capabilities this configuration asks for, combined into one.
 
@@ -609,16 +618,48 @@ def build_guardrails(config: GuardrailsConfig) -> CombinedCapability[object] | N
             ToolGuardrail(result_guard=for_tool_result_text(tool_detector, on_other="allow"))
         )
 
-    args_detector = _edge_detector(
-        redact_secrets_on=config.redact_secrets_args,
-        redact_pii_on=config.redact_pii_args,
-        phone_regions=phone_regions,
-        keywords=_keywords(config.blocked_keywords_args),
-        edge="tool_args",
-    )
+    args_detector = tool_args_screen(config)
     if args_detector is not None:
         edges.append(ScreenedToolArgs(screen=args_detector))
 
     if not edges:
         return None
     return CombinedCapability(capabilities=edges)
+
+
+@dataclass(frozen=True)
+class TranscriptScreens:
+    """The input and output detectors, for a voice call's transcripts (#54).
+
+    A call has no model request for the input and output edges to wrap - audio
+    goes straight to the provider - so the same detectors read the transcripts
+    instead: the caller's words as the input edge, the agent's as the output
+    edge. What is spoken cannot be unsaid; a block interrupts the agent and is
+    recorded, and the saved text is the screened text. The tool-result edge is
+    unchanged: `ToolGuardrail` runs in a session, so a tool result is still
+    blocked strictly before the model sees it.
+    """
+
+    caller: TextDetector | None
+    agent: TextDetector | None
+
+
+def transcript_screens(config: GuardrailsConfig) -> TranscriptScreens:
+    """The input edge as the caller's screen and the output edge as the agent's."""
+    phone_regions = parse_phone_regions(config.phone_regions)
+    return TranscriptScreens(
+        caller=_edge_detector(
+            redact_secrets_on=config.redact_secrets_in,
+            redact_pii_on=config.redact_pii_in,
+            phone_regions=phone_regions,
+            keywords=_keywords(config.blocked_keywords_in),
+            edge="input",
+        ),
+        agent=_edge_detector(
+            redact_secrets_on=config.redact_secrets_out,
+            redact_pii_on=config.redact_pii_out,
+            phone_regions=phone_regions,
+            keywords=_keywords(config.blocked_keywords_out),
+            edge="output",
+        ),
+    )

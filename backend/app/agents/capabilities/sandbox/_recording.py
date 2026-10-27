@@ -30,14 +30,20 @@ into the run's own session rather than a connection per tool call. So a turn's
 operations appear together, a second or so after the turn ends, rather than one at
 a time while it runs. That is the trade: no connection per call, and no second
 transaction that could commit a log for a run that then rolled back.
+
+**And it is where a turn's set-up waits for the sandbox to be used.** Writing a
+run's skills into the workspace and listing what it held were the first two
+operations of every turn, so every turn opened its session - a container start on
+a new conversation - before the model saw a token, whether or not it ever touched
+the sandbox. `prepare_on_first_use` holds that set-up until the first operation
+that reaches here, which is also the first one that needs it.
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
 import shlex
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from typing import TYPE_CHECKING, TypeVar
 from uuid import UUID
 
@@ -87,8 +93,19 @@ class RecordingWorkspace(WrapperWorkspace):
         session_key: str,
         agent_id: UUID | None,
         run_id: UUID | None = None,
+        on_settled: Callable[[], Awaitable[None]] | None = None,
+        explain_unavailable: Callable[[Exception], Awaitable[Exception | None]] | None = None,
     ) -> None:
         super().__init__(wrapped)
+        # Asked about every "session is gone" before it is believed. A service of
+        # another version answers a route it lacks with a 404 the client reads as
+        # a lost session (#2484); the error this returns is raised instead, and a
+        # session it explains is noted as `mismatched` rather than `lost`.
+        self._explain_unavailable = explain_unavailable
+        # Awaited after every operation, whatever it ended in. The first one also
+        # opens the session, so this is how "the sandbox is ready" is heard
+        # without the client having to say so.
+        self._on_settled = on_settled
         self._db = db
         self._organization_id = organization_id
         self._session_key = session_key
@@ -102,6 +119,28 @@ class RecordingWorkspace(WrapperWorkspace):
         # operation passes through, and the close needs it: a lost session is
         # forgotten, so the next run opens a fresh one instead of failing again.
         self.lost = False
+        # Whether an operation met a service of another version (#2484). The
+        # session is alive, but the close forgets its ref as for a lost one.
+        self.mismatched = False
+        # Whether any operation has reached the workspace this run, so the end of
+        # a turn can leave an untouched one unopened instead of listing it.
+        self.touched = False
+        self._before_first_use: Callable[[], Awaitable[None]] | None = None
+        self._preparer: asyncio.Task[object] | None = None
+        self._prepared = asyncio.Event()
+        self._prepared.set()
+
+    def prepare_on_first_use(self, prepare: Callable[[], Awaitable[None]]) -> None:
+        """Run `prepare` once, before the first operation that reaches this workspace.
+
+        Operations `prepare` itself makes go straight through, and any other task
+        arriving meanwhile waits for it to finish, so nothing the agent does runs
+        ahead of the set-up it depends on. `prepare` is expected not to raise - the
+        runner's never does - and if it is cancelled the workspace is released
+        anyway: a set-up left half done costs a skill file, never a stuck turn.
+        """
+        self._before_first_use = prepare
+        self._prepared.clear()
 
     async def read_bytes(self, path: str) -> bytes:
         return await self._recorded(
@@ -151,7 +190,7 @@ class RecordingWorkspace(WrapperWorkspace):
     async def realpath(self, path: str) -> str:
         return await self._noting_loss(super().realpath(path))
 
-    async def _noting_loss(self, call: Awaitable[_T]) -> _T:
+    async def _noting_loss(self, call: Coroutine[object, object, _T]) -> _T:
         """Await a question about the workspace, noting a session found gone.
 
         Not recorded: these read no file and change nothing. But the console's
@@ -159,32 +198,101 @@ class RecordingWorkspace(WrapperWorkspace):
         purged mid-turn is often first seen here, and a close that missed it
         would keep the lost session for the next turn to fail on again.
         """
+        await self._first_use(call)
         try:
             return await call
-        except WorkspaceUnavailableError:
-            self.lost = True
-            raise
+        except Exception as exc:
+            explained = await self._explained(exc)
+            if explained is exc:
+                raise
+            raise explained from exc
+        finally:
+            await self._settled()
 
     async def _recorded(
         self,
         op: str,
         target: str,
-        call: Awaitable[_T],
+        call: Coroutine[object, object, _T],
         outcome: Callable[[_T], tuple[bool, str]],
     ) -> _T:
+        await self._first_use(call)
         started = time.monotonic()
         try:
             result = await call
         except Exception as exc:
-            if isinstance(exc, WorkspaceUnavailableError):
-                self.lost = True
-            # The class, never the message: a shell's message is the command's
-            # own output and an HTTP client's carries the failing request (#423).
-            self._record(op, target, ok=False, detail=exc.__class__.__name__, started=started)
-            raise
+            explained: Exception = exc
+            try:
+                explained = await self._explained(exc)
+            finally:
+                # The class, never the message: a shell's message is the command's
+                # own output and an HTTP client's carries the failing request (#423).
+                # In a `finally` so a run cancelled during the probe still has its row.
+                self._record(
+                    op, target, ok=False, detail=explained.__class__.__name__, started=started
+                )
+            if explained is exc:
+                raise
+            raise explained from exc
+        finally:
+            await self._settled()
         ok, detail = outcome(result)
         self._record(op, target, ok=ok, detail=detail, started=started)
         return result
+
+    async def _explained(self, exc: Exception) -> Exception:
+        """What a session found gone means: the error explaining it, or `exc` - lost.
+
+        An unavailable session is noted lost unless an explanation arrives.
+        Other errors keep their original loss state, including legacy attach
+        conflicts: the service still holds their session.
+        """
+        explained: Exception | None = None
+        try:
+            if self._explain_unavailable is not None:
+                explained = await self._explain_unavailable(exc)
+        finally:
+            if explained is not None:
+                self.mismatched = True
+            elif isinstance(exc, WorkspaceUnavailableError):
+                self.lost = True
+        return exc if explained is None else explained
+
+    async def _first_use(self, call: Coroutine[object, object, object]) -> None:
+        """Mark the workspace used, running a deferred set-up first if there is one.
+
+        `call` is the operation waiting behind it, closed unstarted if the set-up
+        is cancelled, so an abandoned operation does not linger as a coroutine that
+        was never awaited.
+        """
+        self.touched = True
+        if self._prepared.is_set() or asyncio.current_task() is self._preparer:
+            return
+        prepare = self._before_first_use
+        try:
+            if prepare is None:
+                # Another task is running the set-up; this operation follows it.
+                await self._prepared.wait()
+                return
+            self._before_first_use = None
+            self._preparer = asyncio.current_task()
+            try:
+                await prepare()
+            finally:
+                self._preparer = None
+                self._prepared.set()
+        except BaseException:
+            call.close()
+            raise
+
+    async def _settled(self) -> None:
+        """Tell `on_settled` an operation is over. Its failure is not the operation's."""
+        if self._on_settled is None:
+            return
+        try:
+            await self._on_settled()
+        except Exception:
+            logger.warning("sandbox_settled_notice_failed", exc_info=True)
 
     def _record(self, op: str, target: str, *, ok: bool, detail: str, started: float) -> None:
         """Add the row. A failure to record never fails the operation.

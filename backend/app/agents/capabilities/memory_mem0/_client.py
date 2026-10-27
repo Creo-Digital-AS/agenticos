@@ -27,8 +27,6 @@ cannot mix two organizations', two agents', or two owners' memories. It is built
 from the run's audience, never from the model.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
@@ -37,16 +35,26 @@ import os
 # and its default is on.
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from mem0 import AsyncMemoryClient
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError
 
-__all__ = ["Mem0Fact", "mem0_forget_person", "mem0_recall", "mem0_remember", "namespace"]
+__all__ = [
+    "Mem0Fact",
+    "mem0_forget_agent",
+    "mem0_forget_person",
+    "mem0_recall",
+    "mem0_remember",
+    "namespace",
+]
+
+if TYPE_CHECKING:
+    from mem0 import AsyncMemoryClient
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +159,11 @@ def _construct(api_key: str, base_url: str | None) -> AsyncMemoryClient:
     not end the run: a memory service being down is a refusal the model reads, the
     same as any other external service.
     """
+    # Here rather than at the top: the SDK pulls in qdrant-client and numpy,
+    # 0.4 s of every API worker's and every worker process's import for a capability
+    # most deployments never enable (#2225).
+    from mem0 import AsyncMemoryClient
+
     try:
         return AsyncMemoryClient(api_key=api_key, host=base_url)
     except Exception as exc:
@@ -274,12 +287,73 @@ async def mem0_forget_person(
     which half was done. A silent failure here is worse than an error, because the
     answer they get is "forgotten".
     """
+    from mem0.exceptions import MemoryNotFoundError
+
     client = await _client(api_key, base_url)
     try:
-        await client.delete_users(user_ids=[namespace(organization_id, agent_id, owner_key)])
+        await client.delete_users(user_id=namespace(organization_id, agent_id, owner_key))
+    except MemoryNotFoundError:
+        return
     except Exception as exc:
         logger.exception("mem0_forget_failed")
         raise ExternalServiceError(
             message="Could not delete from the mem0 memory service",
             details={"operation": "forget"},
+        ) from exc
+
+
+class _Entity(BaseModel):
+    model_config = ConfigDict(strict=True)
+    type: str = Field(description="The provider's entity kind")
+    name: str = Field(description="The provider's entity namespace")
+
+
+class _Entities(BaseModel):
+    model_config = ConfigDict(strict=True)
+    results: list[_Entity] = Field(description="Entities in the returned page")
+    next: str | None = Field(
+        default=None, description="A further page, if this listing is incomplete"
+    )
+    count: int | None = Field(
+        default=None, ge=0, description="Total number of entities, when reported"
+    )
+
+    @model_validator(mode="after")
+    def require_complete_listing(self) -> Self:
+        if self.next or (self.count is not None and self.count > len(self.results)):
+            raise ValueError("The entity listing is incomplete")
+        return self
+
+
+async def mem0_forget_agent(
+    *, base_url: str | None, api_key: str, organization_id: UUID, agent_id: UUID
+) -> None:
+    """Erase all owners' namespaces for one agent, never another tenant's.
+
+    Refuse an incomplete entity listing rather than claiming a partial wipe is
+    complete. The SDK's users method currently exposes no pagination controls.
+    """
+    from mem0.exceptions import MemoryNotFoundError
+
+    client = await _client(api_key, base_url)
+    try:
+        entities = _Entities.model_validate(await client.users())
+        prefix = f"{organization_id}:{agent_id}:"
+        for entity in entities.results:
+            if entity.type != "user" or not entity.name.startswith(prefix):
+                continue
+            try:
+                await client.delete_users(user_id=entity.name)
+            except MemoryNotFoundError:
+                continue
+    except ValidationError:
+        raise ExternalServiceError(
+            message="The mem0 service returned an incomplete or invalid memory namespace listing",
+            details={"operation": "forget_agent"},
+        ) from None
+    except Exception as exc:
+        logger.exception("mem0_forget_agent_failed")
+        raise ExternalServiceError(
+            message="Could not delete the agent's memory from mem0",
+            details={"operation": "forget_agent"},
         ) from exc

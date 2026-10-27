@@ -1,5 +1,5 @@
 ---
-source_sha: "965ad3ad82f8"
+source_sha: "aaf9f300decf"
 ---
 
 # Secretos y el vault { #secrets-and-the-vault }
@@ -100,6 +100,7 @@ secreto tiene un **kind**, y el kind decide qué campos existen.
 | `github_oauth_app` | El client id público de una GitHub OAuth App y su secreto |
 | `git_token` | Un access token para git sobre HTTPS, y el único host al que puede enviarse |
 | `entra_app` | El tenant id, el client id y el client secret de un registro de aplicación de Microsoft Entra |
+| `openai_codex` | Un inicio de sesión de ChatGPT: un access token, un refresh token y el id de cuenta |
 | `none` | No es un secreto — la marca para un endpoint que no necesita credencial |
 
 `github_oauth_app` lo gasta la plataforma en lugar de elegirlo una persona — el
@@ -109,6 +110,21 @@ exactamente uno**: la credencial privada de un miembro nunca se usa en silencio
 para la conexión de toda la organización, y con dos apps visibles para la
 organización guardadas la conexión se rechaza (nombrando ambas) en lugar de
 quedar atada al nombre que ordene primero.
+
+La misma regla - **solo visibles para la organización** - cubre la clave de API
+con la que se envían la configuración por defecto de voz a texto de la
+organización y el par de transcripción propio de un bot de canal: la plataforma
+la gasta en el dictado de cada miembro y en cada nota de voz que recibe un bot,
+así que la clave privada de un miembro se rechaza al guardar cualquiera de los
+dos, y una clave que se vuelve privada después deja de usarse. A diferencia de
+`github_oauth_app`, estas claves se nombran por id, así que puede haber varias
+guardadas a la vez.
+
+El selector de claves identifica las claves visibles que son privadas o están
+compartidas solo con algunas personas y explica que primero deben compartirse
+con la organización. Identifica por separado el inicio de sesión de ChatGPT:
+permite acceder a modelos mediante una suscripción de ChatGPT y no sustituye
+una clave de API de OpenAI para las funciones de voz. El selector nunca cambia automáticamente el acceso.
 
 `git_token` lleva su host porque una fuente de sincronización Git envía el token a
 una URL que elige quien edita la fuente. Atado al host con el que se añadió, el
@@ -122,6 +138,13 @@ un token no dice cuáles son. Concédele `Sites.Selected` sobre el único sitio 
 lee la fuente — consulta [Configurar SharePoint y
 OneDrive](howto/configure-sync-sources.md#sharepoint-and-onedrive-setup). Su pista
 son los cuatro últimos caracteres del client id, que es público, y no del secreto.
+
+`openai_codex` es el único kind que nadie teclea. Se guarda [iniciando sesión con
+ChatGPT](models.md#running-on-a-chatgpt-subscription), y cambia mientras se usa:
+cada renovación gasta el refresh token, así que el par nuevo se vuelve a sellar
+bajo el mismo id. Su pista son los cuatro últimos caracteres del id de cuenta.
+Cuando un inicio de sesión deja de funcionar, **Reconnect** vuelve a iniciar
+sesión en su lugar.
 
 `aws_credentials` es el caso más claro de por qué existen los kinds: el access key
 id no es secreto y el secret access key sí lo es, y un único campo no puede
@@ -147,9 +170,40 @@ truncado mientras el formulario sigue abierto.
 atribuye al secreto al que resolvió el run, y así «qué clave está costando más»
 tiene respuesta.
 
+**Voz a texto.** Una clave de API cuyo propósito es el proveedor, nombrada por
+id junto al proveedor y el modelo allí donde se configura la voz a texto: la
+configuración por defecto de la organización, la sobrescritura de un agent y el
+par propio de un bot de canal. Nada busca una clave en tiempo de ejecución. La
+clave de la organización y la de un bot tienen que ser visibles para la
+organización; la de un agent sigue la regla del préstamo: quien publica tiene que
+poder verla. El [registro de uso](ml-services.md#what-is-recorded) de cada
+transcripción nombra la clave con la que se envió. Consulta
+[a qué motor llega una grabación](ml-services.md#which-engine-a-recording-reaches).
+La lista de agents que usan una clave no muestra este uso.
+
+**Llamadas de voz.** La clave con la que se mantiene una
+[llamada de voz](voice.md) se nombra en la tarjeta Voice del agent, junto al
+provider y el modelo en tiempo real. Su propósito tiene que ser el provider y su
+kind el del provider: una `api_key`, o un secreto `azure_openai` para Azure, que
+lleva además el endpoint y la versión de la API. Sigue la regla del préstamo -
+quien publica tiene que poder verla - y nada busca una clave en tiempo de
+ejecución. La clave se desella para abrir una llamada y nunca llega al
+navegador: el servidor responde a la oferta WebRTC y no se emite ningún secreto
+de cliente.
+
+Para colgar una llamada cuyo proceso murió, el barrido de voz la lee a través
+de `OrganizationSecretService.voice_call_key`, un lector cuyo texto en claro va
+al endpoint de colgar del provider y a ningún otro sitio. Una fila de llamada
+solo guarda el id de la clave, y una clave borrada deja al agent sin poder
+atender llamadas hasta que se elija otra.
+
 **Capabilities.** Una capability declara que necesita una credencial de un *kind*
 dado — nunca una instancia. El código dice «necesito una clave de API»; la
-`secret_id` de un binding dice cuál. Mira
+`secret_id` de un binding dice cuál. Donde el binding nombra el servicio para el
+que es la clave - el provider elegido, o el único servicio de la capability, como
+mem0 -, publicar rechaza una clave guardada para otro servicio, porque se enviaría
+al provider equivocado en cada llamada. Una clave `custom`, como lo es toda clave
+guardada antes de que existieran los propósitos, se acepta. Mira
 [el catálogo de capabilities](reference/capabilities.md#what-a-binding-may-change).
 
 **Conexiones MCP.** Bearer tokens y cargas útiles de OAuth, selladas a la
@@ -193,6 +247,8 @@ organización puede traer su propia clave:
 | Logfire | [Observabilidad](reference/spec.md#observability) por agent — trazas a un proyecto propio |
 | LlamaParse | Parseo de PDF, facturado a la clave propia de la organización |
 | mem0 | [`memory_mem0`](reference/capabilities.md#memory-mem0) — la capability entera, que guarda las memorias semánticas de un agent en un servicio mem0 (en la nube o autoalojado) en vez de aquí. En este despliegue no se guarda nada, así que mem0 factura su propio embedding por fuera y enviar memorias a la nube de mem0 es una decisión de residencia de datos que nombra el Builder. Una `base_url` autoalojada tiene que ser https y estar en la lista de permitidos `MEM0_ALLOWED_HOSTS`, para que la clave del vault nunca se envíe a un origen controlado por el agent. No hay consola de operador para estas memorias: mem0 tiene su propio almacén, su propio listado y su propio borrado. |
+| ElevenLabs | [`text_to_speech`](reference/capabilities.md#text-to-speech) — voz con las voces de la cuenta de ElevenLabs de la organización |
+| BytePlus ModelArk | [`video_generation`](reference/capabilities.md#video-generation) — los modelos de vídeo Seedance de ByteDance |
 
 ## Lo que nunca ocurre { #what-never-happens }
 

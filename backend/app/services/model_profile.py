@@ -4,9 +4,8 @@ The one place that unseals a provider credential. Everything above it deals in
 profile ids; everything below deals in ciphertext.
 """
 
-from __future__ import annotations
-
 import logging
+from dataclasses import replace
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -22,18 +21,26 @@ from app.agents.model_resolver import (
     get_provider,
 )
 from app.core.audit import record_audit
-from app.core.exceptions import AlreadyExistsError, BadRequestError, NotFoundError
+from app.core.exceptions import (
+    AlreadyExistsError,
+    AuthorizationError,
+    BadRequestError,
+    NotFoundError,
+)
 from app.core.field_errors import refused_field
 from app.core.permissions import AuthContext
 from app.core.secret_kinds import (
     NoSecret,
+    OpenAICodexSecret,
     SecretKind,
     unseal_secret,
 )
 from app.core.vault import VaultScope
 from app.db.models.credential import ModelProfile
-from app.repositories import credential_repo, organization_secret_repo
+from app.repositories import credential_repo, organization_repo, organization_secret_repo
 from app.services.model_catalog import models_for
+from app.services.model_outputs import model_outputs, not_chat_refusal
+from app.services.openai_codex import VaultCodexCredentials
 from app.services.organization_secret import OrganizationSecretService
 
 logger = logging.getLogger(__name__)
@@ -68,10 +75,10 @@ def _validate_model_id(provider: str, model: str) -> None:
 async def validate_endpoint_url(url: str) -> str:
     """Check a provider `base_url` before the platform will store it.
 
-    Everywhere else - webhooks, MCP servers - an internal address is an SSRF
-    attempt and is refused. Here it is frequently the entire point: Ollama on
-    `localhost:11434`, a vLLM server on the deployment's own network, a
-    LiteLLM proxy beside the API. Local models are a first-class provider, so
+    Everywhere else - webhooks, an MCP server not on `MCP_ALLOWED_HOSTS` - an
+    internal address is an SSRF attempt and is refused. Here it is frequently
+    the entire point: Ollama on `localhost:11434`, a vLLM server on the
+    deployment's own network, a LiteLLM proxy beside the API. Local models are a first-class provider, so
     private, loopback and link-local addresses are allowed for model profiles -
     and for model profiles only; the platform's other URL checks are unchanged.
 
@@ -280,6 +287,13 @@ class ModelProfileService:
         return next((entry.context_length for entry in models if entry.id == model), None)
 
     async def delete_profile(self, ctx: AuthContext, profile_id: UUID) -> None:
+        # The organization's proactive work may run on this model. Its column
+        # clears itself on delete, and on without a model is off in practice - so
+        # it is switched off here, in the same transaction, rather than left
+        # saying it is on (Codex on #2324).
+        await organization_repo.stop_proactivity_on(
+            self.db, organization_id=ctx.organization_id, model_profile_id=profile_id
+        )
         deleted = await credential_repo.delete_profile(
             self.db, profile_id, organization_id=ctx.organization_id
         )
@@ -343,13 +357,21 @@ class ModelProfileService:
                 message=f"Model '{profile.label}' points at a key this organization no longer has",
                 details={"profile_id": str(profile.id)},
             )
+        value = unseal_secret(
+            secret.sealed_secret,
+            kind=SecretKind(secret.kind),
+            scope=VaultScope.organization(organization_id),
+            key_version=secret.key_version,
+        )
         return ResolvedCredential(
             provider=profile.provider,
-            secret=unseal_secret(
-                secret.sealed_secret,
-                kind=SecretKind(secret.kind),
-                scope=VaultScope.organization(organization_id),
-                key_version=secret.key_version,
+            secret=value,
+            # A ChatGPT sign-in rotates as it is used, so the provider is handed
+            # the secret's place in the vault rather than only what it holds now.
+            credential_source=(
+                VaultCodexCredentials(organization_id=organization_id, secret_id=secret.id)
+                if isinstance(value, OpenAICodexSecret)
+                else None
             ),
             # The profile's, not the secret's. A secret says what authenticates;
             # where the request is sent is the profile's business, so the same key
@@ -366,8 +388,40 @@ class ModelProfileService:
         *,
         profile_id: UUID | None = None,
     ) -> ModelRequestSpec:
-        """Resolve the model a run should use, credentials included."""
-        return await self.resolve_for_organization(ctx.organization_id, profile_id=profile_id)
+        """Resolve the model a run should use, credentials included.
+
+        A ChatGPT sign-in is one person's subscription, so a run reaches it only
+        for somebody who may see it in the vault - a model shared with the whole
+        organization does not lend everybody that person's plan. A fallback on
+        one is left out of the chain rather than failing the run.
+
+        Raises:
+            AuthorizationError: If the model itself runs on a sign-in the
+                caller may not use.
+        """
+        spec = await self._resolve_in(ctx.organization_id, profile_id=profile_id)
+        # Only somebody actually asking: a publisher standing in for a visitor,
+        # and a key's issuer standing behind whoever holds it, are an account to
+        # bill, not the person whose subscription it is. Persisted run contexts
+        # retain a key's scope ceiling even without its live credential object;
+        # losing that object must never turn a key holder into a signed-in person.
+        person = (
+            None
+            if ctx.subject_is_publisher_fallback
+            or ctx.api_key_id is not None
+            or ctx.key_scopes is not None
+            else ctx.user_id
+        )
+        if not await _may_spend(spec.credential, person):
+            raise AuthorizationError(
+                message=(
+                    f"Model '{spec.label}' runs on somebody's own ChatGPT sign-in, "
+                    "which only they can use"
+                ),
+                details={"profile_id": str(spec.profile_id)},
+            )
+        usable = [entry for entry in spec.fallbacks if await _may_spend(entry[0], person)]
+        return spec if len(usable) == len(spec.fallbacks) else replace(spec, fallbacks=usable)
 
     async def resolve_for_organization(
         self,
@@ -377,6 +431,34 @@ class ModelProfileService:
     ) -> ModelRequestSpec:
         """The same resolution, for work that has an organization but no caller.
 
+        Not on somebody's ChatGPT sign-in: work with no person behind it -
+        ingestion describing a document's images, long after the upload - is
+        nobody's run, and a subscription is spent only in its owner's. A
+        fallback on one is left out of the chain.
+
+        Raises:
+            BadRequestError: If the model itself runs on a ChatGPT sign-in.
+        """
+        spec = await self._resolve_in(organization_id, profile_id=profile_id)
+        if not await _may_spend(spec.credential, None):
+            raise BadRequestError(
+                message=(
+                    f"Model '{spec.label}' runs on somebody's own ChatGPT sign-in, which "
+                    "background work cannot use - pick a model on an API key"
+                ),
+                details={"profile_id": str(spec.profile_id)},
+            )
+        usable = [entry for entry in spec.fallbacks if await _may_spend(entry[0], None)]
+        return spec if len(usable) == len(spec.fallbacks) else replace(spec, fallbacks=usable)
+
+    async def _resolve_in(
+        self,
+        organization_id: UUID,
+        *,
+        profile_id: UUID | None = None,
+    ) -> ModelRequestSpec:
+        """The profile and its fallbacks with their credentials, whoever is asking.
+
         Which model an organization runs on is a fact about that organization,
         not a permission decision - nothing here consults a role, and the
         request that *was* authorized may have finished hours ago. Background
@@ -385,13 +467,13 @@ class ModelProfileService:
         unseal the same key. Taking the organization directly says that plainly,
         instead of inventing a caller for the sake of a signature.
 
-        Precedence, most specific first: the profile that was asked for, then
-        the organization's default. There is deliberately no environment
-        fallback - a deployment serving several tenants must never quietly bill
-        one organization's run to a platform-wide key.
+        An explicit profile is required. There is no organization or environment
+        default: a deployment serving several tenants must never quietly swap
+        the model somebody chose or bill a platform-wide key.
 
         Raises:
-            NotFoundError: If neither a named profile nor a default exists.
+            NotFoundError: If the named profile is missing or none was selected.
+            BadRequestError: If the profile names a known non-chat model.
         """
         profile = None
         if profile_id is not None:
@@ -412,6 +494,12 @@ class ModelProfileService:
                 message="This agent has no model selected",
             )
 
+        outputs = model_outputs(profile.provider, profile.model, base_url=profile.base_url)
+        if not outputs.chat:
+            raise BadRequestError(
+                message=not_chat_refusal(profile.label, profile.model, outputs),
+                details={"profile_id": str(profile.id)},
+            )
         credential = await self.resolve_credential(organization_id, profile)
 
         fallbacks: list[tuple[ResolvedCredential, str]] = []
@@ -426,6 +514,18 @@ class ModelProfileService:
                     # A deleted fallback should degrade the chain, not the run.
                     logger.warning(
                         "Model profile %s lists missing fallback %s", profile.id, fallback_id
+                    )
+                    continue
+                if not model_outputs(
+                    fallback.provider, fallback.model, base_url=fallback.base_url
+                ).chat:
+                    # A speech or embedding model cannot take over a conversation
+                    # (#2487): publish refuses one, and a fallback added to the
+                    # profile afterwards degrades the chain the same way.
+                    logger.warning(
+                        "Model profile %s lists fallback %s, which is not a chat model; skipping",
+                        profile.id,
+                        fallback.id,
                     )
                     continue
                 try:
@@ -451,3 +551,14 @@ class ModelProfileService:
             # a run actually reaches is not known until one has refused.
             context_length=profile.context_length,
         )
+
+
+async def _may_spend(credential: ResolvedCredential, user_id: UUID | None) -> bool:
+    """Whether this person's run may use the credential - only a sign-in is anyone's own.
+
+    A caller with no person behind it reaches nobody's sign-in.
+    """
+    source = credential.credential_source
+    if not isinstance(source, VaultCodexCredentials):
+        return True
+    return user_id is not None and await source.visible_to(user_id)

@@ -11,6 +11,7 @@ export interface ConversationState {
   // loaded messages for that selection, and the fetch/select status.
   currentConversationId: string | null;
   currentMessages: ConversationMessage[];
+  hasEarlierMessages: boolean;
   /**
    * What the open thread has cost in total, as the server added it up.
    *
@@ -20,11 +21,20 @@ export interface ConversationState {
    * thread in which nothing was ever measured.
    */
   currentCost: ConversationCost | null;
+  /**
+   * The project the next new conversation starts in. Read only while there is no
+   * conversation yet: a chat is in the project it was started in, and stays there.
+   */
+  pendingProjectId: string | null;
   isLoading: boolean;
   error: string | null;
 
   setCurrentConversationId: (id: string | null) => void;
-  setCurrentMessages: (messages: ConversationMessage[], cost?: ConversationCost | null) => void;
+  setCurrentMessages: (
+    messages: ConversationMessage[],
+    cost?: ConversationCost | null,
+    hasEarlier?: boolean,
+  ) => void;
   /**
    * Replace the thread's total on its own, without touching the transcript.
    *
@@ -36,6 +46,7 @@ export interface ConversationState {
    * arithmetic double-counts exactly the turn somebody had to approve.
    */
   setCurrentCost: (cost: ConversationCost | null) => void;
+  setPendingProjectId: (projectId: string | null) => void;
   addMessage: (message: ConversationMessage) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
@@ -45,7 +56,9 @@ export interface ConversationState {
 const initialState = {
   currentConversationId: null,
   currentMessages: [],
+  hasEarlierMessages: false,
   currentCost: null,
+  pendingProjectId: null,
   isLoading: false,
   error: null,
 };
@@ -58,10 +71,12 @@ const conversationState: StateCreator<ConversationState> = (set) => ({
   // The total travels with the messages it totals. Set separately, a switch
   // between conversations would leave one thread's figure under another's
   // transcript for as long as the second fetch took.
-  setCurrentMessages: (messages, cost = null) =>
-    set({ currentMessages: messages, currentCost: cost }),
+  setCurrentMessages: (messages, cost = null, hasEarlier = false) =>
+    set({ currentMessages: messages, currentCost: cost, hasEarlierMessages: hasEarlier }),
 
   setCurrentCost: (cost) => set({ currentCost: cost }),
+
+  setPendingProjectId: (projectId) => set({ pendingProjectId: projectId }),
 
   addMessage: (message) =>
     set((state) => ({

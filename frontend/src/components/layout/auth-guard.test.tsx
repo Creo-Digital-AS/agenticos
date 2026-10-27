@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +24,10 @@ vi.mock("@/lib/api-client", async () => {
 // depends on it, and a fresh function per render would re-run the effect on every
 // state change and stage the same token twice.
 const adoptSession = vi.hoisted(() => vi.fn());
-vi.mock("@/hooks/use-auth", () => ({ useAdoptSession: () => adoptSession }));
+vi.mock("@/hooks/use-auth", () => ({
+  useAdoptSession: () => adoptSession,
+  readSession: () => apiClient.get("/auth/me"),
+}));
 
 // One router object across renders, as `next/navigation` hands out: a fresh one per
 // render would re-run the verify effect on every state change and stage twice.
@@ -49,6 +52,20 @@ function renderGuard() {
 }
 
 describe("the dashboard guard, refusing", () => {
+  it("redirects an already open agent page when the session is revoked", async () => {
+    window.history.replaceState(null, "", "/agents/a-1?tab=spec");
+    useAuthStore.setState({ isAuthenticated: true });
+    vi.mocked(apiClient.get).mockRejectedValue(new Error("401"));
+    renderGuard();
+    expect(screen.getByText("the dashboard")).toBeInTheDocument();
+    await act(async () => useAuthStore.getState().logout());
+    await waitFor(() =>
+      expect(replace).toHaveBeenCalledWith(
+        `${ROUTES.LOGIN}?returnTo=${encodeURIComponent("/agents/a-1?tab=spec")}`,
+      ),
+    );
+  });
+
   it("carries the whole address to login - path, query and fragment", async () => {
     window.history.replaceState(null, "", "/agents/a-1?tab=spec#monthly");
     vi.mocked(apiClient.get).mockRejectedValue(new Error("401"));

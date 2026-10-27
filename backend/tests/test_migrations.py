@@ -25,17 +25,22 @@ read identically in pytest's output, and only one of them is acceptable on a
 runner; `_demand_a_server` below is where they are told apart.
 """
 
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.exceptions import AuthenticationError
+from app.db.models.session import Session
+from app.db.models.user import User
+from app.services.session import SessionService, hash_token
 
 # Owned by this module alone, and by this run of it. Not the integration suite's
 # database either: that one builds its schema from the models with `create_all`,
@@ -214,3 +219,339 @@ class TestMigrations:
         assert "(head)" in result.stdout, (
             f"Current revision is not at head:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+
+class TestBotTranscriptionSwitch:
+    """`0151_bot_transcription_switch.py`: no bot starts transcribing on upgrade.
+
+    A bot with no pair used to be a bot that did not transcribe, and a new bot
+    with no pair inherits one. The backfill is what keeps the first from turning
+    into the second underneath its operator - the acceptance criterion "a bot
+    that had no pair before the migration still does not transcribe" (#1797).
+    """
+
+    def test_a_pairless_bot_is_switched_off_and_a_paired_one_keeps_its_pair(self):
+        assert _alembic("downgrade", "base").returncode == 0
+        up = _alembic("upgrade", "0150_org_speech_settings")
+        assert up.returncode == 0, up.stderr
+
+        org = "00000000-0000-0000-0000-0000000000a1"
+        bots = {
+            "paired": ("00000000-0000-0000-0000-0000000000b1", "openai", "whisper-1"),
+            "pairless": ("00000000-0000-0000-0000-0000000000b2", None, None),
+            "half": ("00000000-0000-0000-0000-0000000000b3", "openai", None),
+        }
+        engine = create_engine(_url(MIGRATION_DATABASE))
+        try:
+            with engine.begin() as connection:
+                # Rows written the way 0106's schema allowed, so the creator need
+                # not exist: replica mode skips the foreign-key triggers.
+                connection.execute(text("SET LOCAL session_replication_role = replica"))
+                connection.execute(
+                    text(
+                        "INSERT INTO organizations (id, name, slug, is_personal, "
+                        "created_by_user_id) VALUES (:id, 'Acme', 'acme', false, :id)"
+                    ),
+                    {"id": org},
+                )
+                for bot_id, provider, model in bots.values():
+                    connection.execute(
+                        text(
+                            "INSERT INTO channel_bots (id, organization_id, platform, name, "
+                            "token_encrypted, secret_key_version, is_active, webhook_mode, "
+                            "access_policy, speech_to_text_provider, speech_to_text_model) "
+                            "VALUES (:id, :org, 'telegram', 'bot', 'x', 1, true, false, '{}', "
+                            ":provider, :model)"
+                        ),
+                        {"id": bot_id, "org": org, "provider": provider, "model": model},
+                    )
+
+            up = _alembic("upgrade", "0151_bot_transcription_switch")
+            assert up.returncode == 0, up.stderr
+
+            with engine.connect() as connection:
+                rows = {
+                    str(row[0]): (row[1], row[2], row[3])
+                    for row in connection.execute(
+                        text(
+                            "SELECT id, transcribe_voice_notes, speech_to_text_provider, "
+                            "speech_to_text_model FROM channel_bots"
+                        )
+                    )
+                }
+        finally:
+            engine.dispose()
+
+        assert rows[bots["paired"][0]] == (True, "openai", "whisper-1")
+        assert rows[bots["pairless"][0]] == (False, None, None)
+        # Half a pair could not transcribe either, and the CHECK now refuses one.
+        assert rows[bots["half"][0]] == (False, None, None)
+
+        down = _alembic("downgrade", "0150_org_speech_settings")
+        assert down.returncode == 0, down.stderr
+
+    def test_a_paired_bot_is_given_the_key_its_profile_lookup_would_have_found(self):
+        """The profile lookup is gone, so 0107 writes down the key it would have
+        used - the first keyed profile by label for the bot's provider, with no
+        address of its own - but only a key a bot may now be saved with: an
+        organization-visible API key for that provider. Anything else leaves
+        the key null, which the form shows as "choose a key"."""
+        assert _alembic("downgrade", "base").returncode == 0
+        up = _alembic("upgrade", "0150_org_speech_settings")
+        assert up.returncode == 0, up.stderr
+
+        org, other_org = (
+            "00000000-0000-0000-0000-0000000000a1",
+            "00000000-0000-0000-0000-0000000000a2",
+        )
+        owner = "00000000-0000-0000-0000-0000000000c1"
+        secrets = {
+            # Each is its id, then its organization, purpose, kind and visibility.
+            "proxy": ("00000000-0000-0000-0000-0000000000d1", org, "openai", "api_key", "org"),
+            "real": ("00000000-0000-0000-0000-0000000000d2", org, "openai", "api_key", "org"),
+            "later": ("00000000-0000-0000-0000-0000000000d3", org, "openai", "api_key", "org"),
+            "private": ("00000000-0000-0000-0000-0000000000d4", org, "groq", "api_key", "private"),
+            "custom": ("00000000-0000-0000-0000-0000000000d5", org, "custom", "api_key", "org"),
+        }
+        profiles = [
+            # Each is a label, a provider, the secret it names and its own address.
+            ("a proxy", "openai", "proxy", "http://litellm.local/v1"),
+            ("b real", "openai", "real", None),
+            ("c later", "openai", "later", None),
+            ("d groq", "groq", "private", None),
+            ("e mistral", "mistral", "custom", None),
+        ]
+        bots = {
+            "openai": ("00000000-0000-0000-0000-0000000000b1", org, "openai", "whisper-1"),
+            "groq": ("00000000-0000-0000-0000-0000000000b2", org, "groq", "whisper-large-v3"),
+            "mistral": (
+                "00000000-0000-0000-0000-0000000000b3",
+                org,
+                "mistral",
+                "voxtral-mini-latest",
+            ),
+            "elsewhere": ("00000000-0000-0000-0000-0000000000b4", other_org, "openai", "whisper-1"),
+            "pairless": ("00000000-0000-0000-0000-0000000000b5", org, None, None),
+        }
+        engine = create_engine(_url(MIGRATION_DATABASE))
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("SET LOCAL session_replication_role = replica"))
+                for org_id, slug in ((org, "acme"), (other_org, "other")):
+                    connection.execute(
+                        text(
+                            "INSERT INTO organizations (id, name, slug, is_personal, "
+                            "created_by_user_id) VALUES (:id, :slug, :slug, false, :id)"
+                        ),
+                        {"id": org_id, "slug": slug},
+                    )
+                for name, (secret_id, org_id, purpose, kind, visibility) in secrets.items():
+                    connection.execute(
+                        text(
+                            "INSERT INTO organization_secrets (id, organization_id, name, kind, "
+                            "purpose, visibility, owner_user_id, sealed_secret, hint, "
+                            "key_version) VALUES (:id, :org, :name, :kind, :purpose, "
+                            ":visibility, :owner, 'sealed', 'abcd', 1)"
+                        ),
+                        {
+                            "id": secret_id,
+                            "org": org_id,
+                            "name": name,
+                            "kind": kind,
+                            "purpose": purpose,
+                            "visibility": visibility,
+                            "owner": owner,
+                        },
+                    )
+                for label, provider, secret, base_url in profiles:
+                    connection.execute(
+                        text(
+                            "INSERT INTO model_profiles (id, organization_id, label, provider, "
+                            "model, secret_id, base_url) VALUES (gen_random_uuid(), "
+                            ":org, :label, :provider, 'x', :secret, :base_url)"
+                        ),
+                        {
+                            "org": org,
+                            "label": label,
+                            "provider": provider,
+                            "secret": secrets[secret][0],
+                            "base_url": base_url,
+                        },
+                    )
+                for bot_id, org_id, provider, model in bots.values():
+                    connection.execute(
+                        text(
+                            "INSERT INTO channel_bots (id, organization_id, platform, name, "
+                            "token_encrypted, secret_key_version, is_active, webhook_mode, "
+                            "access_policy, speech_to_text_provider, speech_to_text_model) "
+                            "VALUES (:id, :org, 'telegram', 'bot', 'x', 1, true, false, '{}', "
+                            ":provider, :model)"
+                        ),
+                        {"id": bot_id, "org": org_id, "provider": provider, "model": model},
+                    )
+
+            up = _alembic("upgrade", "0151_bot_transcription_switch")
+            assert up.returncode == 0, up.stderr
+
+            with engine.connect() as connection:
+                keys = {
+                    str(row[0]): None if row[1] is None else str(row[1])
+                    for row in connection.execute(
+                        text("SELECT id, speech_to_text_secret_id FROM channel_bots")
+                    )
+                }
+        finally:
+            engine.dispose()
+
+        # The first by label with no address of its own - not the proxy, which
+        # sorts first, and not the one after it.
+        assert keys[bots["openai"][0]] == secrets["real"][0]
+        # A member's private key is never spent for everybody's voice notes.
+        assert keys[bots["groq"][0]] is None
+        # A key stored for another purpose is not this provider's.
+        assert keys[bots["mistral"][0]] is None
+        # Another organization's profiles are not this bot's.
+        assert keys[bots["elsewhere"][0]] is None
+        assert keys[bots["pairless"][0]] is None
+
+        down = _alembic("downgrade", "0150_org_speech_settings")
+        assert down.returncode == 0, down.stderr
+
+
+class TestLegacyCookieSessionRevocation:
+    @pytest.mark.anyio
+    @pytest.mark.security
+    async def test_upgrade_revokes_old_refresh_chains_without_restoring_them_on_downgrade(self):
+        reset = _alembic("downgrade", "base")
+        assert reset.returncode == 0, reset.stderr
+        up = _alembic("upgrade", "0172_mcp_health_queue_clock")
+        assert up.returncode == 0, up.stderr
+        engine = create_async_engine(
+            f"{settings.DATABASE_URL.rsplit('/', 1)[0]}/{MIGRATION_DATABASE}"
+        )
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with factory() as db:
+                user = User(email=f"cookie-migration-{uuid4()}@example.com")
+                admin = User(email=f"cookie-admin-{uuid4()}@example.com")
+                db.add_all([user, admin])
+                await db.flush()
+                now = datetime.now(UTC)
+                old = Session(
+                    user_id=user.id,
+                    refresh_token_hash=hash_token("legacy-current"),
+                    previous_refresh_token_hash=hash_token("legacy-spent"),
+                    rotated_at=now,
+                    expires_at=now + timedelta(days=1),
+                    is_active=True,
+                )
+                impersonation = Session(
+                    user_id=user.id,
+                    impersonator_user_id=admin.id,
+                    refresh_token_hash=hash_token("legacy-impersonation"),
+                    expires_at=now + timedelta(minutes=5),
+                    is_active=True,
+                )
+                ended = Session(
+                    user_id=user.id,
+                    refresh_token_hash=hash_token("legacy-ended"),
+                    expires_at=now + timedelta(days=1),
+                    is_active=False,
+                )
+                db.add_all([old, impersonation, ended])
+                await db.commit()
+                old_id, impersonation_id, ended_id, user_id = (
+                    old.id,
+                    impersonation.id,
+                    ended.id,
+                    user.id,
+                )
+                before = await SessionService(db).validate_refresh_token("legacy-current")
+                assert before is old
+                await db.commit()
+
+            up = _alembic("upgrade", "0173_revoke_cookie_sessions")
+            assert up.returncode == 0, up.stderr
+            async with factory() as db:
+                service = SessionService(db)
+                current = await service.validate_refresh_token("legacy-current")
+                previous = await service.claim_refresh_grace("legacy-spent")
+                assert current is None
+                assert previous is None
+                with pytest.raises(AuthenticationError, match="Session has ended"):
+                    await service.verify_access_session(
+                        payload={"sid": str(old_id)}, subject=str(user_id)
+                    )
+                rows = list(
+                    await db.scalars(
+                        select(Session).where(Session.id.in_([old_id, impersonation_id, ended_id]))
+                    )
+                )
+                assert len(rows) == 3
+                assert all(not row.is_active for row in rows)
+                fresh = Session(
+                    user_id=user_id,
+                    refresh_token_hash=hash_token("fresh-current"),
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                    is_active=True,
+                )
+                db.add(fresh)
+                await db.commit()
+                fresh_id = fresh.id
+                refreshed = await service.validate_refresh_token("fresh-current")
+                assert refreshed is fresh
+                await service.verify_access_session(
+                    payload={"sid": str(fresh_id)}, subject=str(user_id)
+                )
+                await db.commit()
+
+            down = _alembic("downgrade", "0172_mcp_health_queue_clock")
+            assert down.returncode == 0, down.stderr
+            async with factory() as db:
+                service = SessionService(db)
+                revoked = await service.validate_refresh_token("legacy-current")
+                retained = await service.validate_refresh_token("fresh-current")
+                assert revoked is None
+                assert retained is not None
+        finally:
+            await engine.dispose()
+
+
+class TestMessageClientCorrelation:
+    def test_old_messages_survive_upgrade_downgrade_and_the_models_match_head(self):
+        reset = _alembic("downgrade", "base")
+        assert reset.returncode == 0, reset.stderr
+        up = _alembic("upgrade", "0173_revoke_cookie_sessions")
+        assert up.returncode == 0, up.stderr
+        engine = create_engine(_url(MIGRATION_DATABASE))
+        message_id = uuid4()
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("SET LOCAL session_replication_role = replica"))
+                connection.execute(
+                    text(
+                        "INSERT INTO messages (id, conversation_id, role, content) VALUES (:id, :conversation, 'user', 'before correlation')"
+                    ),
+                    {"id": message_id, "conversation": uuid4()},
+                )
+            up = _alembic("upgrade", "head")
+            assert up.returncode == 0, up.stderr
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT content, client_message_id FROM messages WHERE id=:id"),
+                    {"id": message_id},
+                ).one()
+                assert tuple(row) == ("before correlation", None)
+            check = _alembic("check")
+            assert check.returncode == 0, check.stderr
+            down = _alembic("downgrade", "0173_revoke_cookie_sessions")
+            assert down.returncode == 0, down.stderr
+            with engine.connect() as connection:
+                assert (
+                    connection.scalar(
+                        text("SELECT content FROM messages WHERE id=:id"), {"id": message_id}
+                    )
+                    == "before correlation"
+                )
+        finally:
+            engine.dispose()

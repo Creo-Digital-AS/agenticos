@@ -1,5 +1,5 @@
 ---
-source_sha: "3409285bde3b"
+source_sha: "5bf6eb0fde8e"
 ---
 
 # MCP — narzędzia, których nikt tutaj nie musi pisać { #mcp-the-tools-nobody-here-has-to-write }
@@ -58,6 +58,27 @@ niczego do konfigurowania.
     platformy, a nie jak adres do poprawienia
     ([#861](https://github.com/vstorm-co/agenticos/issues/861)) — self-hosting
     i wklejenie URL-a z `localhost` to przypadek zwyczajny, nie egzotyczny.
+
+    Operator może pozwolić połączeniu sięgać do serwera we własnej sieci
+    wdrożenia, na przykład do usługi compose albo serwera w VPN-ie lub
+    tailnecie. W tym celu wpisuje jego host do
+    [`MCP_ALLOWED_HOSTS`](configuration.md#project-settings). Host z listy
+    pomija tylko sprawdzenie adresu. URL nadal musi mieć `http` albo `https`.
+
+    Do serwera z listy można też logować się przez OAuth. Taki serwer często
+    sam prowadzi logowanie, więc jego wykrywanie, rejestracja klienta i
+    żądania tokenów mogą sięgać do hostów z listy, i do żadnego innego adresu
+    prywatnego. Każde żądanie nadal jest przypięte do adresu, który sprawdzono,
+    a nazwa z listy, która odpowiada adresem loopback, link-local albo adresem
+    metadanych chmury, jest odrzucana. Logowanie do serwera publicznego nigdy
+    nie sięga do hosta z listy, nawet gdy jego metadane go wskazują.
+
+    Każde konto we wdrożeniu może wtedy sięgnąć do każdego portu tego hosta.
+    Wpisuj więc tylko serwer, który sprawdza token, i nigdy `localhost` ani
+    usługi tego stacku, takiej jak `app`, `db` czy `redis`. Lista jest czytana
+    przy zapisie połączenia oraz przy każdym logowaniu i odświeżeniu tokenu.
+    Usunięcie hosta nie rozłącza zapisanego połączenia, ale połączenie OAuth
+    do niego przestaje odnawiać token.
 
 ### Osobiste albo dla całej organizacji { #personal-or-organization-wide }
 
@@ -175,7 +196,9 @@ Własny szablon Architekta prosi
 o `writes` dla serwera platformy, więc nie tworzy niczego bez osoby, w której
 imieniu działa. Powiązanie każdego agenta z tym serwerem trzyma co najmniej
 `writes`, także przy `none`: jego narzędzia działają z uprawnieniami osoby, która
-pyta, również administratora.
+pyta, również administratora. Dwa odczyty czekają jak zmiany: `read_conversation`
+udostępnia całą wcześniejszą rozmowę, a `get_project` instrukcje wybranego projektu.
+Przeczytana strona nie może po cichu wywołać żadnego z tych ujawnień.
 
 W Builderze
 ustawienia serwera mówią to osobno dla grup: **Odczyt** i **Zmiany** działają bez
@@ -377,7 +400,9 @@ Zostają dwa brzegi, oba wąskie i oba celowe:
   rozwiązuje go sama. Nie ma tu czego przypinać.
 - **Własny URL połączenia** jest sprawdzany przy zapisie i rozwiązywany ponownie,
   gdy agent działa — wpisuje go operator, więc przestawienie go wymaga bycia
-  operatorem.
+  operatorem. Host z `MCP_ALLOWED_HOSTS` pomija sprawdzenie adresu, a żądania
+  OAuth połączenia, którego własny host jest na liście, mogą sięgać do hostów
+  z listy, przypięte jak każdy inny krok.
 
 Nic, co wybiera *model*, w ogóle nie dociera do tego sprawdzenia — i nie powinno:
 URL wybrany przez agenta należy do `safe_download` z Pydantic AI.
@@ -473,8 +498,10 @@ wyląduje nowa zgoda.
 
 ## Co dzieje się w turze { #what-happens-on-a-turn }
 
-Każdy serwer jest odpytywany krótkim obiegiem `tools/list` — 3 sekundy — zanim
-tura się zacznie, a odpytania biegną równolegle. Serwer, który odpowiedział na
+Każdy serwer jest odpytywany krótką wymianą `tools/list`, zanim tura się zacznie,
+a odpytania biegną równolegle. Serwer ma 3 sekundy na przyjęcie połączenia i 10
+sekund na całą wymianę, bo serwer, który sprawdza token każdego żądania u swojego
+dostawcy tożsamości, bywa wolny, choć działa. Serwer, który odpowiedział na
 odpytanie w ciągu ostatnich dwóch minut, z tym samym poświadczeniem, nie jest
 odpytywany ponownie: kolejna tura rozmowy dołącza go od razu. Jeśli w międzyczasie
 przestał odpowiadać, ta tura idzie dalej bez jego narzędzi, a następna odpytuje go
@@ -494,8 +521,12 @@ jest nadal wywoływany pod prawdziwą nazwą.
     położyłby każdego agenta, który go wskazuje, łącznie z tymi, które nigdy go
     nie potrzebowały.
 
-    Model odpowiada wtedy **bez** tych narzędzi — słusznie w turze czatu,
-    niesłusznie, jeśli założyłeś, że narzędzie jest tam zawsze.
+    Model odpowiada wtedy **bez** tych narzędzi i wie o tym: instrukcje tury
+    wymieniają serwer, mówią, że nie odpowiedział albo odrzucił połączenie,
+    i każą modelowi powiedzieć, że nie dało się z nim połączyć, zamiast zgłaszać
+    pusty wynik. Dotyczy to także serwera, który odpowiedział chwilę wcześniej
+    i zawodzi, gdy tura się łączy. Słusznie w turze czatu, niesłusznie, jeśli
+    założyłeś, że narzędzie jest tam zawsze.
 
 To świadomy kompromis. Dowiadujesz się o tym przez endpoint `/test`
 i `last_status`, a [ślad audytowy](governance.md#audit) zapisuje, co faktycznie
@@ -973,25 +1004,99 @@ odmowa wraca jako błąd narzędzia nazywający brakujące uprawnienie.
 | Narzędzie | Wymaga |
 |---|---|
 | `whoami` | — |
-| `list_agents`, `get_agent`, `list_capabilities` | `agents:view` |
-| `create_agent_draft` | `agents:edit` |
+| `list_agents`, `get_agent`, `list_capabilities`, `list_models`, `search_mcp_servers` | `agents:view` |
+| `create_agent_draft`, `update_agent_draft`, `test_agent_draft` | `agents:edit` |
+| `list_sandbox_connections`, `list_sandbox_runtimes`, `get_sandbox_policy` | `connections:view` |
+| `list_org_connections` | `mcp:manage` |
+| `publish_agent` | `agents:publish` na tym agencie |
 | `discard_agent_draft` | `agents:edit`, dla twojego draftu, który nigdy nie był opublikowany |
 | `run_agent` | `agents:run` |
-| `list_runs`, `get_run`, `get_spend` | `runs:view` |
+| `list_routines` | `agents:view` |
+| `create_routine`, `run_routine_now` | `agents:run` na agencie |
+| `update_routine`, `delete_routine` | twórca rutyny albo `agents:edit` na jej agencie |
+| `list_runs`, `get_run`, `read_conversation`, `get_spend` | `runs:view` |
 | `list_knowledge_bases`, `search_knowledge` | `collections:view` |
 | `list_embedding_models` | — |
 | `create_knowledge_base`, `add_document` | `collections:edit` |
 | `list_skills` | `skills:view` |
+| `create_skill` | `skills:edit` |
+| `list_projects` | `projects:view` |
+| `get_project` | dostęp do projektu |
+| `create_project` | `projects:edit` |
 | `list_members` | `members:view` |
 | `invite_member` | `members:manage` i `roles:manage` |
+| `list_my_connections`, `set_my_language`, `set_my_profile` | — (własne wywołującego) |
 
-Celowo nie ma tu publikowania agenta, dotykania poświadczeń ani usuwania
-czegokolwiek poza draftem agenta, który wywołujący sam utworzył i nigdy nie
-opublikował - to cofnięcie draftu utworzonego przez pomyłkę. Draft utworzony
-tutaj publikuje osoba w konsoli. Podłączone aplikacje są
+Wyszukiwanie przez `list_projects` zwraca tylko ID i nazwy projektów,
+pomijając opisy, instrukcje i pozostałe edytowalne etykiety. Odczyt wybranego projektu
+przez `get_project` zawiera je i przy polityce `writes` czeka na akceptację, tak
+jak `read_conversation`. Instrukcje innego udostępnionego projektu nie powinny
+trafiać do modelu wyłącznie dlatego, że szukał przestrzeni roboczej.
+
+Agenta da się tu zbudować od początku do końca: utworzyć szkic, edytować go,
+wypróbować jako nieopublikowany draft przez `test_agent_draft` - run testowy,
+liczony do budżetu i zapisywany, odrzucany z podaniem powodu, gdy draft by się nie
+opublikował - i opublikować przez `publish_agent`, które wykonuje te same
+sprawdzenia co przycisk **Publish** w konsoli. `cron_expression` rutyny jest
+liczony w UTC. `set_my_language` przełącza język konsoli wywołującego (`en`, `pl`
+albo `de`) na każdym urządzeniu, na którym się loguje, a `set_my_profile`
+zapisuje jego rolę i to, czym się zajmuje, co od tej pory słyszy każdy agent.
+`create_skill` zapisuje procedurę, która zadziałała, jako [skill](skills.md) - na
+„zrób z tego skill”.
+
+Celowo nie ma tu dotykania poświadczeń ani usuwania czegokolwiek poza draftem
+agenta, który wywołujący sam utworzył i nigdy nie opublikował - to cofnięcie
+draftu utworzonego przez pomyłkę - albo rutyną. Podłączone aplikacje są
 widoczne w **Ustawienia → Klienci MCP**, gdzie odłączenie kończy ich dostęp razem
 z każdym tokenem. Wywołania, które coś
 zmieniają, czekają na zatwierdzenie, jak wyjaśnia [sekcja wyżej](#which-calls-wait-for-a-person).
+
+Narzędzia draftów przyjmują skonfigurowane wiązania możliwości oraz same identyfikatory.
+Na przykład `capabilities: [{id: sandbox, config: {backend: service,
+include_execute: true}}]` daje agentowi programistycznemu powłokę na domyślnym
+hoście sandboxa organizacji. `list_capabilities` zwraca `config_schema`;
+`list_sandbox_connections`, `list_sandbox_runtimes` i `get_sandbox_policy`
+pozwalają sprawdzić hosty, aliasy runtime’ów i ograniczenia przed wyborem ustawień.
+Sandbox tylko na pliki (`state`) nie wykonuje poleceń.
+
+`update_agent_draft.add_capabilities` dodaje lub aktualizuje wiązania: pominięte
+pola zachowują wartości, a podany `config` zastępuje całą konfigurację. Najpierw
+odczytaj draft, żeby zachować potrzebne ustawienia. Oba narzędzia przyjmują
+`mcp_servers`: identyfikatory połączeń organizacji z `list_org_connections` albo
+osobiste klucze katalogowe z `search_mcp_servers`. Identyfikator osobistego
+połączenia nie należy do współdzielonej specyfikacji. Lista wiązań MCP jest
+zastępowana w całości; `[]` odłącza wszystkie. Tworzenie przyjmuje też `skill_ids`
+i `collection_ids`. Testowanie i publikowanie zachowują te same zasady walidacji i akceptacji.
+
+### Udostępnienie go agentowi { #giving-it-to-an-agent }
+
+Ten sam serwer jest też bindingiem MCP, który może mieć każdy agent, więc agent
+odpowie na „co wczoraj padło” albo „którzy agenci używają tej bazy wiedzy” z
+własnych zapisów platformy. W Builderze to pierwsza karta w **Serwerach MCP**,
+nazwana jak to wdrożenie; jej włączenie wiąże go jako
+`mcp_servers: [{account: platform, approval: writes}]`.
+
+- **Działa jako osoba, dla której działa agent.** Run tworzy krótkotrwały klucz z
+  uprawnieniami tej osoby, więc agent Viewera czyta to, co może czytać Viewer, i
+  niczego nie tworzy. Nic nowego nie jest przyznawane, a gdy za runem nikt nie
+  stoi - publiczny widget, harmonogram działający w niczyim imieniu - bindingu nie
+  ma.
+- **Zmiany czekają na zatwierdzenie.** Domyślne `writes` wstrzymuje każde
+  narzędzie, które coś zmienia (`create_agent_draft`, `publish_agent`,
+  `create_routine`, `run_agent`, `invite_member` i pozostałe), do zgody osoby;
+  `all` wstrzymuje też odczyt. `none` nie jest oferowane: te narzędzia działają z
+  uprawnieniami człowieka. Jedyny zapis, który nigdy nie czeka, to
+  `set_my_language`: zmienia język konsoli pytającego, na jego słowo, a karta
+  zatwierdzenia dla „przełącz na angielski” byłaby całą rozmową.
+  `set_my_profile` czeka jak pozostałe, bo to, co zapisuje, słyszy każdy agent,
+  którego ta osoba uruchamia, a strona przeczytana przez agenta nie może tego
+  zapisać niezauważenie.
+- **Narzędzia można zawęzić** w ustawieniach karty, które pokazują każde narzędzie
+  i oznaczają te, które coś zmieniają.
+
+Szablon **AgenticOS** wiąże go właśnie tak, podobnie jak każdy agent tworzony od
+zera, więc agent od razu sięga do platformy - i ustawia rutynę albo przełącza język
+konsoli, gdy się go o to poprosi.
 
 ## Czego MCP ci nie daje { #what-mcp-does-not-get-you }
 
@@ -1017,3 +1122,9 @@ zmieniają, czekają na zatwierdzenie, jak wyjaśnia [sekcja wyżej](#which-call
   żadnego, a usunięcie połączenia wyrejestrowuje to, co ono zarejestrowało.
 - Nieosiągalny serwer zostaje **pominięty**, a nie podnosi wyjątku — tura
   odpowiada bez tych narzędzi.
+
+Każda zaplanowana kontrola obejmuje najwyżej 64 aktywne serwery organizacji, zaczynając od najdawniej sprawdzanych, i wykonuje najwyżej osiem prób równocześnie. Nieużyteczne poświadczenia również aktualizują czas kontroli, bez zgłaszania awarii. Większe instalacje sprawdzają więc wszystkie serwery w kolejnych cyklach.
+
+Odświeżenie OAuth ma osobną krótką transakcję: blokuje i ponownie sprawdza konto, wymienia poświadczenie i zatwierdza zapis przed zwróceniem tokena. Anulowanie czeka na zakończenie tej operacji; późniejszy rollback uruchomienia jej nie cofa. Błąd zapisu po wymianie u dostawcy jawnie przerywa żądanie i może wymagać ponownej autoryzacji konta. Polling skrzynek używa osobnej blokady doradczej konta; pozycja odczytu i zlecone zadania zatwierdzają się razem, a nieprawidłowa odpowiedź wycofuje tylko pracę tej skrzynki.
+
+Kolejka kontroli stanu korzysta z osobnego, indeksowanego znacznika czasu. Odświeżenie OAuth ani polling skrzynki nie przesuwają kolejnej kontroli serwera. Po migracji istniejące serwery trafiają do kolejki jako jeszcze niesprawdzone.

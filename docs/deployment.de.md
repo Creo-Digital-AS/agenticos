@@ -1,5 +1,5 @@
 ---
-source_sha: "11e8f02699df"
+source_sha: "b0a3cf294555"
 ---
 
 # Das Deployment selbst { #the-deployment-itself }
@@ -180,10 +180,10 @@ aufnehmen muss, wechselt also zu `invite_only` und lädt sie ein.
 Drei weitere Dinge daran sind leicht falsch zu machen und waren es:
 
 **Der erste Nutzer wird immer zugelassen.** Eine frische Installation hat keine
-Konten, ihr Administrator existiert also noch nicht; ein geschlossenes Deployment,
-das auch die Person abweist, die es öffnen würde, ist eines, das niemand betreten
-kann, ohne Konsole, um es zu reparieren. `register` befördert dieses erste Konto
-ohnehin zu `is_app_admin`, und die Policy beugt sich derselben Tatsache.
+Konten. Das erste bestätigte Konto wird zum Deployment-Administrator (`is_app_admin`),
+bei Registrierung mit Passwort ebenso wie über OAuth. Eine Transaktionssperre
+gewährt diese Ausnahme nur einer gleichzeitigen Registrierung. Weitere müssen die
+Policy erfüllen. Wird die erste zurückgerollt, kann eine andere das Startrecht erhalten.
 
 **`invite_only` existiert, weil das Schließen der Registrierung sonst Einladungen
 kaputtmachen würde.** `InvitationService.accept` verlangt einen bestehenden,
@@ -300,6 +300,50 @@ existiert, und liest die Ablehnung als ein kaputtes Produkt. Auch deshalb werden
 die erlaubten Domains veröffentlicht: sie sind kein Geheimnis, und das Deployment
 läuft auf dem eigenen Host des Unternehmens.
 
+## Wo ein neues Konto beginnt { #where-a-new-account-starts }
+
+Zwei Einstellungen neben dem Anmeldemodus entscheiden das, beide unter **Neue
+Konten** auf `/admin/settings`, und beide gelten für danach angelegte Konten —
+eine bestehende persönliche Organisation bleibt (#2156).
+
+| Einstellung | Standard | Wirkung |
+|---|---|---|
+| `personal_organizations` | an | Jedes neue Konto bekommt eine eigene Organisation, mit sich selbst als Owner. |
+| `default_organization_id` | keine | Jedes neue Konto tritt dieser Organisation bei, mit `default_organization_role`. |
+| `default_organization_role` | `member` | Jede Rolle außer `owner`; eine Einstellung, die jeden Neuen zum Owner machte, gäbe allen die Schlüssel der Firma. |
+
+Ein Deployment, das unabhängigen Personen offensteht, behält die Standards. Ein
+Deployment für eine Firma schaltet persönliche Organisationen ab und nennt die
+Firmenorganisation, damit ein Kollege dort beginnt, wo die Agents und das Wissen
+der Firma sind, und niemand Agents unter einem eigenen Budget, einer eigenen
+Freigaberegel und einem eigenen Audit-Log neben denen der Firma ausführt. Eine
+persönliche Organisation kann nicht die Standardorganisation sein, und das Löschen
+der Standardorganisation leert die Einstellung.
+
+**Eine Einladung in die Standardorganisation hat Vorrang.** Eine Einladung nennt
+ihre eigene Rolle, und eine Einladung in eine Organisation anzunehmen, der die
+Person schon angehört, wird abgelehnt — wer sich also mit einer Einladung in die
+Standardorganisation registriert oder für dessen Adresse eine aussteht, tritt ihr
+bei der Registrierung nicht bei. Der Beitritt erfolgt beim Annehmen, mit der Rolle
+der Einladung.
+
+**Nur die eigene Regel des Deployments lässt jemanden beitreten.** Ein Konto,
+das der Anmeldemodus selbst zulässt — ein offenes Deployment, eine Adresse unter
+einer erlaubten Domain — tritt der Standardorganisation bei. Eines, das nur durch
+die Einladung oder Verzeichniszuordnung einer anderen Organisation zugelassen
+wurde, nicht: Deren Manager haben für die Person bei ihrer eigenen Organisation
+gebürgt, und ein Beitritt zur Standardorganisation ließe sie Personen zu einer
+Organisation hinzufügen, die sie nicht verwalten.
+
+**Die Standardorganisation ist auch, wo eine Sitzung landet.** Eine Anfrage mit
+Sitzungs-Token und ohne `X-Organization-Id` handelt in der Standardorganisation,
+wenn die Person ihr angehört, dann in ihrer persönlichen, dann in ihrer einzigen.
+Wer eine Wahl hat und keinen Header sendet, erhält `400` mit dem Namen des Headers
+statt einer Vermutung — siehe [den Organisations-Header](api.md#the-organization-header).
+Die Konsole wählt dieselbe Organisation, wenn nichts anderes ausgewählt ist, und
+das Annehmen einer Einladung schaltet die Konsole auf die beigetretene
+Organisation um.
+
 ## Einen Tenant unter allen finden { #finding-one-tenant-among-all-of-them }
 
 `GET /admin/organizations` ist die einzige Oberfläche, die beantwortet, *welche
@@ -315,7 +359,7 @@ nur der Deployment-Admin beheben kann und der ihm deshalb gezeigt werden muss.
 | `search` | Name, Slug oder die Adresse des Owners. Der Begriff ist Text, kein Muster — `100%` findet den so genannten Tenant und nicht alle |
 | `sort_by` | `name`, `slug`, `members`, `agents`, `created_at`. Alles andere ist ein 422 |
 | `sort_dir` | `asc` / `desc`, standardmäßig neueste zuerst |
-| `kind` | `personal`, `team` oder `all`. Jedes Konto bekommt bei der Anmeldung eine persönliche Organisation, auf den meisten Deployments machen sie also den Großteil der Liste aus |
+| `kind` | `personal`, `team` oder `all`. Jedes Konto bekommt bei der Anmeldung eine persönliche Organisation, sofern das Deployment das nicht abgeschaltet hat, auf den meisten Deployments machen sie also den Großteil der Liste aus |
 | `skip`, `limit` | Eine Serverseite, bis zu 100 |
 
 **All das geschieht in SQL, vor `OFFSET`/`LIMIT`**, und `total` zählt das, worauf
@@ -537,9 +581,55 @@ Antwort beantwortet und nicht vom Gedächtnis eines Administrators. Sie wird in 
 Service ausgelöst, der die Sache anlegt, und nicht an der Route, denn die Route
 ist nicht der einzige Weg hinein.
 
+Die Konsole wartet nicht auf diese Ablehnung. `GET /agents/ceiling`, offen für
+einen Aufrufer mit `agents:edit`, liefert das Limit (`limit`, null, wo keines
+gesetzt ist) und ob eine Erstellung daran scheitern würde (`at_limit`), und am
+Limit deaktiviert die Seite Agenten **Neuer Agent (New agent)** und das
+Installieren von Vorlagen und sagt, warum, bevor jemand ein Formular ausfüllt.
+
+Wenn eine andere Erstellung während der geführten Agent-Erstellung das Limit
+erreicht, endet die Anleitung, statt die Seite um einen deaktivierten Button
+zu sperren. Ein erfolgreich in dieser Anleitung erstellter Agent wird vor der
+Aktualisierung des Limits erfasst. Der letzte freie Platz unterbricht deshalb
+nicht die weiteren Schritte im Builder.
+
+Die Zählung selbst (`held`) erhält nur ein Aufrufer, dessen `agents:view` jeden Agenten
+der Organisation erreicht: Sie umfasst Agenten, die ein Mitglied (Member) nicht
+sieht, und neben seiner eigenen Liste würde sie verraten, wie viele vor ihm
+verborgen sind. **Duplizieren (Duplicate)** und **Wiederherstellen (Restore)**
+werden weiterhin erst beim Versuch abgelehnt. Die Garantie bleibt die Ablehnung:
+Die Zählung ist eine Vorhersage, gelesen ohne die Sperre.
+
 Null wird vom Schema abgelehnt: ein Konto, das keine Organisation besitzen darf,
 ist ein Konto, das nicht angelegt werden kann, denn die Anmeldung gibt jedem von
 ihnen eine persönliche Organisation.
+
+## In welchem Format ein Diktat hochgeladen werden darf { #what-a-dictation-may-be-uploaded-as }
+
+`dictation_compressed_audio`, **standardmäßig aus**, entscheidet über das Format
+jedes [Diktats](ml-services.md#dictation-in-chat) im Deployment — im Eingabefeld
+von `/chat`, auf gehosteten Seiten und in Widgets, in jeder Organisation. Aus
+nimmt der Server ein Format an: WAV mit 16 kHz, Mono und 16-Bit-PCM, das jeder
+Browser aufnimmt. Seine Länge ist seine Größe, 32.000 Bytes pro Sekunde, der
+Server zählt also die Samples, und das längste Diktat begrenzt exakt, was eine
+Aufnahme kostet.
+
+Ein werden zusätzlich WebM, Ogg und MP4 angenommen, und Uploads sind etwa achtmal
+kleiner. Ihre Länge wird aus dem eigenen Header der Datei gelesen, den eine von
+Hand gebaute Datei zu kurz angeben kann: Ein Diktat kann dann innerhalb der
+Größengrenze bis zu etwa vierzigmal das längste Diktat tragen. Auf einer
+[öffentlichen Seite oder in einem Widget](channels.md#what-it-costs-and-what-bounds-it)
+kann jeder, der den Link hat, eines senden, abgerechnet über das Provider-Konto
+der Organisation und außerhalb jedes Budgets.
+
+Deshalb fragt der Schalter auf `/admin/settings` zuerst. Das Einschalten öffnet
+einen Dialog, der diese Risiken benennt, und aktiviert dessen
+Bestätigungsschaltfläche erst, wenn ein Kästchen angehakt ist, das bestätigt,
+dass sie gelesen wurden; das Ausschalten fragt nichts. In beiden Fällen wird er
+mit dem Rest des Formulars gespeichert und wie jedes andere Feld auditiert.
+Browser folgen ihm, sobald eine Seite das nächste Mal fragt: Das Format, in dem
+sie aufnehmen, ist das, das der Server ankündigt, nie eine im Client gepflegte
+Liste.
 
 ## Die Zeile { #the-row }
 
@@ -595,6 +685,40 @@ in dem Zweig bereits verwendet, den es abgesichert hat. Upstream ist das ab 0.65
 weiterhin nicht behoben, und `tests/test_otel_route_details.py` schlägt fehl, wenn
 es behoben ist, was der Zeitpunkt ist, an dem das Modul verschwindet.
 
+## Hintergrund-Jobs { #background-jobs }
+
+**Admin → Background jobs** (`/admin/background-jobs`) ist die Queue, wie der
+Eigentümer des Deployments sie sieht, und nur ein App-Admin kann sie öffnen: Die
+Queue gehört dem Deployment, der Eigentümer einer Organisation wird also
+abgewiesen. Der Kopf zählt die Jobs in jedem Zustand, nennt jede pausierte Art
+und den Grund, listet die lebenden Worker und den nächsten Termin jedes
+Zeitplans. Darunter stehen die Jobs, neueste zuerst, gefiltert nach Zustand und
+Pool, jeder mit seinen Versuchen und dem Fehler, mit dem er zuletzt endete.
+
+Unter den Zählern zeigt **Activity** als Diagramm, was in den letzten 24
+Stunden oder 7 Tagen beendet wurde, gestapelt danach, wie es endete, daneben
+die längste Wartezeit eines jetzt fälligen Jobs. **By kind** nennt für jede
+Art die Menge, die Toten, die Laufzeit im Median und im 95. Perzentil und wie
+lange ihre Jobs auf einen Worker warteten: Eine wachsende Wartezeit sagt, dass
+einem Pool Worker fehlen. Das Dashboard des Deployments zeigt denselben Tag als
+Karte.
+
+Drei Aktionen, jede mit dem Handelnden auditiert:
+
+- **Retry** gibt einem toten Job eine neue Reihe von Versuchen.
+- **Cancel** zieht einen Job zurück, den noch niemand begonnen hat.
+- **Resume** lässt die Worker eine pausierte Art wieder abholen.
+
+Eine Art pausiert der Schutzschalter des Workers: Ihre Jobs haben ihren Worker
+`WORKER_BREAKER_DEATHS`-mal in Folge umgebracht, meist ein Dokument, dessen
+Parsen den Speicher sprengt. Jeder Eigentümer erfährt es in der App und per
+E-Mail, und die Benachrichtigung lässt sich nicht abschalten - Arbeit dieser Art
+staut sich, bis einer von ihnen sie fortsetzt. Eine Pause nennt die
+Organisation, deren Jobs sie ausgelöst haben, und für alle anderen läuft die Art
+weiter. Versuchen Sie die toten Jobs erst
+erneut, wenn die Ursache behoben ist, sonst sterben sie auf dieselbe Weise. Die
+Einstellungen stehen unter [Konfiguration](configuration.md#background-work).
+
 ## Zusammenfassung { #recap }
 
 - Die Identität des Deployments ist **eine Zeile**, bearbeitet unter
@@ -603,10 +727,16 @@ es behoben ist, was der Zeitpunkt ist, an dem das Modul verschwindet.
 - `signup_mode` wird an **einer Stelle** angewendet und kontrolliert beide Pfade,
   die ein Konto prägen. Eine Einladung setzt eine Domain-Liste außer Kraft;
   nichts setzt `closed` außer Kraft.
+- Ein neues Konto bekommt eine **persönliche Organisation, sofern das nicht
+  abgeschaltet ist**, und tritt der **Standardorganisation** bei, wenn eine gesetzt
+  ist; dort landet auch eine Sitzung, die keine Organisation nennt.
 - Ein App-Admin **kann sich nicht selbst aussperren** über die Konsole.
 - **Impersonation ist eine Session**: aus der Konsole gestartet, ohne Token in der
   Zwischenablage, in einem Banner benannt, beendet vom Administrator, davon, dass
   die Person sich überall abmeldet, oder von der Stunde. Ob die Person informiert
   wird, ist `notify_impersonated_users`, standardmäßig aus.
+- Diktieren ist **rohes PCM, es sei denn, `dictation_compressed_audio` ist an**,
+  was ein Administrator erst nach einem Dialog einschaltet, der benennt, was es
+  kostet.
 - Jede Ablehnung dieses Deployments sieht gleich aus, welche Schicht sie auch
   erzeugt hat.

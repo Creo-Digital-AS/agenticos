@@ -62,6 +62,8 @@ export function useRuns(
     /** Narrows to these statuses - `failed,budget_exceeded` is "the problems". */
     statuses?: RunStatus[];
     surface?: string;
+    /** Voice calls or text runs (#54); a call is one row, however often it reconnected. */
+    modality?: "text" | "voice";
     /** The model as the run recorded it - the dashboard's bars count these. */
     modelLabel?: string;
     /** Who the run ran as. */
@@ -91,6 +93,7 @@ export function useRuns(
     rated,
     statuses,
     surface,
+    modality,
     modelLabel,
     userId,
     conversationId,
@@ -108,6 +111,7 @@ export function useRuns(
       rated,
       statuses,
       surface,
+      modality,
       modelLabel,
       userId,
       conversationId,
@@ -131,6 +135,7 @@ export function useRuns(
       if (isTest !== undefined) params.test = String(isTest);
       if (statuses && statuses.length > 0) params.status = statuses.join(",");
       if (surface) params.surface = surface;
+      if (modality) params.modality = modality;
       if (modelLabel) params.model_label = modelLabel;
       if (userId) params.user_id = userId;
       if (conversationId) params.conversation_id = conversationId;
@@ -298,14 +303,30 @@ export function useRunTranscript(
  * Never refetched on its own: a manifest is written once when the run ends and
  * cannot change afterwards, so the app-wide cache is exactly right for it.
  */
+class PendingRunManifest extends Error {}
+
 export function useRunManifest(runId: string, options?: { enabled?: boolean }) {
   const { data, isLoading, error } = useQuery({
     queryKey: qk.runs.manifest(runId),
-    queryFn: () => apiClient.get<RunManifest>(`/runs/${runId}/manifest`),
+    queryFn: async () => {
+      try {
+        return await apiClient.get<RunManifest>(`/runs/${runId}/manifest`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          const run = await apiClient.get<AgentRun>(`/runs/${runId}`);
+          if (run.status === "running") throw new PendingRunManifest();
+          // Settlement may have committed between the missing record and the
+          // status read. Close that race with one fresh read, even for old runs.
+          return await apiClient.get<RunManifest>(`/runs/${runId}/manifest`);
+        }
+        throw error;
+      }
+    },
     enabled: options?.enabled ?? true,
-    // A 404 here is an answer, not a hiccup. Retrying it three times delays the
-    // panel that says so by as many round trips.
-    retry: false,
+    // An active run has no record until settlement. Only that state is polled;
+    // a terminal run's 404 and authorization/network errors remain final.
+    retry: (_count, error) => error instanceof PendingRunManifest,
+    retryDelay: 2000,
   });
   return { manifest: data, isLoading, error };
 }

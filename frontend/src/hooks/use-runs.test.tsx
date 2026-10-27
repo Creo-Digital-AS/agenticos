@@ -15,6 +15,7 @@ import {
   useSpend,
 } from "./use-runs";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { DASHBOARD_STALE_MS } from "@/lib/query-freshness";
 
 // `ApiError` stays real: the auto-resume path decides what to swallow by
 // reading the refusal's class, status and details.
@@ -111,6 +112,13 @@ describe("useRuns", () => {
         model_label: "gpt-4o-mini",
       },
     });
+  });
+
+  it("asks for voice calls only", async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0 });
+    const { result } = renderHook(() => useRuns(undefined, { modality: "voice" }), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(apiClient.get).toHaveBeenCalledWith("/runs", { params: { modality: "voice" } });
   });
 
   it("fetches nothing for a caller that is not ready to ask", () => {
@@ -532,19 +540,27 @@ describe("dashboard freshness", () => {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
 
-  it("asks again when the tab regains focus", async () => {
-    // The RUNS figure and Run history read this while an agent runs elsewhere,
-    // so on the app-wide five-minute cache they would sit at "0 runs" beside a
-    // Spend tab that already counted them until a full page reload.
-    vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0 });
-    const { result } = renderHook(() => useRuns(), { wrapper: appWrapper });
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(apiClient.get).toHaveBeenCalledTimes(1);
+  it("reuses its answer for half an hour, then asks again when the tab is looked at", async () => {
+    // Half an hour because what moves is pushed: the live feed marks runs stale
+    // as they change. A focus inside the window costs nothing.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0 });
+      const { result } = renderHook(() => useRuns(), { wrapper: appWrapper });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    focusManager.setFocused(false);
-    focusManager.setFocused(true);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      expect(apiClient.get).toHaveBeenCalledTimes(1);
 
-    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+      vi.setSystemTime(Date.now() + DASHBOARD_STALE_MS + 1);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+
+      await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -588,10 +604,41 @@ describe("useRunManifest", () => {
   it("surfaces the 404 rather than retrying it three times", async () => {
     // A run that recorded nothing is an answer, not a hiccup: retried, the panel
     // that says so arrives three round trips late.
-    vi.mocked(apiClient.get).mockRejectedValue(new ApiError(404, "nothing recorded"));
+    vi.mocked(apiClient.get)
+      .mockRejectedValueOnce(new ApiError(404, "nothing recorded"))
+      .mockResolvedValueOnce({ id: "run-1", status: "completed" })
+      .mockRejectedValueOnce(new ApiError(404, "nothing recorded"));
 
     const { result } = renderHook(() => useRunManifest("run-1"), { wrapper });
 
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(ApiError));
+    expect(apiClient.get).toHaveBeenCalledTimes(3);
+  });
+
+  it("finds a record committed between the initial 404 and the status read", async () => {
+    vi.mocked(apiClient.get)
+      .mockRejectedValueOnce(new ApiError(404, "not settled yet"))
+      .mockResolvedValueOnce({ id: "run-1", status: "completed" })
+      .mockResolvedValueOnce({ run_id: "run-1", transcript: [{ kind: "response" }] });
+    const { result } = renderHook(() => useRunManifest("run-1"), { wrapper });
+    await waitFor(() => expect(result.current.manifest).toBeDefined());
+    expect(result.current.error).toBeNull();
+  });
+
+  it("keeps an open active run loading until its manifest is written", async () => {
+    vi.mocked(apiClient.get)
+      .mockRejectedValueOnce(new ApiError(404, "not settled"))
+      .mockResolvedValueOnce({ id: "run-1", status: "running" })
+      .mockResolvedValueOnce({ run_id: "run-1", transcript: [{ kind: "response" }] });
+    const { result } = renderHook(() => useRunManifest("run-1"), { wrapper });
+    await waitFor(() => expect(result.current.manifest).toBeDefined());
+    expect(result.current.error).toBeNull();
+    expect(apiClient.get).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports a refused manifest without polling or reading the run", async () => {
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(403, "refused"));
+    const { result } = renderHook(() => useRunManifest("run-1"), { wrapper });
     await waitFor(() => expect(result.current.error).toBeInstanceOf(ApiError));
     expect(apiClient.get).toHaveBeenCalledTimes(1);
   });

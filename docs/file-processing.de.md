@@ -1,5 +1,5 @@
 ---
-source_sha: "27fe488f738b"
+source_sha: "e084d213e2b5"
 ---
 
 # Dateiverarbeitung { #file-processing }
@@ -397,6 +397,25 @@ Eine der beiden ließ den Schlüssel früher weg, statt ihn null zu senden, ein
 Client, der die Antwort normalisierte, bekam also von jeder eine andere Form
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
 
+**Auf `complete` warten, nicht auf Vektoren.** `GET /rag/collections/{name}/info`
+leitet `indexing_status` aus den verfolgten Dokumenten der Collection ab:
+`indexing`, solange eines davon noch `processing` ist - in der Warteschlange
+oder in der Ingestion - und `complete`, sobald keines mehr es ist.
+`processing_count`, `indexed_count` und `failed_count` geben an, wie viele
+Dokumente in welchem Zustand sind. Ein fehlgeschlagenes Dokument befindet sich
+in einem Endzustand und hält die Collection deshalb nicht auf `indexing`; es
+erscheint in `failed_count`. Das Feld war früher die Konstante `complete`, und
+`total_vectors` wächst, während der Worker einen Stapel abarbeitet - ein
+Skript, das auf eines von beiden wartete, fragte eine halb aufgebaute
+Collection ab ([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` beantwortet dasselbe für eine Wissensdatenbank und
+zählt die Dokumente, die ihre Seite auflistet, statt alles unter ihrem
+Collection-Namen, den eine andere Wissensdatenbank teilen kann; die Seite der
+Wissensdatenbank zeigt diesen Zustand neben der Dokumentanzahl. Ein Dokument,
+das in `processing` hängen bleibt, hält beide Antworten auf `indexing`, bis
+es gelöscht wird oder, bei einem synchronisierten Dokument, bis seine Quelle
+erneut synchronisiert.
+
 !!! danger "Die Aufgabe wird gestartet, nachdem die Transaktion der Anfrage committet"
 
     Sie wird mit `spawn_after_commit` übergeben, **nicht** mit `spawn`, und von der
@@ -416,11 +435,12 @@ der Arbeit des Flows.**
 **Ein Loop besitzt die Pools des Prozesses, und alles andere baut seine eigene
 Engine.** Die Lifespan der API beansprucht sie beim Start: sie bedient jede
 Anfrage und verwirft sie beim Herunterfahren, sie ist also der eine Loop, dessen
-Verbindungen sie zwischenspeichern dürfen. Außerhalb dieses Loops verhält sich
-`get_db_context` wie `get_worker_db_context` — eine `NullPool`-Engine für den
-Aufruf, am Ende verworfen — denn es wird aus Prefect-Flows erreicht (der Bericht,
-die MCP-Aktualisierung, Einladungs- und Freigabeaufgaben, die Kanal-Loops) und
-aus dem Embedding-Resolver eines Agents, jeweils auf einem eigenen Loop
+Verbindungen sie zwischenspeichern dürfen. Der Worker beansprucht sie ebenso für
+seinen einen Loop, und jeder Ingestion-Kindprozess für seinen eigenen. Außerhalb
+des besitzenden Loops verhält sich `get_db_context` wie `get_worker_db_context` —
+eine `NullPool`-Engine für den Aufruf, am Ende verworfen — denn es wird aus den
+Kanal-Loops und aus dem Embedding-Resolver eines Agents erreicht, jeweils auf
+einem eigenen Loop
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
 Die Wissenssuche eines Agents folgt derselben Regel für ihren Vektorspeicher: der
@@ -646,7 +666,7 @@ Ablehnung rät also nie zu einer Variablen.
 
 Diese Verschlechterung wird angekündigt statt angenommen. Die Auflösung trägt
 mit, auf welcher der fünf Quellen sie gelandet ist, und die Ingestion schreibt
-jeden verschlechterten Fall in das Log des Prefect-Runs, eine Collection, die
+jeden verschlechterten Fall in das Log des Workers, eine Collection, die
 schlicht keinen Schlüssel benennt, eingeschlossen. Vor Issue #306 war der
 Ingestion-Worker der eine Aufrufer, der den Resolver überhaupt nie fragte, jedes
 hochgeladene Dokument wurde also mit dem Model des Deployments und einem
@@ -1091,11 +1111,14 @@ Provider-SDK, `httpx`, `boto3` und der Google-Drive-Client legen alle die Anfrag
 die sie gerade machten, in ihre Ausnahmemeldung, und das heißt regelmäßig ein
 Endpunkt, ein interner Host, ein Bucket oder eine URL mit einem Schlüssel im
 Query-String — und anders als ein HTTP-Fehlerkörper wird eine Spalte Wochen später
-erneut gelesen, von jedem, der das gescheiterte Dokument öffnet. Dieser Text ist
-nicht verloren: jede dieser Aufrufstellen protokolliert ihn mit
-`logger.exception`, das Worker-Log hat also Meldung und Traceback, und ein
-Prefect-Flow, der erneut wirft, hat beides in seinem Run.
-`app/services/rag/failures.py` ist die Stelle, an der die beiden getrennt werden.
+erneut gelesen, von jedem, der das gescheiterte Dokument öffnet.
+
+Dieser Text ist nicht verloren: jede dieser Aufrufstellen protokolliert ihn mit
+`logger.exception`, das Worker-Log hat also Meldung und Traceback, und ein Job, der
+erneut wirft, hat Typ, Meldung und letzte Frames in seiner Zeile in
+`background_jobs`, wo nur der Eigentümer des Deployments sie liest.
+`app/services/rag/failures.py` ist die Stelle, an der Spalte und Log getrennt
+werden.
 
 Das Log ist ein kleineres Publikum als die Spalte, kein sicheres — behandeln Sie
 ein Worker-Log als etwas, das nur Betreiber lesen, und siehe [#440] dafür, warum
@@ -1404,9 +1427,12 @@ Folge dieselbe ist (#982).
 
 Das Klonen sagt es ebenfalls, und aus dem Grund oben: es ist der einzige Weg, das
 Publikum einer Source aus der eigenen UI dieses Produkts heraus zu ändern. Eine
-bestehende umzuhängen ist ein `PATCH` auf `collection_name`, das heute kein
-Bildschirm sendet - es gibt keinen Editor für Sources - es ist also über die API
-und die CLI erreichbar, wo der Audit-Eintrag oben es festhält.
+bestehende umzuhängen ist ein `PATCH` auf `collection_name` an
+`/rag/sync/sources/{id}`. Der Source-Editor im Tab **Sync** einer
+Wissensdatenbank sendet keines, und deren eigenes
+`PATCH /kb/{kb_id}/sync-sources/{source_id}` weist einen `collection_name` ab,
+der eine andere Datenbank nennt - das Umhängen ist also über die API und die CLI
+erreichbar, wo der Audit-Eintrag oben es festhält.
 
 ### Was ein neuer Connector schuldet { #what-a-new-connector-owes }
 
@@ -1534,7 +1560,7 @@ für eine bessere semantische Suche.
 
 ## Aus einem Kanal { #from-a-channel }
 
-Eine Datei, die an einen Slack-, Telegram- oder Mattermost-Bot gesendet wird,
+Eine Datei, die an einen Slack-, Teams-, Telegram- oder Mattermost-Bot gesendet wird,
 kommt hier herein, nicht daneben. Der Adapter holt sie mit den eigenen
 Zugangsdaten des Bots, sie durchläuft dieselbe Validierung wie ein Upload aus dem
 Browser, und sie wird dieselbe `ChatFile`-Zeile — das Routing oben gilt also

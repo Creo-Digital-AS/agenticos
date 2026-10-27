@@ -1,6 +1,6 @@
 "use client";
 
-import { Children, isValidElement, useLayoutEffect, useMemo, useRef } from "react";
+import { Children, isValidElement, memo, useLayoutEffect, useMemo, useRef } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -9,7 +9,7 @@ import { ExternalLink, ImageOff, PanelsTopLeft } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { BrandIcon } from "@/components/icons/brand-icon";
-import { brandForUrl, isAppLink } from "@/lib/link-brands";
+import { brandForUrl, consolePageIcon, isAppLink } from "@/lib/link-brands";
 import { rehypeStreamWords } from "@/lib/stream-words";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +17,10 @@ import { CollapsibleBlock } from "./collapsible-block";
 import { MarkdownQuote } from "./markdown-quote";
 import { MarkdownTable } from "./markdown-table";
 import type { MarkdownContentProps } from "./markdown-content";
+
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+const STREAM_PLUGINS = [rehypeHighlight, rehypeStreamWords];
 
 /** Parse `language-xyz` from a `<code>` className that rehype-highlight emits. */
 function languageLabel(className: string | undefined): string | null {
@@ -119,7 +123,7 @@ function textOf(node: React.ReactNode): string {
   return "";
 }
 
-export function MarkdownContent({
+export const MarkdownContent = memo(function MarkdownContent({
   content,
   onCiteClick,
   bareCode,
@@ -241,6 +245,8 @@ export function MarkdownContent({
         const app = !!href && isAppLink(href, window.location.origin);
         const isExternal = !app && !!href && /^https?:\/\//i.test(href);
         const brand = isExternal ? brandForUrl(href) : null;
+        // A console page the agent points at wears the sidebar's mark for it.
+        const PageIcon = !app && href ? consolePageIcon(href, window.location.origin) : null;
         const label = app && textOf(children) === href ? t("openApp") : children;
         return (
           <a
@@ -252,6 +258,12 @@ export function MarkdownContent({
           >
             {app && (
               <PanelsTopLeft
+                aria-hidden
+                className="text-foreground/70 inline h-[0.95em] w-[0.95em] shrink-0 translate-y-[0.1em]"
+              />
+            )}
+            {PageIcon && (
+              <PageIcon
                 aria-hidden
                 className="text-foreground/70 inline h-[0.95em] w-[0.95em] shrink-0 translate-y-[0.1em]"
               />
@@ -389,11 +401,11 @@ export function MarkdownContent({
 
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={streaming ? [rehypeHighlight, rehypeStreamWords] : [rehypeHighlight]}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={streaming ? STREAM_PLUGINS : REHYPE_PLUGINS}
       components={components}
     >
       {processed}
     </ReactMarkdown>
   );
-}
+});

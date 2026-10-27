@@ -91,7 +91,7 @@ class Document(BaseModel):
         return len(self.pages)
 
     @model_validator(mode="after")
-    def connect_pages(self) -> "Document":
+    def connect_pages(self) -> Document:
         for page in self.pages:
             page.parent_doc_id = self.id
         return self
@@ -186,7 +186,6 @@ class CollectionInfo(BaseModel):
     name: str
     total_vectors: int
     dim: int
-    indexing_status: str = "complete"
 
 
 class DocumentInfo(BaseModel):

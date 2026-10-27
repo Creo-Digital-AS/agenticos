@@ -15,26 +15,28 @@ words in somebody's mouth. A run that answered nothing but *did* something is th
 opposite case, and it is written: the calls are what happened.
 """
 
-from __future__ import annotations
-
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
+    RetryFeedbackPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
 
+from app.repositories.conversation import Attributed
 from app.services.transcript import (
     RecordedToolCall,
     TranscriptService,
@@ -46,7 +48,11 @@ pytestmark = pytest.mark.anyio
 
 
 def _run(
-    *, in_a_conversation: bool = True, channel_identity_id: uuid.UUID | None = None
+    *,
+    in_a_conversation: bool = True,
+    channel_identity_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+    publisher_fallback: bool = False,
 ) -> MagicMock:
     # `channel_identity_id` is named rather than left to the mock: an attribute
     # nobody set answers with a `MagicMock`, and this one is written to a column.
@@ -56,6 +62,8 @@ def _run(
         agent_version_id=uuid.uuid4(),
         conversation_id=uuid.uuid4() if in_a_conversation else None,
         channel_identity_id=channel_identity_id,
+        user_id=user_id,
+        initiated_by_publisher_fallback=publisher_fallback,
     )
 
 
@@ -124,10 +132,11 @@ class TestReadingToolCallsOffARun:
                     _called("web_search", "c1", query="refunds"),
                     ModelRequest(
                         parts=[
-                            RetryPromptPart(
+                            ToolReturnPart(
                                 content=vendor_text,
                                 tool_name="web_search",
                                 tool_call_id="c1",
+                                outcome="retried",
                             )
                         ]
                     ),
@@ -139,6 +148,85 @@ class TestReadingToolCallsOffARun:
             "The server log has the full error."
         )
         assert vendor_text in caplog.text
+
+    @pytest.mark.parametrize(
+        ("outcome", "notice"),
+        [
+            ("failed", "The lookup call failed. The server log has the full error."),
+            (
+                "retried",
+                "The lookup call failed and the model was asked to try again. The server log has the full error.",
+            ),
+        ],
+    )
+    def test_framework_errors_never_store_the_provider_payload(
+        self, outcome: Literal["failed", "retried"], notice: str
+    ) -> None:
+        calls = tool_calls_in(
+            [
+                _called("lookup", "c1"),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            "lookup",
+                            {"url": "https://provider.invalid/?key=fixture"},
+                            tool_call_id="c1",
+                            outcome=outcome,
+                        )
+                    ]
+                ),
+            ]
+        )
+        assert calls[0].result == notice
+
+    @pytest.mark.parametrize("tool_name", ["lookup", None])
+    def test_stored_retry_parts_load_without_a_history_migration(
+        self, tool_name: str | None
+    ) -> None:
+        messages = ModelMessagesTypeAdapter.validate_json(
+            json.dumps(
+                [
+                    {
+                        "kind": "response",
+                        "parts": (
+                            [
+                                {
+                                    "part_kind": "tool-call",
+                                    "tool_name": "lookup",
+                                    "args": {},
+                                    "tool_call_id": "old",
+                                }
+                            ]
+                            if tool_name
+                            else [{"part_kind": "text", "content": "invalid output"}]
+                        ),
+                    },
+                    {
+                        "kind": "request",
+                        "parts": [
+                            {
+                                "part_kind": "retry-prompt",
+                                "tool_name": tool_name,
+                                "tool_call_id": "old",
+                                "content": "provider error https://provider.invalid/?key=fixture",
+                            }
+                        ],
+                    },
+                ]
+            )
+        )
+        part = messages[-1].parts[0]
+        if tool_name:
+            assert isinstance(part, ToolReturnPart)
+            assert part.outcome == "retried"
+            assert (
+                tool_calls_in(messages)[0].result
+                == "The lookup call failed and the model was asked to try again. The server log has the full error."
+            )
+        else:
+            assert isinstance(part, RetryFeedbackPart)
+            assert tool_calls_in(messages) == []
+        assert settled_calls_in(messages) == {}
 
     def test_a_return_holding_a_url_is_stored_whole(self):
         """The success case is the tool's own answer, not a vendor's exception -
@@ -257,8 +345,11 @@ class TestReadingWhatAnInheritedCallReturned:
                 [
                     ModelRequest(
                         parts=[
-                            RetryPromptPart(
-                                content=vendor_text, tool_name="web_search", tool_call_id="c1"
+                            ToolReturnPart(
+                                content=vendor_text,
+                                tool_name="web_search",
+                                tool_call_id="c1",
+                                outcome="retried",
                             )
                         ]
                     )
@@ -282,7 +373,12 @@ class TestReadingWhatAnInheritedCallReturned:
         messages = [
             ModelRequest(
                 parts=[
-                    RetryPromptPart(content=vendor_text, tool_name="web_search", tool_call_id="c1")
+                    ToolReturnPart(
+                        content=vendor_text,
+                        tool_name="web_search",
+                        tool_call_id="c1",
+                        outcome="retried",
+                    )
                 ]
             )
         ]
@@ -294,6 +390,26 @@ class TestReadingWhatAnInheritedCallReturned:
 
 
 class TestWritingTheTranscript:
+    @pytest.fixture(autouse=True)
+    def steps(self):
+        # This class verifies persistence, not a paid post-commit model call.
+        with patch("app.services.follow_ups.queue_next_steps") as queued:
+            yield queued
+
+    async def test_non_socket_answers_defer_suggestions_after_their_saved_message(
+        self, conversations, files, steps
+    ):
+        db = _session()
+        run = _run()
+        run.organization_id = uuid.uuid4()
+        prompt_id, answer_id = uuid.uuid4(), uuid.uuid4()
+        conversations.create_message.side_effect = [
+            MagicMock(id=prompt_id),
+            MagicMock(id=answer_id),
+        ]
+        await TranscriptService(db).record(run, prompt="Question", answer="Answer")
+        steps.assert_called_once_with(db, answer_id, run.organization_id)
+
     @pytest.fixture
     def conversations(self):
         """The repository boundary, which is where the assertions belong."""
@@ -304,7 +420,7 @@ class TestWritingTheTranscript:
             # What this run's earlier turns already claim of its cost. Zero on an
             # ordinary turn; the subtraction is what stops a resumed run counting
             # its parked half twice.
-            repo.attributed_to_run = AsyncMock(return_value=(0, 0, Decimal(0)))
+            repo.attributed_to_run = AsyncMock(return_value=Attributed())
             yield repo
 
     @pytest.fixture
@@ -422,6 +538,22 @@ class TestWritingTheTranscript:
         assert (answer["role"], answer["content"], answer["run_id"]) == ("assistant", "two", run.id)
         assert answer["model_name"] == "gpt-4.1"
 
+    async def test_a_resumed_turn_records_only_its_own_cache_split(self, conversations):
+        """The row is cumulative across a park, so the continuation is written
+        with what it added - the cache counts as much as the tokens (#2170)."""
+        run = _run()
+        run.input_tokens, run.output_tokens, run.cost_usd = 900, 90, Decimal("0.9")
+        run.cache_read_tokens, run.cache_write_tokens = 700, 150
+        conversations.attributed_to_run = AsyncMock(
+            return_value=Attributed(400, 40, Decimal("0.4"), 300, 100)
+        )
+
+        await TranscriptService(_session()).record(run, prompt=None, answer="done")
+
+        answer = conversations.create_message.await_args_list[-1].kwargs
+        assert (answer["cache_read_tokens"], answer["cache_write_tokens"]) == (400, 50)
+        assert answer["input_tokens"] == 500
+
     async def test_the_answer_records_the_size_of_the_request_it_came_out_of(self, conversations):
         """Not the run's totals beside it: those sum every request of a tool loop,
         and this is the anchor a replayed history is measured against - a
@@ -460,6 +592,20 @@ class TestWritingTheTranscript:
 
         prompt = conversations.create_message.await_args_list[0].kwargs
         assert prompt["channel_identity_id"] is None
+
+    async def test_a_turn_names_whoever_started_the_run_and_only_them(self, conversations):
+        """A key's caller typed what their run was asked; a visitor running as the
+        publisher did not, and a chat account already says who it was."""
+        starter = uuid.uuid4()
+        for run, expected in (
+            (_run(user_id=starter), starter),
+            (_run(user_id=starter, publisher_fallback=True), None),
+            (_run(user_id=starter, channel_identity_id=uuid.uuid4()), None),
+        ):
+            conversations.create_message.reset_mock()
+            await TranscriptService(_session()).record(run, prompt="hej", answer="czesc")
+            prompt = conversations.create_message.await_args_list[0].kwargs
+            assert prompt["author_user_id"] == expected
 
     async def test_the_answer_is_attributed_to_the_version_that_ran(self, conversations):
         """An agent is rewritten between runs. Attributing last Tuesday's answer

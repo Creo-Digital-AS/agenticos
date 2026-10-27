@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo } from "react";
+import {
+  queryOptions,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { getErrorMessage } from "@/lib/api-error";
 import { apiClient } from "@/lib/api-client";
+import { invalidateSpeechSettings } from "@/lib/dictation-api";
+import { runsAgents } from "@/lib/model-profiles";
 import { qk } from "@/lib/query-keys";
 import type { ModelApi, ModelProfile, ModelProfileList, ProviderCatalog } from "@/types/providers";
 export interface NewModelProfile {
@@ -83,10 +91,39 @@ export function useModelProviders() {
     queryFn: () => apiClient.get<ModelProfileList>("/providers/model-profiles"),
   });
 
+  const providerIds = useMemo(
+    () => [...new Set(profiles.data?.items.map((profile) => profile.provider) ?? [])],
+    [profiles.data?.items],
+  );
+  // Observe listings already fetched by model forms, without making requests.
+  // A profile may have arrived before its listing, or from another API replica
+  // that has not cached it; saved-model pickers must still honor the answer.
+  const listings = useQueries({
+    // Disabled subscriptions share the active form's fetcher and retry policy.
+    queries: providerIds.map((provider) => ({ ...providerModelsQuery(provider), enabled: false })),
+    combine: (queries) => queries.map((query) => query.data),
+  });
+  const classifiedProfiles = useMemo(
+    () =>
+      (profiles.data?.items ?? []).map((profile) => {
+        const listing = listings[providerIds.indexOf(profile.provider)];
+        const refused = listing?.items.some(
+          (model) => model.id === profile.model && !runsAgents(model),
+        );
+        return !profile.base_url && refused ? { ...profile, chat_capable: false } : profile;
+      }),
+    [profiles.data?.items, providerIds, listings],
+  );
+
   const invalidate = useCallback(
     // Not `providers.all()`: that prefix covers the catalog, which no mutation
-    // can change and which every dialog on the page needs to stay open.
-    () => queryClient.invalidateQueries({ queryKey: qk.providers.modelProfiles() }),
+    // can change and which every dialog on the page needs to stay open. Speech
+    // to text yes: a profile is one of the credentials a recording is sent with.
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.providers.modelProfiles() }),
+        invalidateSpeechSettings(queryClient),
+      ]),
     [queryClient],
   );
 
@@ -112,7 +149,7 @@ export function useModelProviders() {
 
   return {
     catalog: catalog.data?.items ?? [],
-    profiles: profiles.data?.items ?? [],
+    profiles: classifiedProfiles,
     /**
      * What `profiles` currently is: the organization's answer, a placeholder
      * while the read is in flight, or a read that failed.
@@ -139,6 +176,8 @@ export interface ProviderModel {
   name: string;
   /** Tokens the model accepts, when the provider says. */
   context_length?: number | null;
+  /** False for a model the platform knows an agent cannot run on (#2487). */
+  chat_capable?: boolean;
 }
 
 interface ProviderModelList {
@@ -150,6 +189,17 @@ interface ProviderModelList {
    * could not be reached.
    */
   source: "live" | "curated" | "unlisted";
+}
+
+function providerModelsQuery(providerId: string) {
+  return queryOptions({
+    queryKey: qk.providers.models(providerId),
+    queryFn: () => apiClient.get<ProviderModelList>(`/providers/${providerId}/models`),
+    staleTime: 60 * 60 * 1000,
+    // An empty dropdown is the fallback the field is built for, so a provider
+    // that cannot be reached must not retry three times behind an open form.
+    retry: false,
+  });
 }
 
 /**
@@ -165,17 +215,18 @@ interface ProviderModelList {
  * its first key should not have to reload to see a list.
  */
 export function useProviderModels(providerId: string) {
-  const { data, isLoading } = useQuery({
-    queryKey: qk.providers.models(providerId),
-    queryFn: () => apiClient.get<ProviderModelList>(`/providers/${providerId}/models`),
+  const { data, isFetching } = useQuery({
+    ...providerModelsQuery(providerId),
     enabled: providerId !== "",
-    staleTime: 60 * 60 * 1000,
-    // An empty dropdown is the fallback the field is built for, so a provider
-    // that cannot be reached must not retry three times behind an open form.
-    retry: false,
   });
 
-  return { models: data?.items ?? [], source: data?.source ?? null, isLoading };
+  // Both fields this fills choose a model to talk to, so a speech or embedding
+  // model is not a suggestion (#2487). The field stays free text, so the ids
+  // left out are returned too, for a form to refuse one typed in.
+  const items = data?.items ?? [];
+  const models = items.filter(runsAgents);
+  const refused = items.filter((entry) => !runsAgents(entry)).map((entry) => entry.id);
+  return { models, refused, source: data?.source ?? null, isLoading: isFetching };
 }
 
 /** One model that draws. */
@@ -225,6 +276,8 @@ export interface SpeechToTextProvider {
 interface SpeechToTextProviderList {
   items: SpeechToTextProvider[];
   total: number;
+  /** ISO-639-1 codes a recording may be pinned to. */
+  languages: string[];
 }
 
 /**
@@ -235,14 +288,23 @@ interface SpeechToTextProviderList {
  * API shape has no client, never reaches here - a picker entry that fails when
  * somebody sends a voice note is worse than one that is absent.
  *
- * A catalog, not a listing. It says what the deployment can offer, not what this
- * organization has a key for; the key is resolved from its model profiles when a
- * recording actually arrives.
+ * A catalog, not a listing: no credential is read. Which keys a provider has is
+ * the key picker's to say (`SpeechKeyField`), from the vault itself.
  */
 export function useSpeechToTextProviders() {
   const { data, isLoading, isError } = useQuery({
     queryKey: qk.providers.speechToTextModels(),
     queryFn: () => apiClient.get<SpeechToTextProviderList>("/providers/speech-to-text-models"),
+    retry: false,
+  });
+
+  return { providers: data?.items ?? [], languages: data?.languages ?? [], isLoading, isError };
+}
+
+export function useImageProviders() {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: qk.providers.imageModels(),
+    queryFn: () => apiClient.get<ImageProviderList>("/providers/image-models"),
     // Fixed until the platform is redeployed, like the provider catalog.
     staleTime: Infinity,
     retry: false,
@@ -251,10 +313,99 @@ export function useSpeechToTextProviders() {
   return { providers: data?.items ?? [], isLoading, isError };
 }
 
-export function useImageProviders() {
+/** One voice a provider offers to every account. */
+export interface TextToSpeechVoice {
+  id: string;
+  name: string;
+  description: string;
+}
+
+/** One model that speaks, with the voices it can speak in. */
+export interface TextToSpeechModel {
+  id: string;
+  name: string;
+  description: string;
+  max_characters: number;
+  takes_instructions: boolean;
+  /** Empty where the provider's voices belong to the account. */
+  voices: TextToSpeechVoice[];
+}
+
+/** One provider that can speak, and what may be chosen on it. */
+export interface TextToSpeechProvider {
+  provider: string;
+  name: string;
+  formats: string[];
+  /** Whether a binding names one of the account's own voices by id. */
+  account_voices: boolean;
+  models: TextToSpeechModel[];
+}
+
+interface TextToSpeechProviderList {
+  items: TextToSpeechProvider[];
+  total: number;
+}
+
+/**
+ * The providers that can speak a text aloud, with their models and voices.
+ *
+ * The catalog is `app/core/catalog/text_to_speech_models.json`, served whole: a
+ * model or a voice released this morning is a catalog entry rather than a frontend
+ * release. ElevenLabs lists no voices because its voices belong to the account,
+ * and `account_voices` says so. No credential is read.
+ */
+export function useTextToSpeechProviders() {
   const { data, isLoading, isError } = useQuery({
-    queryKey: qk.providers.imageModels(),
-    queryFn: () => apiClient.get<ImageProviderList>("/providers/image-models"),
+    queryKey: qk.providers.textToSpeechModels(),
+    queryFn: () => apiClient.get<TextToSpeechProviderList>("/providers/text-to-speech-models"),
+    // Fixed until the platform is redeployed, like the provider catalog.
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  return { providers: data?.items ?? [], isLoading, isError };
+}
+
+/** One model that makes video, and what it can make. */
+export interface VideoModel {
+  id: string;
+  name: string;
+  description: string;
+  min_seconds: number;
+  max_seconds: number;
+  /** Whether a call may ask for a length; where not, the model decides its own. */
+  duration_choosable: boolean;
+  /** The first is the default. */
+  aspect_ratios: string[];
+  /** The first is the default. */
+  resolutions: string[];
+  audio: "always" | "optional" | "never";
+  first_frame: boolean;
+}
+
+/** One provider that can make video, and what may be chosen on it. */
+export interface VideoProvider {
+  provider: string;
+  name: string;
+  models: VideoModel[];
+}
+
+interface VideoProviderList {
+  items: VideoProvider[];
+  total: number;
+}
+
+/**
+ * The providers that can make a video, and what each of their models can make.
+ *
+ * The catalog is `app/core/catalog/video_models.json`, served whole, so the
+ * Builder offers only the lengths, shapes and resolutions the chosen model
+ * renders. No credential is read.
+ */
+export function useVideoProviders() {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: qk.providers.videoModels(),
+    queryFn: () => apiClient.get<VideoProviderList>("/providers/video-models"),
     // Fixed until the platform is redeployed, like the provider catalog.
     staleTime: Infinity,
     retry: false,
