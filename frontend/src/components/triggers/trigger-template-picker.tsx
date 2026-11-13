@@ -1,14 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 
 import { EventSourceMark } from "@/components/triggers/event-source-mark";
-import { Label } from "@/components/ui";
+import { ChevronDown, LayoutTemplate } from "lucide-react";
+import { FORM_CONTROL } from "@/components/ui/control-styles";
+import { Label, Popover, PopoverContent, PopoverTrigger, Spinner } from "@/components/ui";
 import { useTriggerTemplates } from "@/hooks";
 import { templateIcon } from "@/lib/trigger-template-icons";
 import { cn } from "@/lib/utils";
 import type { TriggerTemplate } from "@/types/trigger-templates";
 import type { EventSource, TriggerType } from "@/types/triggers";
+
+/** Templates in sight before Show more - three, beside Start from scratch. */
+const SHOWN_TEMPLATES = 3;
 
 interface TriggerTemplatePickerProps {
   /** Which flow's cards to offer - a template never crosses modes. */
@@ -32,8 +38,11 @@ interface TriggerTemplatePickerProps {
  * sits in: every schedule template on the New-schedule flow, one source's event
  * templates on that source's message step - a prompt written for a GitHub issue
  * makes no sense against an inbound email. "Start from scratch" stays for the
- * case a template does not cover. Nothing is shown while the catalog loads or
- * when nothing fits - the flow then just opens on the blank form it always had.
+ * case a template does not cover, first, so writing your own is never below the
+ * fold; three templates follow and the rest wait behind Show more - a page of
+ * cards pushed the message itself out of sight. Nothing is shown while the
+ * catalog loads or when nothing fits - the flow then just opens on the blank
+ * form it always had.
  */
 export function TriggerTemplatePicker({
   triggerType,
@@ -44,6 +53,7 @@ export function TriggerTemplatePicker({
 }: TriggerTemplatePickerProps) {
   const t = useTranslations("triggers");
   const { templates, isLoading } = useTriggerTemplates();
+  const [expanded, setExpanded] = useState(false);
 
   const offered = templates.filter((template) =>
     triggerType === "schedule"
@@ -52,12 +62,34 @@ export function TriggerTemplatePicker({
   );
 
   if (isLoading || offered.length === 0) return null;
+  // A picked template stays in sight, wherever it sits in the catalog - so
+  // there is nothing to fold away while it is picked.
+  const pickedBelow =
+    offered.findIndex((template) => template.key === selectedKey) >= SHOWN_TEMPLATES;
+  const showAll = expanded || pickedBelow;
+  const shown = showAll ? offered : offered.slice(0, SHOWN_TEMPLATES);
 
   return (
     <div className="space-y-1.5">
       <Label>{t("templatesLabel")}</Label>
       <div className="grid gap-2 sm:grid-cols-2">
-        {offered.map((template) => {
+        <button
+          type="button"
+          onClick={onScratch}
+          aria-pressed={selectedKey === null}
+          className={cn(
+            "rounded-md border p-2.5 text-left transition-colors",
+            selectedKey === null
+              ? "border-foreground/30 bg-accent"
+              : "border-input hover:border-foreground/30",
+          )}
+        >
+          <p className="text-sm font-medium">{t("templateScratch")}</p>
+          <p className="text-muted-foreground text-xs">
+            {triggerType === "schedule" ? t("templateScratchHelp") : t("templateScratchHelpEvent")}
+          </p>
+        </button>
+        {shown.map((template) => {
           const active = template.key === selectedKey;
           const Glyph = templateIcon(template.key);
           return (
@@ -90,23 +122,78 @@ export function TriggerTemplatePicker({
             </button>
           );
         })}
+      </div>
+      {offered.length > SHOWN_TEMPLATES && !pickedBelow && (
         <button
           type="button"
-          onClick={onScratch}
-          aria-pressed={selectedKey === null}
+          onClick={() => setExpanded(!expanded)}
+          className="text-muted-foreground hover:text-foreground text-sm font-medium"
+        >
+          {expanded
+            ? t("templatesFewer")
+            : t("templatesMore", { count: offered.length - SHOWN_TEMPLATES })}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A stable-height entry point: catalog arrivals never move the message editor. */
+export function TriggerTemplateSelector(props: TriggerTemplatePickerProps) {
+  const t = useTranslations("triggers");
+  const [open, setOpen] = useState(false);
+  const { templates, isLoading, error } = useTriggerTemplates();
+  const selected = templates.find((template) => template.key === props.selectedKey);
+  const available = templates.some((template) =>
+    props.triggerType === "schedule"
+      ? template.trigger_type === "schedule"
+      : template.trigger_type === "event" && template.event_source === props.eventSource,
+  );
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={t("templatesLabel")}
           className={cn(
-            "rounded-md border p-2.5 text-left transition-colors",
-            selectedKey === null
-              ? "border-foreground/30 bg-accent"
-              : "border-input hover:border-foreground/30",
+            FORM_CONTROL,
+            "flex h-10 w-full items-center gap-2.5 px-3 text-left text-sm",
           )}
         >
-          <p className="text-sm font-medium">{t("templateScratch")}</p>
-          <p className="text-muted-foreground text-xs">
-            {triggerType === "schedule" ? t("templateScratchHelp") : t("templateScratchHelpEvent")}
-          </p>
+          <LayoutTemplate aria-hidden className="text-muted-foreground size-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{selected?.label ?? t("templatesLabel")}</span>
+          {isLoading ? (
+            <Spinner aria-hidden className="size-4 shrink-0" />
+          ) : (
+            <ChevronDown aria-hidden className="text-muted-foreground size-4 shrink-0" />
+          )}
         </button>
-      </div>
-    </div>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-3"
+        style={{ backgroundColor: "var(--color-card)" }}
+      >
+        {isLoading ? (
+          <Spinner className="mx-auto my-4 size-5" />
+        ) : available ? (
+          <TriggerTemplatePicker
+            {...props}
+            onPick={(template) => {
+              props.onPick(template);
+              setOpen(false);
+            }}
+            onScratch={() => {
+              props.onScratch();
+              setOpen(false);
+            }}
+          />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            {t(error ? "templatesLoadFailed" : "templatesUnavailable")}
+          </p>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }

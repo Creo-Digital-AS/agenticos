@@ -1,17 +1,25 @@
 "use client";
 
 import { Fragment, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 
 import { useAgents } from "@/hooks";
+import { consoleLink, pointAt } from "@/lib/assistant-highlight";
+import { buildAssistantParts } from "@/lib/conversation-to-chat";
 import { dayLabel, startsADay } from "@/lib/day-separator";
-import type { ChatMessage, TurnUsage } from "@/types";
+import type { AskedBefore } from "@/components/datasets/follows-on";
+import type { ChatMessage, TurnUsage, Delegation } from "@/types";
 import type { PinnedPrompts } from "./chat-container";
 import { MessageItem } from "./message-item";
 
 interface MessageListProps {
   messages: ChatMessage[];
+  delegations?: Delegation[];
   onRegenerate?: (messageId: string) => void;
+  /** Fork the conversation at this answer; absent where the reader may not (#2762). */
+  onFork?: (messageId: string) => void;
+  forkingMessageId?: string | null;
   /** The test panel's pinned questions; a question here can be pinned or taken off. */
   pins?: PinnedPrompts;
 }
@@ -75,33 +83,152 @@ export function continuesTurn(messages: ChatMessage[], index: number): boolean {
   return message.groupId !== undefined && message.groupId === previous.groupId;
 }
 
+/**
+ * The question an assistant message replied to, and whether anything came before it.
+ *
+ * Undefined for a user message, or an answer with no question above it.
+ */
+export function askedBefore(messages: ChatMessage[], index: number): AskedBefore | undefined {
+  if (messages[index]?.role !== "assistant") return undefined;
+  for (let at = index - 1; at >= 0; at--) {
+    const message = messages[at];
+    if (message?.role === "user") return { question: message.content, earlier: at > 0 };
+  }
+  return undefined;
+}
+
 /** Whether the turn ends here, so the time and the cost belong under this message. */
 export function endsTurn(messages: ChatMessage[], index: number): boolean {
   return !continuesTurn(messages, index + 1);
 }
 
-/**
- * What the turn cost, wherever in it that was recorded.
- *
- * The figure belongs to the turn and not to the segment that happened to carry
- * it: a run reports what it has spent when it parks, which is the *first*
- * segment, so a footer drawn from the message it sits on put the tokens and the
- * cost in the middle of the answer with nothing under the end of it.
- *
- * The last segment that recorded anything wins, because each figure is the run's
- * total as at that point rather than that segment's own share - summing them
- * would count the first segment twice.
+/** One chronological timeline per adjacent run, without rewriting stored messages.
+ * Progress text stays beside its tools, and the last segment supplies the answer.
  */
-export function turnUsage(messages: ChatMessage[], index: number): TurnUsage | undefined {
-  // The walk cannot run off the start: `continuesTurn` is false at index 0, which
-  // is what stops it, so no bound is needed and none is written - a guard that
-  // cannot fail is a line no test can reach.
-  let at = index;
-  while (messages[at]?.usage === undefined && continuesTurn(messages, at)) at--;
-  return messages[at]?.usage;
+export function coalesceActivity(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+  for (const message of messages) {
+    const previous = result.at(-1);
+    const sameRun =
+      previous?.runId && message.runId
+        ? previous.runId === message.runId
+        : previous?.groupId && message.groupId && previous.groupId === message.groupId;
+    if (
+      !previous ||
+      previous.role !== "assistant" ||
+      message.role !== "assistant" ||
+      !sameRun ||
+      previous.files?.length ||
+      previous.fileIds?.length ||
+      previous.replyTo ||
+      previous.agentId !== message.agentId
+    ) {
+      result.push(message);
+      continue;
+    }
+    const calls = new Map(
+      [...(previous.toolCalls ?? []), ...(message.toolCalls ?? [])].map((call) => [call.id, call]),
+    );
+    const parts = new Map(
+      [
+        ...(previous.parts ??
+          buildAssistantParts(
+            previous.toolCalls ?? [],
+            previous.content,
+            previous.id,
+            previous.thinking,
+          )),
+        ...(message.parts ??
+          buildAssistantParts(
+            message.toolCalls ?? [],
+            message.content,
+            message.id,
+            message.thinking,
+          )),
+      ].map((part) => [part.id, part]),
+    );
+    result[result.length - 1] = {
+      ...message,
+      renderKey: previous.renderKey ?? previous.id,
+      timestamp: previous.timestamp,
+      fileSource: message.fileSource ?? previous.fileSource,
+      runStartedAt: previous.runStartedAt ?? message.runStartedAt,
+      runDurationMs: message.runDurationMs ?? previous.runDurationMs,
+      toolCalls: [...calls.values()],
+      parts: [...parts.values()].map((part) =>
+        part.toolCall ? { ...part, toolCall: calls.get(part.toolCall.id) ?? part.toolCall } : part,
+      ),
+      thinking: [previous.thinking, message.thinking].filter(Boolean).join("\n\n") || undefined,
+      usage: message.usage ?? previous.usage,
+    };
+  }
+  return result;
 }
 
-export function MessageList({ messages, onRegenerate, pins }: MessageListProps) {
+interface MessageLayout {
+  message: ChatMessage;
+  groupPosition?: "first" | "middle" | "last" | "single";
+  continuesTurn: boolean;
+  endsTurn: boolean;
+  turnUsage?: TurnUsage;
+  request?: string;
+}
+
+/** Prepare transcript-wide relationships once per update, in linear time.
+ * Usage is a run's latest cumulative figure, and the nearest user message owns
+ * the request even when it contains only a file. Group positions also include
+ * nonadjacent segments, while turn continuation still requires adjacency.
+ */
+export function layoutMessages(messages: ChatMessage[]): MessageLayout[] {
+  const groups = new Map<string, number[]>();
+  messages.forEach((message, index) => {
+    if (!message.groupId) return;
+    const indices = groups.get(message.groupId);
+    if (indices) indices.push(index);
+    else groups.set(message.groupId, [index]);
+  });
+  const positions = new Map<number, MessageLayout["groupPosition"]>();
+  groups.forEach((indices) => {
+    indices.forEach((index, position) => {
+      positions.set(
+        index,
+        indices.length === 1
+          ? "single"
+          : position === 0
+            ? "first"
+            : position === indices.length - 1
+              ? "last"
+              : "middle",
+      );
+    });
+  });
+  let usage: TurnUsage | undefined;
+  let request: string | undefined;
+  return messages.map((message, index) => {
+    const continues = continuesTurn(messages, index);
+    const ends = endsTurn(messages, index);
+    usage = message.usage ?? (continues ? usage : undefined);
+    if (message.role === "user") request = message.content || undefined;
+    return {
+      message,
+      groupPosition: positions.get(index),
+      continuesTurn: continues,
+      endsTurn: ends,
+      turnUsage: usage,
+      request: message.role === "assistant" && ends ? request : undefined,
+    };
+  });
+}
+
+export function MessageList({
+  messages: sourceMessages,
+  delegations,
+  onRegenerate,
+  onFork,
+  forkingMessageId = null,
+  pins,
+}: MessageListProps) {
+  const messages = useMemo(() => coalesceActivity(sourceMessages), [sourceMessages]);
   // Agents are resolved here rather than stamped onto the message, so a renamed
   // agent is labelled by its current name and a new picture appears on old
   // turns. The query is the one the agent picker already made, so this costs a
@@ -109,20 +236,9 @@ export function MessageList({ messages, onRegenerate, pins }: MessageListProps) 
   // part in before it was retired still has to say who answered.
   const { agents } = useAgents({ includeArchived: true });
   const byId = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const router = useRouter();
 
-  const getGroupPosition = (
-    message: ChatMessage,
-  ): "first" | "middle" | "last" | "single" | undefined => {
-    if (!message.groupId) return undefined;
-
-    const groupMessages = messages.filter((m) => m.groupId === message.groupId);
-    if (groupMessages.length <= 1) return "single";
-
-    const groupIndex = groupMessages.findIndex((m) => m.id === message.id);
-    if (groupIndex === 0) return "first";
-    if (groupIndex === groupMessages.length - 1) return "last";
-    return "middle";
-  };
+  const layout = useMemo(() => layoutMessages(messages), [messages]);
 
   // Only allow regenerating the most recent assistant message - older ones
   // would diverge the transcript in a confusing way.
@@ -132,31 +248,53 @@ export function MessageList({ messages, onRegenerate, pins }: MessageListProps) 
     }
     return -1;
   })();
+  const lastAssistantId = messages[lastAssistantIndex]?.id;
+  const regenerateLast = useMemo(() => {
+    if (onRegenerate === undefined || lastAssistantId === undefined) return undefined;
+    return () => onRegenerate(lastAssistantId);
+  }, [onRegenerate, lastAssistantId]);
   const openStepsAt = lastToolTurnIndex(messages);
   const timestamps = messages.map((message) => message.timestamp);
   const now = new Date();
 
+  // "Show me" (#2301): a console link an agent wrote opens that page in the
+  // console and points at the control its `?highlight=` names, as the
+  // Architect's links do - rather than reloading the whole app.
+  const onClickCapture = (event: React.MouseEvent) => {
+    const anchor = (event.target as Element).closest("a");
+    const link = consoleLink(anchor?.getAttribute("href") ?? null, window.location.origin);
+    if (link === null) return;
+    event.preventDefault();
+    router.push(link.path);
+    if (link.anchor) void pointAt(link.anchor, link.path);
+  };
+
   return (
-    <div className="space-y-0">
-      {messages.map((message, index) => (
+    <div className="space-y-0" onClickCapture={onClickCapture}>
+      {layout.map(({ message, ...row }, index) => (
         <Fragment key={message.renderKey ?? message.id}>
           {/* Never inside a turn: a run that crossed midnight is still one answer. */}
-          {!continuesTurn(messages, index) && startsADay(timestamps, index, now) && (
+          {!row.continuesTurn && startsADay(timestamps, index, now) && (
             <DaySeparator at={message.timestamp} now={now} />
           )}
           <MessageItem
             message={message}
+            delegations={index === lastAssistantIndex ? delegations : undefined}
             agent={message.agentId ? byId.get(message.agentId) : undefined}
-            groupPosition={getGroupPosition(message)}
-            continuesTurn={continuesTurn(messages, index)}
-            endsTurn={endsTurn(messages, index)}
-            turnUsage={turnUsage(messages, index)}
+            groupPosition={row.groupPosition}
+            continuesTurn={row.continuesTurn}
+            endsTurn={row.endsTurn}
+            turnUsage={row.turnUsage}
             openLastStep={index === openStepsAt}
             pins={pins}
             agents={agents}
+            asked={askedBefore(messages, index)}
+            request={pins ? undefined : row.request}
+            onFork={onFork}
+            forkingMessageId={forkingMessageId}
             onRegenerate={
               onRegenerate && index === lastAssistantIndex && !message.isStreaming
-                ? () => onRegenerate(message.id)
+                ? regenerateLast
                 : undefined
             }
           />

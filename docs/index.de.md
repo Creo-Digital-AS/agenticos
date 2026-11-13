@@ -1,5 +1,5 @@
 ---
-source_sha: "ef634a1ced73"
+source_sha: "5586ac2f392a"
 ---
 
 <div class="agenticos-hero" markdown>
@@ -9,17 +9,18 @@ source_sha: "ef634a1ced73"
 <p class="agenticos-hero__name">AgenticOS</p>
 
 <p class="agenticos-hero__tagline">
-Geben Sie KI-Agents konkrete Aufgaben in Ihrem Team. Erstellen Sie Agents im Browser, verbinden Sie Dokumente und Werkzeuge und betreiben Sie sie auf Infrastruktur unter Ihrer Kontrolle.
+Open-Source-Plattform für die KI-Teammates Ihres Unternehmens, auf eigener Infrastruktur. Agents mit eigenen Servern und Modellen bauen, betreiben und steuern: gemeinsamer Chat, RAG, Skills, ein echter Browser, MCP, Budgets, Freigaben und Audit-Protokoll.
 </p>
 
 <p class="agenticos-hero__badges">
 <a href="https://github.com/vstorm-co/agenticos/actions"><img src="https://img.shields.io/github/actions/workflow/status/vstorm-co/agenticos/ci.yml?branch=main&label=tests" alt="Tests"></a>
 <a href="https://github.com/vstorm-co/agenticos/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Licence"></a>
 <a href="https://github.com/vstorm-co/agenticos"><img src="https://img.shields.io/github/stars/vstorm-co/agenticos?style=flat" alt="Stars"></a>
-<img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
+<img src="https://img.shields.io/badge/python-3.15-blue" alt="Python 3.15">
 </p>
 
 <p class="agenticos-hero__links" markdown>
+<a href="https://vstorm-co.github.io/vstormos-landing/">AgenticOS</a> ·
 **Dokumentation**: <a href="https://vstorm-co.github.io/agenticos/">vstorm-co.github.io/agenticos</a><br>
 **Quellcode**: <a href="https://github.com/vstorm-co/agenticos">github.com/vstorm-co/agenticos</a>
 </p>
@@ -32,6 +33,10 @@ Beginnen Sie mit einer überprüfbaren Antwort aus einem Handbuch. Testen Sie da
 
 Ihr Team verantwortet den Betrieb. Modelle, Parsing, Embeddings, Werkzeuge und Tracing können je nach Konfiguration externe Dienste nutzen.
 
+
+Mit [Workflows](https://vstorm-co.github.io/agenticos/de/workflows/) verbinden Sie typisierte Schritte, Agent-Aufrufe und MCP-Tools auf einer visuellen Arbeitsfläche. Strukturierte Ergebnisse stehen in [Virtual Tables](https://vstorm-co.github.io/agenticos/de/virtual-tables/); [Routines](https://vstorm-co.github.io/agenticos/de/triggers/) starten die Arbeit. Runs und Freigaben bleiben überprüfbar. [Sprachanrufe](https://vstorm-co.github.io/agenticos/de/voice/) und die [Desktop-App](https://vstorm-co.github.io/agenticos/de/desktop/) nutzen dieselben veröffentlichten Agents.
+
+Beginnen Sie mit einer konkreten Aufgabe: einem [LLM-Wiki in einem Project](https://vstorm-co.github.io/agenticos/de/projects/), einem [Agent-Widget auf einer Website](https://vstorm-co.github.io/agenticos/de/channels/) oder Teamarbeit mit gemeinsamen Projektdateien und Anweisungen. Das Widget stellt die Unterhaltung bereit; Empfehlungen und Warenkorb-Aktionen erfordern Ihren Katalog, Tool-Integrationen und Berechtigungsprüfungen.
 
 ---
 
@@ -140,10 +145,14 @@ um ihn herum.
 
 ## Voraussetzungen { #requirements }
 
+Podman-Installationen verwenden den [manuellen Docker-Compose-Weg](deploy.md#podman-support)
+mit zusätzlichem Override für Sandbox-Socket und Workspace-Berechtigungen. Der
+Quickstart unterstützt Docker; `podman-compose` 1.6.0 wird nicht unterstützt.
+
 Docker und Docker Compose. Das ist die ganze Liste — Postgres (mit pgvector),
 Redis, die API, der Worker und die Konsole starten gemeinsam.
 
-Sie wollen die Dienste lieber von Hand betreiben? Python 3.12, Node mit
+Sie wollen die Dienste lieber von Hand betreiben? Python 3.15, Node mit
 [bun](https://bun.sh), PostgreSQL 16 mit
 [pgvector](https://github.com/pgvector/pgvector) und Redis.
 
@@ -230,7 +239,7 @@ eine Antwort.
 
 Veröffentlichen Sie ihn, und er läuft auf jeder Oberfläche gleich: im Chat der
 Konsole, auf einer gehosteten Seite, in einem eingebetteten Widget, über die
-HTTP-API, in Slack, Telegram, Mattermost.
+HTTP-API, in Slack, Teams, Telegram, Mattermost, Discord.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/agents/$AGENT_ID/run \
@@ -250,11 +259,11 @@ Frage kam.
 | **Agents** | In einer UI gebaut, beim Veröffentlichen versioniert, als YAML in Ihr eigenes git-Repository exportierbar |
 | **[Capabilities](reference/capabilities.md)** | Retrieval, Websuche und Abruf, ein echter Browser, Python, eine Sandbox mit Dateien und Shell, Diagramme, Bilder, Delegation, Planung, Guardrails — pro Agent eingeschaltet |
 | **[Integrationen](mcp.md)** | Kompatible MCP-Server, mit 59 gängigen im Picker — GitHub, Linear, Notion, Slack, Stripe, Postgres |
-| **[Modelle](models.md)** | 27 Provider, Schlüssel pro Organisation, Fallbacks und selbst gehostetes Ollama oder ein LiteLLM-Proxy |
+| **[Modelle](models.md)** | 28 Provider, Schlüssel pro Organisation, Fallbacks und selbst gehostetes Ollama oder ein LiteLLM-Proxy |
 | **[Wissen](file-processing.md)** | Retrieval über Ihre Dokumente mit drei PDF-Parsern, Ihrem eigenen Chunking, OCR und Bildbeschreibung — pro Collection, pro Upload überschreibbar. Google-Drive- und S3-Sync |
 | **[Skills](skills.md)** | Aufgeschriebenes Know-how, das der Agent nur lädt, wenn er es für relevant hält |
 | **[Governance](governance.md)** | Monatsbudgets, menschliche Approval, eine Audit-Spur, Alerts pro Agent |
-| **[Oberflächen](channels.md)** | Web-Chat, eine gehostete Seite ohne Login, ein einbettbares Widget, die HTTP-API, ein rohes WebSocket für Ihr eigenes Frontend, Slack, Telegram, Mattermost — ein Runner hinter allen |
+| **[Oberflächen](channels.md)** | Web-Chat, eine gehostete Seite ohne Login, ein einbettbares Widget, die HTTP-API, ein rohes WebSocket für Ihr eigenes Frontend, Slack, Teams, Telegram, Mattermost, Discord — ein Runner hinter allen |
 | **[Secrets](secrets.md)** | Pro Organisation versiegelt. Keine Antwort, keine Logzeile und kein Audit-Eintrag trägt je einen Schlüssel im Klartext |
 
 [Die vollständige Liste der Funktionen →](features.md)
@@ -304,8 +313,8 @@ Frage kam.
 ## Stack { #stack }
 
 FastAPI und Pydantic v2 auf PostgreSQL, [Pydantic AI](https://ai.pydantic.dev)
-für die Agent-Laufzeit, pgvector für Retrieval, Prefect für Hintergrundarbeit und
-Next.js 15 für die Konsole.
+für die Agent-Laufzeit, pgvector für Retrieval, eine Job-Queue in demselben
+PostgreSQL für Hintergrundarbeit und Next.js 15 für die Konsole.
 
 Externe Ziele hängen von Modell-, Parser-, Embedding-, Werkzeug-, Kanal-, Sandbox- und Tracing-Konfiguration ab. Prüfen Sie den [Datenfluss](security.md).
 

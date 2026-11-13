@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.agents.mcp_oauth import OAuthError
 from app.api.deps import Auth, McpConnectionSvc, require
+from app.api.public_api import PUBLIC
 from app.core.permissions import Perm
 from app.schemas.mcp_connection import (
     GithubAppInstall,
@@ -36,6 +37,8 @@ from app.schemas.mcp_connection import (
     OrgMcpConnectionList,
     OrgMcpConnectionUpdate,
     OrgMcpOAuthStart,
+    PortalPollIntervalRead,
+    PortalPollIntervalUpdate,
 )
 
 router = APIRouter()
@@ -44,7 +47,7 @@ router = APIRouter()
 @router.get(
     "",
     response_model=OrgMcpConnectionList,
-    dependencies=[Depends(require(Perm.MCP_MANAGE))],
+    dependencies=[PUBLIC, Depends(require(Perm.MCP_MANAGE))],
 )
 async def list_org_mcp_connections(service: McpConnectionSvc, ctx: Auth) -> Any:
     """The MCP servers this organization has connected."""
@@ -182,6 +185,29 @@ async def start_org_polled_portal_oauth(
     return McpOAuthStartResult(authorization_url=authorization_url)
 
 
+@router.put(
+    "/portals/{connection_id}/poll-interval",
+    response_model=PortalPollIntervalRead,
+    dependencies=[Depends(require(Perm.MCP_MANAGE))],
+)
+async def set_portal_poll_interval(
+    connection_id: UUID, data: PortalPollIntervalUpdate, service: McpConnectionSvc, ctx: Auth
+) -> Any:
+    """Set how often a connected mailbox (Gmail, Outlook) is checked for new mail.
+
+    The setting belongs to the mailbox, not to a trigger: one read of it serves
+    every trigger and workflow listening there, so it applies to all of them. One
+    of 1, 5, 15, 30 or 60 minutes; anything else is a 422 naming the field. A grant
+    that is not this organization's, or whose portal is not a mailbox, is a 404.
+    """
+    grant = await service.set_poll_interval(
+        ctx, connection_id=connection_id, minutes=data.poll_interval_minutes
+    )
+    return PortalPollIntervalRead(
+        connection_id=grant.id, poll_interval_minutes=grant.poll_interval_minutes
+    )
+
+
 @router.patch(
     "/{connection_id}",
     response_model=McpConnectionRead,
@@ -237,5 +263,5 @@ async def test_org_mcp_connection(connection_id: UUID, service: McpConnectionSvc
     return McpConnectionTestResult(
         ok=error is None,
         error=error,
-        tools=[McpToolRead(name=t.name, description=t.description) for t in tools],
+        tools=[McpToolRead.model_validate(t, from_attributes=True) for t in tools],
     )

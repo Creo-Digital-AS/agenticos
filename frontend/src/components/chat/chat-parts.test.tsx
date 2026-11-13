@@ -12,6 +12,7 @@ import { MarkdownContent } from "./markdown-content";
 import { BUILTIN_COMMANDS, resolveBuiltin } from "./slash-commands";
 import type { Translate } from "@/lib/agent-step-captions";
 import messages from "../../../messages/en.json";
+import { useAgentSelectionStore } from "@/stores";
 
 /**
  * The built-ins as the palette receives them: `BUILTIN_COMMANDS` holds keys, and the
@@ -27,11 +28,25 @@ const commands = BUILTIN_COMMANDS.map((command) =>
 
 const auth = vi.hoisted(() => ({
   user: null as { full_name?: string | null; email?: string } | null,
+  agents: [] as Record<string, unknown>[],
 }));
-vi.mock("@/hooks", () => ({ useAuth: () => ({ user: auth.user }) }));
+vi.mock("@/hooks", () => ({
+  useAuth: () => ({ user: auth.user }),
+  useAgents: () => ({ agents: auth.agents }),
+}));
+// What the agent may be pointed at - here, nothing that draws, so the general
+// starters show; `chat-empty-state.test.tsx` covers an agent with Visuals.
+vi.mock("@/hooks/use-mentionables", () => ({ useMentionables: () => ({ items: [] }) }));
+
+vi.mock("@/hooks/use-suggestions", () => ({
+  usePersonalStarterQuery: () => ({ data: [], isPending: false }),
+}));
 
 beforeEach(() => {
+  vi.spyOn(Date.prototype, "getHours").mockReturnValue(9);
   auth.user = null;
+  auth.agents = [];
+  useAgentSelectionStore.setState({ selectedAgentId: null });
   vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -241,6 +256,34 @@ describe("the queue above the composer", () => {
 
     expect(screen.getByText("Waiting for the answer")).toBeInTheDocument();
   });
+
+  it("says it waits for the network when there is none", () => {
+    render(<PendingMessages messages={queued} onCancel={vi.fn()} waitingForNetwork />);
+
+    expect(screen.getByText("Waiting for the network")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for the answer")).toBeNull();
+  });
+
+  it("marks a message the server refused, says why, and sends it again on request", async () => {
+    const onRetry = vi.fn();
+    render(
+      <PendingMessages
+        messages={[{ id: "q-1", content: "First question", refused: "The budget is spent." }]}
+        onCancel={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+
+    expect(screen.getByText("Not sent: The budget is spent.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Send again" }));
+    expect(onRetry).toHaveBeenCalledWith("q-1");
+  });
+
+  it("offers no retry for a message nobody refused", () => {
+    render(<PendingMessages messages={queued} onCancel={vi.fn()} onRetry={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Send again" })).toBeNull();
+  });
 });
 
 describe("the slash command palette", () => {
@@ -369,7 +412,7 @@ describe("the empty chat", () => {
 
     render(<ChatEmptyState onPick={vi.fn()} />);
 
-    expect(screen.getByText("How can I help, Kacper?")).toBeInTheDocument();
+    expect(screen.getByText("Good morning, Kacper. What’s on your mind?")).toBeInTheDocument();
   });
 
   it("falls back to the local part of the address", () => {
@@ -377,7 +420,7 @@ describe("the empty chat", () => {
 
     render(<ChatEmptyState onPick={vi.fn()} />);
 
-    expect(screen.getByText("How can I help, kacper?")).toBeInTheDocument();
+    expect(screen.getByText("Good morning, kacper. What’s on your mind?")).toBeInTheDocument();
   });
 
   it("greets nobody in particular when it knows no name", () => {
@@ -393,6 +436,26 @@ describe("the empty chat", () => {
     await userEvent.click(screen.getByText("Summarize my docs"));
 
     expect(onPick).toHaveBeenCalledWith("Summarize the key points from my latest documents.");
+  });
+
+  it("opens on the agent who will answer, by name and with what it does", () => {
+    auth.agents = [
+      {
+        id: "a-1",
+        slug: "sales-researcher",
+        name: "Sales Researcher",
+        description: "Prepares a company brief before a first call.",
+        has_avatar: false,
+        avatar_color: null,
+      },
+    ];
+    useAgentSelectionStore.setState({ selectedAgentId: "a-1" });
+
+    render(<ChatEmptyState onPick={vi.fn()} />);
+
+    expect(screen.getByText("Sales Researcher")).toBeInTheDocument();
+    expect(screen.getByText(/Prepares a company brief before a first call/)).toBeInTheDocument();
+    expect(screen.queryByText(/start from one of these/)).toBeNull();
   });
 });
 

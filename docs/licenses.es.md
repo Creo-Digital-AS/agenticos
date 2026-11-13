@@ -1,5 +1,5 @@
 ---
-source_sha: "f65f76a23f9a"
+source_sha: "54831c55840b"
 ---
 
 # Licencias y avisos de terceros { #licences-and-third-party-notices }
@@ -39,6 +39,12 @@ dependencias `docs`, `devDependencies`) no están en las imágenes ni en los avi
 Las herramientas de compilación que se ejecutan en una fase de builder y no están
 en la capa final, como `uv`, quedan registradas en `licenses/components.toml` como
 no distribuidas.
+
+Los extras opcionales `kerberos` y `mirage` no están en las imágenes publicadas,
+así que los avisos los dejan fuera. La imagen del backend sí incluye `browser`. Quien construye una imagen
+con `EXTRAS` distribuye también esos paquetes, bajo sus propias licencias. El extra
+`mirage` trae [Mirage](https://github.com/strukto-ai/mirage) (Apache-2.0) y los
+clientes de servicios que usan sus backends.
 
 ## El inventario { #the-inventory }
 
@@ -121,7 +127,8 @@ cifra actual es la del propio archivo de avisos.
 | CC-BY-4.0 (`caniuse-lite`) | 1 | Atribución y un enlace al código fuente | Aparece nombrado con su fuente en los avisos |
 | AGPL-3.0-only (`pymupdf`) | 1 | Copyleft de red: la imagen se transmite bajo los términos de la AGPL-3.0 y un despliegue modificado les debe a sus usuarios el código fuente modificado (art. 13) | Se mantiene deliberadamente y los términos se declaran: [la sección de abajo](#the-agpl-component) y el `COPYING` del wheel dentro de la imagen |
 | OFL-1.1 (Inter, Bricolage Grotesque, Geist Mono) | 3 familias | Texto de la licencia y avisos de copyright junto con las tipografías; no vender las tipografías por sí solas; no reutilizar los nombres reservados para tipografías modificadas | `frontend/src/app/fonts/OFL.txt` lleva los tres avisos; las tipografías se sirven sin modificar |
-| CC0-1.0, CC-BY-4.0, MIT (glifos de marca) | 3 fuentes | Atribución para los iconos de Font Awesome; las marcas siguen siendo marcas registradas de sus dueños | `NOTICE` nombra las fuentes y la posición sobre las marcas registradas |
+| MIT, ISC, BSD-2-Clause, 0BSD (el [conjunto de bibliotecas](artifacts.md#the-library-set)) | 7 bibliotecas y código adaptado de Open Intelligent UI | Conservar los avisos con las copias | Chart.js, d3, Lucide, three.js, Mermaid, idiomorph y Leaflet se copian byte a byte en `backend/app/core/catalog/artifact_lib/`, cuyo README lleva el texto de cada licencia; `agenticos-map-1.js` adapta la temporización de las chinchetas de Open Intelligent UI (MIT) y conserva su aviso en la cabecera, y el skill `visual-design` toma prestadas sus pautas. `NOTICE` y `licenses/components.toml` los nombran a todos |
+| CC0-1.0, MIT (glifos de marca) | 4 fuentes | Avisos MIT para @lobehub/icons y theSVG; las marcas siguen siendo marcas registradas de sus dueños | `NOTICE` nombra las fuentes y la posición sobre las marcas registradas |
 
 **De un paquete que no publica archivo de licencia** no se puede copiar ninguno.
 Varios paquetes npm del cierre son así, `@img/sharp-libvips-linux-x64` y su gemelo
@@ -214,8 +221,7 @@ imagen.
 
 ## Servicios alojados y términos de los providers { #hosted-services-and-provider-terms }
 
-La API de un provider de modelos, Logfire, Tavily, Brave, Exa, LlamaParse, Mem0,
-Daytona, Google Drive y S3 no son software que este proyecto distribuya y no tienen
+La API de un provider de modelos, Logfire, Tavily, Brave, Exa, LlamaParse, Daytona, Google Drive y S3 no son software que este proyecto distribuya y no tienen
 licencia en el sentido de arriba. Cada uno es un acuerdo de servicio entre el
 despliegue y el provider, que se contrae cuando un administrador guarda la
 credencial de ese provider en el [vault](secrets.md). Los términos que importan

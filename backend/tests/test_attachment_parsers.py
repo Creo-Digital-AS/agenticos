@@ -8,8 +8,6 @@ since no Python library writes the OLE compound format. A malformed input is a c
 rather than the parse (#1591).
 """
 
-from __future__ import annotations
-
 import io
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -18,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services import file_upload as fu
+from app.services import office_archive
 from app.services.file_upload import FileUploadService
 
 if TYPE_CHECKING:
@@ -526,6 +525,84 @@ class TestArchiveBombGuards:
 
         with pytest.raises(ValueError, match="too many members"):
             fu.safe_unzip(self._zip({"a": b"1", "b": b"2"}))
+
+    def test_a_forged_member_count_does_not_hide_the_real_one(self, monkeypatch):
+        from app.core import config as config_module
+
+        monkeypatch.setattr(config_module.settings, "CHAT_ARCHIVE_MAX_MEMBERS", 2)
+        forged = bytearray(self._zip({"a": b"1", "b": b"2", "c": b"3"}))
+        end = forged.rfind(b"PK\x05\x06")
+        forged[end + 10 : end + 12] = (1).to_bytes(2, "little")
+
+        with pytest.raises(ValueError, match="too many members"):
+            fu.safe_unzip(bytes(forged))
+
+    def test_a_zip_declaring_countless_members_is_refused_before_it_is_opened(self, monkeypatch):
+        from app.core import config as config_module
+
+        monkeypatch.setattr(config_module.settings, "CHAT_ARCHIVE_MAX_MEMBERS", 2)
+        data = self._zip({str(number): b"" for number in range(10)})
+        monkeypatch.setattr(office_archive.zipfile, "ZipFile", lambda *_: pytest.fail("listed"))
+
+        with pytest.raises(ValueError, match="too many members"):
+            fu.safe_unzip(data)
+
+    def test_a_marker_inside_the_end_record_does_not_hide_it(self, monkeypatch):
+        """Signature bytes in the record's own count fields must not be taken for
+        the record: `zipfile` reads the last 22 bytes first, and so does the guard."""
+        from app.core import config as config_module
+
+        monkeypatch.setattr(config_module.settings, "CHAT_ARCHIVE_MAX_MEMBERS", 50)
+        data = bytearray(self._zip({str(number): b"" for number in range(200)}))
+        end = data.rfind(b"PK\x05\x06")
+        data[end + 8 : end + 12] = b"PK\x05\x06"
+
+        assert fu.zip_has_too_many_members(bytes(data)) is True
+
+    def test_a_record_cut_short_is_refused_and_no_record_is_left_to_zipfile(self):
+        data = self._zip({"a": b"1"})
+        end = data.rfind(b"PK\x05\x06")
+        comment = b"x" * 5 + b"PK\x05\x06" + b"y" * 4
+
+        assert fu.zip_has_too_many_members(data[: end + 21] + comment[:0]) is True
+        assert fu.zip_has_too_many_members(b"no end record") is False
+        assert fu.zip_has_too_many_members(b"") is False
+
+    def test_a_zip64_archive_is_judged_by_its_zip64_record(self, monkeypatch):
+        import zipfile
+
+        from app.core import config as config_module
+
+        monkeypatch.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 1)
+        data = bytearray(self._zip({"a": b"1", "b": b"2", "c": b"3"}))
+        monkeypatch.undo()
+        # What a writer with more than 65535 members leaves in the 16-bit field.
+        end = data.rfind(b"PK\x05\x06")
+        data[end + 10 : end + 12] = b"\xff\xff"
+        data = bytes(data)
+        monkeypatch.setattr(config_module.settings, "CHAT_ARCHIVE_MAX_MEMBERS", 100)
+        assert fu.zip_has_too_many_members(data) is False
+        monkeypatch.setattr(config_module.settings, "CHAT_ARCHIVE_MAX_MEMBERS", 2)
+        assert fu.zip_has_too_many_members(data) is True
+
+    def test_a_zip64_marker_nothing_backs_up_is_refused(self):
+        data = bytearray(self._zip({"a": b"1"}))
+        end = data.rfind(b"PK\x05\x06")
+        data[end + 10 : end + 12] = b"\xff\xff"
+
+        assert fu.zip_has_too_many_members(bytes(data)) is True
+
+    def test_a_zip64_locator_pointing_nowhere_is_refused(self, monkeypatch):
+        import zipfile
+
+        monkeypatch.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 1)
+        data = bytearray(self._zip({"a": b"1", "b": b"2"}))
+        monkeypatch.undo()
+        end = data.rfind(b"PK\x05\x06")
+        data[end + 10 : end + 12] = b"\xff\xff"
+        data[end - 12 : end - 4] = (len(data) * 2).to_bytes(8, "little")
+
+        assert fu.zip_has_too_many_members(bytes(data)) is True
 
     def test_a_member_over_the_cap_is_refused_by_its_real_size(self, monkeypatch):
         """The bound is measured by reading the member, not by trusting the
@@ -1143,6 +1220,23 @@ class TestTheParseStopsAtItsLimit:
         )
 
         assert pages_read == [0, 1, 2]
+        assert text == "first\n\nsecond"
+
+    async def test_pdf_nul_characters_do_not_reach_parsed_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pymupdf
+
+        page_text = ["f\x00irst\n", "\x00\n", "second\x00\n"]
+
+        def extract(page: pymupdf.Page, _format: str) -> str:
+            return page_text[page.number]
+
+        monkeypatch.setattr(pymupdf.Page, "get_text", extract)
+        text = await fu.DocumentText().parse_content(
+            _pdf(["first", "", "second"]), "pdf", max_chars=13
+        )
+
         assert text == "first\n\nsecond"
 
     async def test_a_pdf_past_the_page_cap_says_where_it_stopped(

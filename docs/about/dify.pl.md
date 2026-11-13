@@ -1,5 +1,5 @@
 ---
-source_sha: "3689d8258a77"
+source_sha: "74d7e5d2126c"
 title: "AgenticOS vs Dify"
 seo_title: "AgenticOS vs Dify: wielotenantowa alternatywa na Apache-2.0"
 description: "Porównaj Dify i AgenticOS, dwie platformy agentów AI self-hosted: warunki licencji, wielotenantowość, SSO, budżety, zatwierdzenia, logi audytowe i ceny."
@@ -9,22 +9,24 @@ description: "Porównaj Dify i AgenticOS, dwie platformy agentów AI self-hosted
 
 Oba produkty da się hostować samodzielnie i oba wyszukują w dokumentach, więc różnica leży gdzie indziej. Dify to wizualny canvas do aplikacji LLM i workflow, z wieloma workspace'ami, SSO i logami audytowymi w edycji Enterprise. AgenticOS jest na licencji Apache-2.0 i wielotenantowy w produkcie open source, z budżetami, zatwierdzeniami, logowaniem przez katalog i logiem audytowym wykrywającym manipulacje w zestawie.
 
-Utrzymuje zespół AgenticOS. Źródła sprawdzono 25 września 2026. Wersja bazowa AgenticOS: v0.0.504. Zakres Dify: publiczne repozytorium w wersji 1.17.1, jego licencja, dokumentacja i strona cennika, a nie przetestowany plan chmurowy ani przypięte wdrożenie.
+Utrzymuje zespół AgenticOS. Źródła sprawdzono 21 października 2026. Wersja bazowa AgenticOS: v1.10.0. Zakres Dify: publiczne repozytorium w wersji 1.17.1, jego licencja, dokumentacja i strona cennika, a nie przetestowany plan chmurowy ani przypięte wdrożenie.
+
+Opisy funkcji AgenticOS odświeżono 2 listopada 2026 na podstawie v1.35.0. Data sprawdzenia źródeł dostawcy powyżej pozostaje bez zmian; nie jest to nowy audyt jego cen.
 
 ## W skrócie { #at-a-glance }
 
 | Obszar | Dify Community Edition | AgenticOS |
 | --- | --- | --- |
-| Jak budujesz | Wizualny canvas z węzłami workflow, chatflow i agentów | Instrukcje, profil modelu, capabilities, kolekcje i budżet, opublikowane jako wersja |
+| Jak budujesz | Wizualny canvas z węzłami workflow, chatflow i agentów | Wersjonowani agenci i wizualny canvas workflow z typowanymi krokami, rozgałęzieniami i pętlami |
 | Licencja | Dify Open Source License: Apache 2.0 z dodatkowymi warunkami | Apache-2.0; zobacz [licencje dołączonych komponentów](../licenses.md) |
 | Wielotenantowość | Jeden workspace; kilka workspace'ów to Enterprise | Wiele organizacji w jednym wdrożeniu |
-| Role | Cztery wbudowane role; role niestandardowe to Enterprise | Sześć ról, 27 uprawnień i granty per zasób dla osób i grup |
+| Role | Cztery wbudowane role; role niestandardowe to Enterprise | Sześć ról, 33 uprawnienia i granty per zasób dla osób i grup |
 | Logowanie | E-mail; SSO to Enterprise | E-mail, Google, OIDC SSO, LDAP i Kerberos, z mapowaniem grup z katalogu |
 | Audyt | Enterprise | Log audytowy wykrywający manipulacje, z eksportem do CSV i JSONL |
 | Kontrola wydatków | Rozliczenia u providera albo kredyty wiadomości w Cloud | Miesięczny budżet per agent i per organizacja, sprawdzany przed każdym żądaniem do modelu |
-| Zatwierdzenie przez człowieka | Węzeł Human Input w workflow | Zatwierdzenie per capability i per narzędzie dla narzędzi capabilities; run czeka, dopóki ktoś nie zdecyduje. Narzędzia MCP nie są bramkowane per narzędzie |
+| Zatwierdzenie przez człowieka | Węzeł Human Input w workflow | Zatwierdzenie per capability i per narzędzie oraz polityka zatwierdzeń per połączenie MCP (none, writes albo all); run czeka, dopóki ktoś nie zdecyduje |
 | Powierzchnie | Aplikacja web, embed, API, serwer MCP; Slack przez plugin | Czat webowy, widget, hostowana strona, HTTP API, WebSocket, Slack, Telegram, Mattermost |
-| Kubernetes | Społecznościowe charty Helm; oficjalna wysoka dostępność to Enterprise | Docker Compose na jednym hoście |
+| Kubernetes | Społecznościowe charty Helm; oficjalna wysoka dostępność to Enterprise | [Utrzymywany chart Helm](../kubernetes.md) dla API, workera i konsoli z zewnętrznymi usługami danych; OpenShift niezweryfikowany |
 
 ## Gdzie AgenticOS idzie dalej { #where-agenticos-goes-further }
 
@@ -53,15 +55,15 @@ AgenticOS sprawdza [miesięczny budżet](../governance.md#budgets) każdego agen
 
 ### Zatwierdzenie na narzędziu, nie tylko w przepływie { #approval-on-the-tool-not-only-in-the-flow }
 
-Węzeł Human Input w Dify wstrzymuje workflow i wysyła formularz, a żądanie zamyka się po pierwszej odpowiedzi. W AgenticOS [zatwierdzenie](../governance.md#approvals) ustawia się per capability i można je nadpisać per narzędzie. Obejmuje narzędzia capabilities; narzędzie MCP jest bramkowane tylko wtedy, gdy rozmowa w czacie webowym pyta o wszystko. Run czeka, wybrane przez Ciebie osoby dostają [alert](../governance.md#alerts), a druga decyzja w sprawie już rozstrzygniętego zatwierdzenia jest odrzucana.
+Węzeł Human Input w Dify wstrzymuje workflow i wysyła formularz, a żądanie zamyka się po pierwszej odpowiedzi. W AgenticOS [zatwierdzenie](../governance.md#approvals) ustawia się per capability i można je nadpisać per narzędzie. Połączenie MCP ma własną [politykę](../mcp.md#which-calls-wait-for-a-person): none, writes albo all. Run czeka, wybrane przez Ciebie osoby dostają [alert](../governance.md#alerts), a druga decyzja w sprawie już rozstrzygniętego zatwierdzenia jest odrzucana.
 
 ### Zmiana, którą może wprowadzić zespół biznesowy { #a-change-a-business-team-can-make }
 
-W Dify proces zmieniasz, edytując canvas. W AgenticOS właściciel biznesowy edytuje instrukcje albo włącza capability, a potem publikuje. Każda [wersja](../concepts.md#version) pozostaje czytelna, [środowiska](../environments.md#the-workflow-it-is-for) promują przetestowaną wersję, a spec [eksportuje się jako YAML](../features.md#exportable-into-your-own-repository) do przeglądu w pull requeście. Konfiguracja sięga tylko tego, co zarejestrowali inżynierowie, i to sprawia, że builder bez kodu jest bezpieczny.
+W Dify proces zmieniasz, edytując canvas. W AgenticOS właściciel biznesowy edytuje instrukcje albo włącza capability, albo edytuje wizualny workflow, a potem publikuje. Każda [wersja](../concepts.md#version) pozostaje czytelna, [środowiska](../environments.md#the-workflow-it-is-for) promują przetestowaną wersję, a spec [eksportuje się jako YAML](../features.md#exportable-into-your-own-repository) do przeglądu w pull requeście. Konfiguracja sięga tylko tego, co zarejestrowali inżynierowie.
 
 ## Kiedy Dify pasuje lepiej { #when-dify-is-the-better-fit }
 
-- twój zespół myśli schematami blokowymi i chce wizualnego canvasu z węzłami, pętlami i rozgałęzieniami. AgenticOS nie ma canvasu workflow.
+- twój zespół myśli schematami blokowymi i chce wizualnego canvasu z węzłami, pętlami i rozgałęzieniami. AgenticOS także ma wizualny edytor workflow; biblioteki węzłów i semantyka wykonania różnią się.
 - Potrzebujesz jego pluginów z marketplace'u, wyszukiwania hybrydowego z rerankingiem albo wielu integracji obserwowalności. AgenticOS nie ma jeszcze rerankera ani dashboardu trace'ów.
 - Wystarcza Ci jeden workspace albo odpowiadają Ci warunki edycji Enterprise.
 
@@ -83,7 +85,7 @@ Licencja Dify wymaga pisemnej zgody na prowadzenie środowiska wielotenantowego,
 
 ### Czy AgenticOS ma wizualny builder workflow jak Dify? { #does-agenticos-have-a-visual-workflow-builder-like-dify }
 
-Nie. AgenticOS buduje agentów z instrukcji, capabilities, wiedzy i budżetu, a pracę wieloetapową obsługuje delegacją, planowaniem i wyzwalaczami. Jeśli twój zespół pracuje na canvasie z węzłami, Dify pasuje lepiej.
+Tak. AgenticOS ma wizualny edytor workflow z typowanymi krokami, rozgałęzieniami, pętlami i publikowanymi wersjami. Dify ma własną bibliotekę węzłów i ekosystem; porównaj węzły potrzebne w konkretnym zadaniu.
 
 ### Które rozwiązanie jest tańsze w utrzymaniu? { #which-one-costs-less-to-run }
 

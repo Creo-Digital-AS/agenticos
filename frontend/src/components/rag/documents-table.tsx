@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Download, Eye, FileText, Loader2, Trash2, Upload } from "lucide-react";
+import { Download, Eye, Loader2, Trash2, Upload } from "lucide-react";
+import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/api-error";
 import { useTranslations } from "next-intl";
 
 import {
@@ -12,6 +14,7 @@ import {
   ListCardFootRow,
   type Column,
 } from "@/components/ui";
+import { FileIcon } from "@/components/files/file-icon";
 import { DocumentProvenance } from "@/components/rag/document-cells";
 import { RagStatusBadge } from "@/components/rag/rag-status-badge";
 import { kbDocumentAccess } from "@/lib/rag-api";
@@ -56,6 +59,7 @@ export function DocumentsTable({
   onChooseFiles: () => void;
 }) {
   const t = useTranslations("pages.kb");
+  const tErrors = useTranslations("errors");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const handleDownload = async (doc: KBDocument) => {
@@ -63,8 +67,8 @@ export function DocumentsTable({
     setDownloadingId(doc.id);
     try {
       await kbDocumentAccess(kbId, doc).download();
-    } catch {
-      /* silently ignore */
+    } catch (error) {
+      toast.error(getErrorMessage(error, tErrors));
     } finally {
       setDownloadingId(null);
     }
@@ -74,12 +78,12 @@ export function DocumentsTable({
     () => [
       {
         key: "filename",
-        className: "pl-5",
+        className: "pl-5 @max-md/table:w-full @max-md/table:pb-1",
         header: t("name"),
         cell: (doc) => (
           <div className="flex min-w-0 items-center gap-3">
             <span className="bg-muted text-muted-foreground inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
-              <FileText className="h-3.5 w-3.5" />
+              <FileIcon name={doc.filename} mimeType={doc.filetype} className="size-4" />
             </span>
             <span className="text-foreground truncate font-medium" title={doc.filename}>
               {doc.filename}
@@ -111,13 +115,14 @@ export function DocumentsTable({
       {
         key: "status",
         header: t("status2"),
+        className: "@max-md/table:flex-1 @max-md/table:pl-5 @max-md/table:pt-1",
         cell: (doc) => <RagStatusBadge status={doc.status} message={doc.error_message} />,
       },
       {
         key: "actions",
         header: "",
         align: "right",
-        className: "w-0 pr-5",
+        className: "w-0 pr-5 @max-md/table:w-auto @max-md/table:pt-1",
         cell: (doc) => {
           const dlBusy = downloadingId === doc.id;
           return (
@@ -173,6 +178,7 @@ export function DocumentsTable({
 
   return (
     <ListCard
+      fill
       data-tour="kb-documents"
       title={t("documents")}
       counted={
@@ -183,6 +189,7 @@ export function DocumentsTable({
       contentClassName="mb-8 p-0"
     >
       <DataTable<KBDocument>
+        stackOnNarrow
         columns={columns}
         rows={documents}
         getRowKey={(doc) => doc.id}

@@ -48,6 +48,8 @@ A secret is not always a string, and the kind decides which fields exist:
 runtime can hold but nobody can store. That difference keeps "a secret with no value"
 out of the API schema. The vault refuses to seal an empty value.
 
+`smtp_account` seals the SMTP destination, TLS mode, sender and credentials together. Workflow steps store only `smtp_secret_id`; `OrganizationSecretService.smtp_email_service` checks resource access and constructs the transport directly. It exposes no password hint.
+
 Adding a kind means: a new model in `secret_kinds.py`, a branch in
 `model_resolver._build_provider` if a provider needs it, a Builder form field, and a
 migration only if a stored shape changes. Validate on the way in — the failure mode of
@@ -57,8 +59,11 @@ the paste that caused it.
 ## Four things that must stay true
 
 1. **No API response returns a plaintext.** There is no endpoint for it.
-   `OrganizationSecretService.resolve_for_bindings` is the *only* reader that yields
-   plaintext, and the runner is its only caller. Do not add a second.
+   Plaintext leaves the vault only through the few `OrganizationSecretService`
+   readers its module docstring lists - `resolve_for_bindings` for the runner,
+   and narrow ones that hand one value straight to a provider (`listing_key`,
+   `transcription_key`, `oauth_app`). None returns it to a caller who could keep
+   it. Do not add another without that shape.
 2. **No log line or audit entry contains one.** Every secret-bearing field is a
    `SecretStr`, which is what makes the carrying dataclasses mask themselves in a
    repr — the usual way a key escapes.

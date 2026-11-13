@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Boxes, Plus } from "lucide-react";
+import { Boxes, Plus, Plug, Activity } from "lucide-react";
+import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ConnectionDialog } from "@/components/sandboxes/connection-dialog";
@@ -10,6 +11,7 @@ import { PolicyPanel } from "@/components/sandboxes/policy-panel";
 import { SessionsPanel } from "@/components/sandboxes/sessions-panel";
 import {
   Button,
+  ConfirmDialog,
   ListCard,
   ListCardEmpty,
   Skeleton,
@@ -21,6 +23,7 @@ import {
 import { ErrorState } from "@/components/states";
 import { usePermissions, useSandboxConnections, useUrlState } from "@/hooks";
 import { Perm } from "@/types/permissions";
+import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { holdsSessions, watchableConnections } from "@/lib/dashboard/sandbox";
 import type { SandboxConnectionRecord } from "@/lib/sandbox-connections-api";
 import { useTranslations } from "next-intl";
@@ -45,6 +48,14 @@ export default function SandboxesPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<SandboxConnectionRecord | null>(null);
   const [inspecting, setInspecting] = useState<SandboxConnectionRecord | null>(null);
+  // A delete refused because sandboxes on the connection are still on the
+  // provider: the person is asked whether they removed them there (#2250).
+  const [stranded, setStranded] = useState<{
+    connection: SandboxConnectionRecord;
+    pending: number;
+  } | null>(null);
+  const [forgetting, setForgetting] = useState(false);
+  const tErrors = useTranslations("errors");
   // In the URL so a pasted link lands on the tab it was sent from. The default
   // keeps the parameter off, so `/sandboxes` stays the connections screen.
   const [tabParam, setTabParam] = useUrlState("tab");
@@ -52,8 +63,18 @@ export default function SandboxesPage() {
 
   const watchable = watchableConnections(connections).filter(holdsSessions);
 
+  const deleteConnection = async (connection: SandboxConnectionRecord) => {
+    try {
+      await remove(connection.id);
+    } catch (err) {
+      const pending = err instanceof ApiError ? err.details?.pending_destroys : undefined;
+      if (typeof pending === "number") setStranded({ connection, pending });
+      else toast.error(getErrorMessage(err, tErrors, t("deleteFailed")));
+    }
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="flex flex-1 flex-col space-y-4">
       <PageHeader
         title={t("sandboxes2")}
         description={t("pageDescription")}
@@ -73,16 +94,24 @@ export default function SandboxesPage() {
       />
 
       <Tabs
+        className="flex flex-1 flex-col"
         value={tab}
         onValueChange={(value) => setTabParam(value === "connections" ? null : value)}
       >
         <TabsList>
-          <TabsTrigger value="connections">{t("tabConnections")}</TabsTrigger>
-          <TabsTrigger value="running">{t("tabRunning")}</TabsTrigger>
+          <TabsTrigger value="connections">
+            <Plug className="size-4 shrink-0" aria-hidden />
+            {t("tabConnections")}
+          </TabsTrigger>
+          <TabsTrigger value="running">
+            <Activity className="size-4 shrink-0" aria-hidden />
+            {t("tabRunning")}
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="connections">
+        <TabsContent value="connections" className="flex-1 flex-col data-[state=active]:flex">
           <ListCard
+            fill
             data-tour="sandboxes-connections"
             title={t("sandboxConnections")}
             // With the list refused or still loading, "0 connections" would
@@ -119,13 +148,13 @@ export default function SandboxesPage() {
                   setDialogOpen(true);
                 }}
                 onInspect={setInspecting}
-                onDelete={(connection) => void remove(connection.id)}
+                onDelete={(connection) => void deleteConnection(connection)}
               />
             )}
           </ListCard>
         </TabsContent>
 
-        <TabsContent value="running">
+        <TabsContent value="running" className="flex flex-1 flex-col">
           {isLoading ? (
             <div className="space-y-3 p-5">
               {[0, 1].map((row) => (
@@ -154,6 +183,34 @@ export default function SandboxesPage() {
           onSubmit={async (input) => {
             if (editing) await update(editing.id, input);
             else await create(input);
+          }}
+        />
+      )}
+
+      {stranded && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setStranded(null);
+          }}
+          title={t("strandedTitle", { count: stranded.pending })}
+          description={t("strandedBody", {
+            count: stranded.pending,
+            name: stranded.connection.name,
+          })}
+          confirmLabel={t("strandedConfirm")}
+          destructive
+          loading={forgetting}
+          onConfirm={async () => {
+            setForgetting(true);
+            try {
+              await remove(stranded.connection.id, { forgetPendingDestroys: true });
+              setStranded(null);
+            } catch (err) {
+              toast.error(getErrorMessage(err, tErrors, t("deleteFailed")));
+            } finally {
+              setForgetting(false);
+            }
           }}
         />
       )}

@@ -9,13 +9,14 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr, ValidationError, create_model
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.models.test import TestModel
 
@@ -23,6 +24,7 @@ from app.agents.capabilities import (
     REGISTRY,
     CapabilityBinding,
     CapabilityBuildContext,
+    CapabilityDef,
     CapabilityToolInfo,
     ProviderExecuted,
     ToolOverride,
@@ -37,8 +39,14 @@ from app.agents.capabilities.charts import Charts
 from app.agents.capabilities.clock import Clock
 from app.agents.capabilities.code_execution import CodeExecution, CodeExecutionConfig
 from app.agents.capabilities.knowledge import Knowledge, KnowledgeConfig
+from app.agents.capabilities.mirage import (
+    MIRAGE_MOUNTS_RESOURCE,
+    ResolvedMount,
+    ResolvedTerminal,
+)
 from app.agents.capabilities.skills import SAFE_SKILL_TOOLS, Skills
 from app.agents.capabilities.web_research import WebResearch, WebResearchConfig
+from app.agents.hand_off import HAND_OFF_TOOL
 from app.agents.subagent_runtime import (
     SUBAGENT_RUNTIME_RESOURCE,
     DynamicSpecialists,
@@ -47,6 +55,7 @@ from app.agents.subagent_runtime import (
 )
 from app.core.exceptions import BadRequestError
 from app.core.secret_kinds import ApiKeySecret, SecretKind, StorableSecret
+from app.services.agent_registry import DEFAULT_GRANTED_SCOPES
 from app.services.capability_contracts import probe_context, real_tool_definition
 
 
@@ -110,6 +119,18 @@ class TestSelfLoading:
         assert get("clock").id == "clock"
 
 
+def test_every_builtin_is_granted_the_scopes_it_declares():
+    """A builtin needing a scope this deployment does not grant is refused at
+    every publish - listed in the Builder, documented, and unusable."""
+    ungranted = {
+        definition.id: sorted(definition.scopes - DEFAULT_GRANTED_SCOPES)
+        for definition in all_capabilities()
+        if definition.scopes - DEFAULT_GRANTED_SCOPES
+    }
+
+    assert ungranted == {}
+
+
 class TestToolDeclarations:
     """A tool's declared identity is what the approval gate keys on."""
 
@@ -147,6 +168,10 @@ class TestToolDeclarations:
         # and contributes nothing when it is not, and this test is about the
         # names it offers rather than what a platform answers.
         CHANNEL_DIRECTORY_RESOURCE: SimpleNamespace(),
+        # The folders the runner resolved; one scratch folder needs no credential.
+        MIRAGE_MOUNTS_RESOURCE: ResolvedTerminal(
+            mounts=(ResolvedMount("/scratch/", "ram", "write", False, {}, "scratch"),)
+        ),
         # A skill that ships a file, which is the widest shape: `skills` offers
         # `read_skill_resource` only when at least one skill has something to
         # read, and a skill with no resources offers no tool at all.
@@ -168,6 +193,7 @@ class TestToolDeclarations:
         # for the same reason the delegate below is at its widest.
         "context_files": [
             SimpleNamespace(
+                id=uuid4(),
                 name="glossary",
                 description="What the words mean.",
                 content="SLA: service level agreement.",
@@ -212,6 +238,8 @@ class TestToolDeclarations:
 
     DECLARED_AND_NOT_OFFERED: dict[str, frozenset[str]] = {
         "subagents": frozenset({"answer_subagent"}),
+        # Stored synthetic calls retain their identity; no main model offers them.
+        "follow_ups": frozenset({"suggest_next_steps"}),
         # Pydantic AI contributes `load_capability` to any run carrying a
         # deferred capability, and every skill is one. `skills` declares it
         # because it is the call that opens a skill and therefore the only place
@@ -227,6 +255,9 @@ class TestToolDeclarations:
     declares `answer_subagent` for exactly that reason -
     `app.agents.capabilities.subagents._capability.UNREACHABLE_TOOLS` has the whole
     of it, including why agenticos#184 would not empty this table on its own.
+
+    Follow-ups also retains the recorded identity of synthetic next-step calls,
+    while no main model is allowed to offer the tool.
 
     Spelt out here rather than imported from the capability, and subtracted rather
     than skipped. An imported set would make the check below a tautology, and
@@ -245,6 +276,7 @@ class TestToolDeclarations:
         )
 
     CONFIGS: dict[str, dict[str, Any]] = {
+        "phone_calls": {"endpoint_id": "00000000-0000-4000-8000-000000000001"},
         # The only capability whose *tools* are configuration rather than a fixed
         # list: a binding names which lookups it allows, so the widest
         # configuration is the one that allows all of them. Same reason the
@@ -260,10 +292,15 @@ class TestToolDeclarations:
         # checklist) offers the six core tools and would hide the other three from
         # the comparison rather than check them.
         "planning": {"enable_subtasks": True},
+        # A terminal has no default folder; one scratch folder is the least it
+        # mounts, and its seven tools are the same whatever is mounted.
+        "mirage": {"mounts": [{"path": "/scratch/", "backend": "ram", "mode": "write"}]},
         # Builds `None` from an empty blob on purpose - binding the capability
         # without setting a reminder attaches nothing. One reminder on is what
         # makes it build here; it offers no tools either way.
         "system_reminders": {"goal_reanchor": {}},
+        # Builds `None` naming no workflow: one named is what makes it offer its tools.
+        "workflows": {"workflow_ids": ["00000000-0000-0000-0000-000000000002"]},
     }
     """Configurations a capability needs before it offers anything.
 
@@ -492,6 +529,18 @@ class TestEffectiveTools:
         assert (tool.id, tool.name) == ("search_documents", "search_refund_policy")
         assert tool.description == get("knowledge").tools[0].description
 
+    @pytest.mark.security
+    def test_a_rename_cannot_take_a_tool_off_its_mandatory_approval(self):
+        shared = {
+            tool.id: tool
+            for tool in get("memory_files").effective_tools(
+                {"share_memory": ToolOverride(name="publish_memory")}
+            )
+        }["share_memory"]
+
+        assert shared.name == "publish_memory"
+        assert shared.always_requires_approval
+
     def test_a_reworded_description_keeps_the_declared_name(self):
         (tool,) = get("knowledge").effective_tools(
             {"search_documents": ToolOverride(description="Look up the refund policy.")}
@@ -508,6 +557,196 @@ class TestEffectiveTools:
             get("knowledge").effective_tools({"search_docuemnts": ToolOverride(name="typo")})
             == get("knowledge").tools
         )
+
+
+class TestReadOnlyDeclarations:
+    """Which tools an eval may run against the normal connections.
+
+    Pinned as a table, so a new tool - or a capability nobody classified - fails
+    here and somebody decides, rather than an eval blocking it or running it by
+    accident.
+    """
+
+    WRITES = frozenset(
+        {
+            ("background_tasks", "list_background_tasks"),
+            ("background_tasks", "start_background_task"),
+            ("background_tasks", "stop_background_task"),
+            ("drafts", "write_draft"),
+            ("memory_files", "correct_memory"),
+            ("memory_files", "recall"),
+            ("memory_files", "remember"),
+            ("memory_files", "share_memory"),
+            ("mirage", "mirage_edit_file"),
+            ("mirage", "mirage_execute"),
+            ("mirage", "mirage_glob"),
+            ("mirage", "mirage_grep"),
+            ("mirage", "mirage_ls"),
+            ("mirage", "mirage_read_file"),
+            ("mirage", "mirage_write_file"),
+            ("phone_calls", "call_me"),
+            ("phone_calls", "end_phone_call"),
+            ("phone_calls", "get_phone_contact_policy"),
+            ("phone_calls", "list_phone_transfer_contacts"),
+            ("phone_calls", "transfer_phone_call"),
+            ("artifacts", "publish_artifact"),
+            ("artifacts", "share_artifact"),
+            ("computer_use", "computer_screenshot"),
+            ("computer_use", "computer_act"),
+            ("computer_use", "computer_apps"),
+            ("computer_use", "computer_save_screenshot"),
+            ("workflows", "run_workflow"),
+            ("ask_user", "ask_user_question"),
+            ("browser_use", "browse_web"),
+            ("browser_use", "browser_open"),
+            ("browser_use", "browser_read"),
+            ("browser_use", "browser_click"),
+            ("browser_use", "browser_type"),
+            ("browser_use", "browser_select"),
+            ("browser_use", "browser_scroll"),
+            ("browser_use", "browser_back"),
+            ("browser_use", "browser_new_tab"),
+            ("browser_use", "browser_tabs"),
+            ("browser_use", "browser_switch_tab"),
+            ("browser_use", "browser_close_tab"),
+            ("coding_agent", "run_coding_agent"),
+            ("monitor", "start_monitor"),
+            ("monitor", "list_monitors"),
+            ("monitor", "stop_monitor"),
+            ("image_generation", "generate_image"),
+            ("text_to_speech", "generate_speech"),
+            ("follow_ups", "suggest_next_steps"),
+            ("follow_ups", "propose_setup"),
+            ("video_generation", "generate_video"),
+            ("memory_files", "write_memory"),
+            ("memory_files", "edit_memory"),
+            ("memory_files", "delete_memory"),
+            ("sandbox", "write_file"),
+            ("sandbox", "edit_file"),
+            ("sandbox", "execute"),
+            ("visuals", "draw"),
+            ("visuals", "revise_visual"),
+            ("visuals", "read_visual"),
+        }
+    )
+
+    def test_every_declared_tool_is_classified_as_the_table_says(self):
+        writes = {
+            (definition.id, tool.id)
+            for definition in all_capabilities()
+            for tool in definition.tools
+            if not definition.tool_is_read_only(tool)
+        }
+
+        assert writes == self.WRITES
+
+    def test_a_capability_that_declares_nothing_writes(self):
+        tool = CapabilityToolInfo(id="send_email", description="Send it.")
+        definition = CapabilityDef(
+            id="mailer",
+            name="Mailer",
+            category="test",
+            description="Sends mail.",
+            builder=lambda _ctx: None,
+            tools=(tool,),
+        )
+
+        assert definition.tool_is_read_only(tool) is False
+
+    def test_a_tool_declaration_beats_its_capabilitys(self):
+        (read_artifact,) = (t for t in get("artifacts").tools if t.id == "read_artifact")
+
+        assert get("artifacts").read_only is False
+        assert get("artifacts").tool_is_read_only(read_artifact) is True
+
+    def test_a_rename_keeps_the_declaration(self):
+        """The eval guard reads effective tools; a rename must not make a read write."""
+        (tool,) = (
+            t
+            for t in get("memory_files").effective_tools(
+                {"read_memory": ToolOverride(name="look_up_note")}
+            )
+            if t.id == "read_memory"
+        )
+
+        assert (tool.name, tool.read_only) == ("look_up_note", True)
+
+
+class TestTestKeyIsolation:
+    """Which capabilities let a swapped vault key carry their writes into an eval.
+
+    The declaration is what lets a write execute in an isolated run, so it is
+    pinned: a capability gaining it fails here until somebody decides.
+    """
+
+    DECLARED: frozenset[str] = frozenset()
+
+    #: Config fields that name where a capability's calls go. A capability with
+    #: one can be pointed at production whatever key it holds.
+    _TARGET = re.compile(
+        r"url|uri|host|endpoint|base|server|dsn|address|domain|port", re.IGNORECASE
+    )
+
+    @classmethod
+    def _offending(cls, definitions: Iterable[CapabilityDef]) -> set[str]:
+        return {
+            definition.id
+            for definition in definitions
+            if definition.test_key_isolates
+            and definition.config_schema is not None
+            and any(cls._TARGET.search(name) for name in definition.config_schema.model_fields)
+        }
+
+    def test_the_declarations_are_the_ones_decided(self):
+        declared = {d.id for d in all_capabilities() if d.test_key_isolates}
+
+        assert declared == self.DECLARED
+
+    def test_a_capability_whose_config_names_a_target_never_declares_it(self):
+        """A test key next to a production URL still writes to production."""
+        assert self._offending(all_capabilities()) == set()
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "cdp_url",
+            "api_base",
+            "base_url",
+            "server_uri",
+            "Hostname",
+            "smtp_server",
+            "dsn",
+            "ip_address",
+            "domain",
+            "port",
+            "endpoint",
+        ],
+    )
+    def test_a_declaration_beside_any_field_naming_a_target_is_refused(self, field):
+        config = create_model("Config", **{field: (str, "x")})
+        definition = CapabilityDef(
+            id="mailer",
+            name="Mailer",
+            category="test",
+            description="Sends mail.",
+            builder=lambda _ctx: None,
+            tools=(),
+            config_schema=config,
+            test_key_isolates=True,
+        )
+
+        assert self._offending([definition]) == {"mailer"}
+
+    def test_the_config_check_sees_the_capabilities_it_exists_for(self):
+        """Without this the check above could pass by matching nothing."""
+        named = {
+            definition.id
+            for definition in all_capabilities()
+            if definition.config_schema is not None
+            and any(self._TARGET.search(name) for name in definition.config_schema.model_fields)
+        }
+
+        assert {"browser_use", "web_fetch"} <= named
 
 
 class TestProviderExecutedDeclarations:
@@ -908,6 +1147,43 @@ def _frontend_tool_ids() -> frozenset[str]:
     return frozenset(ids)
 
 
+ART_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "frontend"
+    / "src"
+    / "components"
+    / "agents"
+    / "capability-art"
+)
+
+
+def _capabilities_with_art() -> frozenset[str]:
+    """The capability ids the Toolbox has a scene for, read out of the two art tables.
+
+    `art.generated.ts` is the design canvas's export, one key per scene at two
+    spaces; `art.drawn.ts` holds the scenes drawn by hand since, in `DRAWN_ART`.
+    """
+    generated = (ART_DIR / "art.generated.ts").read_text(encoding="utf-8")
+    drawn = (ART_DIR / "art.drawn.ts").read_text(encoding="utf-8")
+    table = drawn[drawn.index("export const DRAWN_ART") :]
+    return frozenset(
+        re.findall(r"^  ([a-z0-9_]+):\n    '<svg", generated, re.MULTILINE)
+    ) | frozenset(re.findall(r"^  ([a-z0-9_]+): [A-Z0-9_]+,$", table, re.MULTILINE))
+
+
+class TestToolboxArt:
+    def test_every_capability_has_a_scene_and_every_scene_a_capability(self):
+        """A capability with no scene shows a lone initial among the dioramas -
+        `background_tools` did, unnoticed, because nothing compared the two."""
+        registered = frozenset(definition.id for definition in all_capabilities())
+        drawn = _capabilities_with_art()
+
+        assert sorted(registered - drawn) == [], (
+            "draw a scene for each of these in capability-art/art.drawn.ts"
+        )
+        assert sorted(drawn - registered) == [], "these scenes draw no capability"
+
+
 class TestFrontendToolCatalog:
     """The web chat's tool table holds exactly the tools capabilities register.
 
@@ -943,6 +1219,42 @@ class TestFrontendToolCatalog:
             f"{CATALOG_PATH.name} has a row for a tool no capability registers; "
             "nothing will ever render it"
         )
+
+    def test_the_tool_a_call_adds_has_its_own_row(self):
+        """`hand_off` is no capability's, so the check above cannot see it (#54)."""
+        source = CATALOG_PATH.read_text(encoding="utf-8")
+        start = source.index("export const CALL_TOOLS")
+        body = source[source.index("{", start) : source.index("\n};", start)]
+        assert re.findall(r"^  ([a-z][a-z0-9_]*): \{", body, flags=re.MULTILINE) == [HAND_OFF_TOOL]
+
+
+def test_exactly_the_capabilities_a_call_cannot_run_live_say_so():
+    """#54: a realtime session cannot carry these, so a call hands them to the
+    agent's text twin; the Builder's Voice card lists them.
+
+    `channel_tools` alone is never in a call, which is never made on a channel;
+    `docs/reference/capabilities.md` says the same of each.
+    """
+    load_builtins()
+    by_support = {
+        support: {d.id for d in all_capabilities() if d.voice == support}
+        for support in ("hand_off", "never")
+    }
+    assert by_support == {
+        "hand_off": {
+            "sandbox",
+            "browser_use",
+            "mirage",
+            "computer_use",
+            "subagents",
+            "background_tools",
+            "background_tasks",
+            "coding_agent",
+            "video_generation",
+            "monitor",
+        },
+        "never": {"channel_tools", "follow_ups", "drafts"},
+    }
 
 
 MESSAGES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "messages"
@@ -1046,7 +1358,9 @@ class TestConsoleCapabilityGuide:
             text = (docs / page).read_text(encoding="utf-8")
             rows = {
                 cap_id: name.strip()
-                for name, cap_id in re.findall(r"^\| ([^|`]+) \| `([a-z_0-9]+)` \|$", text, re.M)
+                for name, cap_id in re.findall(
+                    r"^\|\s*([^|`]+?)\s*\|\s*`([a-z_0-9]+)`\s*\|$", text, re.M
+                )
             }
             assert rows == {
                 cap_id: entry["name"] for cap_id, entry in self._guide(locale).items()

@@ -265,11 +265,11 @@ test.describe("Agents", () => {
     // same headings and none of this.
     await expect(pageStatus(page)).toContainText("published");
     await expect(page.getByRole("textbox", { name: "Description" })).toHaveValue(
-      /general-purpose agent in the style of Claude Code/,
+      /organization's general-purpose assistant/,
     );
 
     await expect(page.getByRole("textbox", { name: "Instructions" })).toHaveValue(
-      /You are a capable, general-purpose assistant/,
+      /You are \{\{agent_name\}\}, the helpful general-purpose assistant in/,
     );
 
     // The model section leads with the profile this agent actually runs on, and
@@ -329,6 +329,15 @@ test.describe("Agents", () => {
     // there. Everything below the click — the spec the Builder assembles, the
     // draft the API stores, the spec it hands back — is only exercised here.
     const tool = await openToolRow(page);
+    const settingsPanel = page.getByRole("group", { name: CAPABILITY_WITH_TOOLS, exact: true });
+    await settingsPanel.getByRole("tab", { name: "Settings", exact: true }).click();
+    const approval = settingsPanel.getByRole("combobox", { name: "Human approval" });
+    if (!(await approval.textContent())?.includes("Never ask")) {
+      await approval.click();
+      await page.getByRole("option", { name: "Never ask", exact: true }).click();
+      await saveDraft(page);
+    }
+    await settingsPanel.getByRole("tab", { name: "Tools", exact: true }).click();
 
     // Establish the starting state rather than assume it. This test asserts on
     // a *transition* — an unsaved change appearing — so it needs the override
@@ -343,7 +352,7 @@ test.describe("Agents", () => {
     }
 
     await tool.getByRole("combobox").click();
-    await page.getByRole("option", { name: "Always ask" }).click();
+    await page.getByRole("option", { name: "Always ask", exact: true }).click();
     await expect(tool.getByText("overridden")).toBeVisible();
 
     // Only then is there anything to save: the badge in the title is the
@@ -372,7 +381,7 @@ test.describe("Agents", () => {
     const panel = page.getByRole("group", { name: CAPABILITY_WITH_TOOLS, exact: true });
     await panel.getByRole("tab", { name: "Settings", exact: true }).click();
 
-    await expect(panel.getByLabel("Human approval")).toContainText("Follow the capability");
+    await expect(panel.getByLabel("Human approval")).toContainText("Never ask");
   });
 
   test("a tool renamed for one agent sticks, and the code default can be had back", async ({
@@ -441,6 +450,11 @@ test.describe("Agents", () => {
   // registers before `web_research`, so a search for "something that needs a
   // secret" finds it first and then cannot find its switch.
   const OWN_SECTION = new Set(["sandbox", "skills", "thinking"]);
+  // Needs more than a key: the coding agent also refuses to publish without a
+  // shell-capable sandbox, so binding it here leaves the shared draft agent
+  // unpublishable for every spec after this one. Its picker takes a sign-in as
+  // well, under its own label, which `capability-settings` covers.
+  const NEEDS_MORE_THAN_A_SECRET = new Set(["coding_agent"]);
 
   test("a capability that needs a secret says so until it has one, and keeps the one it is given", async ({
     page,
@@ -464,7 +478,9 @@ test.describe("Agents", () => {
     // requirement — correctly, which is a different spec than this one.
     const needy = items.find(
       (entry): entry is NeedsSecret =>
-        entry.requires_secret?.kind === "api_key" && !OWN_SECTION.has(entry.id),
+        entry.requires_secret?.kind === "api_key" &&
+        !OWN_SECTION.has(entry.id) &&
+        !NEEDS_MORE_THAN_A_SECRET.has(entry.id),
     );
     if (needy === undefined) {
       test.skip(
@@ -496,11 +512,15 @@ test.describe("Agents", () => {
     // account - the picker is absent until the condition is met. An
     // *unconditional* one (image generation always needs a provider key) asks
     // from the moment the capability is on.
+    // A condition already met by what the panel shows - a media capability's
+    // provider, preselected from its catalog - offers the picker at once.
     const condition = needy.requires_secret.required_when;
-    if (condition !== null) {
-      await expect(group.getByLabel("Secret")).toHaveCount(0);
+    if (condition !== null && (await group.getByLabel("Secret").count()) === 0) {
       await group.getByLabel(fieldLabel(condition.field)).click();
-      await page.getByRole("option", { name: condition.equals[0]!, exact: true }).click();
+      // An option is named for people: Web search lists `tavily` as is, image
+      // generation lists the provider `openai` as "OpenAI".
+      const value = condition.equals[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      await page.getByRole("option", { name: new RegExp(`^${value}$`, "i") }).click();
     }
 
     const picker = group.getByLabel("Secret");
@@ -510,7 +530,7 @@ test.describe("Agents", () => {
     await expect(group.getByText(needy.requires_secret.description)).toBeVisible();
     // And the refusal that would otherwise arrive from a publish attempt, in a
     // list beside everything else wrong with the agent.
-    await expect(group.getByText(/cannot be published until it has one/)).toBeVisible();
+    await expect(group.getByText(/cannot be published until something is/)).toBeVisible();
 
     await picker.click();
     await page.getByRole("option", { name: new RegExp(SEEDED_SECRET_NAME) }).click();
@@ -519,7 +539,7 @@ test.describe("Agents", () => {
     // nothing else, and neither the API nor this page can show the value.
     await expect(picker).toContainText(SEEDED_SECRET_NAME);
     await expect(picker).toContainText(SEEDED_SECRET_HINT);
-    await expect(group.getByText(/cannot be published until it has one/)).toBeHidden();
+    await expect(group.getByText(/cannot be published until something is/)).toBeHidden();
 
     // Stored, without asserting the badge on the way: this spec walks through
     // two selects and a catalog read, which is long enough for the Builder's own
@@ -533,7 +553,7 @@ test.describe("Agents", () => {
     await openBuilderTab(page, "Toolbox");
     const saved = await capabilityPanel(page, needy.name);
     await expect(saved.getByLabel("Secret")).toContainText(SEEDED_SECRET_NAME);
-    await expect(saved.getByText(/cannot be published until it has one/)).toBeHidden();
+    await expect(saved.getByText(/cannot be published until something is/)).toBeHidden();
 
     // Nowhere on this page, at any point, is the value itself.
     await expectNoRenderedSecret(page);
@@ -550,6 +570,7 @@ test.describe("Agents", () => {
     // until a reasoning model refused the run.
     await openAgent(page, DRAFT_AGENT_NAME);
 
+    await page.getByText("Model settings", { exact: true }).click();
     const temperature = page.getByLabel("Temperature");
     const reset = page.getByRole("button", { name: "Use provider default" });
 
@@ -572,6 +593,7 @@ test.describe("Agents", () => {
     await saveDraft(page);
 
     await page.reload();
+    await page.getByText("Model settings", { exact: true }).click();
 
     await expect(page.getByLabel("Temperature")).toHaveValue("0.95");
     await expect(page.getByText("0.95")).toBeVisible();
@@ -582,6 +604,7 @@ test.describe("Agents", () => {
     await saveDraft(page);
 
     await page.reload();
+    await page.getByText("Model settings", { exact: true }).click();
 
     await expect(page.getByRole("button", { name: "Use provider default" })).toBeHidden();
     await expect(page.getByText("Provider default").first()).toBeVisible();
@@ -616,8 +639,9 @@ test.describe("Agents", () => {
       "true",
     );
 
-    // The seeded draft is created with a name and nothing else, so the first
-    // thing publish refuses it for is having no model - which says nothing about
+    // The seeded draft starts with a model only while the organization has
+    // exactly one (#2483), and other specs add more - so without one the first
+    // thing publish refuses it for is having no model, which says nothing about
     // the MCP binding this test is about. Naming one is what makes the assertion
     // below a statement about the server rather than about the fixture.
     await openBuilderTab(page, "Build");

@@ -18,7 +18,7 @@ export const DEFAULT_ANSWER_STYLE: AnswerStyle = {
   ack_reaction: null,
   stream_answers: true,
   step_display: "timeline",
-  rate_answers: true,
+  rate_answers: false,
 };
 
 /** An emoji's name as the platforms spell it, without colons - what the server accepts. */
@@ -40,6 +40,25 @@ export const REACTIONS: readonly (readonly [name: string, emoji: string])[] = [
   ["zap", "⚡"],
   ["hourglass", "⌛"],
 ];
+
+/**
+ * Where the bot can react to a question. Teams and Discord answer without one,
+ * so a reaction chosen there would be saved and never drawn.
+ */
+const REACTS: readonly ChannelPlatform[] = ["slack", "telegram", "mattermost", "imessage"];
+
+/** Whether the bot can react to a question on `platform`. */
+export function reactsOn(platform: ChannelPlatform): boolean {
+  return REACTS.includes(platform);
+}
+
+/** New bots acknowledge messages with a reaction native to their platform. */
+export function defaultAnswerStyle(platform: ChannelPlatform): AnswerStyle {
+  return {
+    ...DEFAULT_ANSWER_STYLE,
+    ack_reaction: platform === "imessage" ? "emphasize" : reactsOn(platform) ? "eyes" : null,
+  };
+}
 
 /** The select's value for "no reaction" - a name no platform spells. */
 const NONE = "none";
@@ -66,44 +85,57 @@ export function AnswerStyleFields({
   const reaction = value.ack_reaction;
   // A reaction stored before this list existed is still offered, so opening
   // the form never silently changes it.
-  const options =
-    reaction !== null && !REACTIONS.some(([name]) => name === reaction)
-      ? [...REACTIONS, [reaction, ""] as const]
+  const supported =
+    platform === "imessage"
+      ? ([
+          ["emphasize", "‼️"],
+          ["love", "❤️"],
+          ["like", "👍"],
+          ["dislike", "👎"],
+          ["laugh", "😄"],
+          ["question", "❓"],
+        ] as const)
       : REACTIONS;
+  const options =
+    reaction !== null && !supported.some(([name]) => name === reaction)
+      ? [...supported, [reaction, ""] as const]
+      : supported;
 
   return (
     <div className="space-y-4">
       <p className="text-sm font-medium">{t("answerStyle")}</p>
-      <FormField
-        label={t("ackReaction")}
-        htmlFor={`${idPrefix}-ack-reaction`}
-        description={t("ackReactionHint")}
-      >
-        <Select
-          value={reaction ?? NONE}
-          onValueChange={(next) =>
-            onChange({ ...value, ack_reaction: next === NONE ? null : next })
-          }
+      {reactsOn(platform) && (
+        <FormField
+          label={t("ackReaction")}
+          htmlFor={`${idPrefix}-ack-reaction`}
+          description={t(platform === "imessage" ? "imessageReactionHint" : "ackReactionHint")}
         >
-          <SelectTrigger id={`${idPrefix}-ack-reaction`} className="max-w-56">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>{t("noReaction")}</SelectItem>
-            {options.map(([name, emoji]) => (
-              <SelectItem key={name} value={name} textValue={name}>
-                {/* i18n-exempt: an emoji and its platform name, the same in every language */}
-                <span className="flex items-center gap-2">
-                  <span aria-hidden className="w-5 text-center text-base leading-none">
-                    {emoji}
+          <Select
+            value={reaction ?? NONE}
+            onValueChange={(next) =>
+              onChange({ ...value, ack_reaction: next === NONE ? null : next })
+            }
+          >
+            <SelectTrigger id={`${idPrefix}-ack-reaction`} className="max-w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE}>{t("noReaction")}</SelectItem>
+              {options.map(([name, emoji]) => (
+                <SelectItem key={name} value={name} textValue={name}>
+                  {/* i18n-exempt: an emoji and its platform name, the same in every language */}
+                  <span className="flex items-center gap-2">
+                    <span aria-hidden className="w-5 text-center text-base leading-none">
+                      {emoji}
+                    </span>
+                    <span className="font-mono text-xs">{name}</span>
                   </span>
-                  <span className="font-mono text-xs">{name}</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FormField>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+      )}
 
       <div className="flex items-start gap-3">
         <Switch

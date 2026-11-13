@@ -12,8 +12,6 @@ side-effecting tool runs unapproved with nothing reporting it - which is why
 than asserting on a set of strings.
 """
 
-from __future__ import annotations
-
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -474,8 +472,8 @@ class TestSkillsAreDeferredCapabilities:
         offered = await _tools_offered(spec, resources=self._skill())
 
         assert sorted(tool.name for tool in offered) == [
-            "load_capability",
             "open_playbook_file",
+            "read_skill",
         ]
 
     @pytest.mark.anyio
@@ -516,7 +514,7 @@ class TestSkillsAreDeferredCapabilities:
         for capability in built.capabilities:
             capability.apply(registered.append)
 
-        assert [capability.id for capability in registered] == ["skills", "refunds"]
+        assert [capability.id for capability in registered] == ["skills", "refunds", None]
 
 
 class TestSpecVersion12WithdrewTwoSkillsTools:

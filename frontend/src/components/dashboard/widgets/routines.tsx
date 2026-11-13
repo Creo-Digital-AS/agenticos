@@ -118,8 +118,9 @@ function row(
   tt: Translate,
   locale: string,
 ): StatusRow {
-  const [pill, tone] = outcome(trigger, run, t);
+  const [pill, tone] = outcome(trigger, run, t, tt);
   return {
+    id: trigger.id,
     label: trigger.name ?? trigger.agent_name ?? t("unnamed"),
     sub: [
       cadenceText(trigger, tt),
@@ -138,16 +139,22 @@ function row(
  * heartbeat has yet to claim, and "next" about it would assert a future that
  * already failed to happen, loudest exactly when the worker is down. */
 function upcomingFireMs(trigger: Trigger): number | null {
-  if (!trigger.is_active || trigger.next_fire_at === null) return null;
+  if (
+    !trigger.is_active ||
+    trigger.next_fire_at === null ||
+    (trigger.waiting_device_count ?? 0) > 0
+  )
+    return null;
   const at = new Date(trigger.next_fire_at).getTime();
   return at >= Date.now() ? at : null;
 }
 
 /**
- * "next Aug 22, 09:00 UTC" for a live schedule whose next fire is still ahead.
+ * "next Aug 22, 09:00 (Europe/Warsaw)" for a live schedule whose next fire is still ahead.
  *
- * In UTC, because the cadence beside it is ("Daily at 09:00 UTC") - a local
- * instant next to a UTC cadence reads as a contradiction two hours wide. The
+ * In the schedule's own zone, because the cadence beside it is ("Daily at 09:00
+ * (Europe/Warsaw)") - an instant in the viewer's zone next to a cadence in another
+ * reads as a contradiction hours wide. The
  * year appears only when the fire is outside the current one: a 999-day
  * interval can put it years out, where "Feb 29" alone names the wrong February.
  */
@@ -155,15 +162,16 @@ function nextFireText(trigger: Trigger, t: Translate, locale: string): string | 
   const upcoming = upcomingFireMs(trigger);
   if (upcoming === null) return null;
   const at = new Date(upcoming);
+  const zone = trigger.time_zone ?? "UTC";
   const shown = at.toLocaleString(locale, {
-    timeZone: "UTC",
+    timeZone: zone,
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     ...(at.getUTCFullYear() === new Date().getUTCFullYear() ? {} : { year: "numeric" as const }),
   });
-  return t("nextFire", { at: shown });
+  return t("nextFire", { at: shown, zone });
 }
 
 /** setTimeout's ceiling; a longer delay wraps and fires at once. */
@@ -190,8 +198,15 @@ function useNextFireTick(triggers: Trigger[]): void {
   }, [soonest]);
 }
 
-function outcome(trigger: Trigger, run: AgentRun | undefined, t: Translate): [string, StatusTone] {
+function outcome(
+  trigger: Trigger,
+  run: AgentRun | undefined,
+  t: Translate,
+  tt: Translate,
+): [string, StatusTone] {
   if (!trigger.is_active) return [t("paused"), "neutral"];
+  if ((trigger.waiting_device_count ?? 0) > 0)
+    return [tt("local.waitingDevice", { count: trigger.waiting_device_count ?? 0 }), "warn"];
   if (trigger.last_fired_at === null) return [t("neverRun"), "neutral"];
   // Fired, but the run it started is not in the page of recent ones - it is older
   // than the page reaches, or this reader may not read runs at all. Saying
@@ -200,7 +215,8 @@ function outcome(trigger: Trigger, run: AgentRun | undefined, t: Translate): [st
   if (
     run.status === "failed" ||
     run.status === "budget_exceeded" ||
-    run.status === "guardrail_blocked"
+    run.status === "guardrail_blocked" ||
+    run.status === "loop_stopped"
   )
     return [t(`status.${run.status}`), "err"];
   if (run.down_rated) return [t("ratedDown"), "warn"];

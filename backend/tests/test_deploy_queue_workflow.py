@@ -14,8 +14,6 @@ properties below are the ones whose loss would put it back where it started -
 joining the group it watches, or being able to approve what it found.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -120,14 +118,16 @@ class TestItCancelsAndReportsAndNothingElse:
         assert "Date.parse(run.updated_at)" in script
         assert "Date.parse(run.created_at)" not in script
 
-    def test_drift_is_measured_against_a_merge_rather_than_a_dispatch(
+    def test_drift_is_measured_against_a_release_rather_than_a_dispatch(
         self, watcher: dict[str, Any]
     ) -> None:
         """A `workflow_dispatch` deploys the commit its `ref` input names, which
         is not the run's own `head_sha` - so comparing against it would report a
         rollback as no drift at all."""
         script = watcher["jobs"]["queue"]["steps"][0]["with"]["script"]
-        assert "run.event === 'push'" in script
+        assert "lastSuccess?.event === 'release'" in script
+        assert "getLatestRelease" in script
+        assert "${latest.tag_name}" in script
 
     def test_it_creates_the_label_its_own_dedup_reads(self, watcher: dict[str, Any]) -> None:
         """Nothing else sets `deploy-queue`, and an issue that could not be
@@ -140,3 +140,15 @@ class TestItCancelsAndReportsAndNothingElse:
         step = watcher["jobs"]["queue"]["steps"][0]
         assert "STALE_AFTER_HOURS" in step["env"]
         assert "${{" not in step["with"]["script"]
+
+
+class TestTheDeployConnectionOutlivesTheWait:
+    def test_the_ssh_session_keeps_itself_alive(self, deploy: dict[str, Any]) -> None:
+        """`deploy.sh` waits up to twenty minutes for a merge's images and prints
+        nothing meanwhile; an idle session was dropped four minutes in and failed
+        the 1.1.1 deploy with exit 255."""
+        steps = deploy["jobs"]["deploy"]["steps"]
+        script = next(step["run"] for step in steps if step.get("name") == "Deploy")
+
+        assert "ServerAliveInterval=" in script
+        assert "ServerAliveCountMax=" in script

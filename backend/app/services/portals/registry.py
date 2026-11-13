@@ -5,17 +5,25 @@ A portal absent here has no auto-registration - the create flow reads `None` as
 one-line entry, and a portal never needs one to work.
 """
 
-from __future__ import annotations
-
 from app.services.portals.base import PortalAdapter
 from app.services.portals.github import GitHubPortalAdapter
 from app.services.portals.github_app import GitHubAppPortalAdapter
 from app.services.portals.google import GooglePortalAdapter
+from app.services.portals.google_calendar import GoogleCalendarPortalAdapter
+from app.services.portals.google_drive import GoogleDrivePortalAdapter
+from app.services.portals.microsoft_files import MicrosoftFilesPortalAdapter
+from app.services.portals.outlook import OutlookPortalAdapter
+from app.services.portals.outlook_calendar import OutlookCalendarPortalAdapter
 
 _ADAPTERS: dict[str, PortalAdapter] = {
     GitHubPortalAdapter.portal_key: GitHubPortalAdapter(),
     GitHubAppPortalAdapter.portal_key: GitHubAppPortalAdapter(),
     GooglePortalAdapter.portal_key: GooglePortalAdapter(),
+    OutlookPortalAdapter.portal_key: OutlookPortalAdapter(),
+    GoogleDrivePortalAdapter.portal_key: GoogleDrivePortalAdapter(),
+    GoogleCalendarPortalAdapter.portal_key: GoogleCalendarPortalAdapter(),
+    MicrosoftFilesPortalAdapter.portal_key: MicrosoftFilesPortalAdapter(),
+    OutlookCalendarPortalAdapter.portal_key: OutlookCalendarPortalAdapter(),
 }
 
 

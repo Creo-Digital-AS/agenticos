@@ -1,7 +1,11 @@
-import { MessageSquare } from "lucide-react";
+import { ChatIcon as MessageSquare } from "@/components/icons/product-icons";
 
+import { AgenticosAttribution } from "@/components/shared/agenticos-attribution";
 import { formatDateTime } from "@/lib/utils";
 import { getTranslations } from "next-intl/server";
+import { DraftCardView } from "@/components/chat/draft-card";
+import type { DraftCard } from "@/lib/drafts";
+import { SharedVisuals, type SharedVisual } from "@/components/chat/shared-visuals";
 
 interface SharedConversationPageProps {
   params: Promise<{ token: string; locale: string }>;
@@ -52,25 +56,41 @@ export default async function SharedConversationPage({ params }: SharedConversat
       </div>
 
       <div className="space-y-4">
-        {messages.map((msg: { id: string; role: string; content: string; created_at: string }) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
+        {messages.map(
+          (msg: {
+            id: string;
+            role: string;
+            content: string;
+            created_at: string;
+            visuals?: SharedVisual[];
+            drafts?: DraftCard[];
+          }) => (
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
-              }`}
+              key={msg.id}
+              className={`flex flex-col gap-3 ${msg.role === "user" ? "items-end" : "items-start"}`}
             >
-              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-              <p className="mt-1 text-xs opacity-60">{formatDateTime(msg.created_at, locale)}</p>
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-3 ${
+                  msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
+                }`}
+              >
+                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                <p className="mt-1 text-xs opacity-60">{formatDateTime(msg.created_at, locale)}</p>
+              </div>
+              {msg.visuals && msg.visuals.length > 0 && <SharedVisuals visuals={msg.visuals} />}
+              {msg.drafts?.map((draft) => (
+                <DraftCardView key={draft.id} card={draft} />
+              ))}
             </div>
-          </div>
-        ))}
+          ),
+        )}
 
         {messages.length === 0 && (
           <p className="text-muted-foreground py-12 text-center">{t("noMessagesYet")}</p>
         )}
+      </div>
+      <div className="mt-8 flex justify-end">
+        <AgenticosAttribution visible={data.show_agenticos_attribution} />
       </div>
     </div>
   );

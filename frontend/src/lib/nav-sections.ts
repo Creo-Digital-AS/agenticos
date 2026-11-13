@@ -1,23 +1,32 @@
+import { BackgroundIcon } from "@/components/icons/product-icons";
 import {
+  FlaskConical,
   MessagesSquare,
-  PanelsTopLeft,
   Activity,
   Boxes,
-  FileText,
-  FolderOpen,
-  BookOpen,
-  Bot,
   Building2,
-  Database,
   KeyRound,
   LayoutDashboard,
-  MessageSquare,
+  Network,
   Plug,
-  Repeat,
   ShieldCheck,
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
+import {
+  AppIcon as PanelsTopLeft,
+  ContextIcon as NotebookTabs,
+  ProjectIcon as FolderKanban,
+  DocumentIcon as Files,
+  InboxIcon as Inbox,
+  SkillIcon as Waypoints,
+  AgentIcon as BotMessageSquare,
+  KnowledgeIcon as LibraryBig,
+  ChatIcon as MessageSquare,
+  WorkflowIcon as Workflow,
+  RoutineIcon as TimerReset,
+  TableIcon as Table2,
+} from "@/components/icons/product-icons";
 
 import { stripLocale } from "@/lib/active-route";
 import { ROUTES } from "@/lib/constants";
@@ -46,6 +55,10 @@ export type NavItem = {
    * `/admin/users`, `/admin/system` - so each is still the section's page.
    */
   tabbed?: boolean;
+  /** Lit on its own page only - a project's page lights the project's own row instead. */
+  exact?: boolean;
+  /** A count beside the label: how much waits there. Only the inbox has one. */
+  count?: "inbox";
 };
 
 /** The section hue a group carries - see "Section hues" in `globals.css`. */
@@ -73,6 +86,13 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { labelKey: "dashboard", href: ROUTES.DASHBOARD, icon: LayoutDashboard },
       { labelKey: "chat", href: ROUTES.CHAT, icon: MessageSquare },
+      {
+        labelKey: "inbox",
+        href: ROUTES.INBOX,
+        icon: Inbox,
+        dataTour: "nav-inbox",
+        count: "inbox",
+      },
     ],
   },
   {
@@ -82,46 +102,86 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         labelKey: "agents",
         href: ROUTES.AGENTS,
-        icon: Bot,
+        icon: BotMessageSquare,
         permission: Perm.agentsView,
         dataTour: "nav-agents",
       },
-      // The org-wide create-and-manage home for triggers. Gated on `agents:view`,
-      // the floor for seeing an agent's schedule; the create controls inside gate
-      // further on `agents:run`, so a viewer sees the list without the buttons.
-      { labelKey: "routines", href: ROUTES.ROUTINES, icon: Repeat, permission: Perm.agentsView },
+      {
+        labelKey: "workflows",
+        href: ROUTES.WORKFLOWS,
+        icon: Workflow,
+        permission: Perm.workflowsView,
+        dataTour: "nav-workflows",
+      },
+      {
+        labelKey: "routines",
+        href: ROUTES.ROUTINES,
+        icon: TimerReset,
+        permission: Perm.agentsView,
+      },
+      {
+        labelKey: "datasets",
+        href: ROUTES.DATASETS,
+        icon: FlaskConical,
+        permission: Perm.datasetsView,
+      },
       {
         labelKey: "artifacts",
         href: ROUTES.ARTIFACTS,
         icon: PanelsTopLeft,
         permission: Perm.artifactsView,
       },
-      { labelKey: "activity", href: ROUTES.RUNS, icon: Activity, permission: Perm.runsView },
     ],
   },
-  // What an agent knows: the documents it searches, the files it kept, the
-  // how-tos it follows and the standing context it is always given.
+  {
+    labelKey: "projects",
+    domain: "use",
+    items: [
+      {
+        labelKey: "allProjects",
+        href: ROUTES.PROJECTS,
+        icon: FolderKanban,
+        permission: Perm.projectsView,
+        dataTour: "nav-projects",
+        exact: true,
+      },
+    ],
+  },
   {
     labelKey: "knowledge",
     domain: "knowledge",
+    collapsible: true,
     items: [
       {
         labelKey: "knowledgeBases",
         href: ROUTES.RAG,
-        icon: Database,
+        icon: LibraryBig,
         permission: Perm.collectionsView,
       },
       {
-        // Deliberately ungated. These are the files an agent kept *for the
-        // person looking*, and the backend narrows the listing to what they are
-        // part of - so a permission here would hide somebody's own files behind
-        // an operator's authority.
-        labelKey: "documents",
-        href: ROUTES.DOCUMENTS,
-        icon: FolderOpen,
+        labelKey: "tables",
+        href: ROUTES.TABLES,
+        icon: Table2,
+        permission: Perm.tablesView,
+        dataTour: "nav-tables",
       },
-      { labelKey: "skills", href: ROUTES.SKILLS, icon: BookOpen, permission: Perm.skillsView },
-      { labelKey: "context", href: ROUTES.CONTEXT, icon: FileText, permission: Perm.contextView },
+      { labelKey: "skills", href: ROUTES.SKILLS, icon: Waypoints, permission: Perm.skillsView },
+      {
+        labelKey: "context",
+        href: ROUTES.CONTEXT,
+        icon: NotebookTabs,
+        permission: Perm.contextView,
+      },
+      { labelKey: "documents", href: ROUTES.DOCUMENTS, icon: Files },
+    ],
+  },
+  {
+    labelKey: "monitoring",
+    domain: "build",
+    collapsible: true,
+    items: [
+      { labelKey: "activity", href: ROUTES.RUNS, icon: Activity, permission: Perm.runsView },
+      { labelKey: "backgroundWork", href: ROUTES.WORK, icon: BackgroundIcon },
     ],
   },
   // What the organization is connected to. Set up once, revisited rarely, so
@@ -146,6 +206,14 @@ export const NAV_GROUPS: NavGroup[] = [
         labelKey: "channels",
         href: ROUTES.CHANNELS,
         icon: MessagesSquare,
+        permission: Perm.agentsView,
+      },
+      {
+        // Another vendor's agent, reached over A2A (#2092): a connection the
+        // organization registers once, which its agents then delegate to.
+        labelKey: "remoteAgents",
+        href: ROUTES.REMOTE_AGENTS,
+        icon: Network,
         permission: Perm.agentsView,
       },
       {

@@ -1,5 +1,5 @@
 ---
-source_sha: "8122fd41c206"
+source_sha: "d8ab63f0a753"
 ---
 
 # Die HTTP-API { #the-http-api }
@@ -17,11 +17,17 @@ veröffentlicht.
 
 Drei Wege hinein, für drei verschiedene Aufrufer.
 
-| | Header | Für |
-|---|---|---|
+|  | Header | Für |
+| --- | --- | --- |
 | **API-Schlüssel der Organisation** | `Authorization: Bearer aos_…` | Ein Skript, einen HTTP-Client wie Postman oder einen MCP-Client. Handelt als das Mitglied, das ihn ausgestellt hat, beschränkt auf die Berechtigungen, mit denen er ausgestellt wurde |
 | **JWT** | `Authorization: Bearer <access token>` | Eine Person oder etwas, das für sie handelt. Kurzlebig, erneuert mit einem Refresh-Token |
 | **Sitzungs-Cookie** | von der Konsole gesetzt | Nur den Browser — das Token ist HttpOnly und erreicht nie JavaScript |
+
+Organisationsschlüssel verwenden `Authorization: Bearer aos_…`. `X-API-Key` ist ein separates
+Dienstzugangsmittel der Bereitstellung; ein `aos_…`-Schlüssel dort authentifiziert keine
+Organisationsanfrage. Tresorrouten wie `GET /api/v1/secrets` und die Nachrichtenroute der Konsole
+benötigen eine angemeldete Sitzung. API-Clients lesen Unterhaltungen über `GET
+/api/v1/conversations/{id}/transcript`.
 
 ### API-Schlüssel der Organisation { #organization-api-keys }
 
@@ -31,14 +37,14 @@ angemeldeten Sitzung). Er trägt die Befugnisse dieses Mitglieds, zweifach
 eingeschränkt:
 
 - **Auf die Berechtigungen, mit denen er ausgestellt wurde.** Wählen Sie eine
-  Vorlage — *Nur lesen*, *Wissen einspeisen*, *Voller Zugriff* — oder haken Sie
+  Vorlage — _Nur lesen_, _Wissen einspeisen_, _Voller Zugriff_ — oder haken Sie
   Berechtigungen aus dem [Katalog](permissions.md) an. Sie können nur vergeben,
   was Sie selbst haben.
 - **Auf das, was der Aussteller jetzt darf.** Jede Anfrage liest die Mitgliedschaft
   des Ausstellers neu, sodass eine Herabstufung jeden seiner Schlüssel sofort
   einschränkt. Seine Entfernung aus der Organisation, oder sein Austritt, widerruft
   jeden von ihm ausgestellten Schlüssel und jede von ihm verbundene App - endgültig,
-  sodass eine erneute Einladung keinen davon wieder weckt. Eine Freigabe auf einer Ressource erweitert, was eine *Person*
+  sodass eine erneute Einladung keinen davon wieder weckt. Eine Freigabe auf einer Ressource erweitert, was eine _Person_
   mit einer Zeile tun darf; einen Schlüssel erweitert sie nie über seine
   Berechtigungen hinaus.
 
@@ -51,6 +57,18 @@ geschrieben wird, trägt `via_api_key` in seinen Details. Ein Schlüssel kann ei
 Ablaufdatum haben, und sein Widerruf (`DELETE /api/v1/api-keys/{id}`) wirkt ab
 seiner nächsten Anfrage.
 
+In der Konsole stehen die Schlüssel vor der Verbindungsanleitung, aktive zuerst.
+Suche nach Name, Präfix oder Aussteller; auf dem Smartphone zeigen Karten auch
+Ablauf und letzte Nutzung. Unter **Schlüssel erstellen** kannst du die
+Berechtigungsdetails einer Vorlage öffnen oder unter **Benutzerdefiniert**
+einzelne Berechtigungen suchen. Die Suche behält deine Auswahl.
+Enter im Namensfeld erstellt den Schlüssel; Enter in der Berechtigungssuche sendet nichts ab.
+
+Während der Erstellung sind Eingaben und Schließen gesperrt. Bei einer Ablehnung
+bleibt der Entwurf erhalten. Kopiere den Schlüssel vor dem Schließen; bei einem
+Zwischenablagefehler bleibt der Wert für einen neuen Versuch verfügbar. Schließen
+leert den Erstellungszustand. Bei einem abgelehnten Widerruf bleibt die Bestätigung offen.
+
 **Ein Schlüssel ist nicht die Person, die ihn ausgestellt hat.** Ein Run, den er
 startet, gehört der ausstellenden Person, läuft über ihr Budget und ihr Audit,
 erreicht aber nichts Persönliches von ihr: kein
@@ -59,6 +77,31 @@ Suche in ihren früheren Unterhaltungen, keine Seiten, auf denen der Browser ihr
 Anmeldungen hält, und keinen benutzerbezogenen Sandbox-Arbeitsbereich. Wer den
 Schlüssel hält, ist ein Skript, nicht diese Person, also antwortet der Run wie
 auf einem öffentlichen Widget.
+
+Für das Genehmigen persönlicher Routinen und Watches ist der ausdrückliche Scope `personal:consent` nötig, ausgewählt unter **Custom** beim Ausstellen eines Schlüssels oder Autorisieren eines MCP-Clients. Er ist in keiner Voreinstellung enthalten, auch nicht in **Full access**. Die Bestätigung erlaubt dem Zugang, dauerhafte Routinen und Watches mit Ihren persönlichen Verbindungen und Daten zu genehmigen; die üblichen Scopes `agents:run` und `runs:view` erlauben das nicht. Bestehende Schlüssel und MCP-Autorisierungen erhalten diese persönliche Zustimmung nicht automatisch.
+
+**Arbeit, die als Sie handelt, richten Sie auch mit einem selbst ausgestellten
+Schlüssel ein.** Ein Schlüssel, den Sie erstellt haben, oder das Token eines
+MCP-Clients, den Sie autorisiert haben, darf Ihre eigenen [Routinen](triggers.md),
+die als Sie handeln (`runs_as_creator`), und Ihre [Watches](console.md) anlegen und
+ändern, die Quellen einer Routine prüfen und einen Agenten veröffentlichen, ohne
+die Zustimmung Ihrer als Sie handelnden Routinen zu entziehen. Der Lauf einer
+solchen Routine bleibt an ihre geprüften Quellen und ihr Budget gebunden. Die
+Laufberechtigung eines Agenten außerhalb Ihres privaten Chats kann das nicht,
+ebenso wenig ein Administrator, der Sie imitiert.
+
+Auch Unterhaltungen sind öffentlich: `GET /api/v1/conversations` listet die Chats
+des Ausstellers (`runs:view`), `POST /api/v1/conversations` mit `title` und
+`PATCH /api/v1/conversations/{id}` öffnen und benennen einen Chat (`agents:run`) -
+etwa einen Themen-Chat, in dem eine Routine antwortet.
+`POST /api/v1/me/mcp-connections/{id}/test` prüft eine eigene Verbindung und
+aktualisiert ihre Tools (`agents:run`).
+
+Auch die Verbindungssuche ist lesend öffentlich: `GET /sandbox-connections`,
+`GET /sandbox-connections/runtimes` und `GET /sandbox-connections/{id}/policy`
+erfordern `connections:view`; `GET /mcp-connections` erfordert `mcp:manage`.
+Organisations- und Schlüsselberechtigungen gelten weiterhin. Schreibzugriffe auf
+Verbindungen und Zugangsdatenoperationen bleiben Sitzungen vorbehalten.
 
 ```bash
 curl "$BASE/api/v1/me/permissions" \
@@ -69,7 +112,7 @@ Zwei Ablehnungen sollten Sie kennen:
 
 - **`403` "API keys are not accepted on this endpoint"** — Schlüssel werden nur in
   der öffentlichen API angenommen: Agents, Runs und Freigaben, Wissensbasen und
-  RAG, Skills, Kontextdateien, Apps, die ML-Dienste, `/me/permissions`
+  RAG, Skills, Kontextdateien, Projekte, Apps, die ML-Dienste, `/me/permissions`
   sowie Mitglieder, Einladungen, Gruppen und Einstellungen einer Organisation.
   Die eigenen Routen der Konsole, Ihr Konto, das Verlassen oder Übergeben einer
   Organisation und die Schlüsselverwaltung selbst bleiben Sitzungen vorbehalten,
@@ -125,7 +168,6 @@ widerruft den Schlüssel am Ende.
 BASE=http://localhost:8000 EMAIL=you@example.com PASSWORD=... bash docs/examples/public-api.sh
 ```
 
-
 ### Sessions und Widerruf { #sessions-and-revocation }
 
 Ein JWT-Access-Token ist an die Session gebunden, die seine Anmeldung geöffnet
@@ -140,6 +182,20 @@ Ein Refresh startet keine neue Session — das Refresh-Token rotiert an Ort und
 Stelle und das Access-Token nennt weiterhin dieselbe —, sodass eine langlebige
 Verbindung von einem routinemäßigen Refresh nicht gekappt wird.
 
+### Arbeit, die nach der Anfrage läuft { #work-that-runs-after-the-request }
+
+Ein [Eval-Run](evals.md) oder eine Anfrage an den [Authoring-Assistenten](authoring.md)
+lässt sich nicht mit einem Organisationsschlüssel starten: Diese Routen sind für
+angemeldete Personen, und ein Schlüssel erhält dort `403`. Arbeit, die später im
+Hintergrund läuft, ist an die Befugnisse der Person gebunden, die sie gestartet hat, so
+wie sie zu Beginn der Arbeit stehen - eine seither verlorene Rolle stoppt sie. Dürfte
+ein Schlüssel je solche Arbeit starten, gälte dasselbe für ihn: seine Berechtigungen,
+wie sie dann stehen, und ein seither widerrufener oder gelöschter Schlüssel stoppte die
+Arbeit, mit einem Grund am Run oder an der Anfrage.
+
+Der Ablauf begrenzt nur, was ein Schlüssel starten kann: Arbeit, die er gültig gestartet
+hat, läuft nach seinem Ablauf weiter.
+
 ## Der Organisations-Header { #the-organization-header }
 
 **Ein API-Schlüssel handelt in seiner eigenen Organisation** und braucht keinen
@@ -150,11 +206,16 @@ und `details.header = "X-Organization-Id"`, statt den Tenant zu wechseln.
 **Ein Sitzungs-Token nimmt den Tenant aus `X-Organization-Id`.** Ein Aufrufer,
 der drei Organisationen angehört, ist in jeder ein anderer Akteur, mit einer
 anderen Rolle und anderen Freigaben, also senden Sie den Header bei jeder Anfrage.
-Fehlt er, fällt die Anfrage auf die **persönliche Organisation** des Aufrufers
-zurück — ein Skript, das ihn vergisst, handelt dort, mit den Agents, Freigaben
-und dem Budget dieser Organisation, und bekommt keinen Fehler. Senden Sie den
-falschen, erhalten Sie eine Ablehnung, die genau wie eine nicht existierende
-Ressource aussieht — absichtlich, damit sich IDs nicht abtasten lassen.
+Fehlt er, fällt die Anfrage auf die **Standardorganisation** des Deployments
+zurück, wenn der Aufrufer ihr angehört, dann auf seine **persönliche
+Organisation**, dann auf seine einzige — ein Skript, das den Header vergisst,
+handelt dort, mit den Agents, Freigaben und dem Budget dieser Organisation, und
+bekommt keinen Fehler. Wer mehreren angehört und keine davon hat, erhält `400`
+mit `details.header = "X-Organization-Id"` statt einer Vermutung
+([wo ein neues Konto beginnt](deployment.md#where-a-new-account-starts)). Senden
+Sie den falschen, erhalten Sie eine Ablehnung, die genau wie eine nicht
+existierende Ressource aussieht — absichtlich, damit sich IDs nicht abtasten
+lassen.
 
 ## Einen Agent ausführen { #running-an-agent }
 
@@ -165,9 +226,45 @@ curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
   -d '{"prompt": "How do I rotate a provider key?"}'
 ```
 
+**Ein Run setzt eine Unterhaltung fort.** Ein Aufruf ohne `conversation_id`
+öffnet eine neue Unterhaltung für den Aussteller des Schlüssels und gibt ihre Id
+Ein Agent mit einem [Antwortformat](concepts.md#spec) antwortet mit einem
+Objekt: Es steht in `structured`, bereits gegen das `output_schema` des Agents
+geprüft, und `output` zeigt dasselbe Objekt als JSON-Block.
 Die Antwort trägt die Id des Runs, die Ausgabe, den Status, die Tokens und die
 Kosten. `environment_id` im Body wählt, [welche Umgebung](environments.md)
-antwortet.
+antwortet. `"draft": true` führt stattdessen den unveröffentlichten Entwurf aus, wie
+das Test-Panel des Builders: ein Test-Run, für einen Key, dessen Aussteller den
+Agent bearbeiten darf, mit Begründung abgelehnt, wenn der Entwurf nicht
+veröffentlicht werden könnte, und nie mit `Prefer: respond-async`.
+
+Synchrone Läufe einschließlich Entwurfstests liefern `status: awaiting_answer` und `questions`, wenn
+der Agent die Person fragt. Antworten gehen an `POST /api/v1/runs/{run_id}/answers` mit
+`{"responses":{"<tool_call_id>":[{"selected":["Auswahl"]}]}}`; `answer` enthält Freitext, `skipped:
+true` überspringt bewusst. Eine ausstehende Antwort gilt nicht automatisch als Ablehnung. Das
+Plattform-MCP bietet denselben Ablauf mit `test_agent_draft` und `answer_agent_questions`.
+
+Der Gesprächsverlauf behält beantwortete Fragekarten und erfolgreiche Ladevorgänge verzögerter
+Capabilities. Aktuell registrierte Skills erhalten im nächsten Durchgang ihre aktuellen Anweisungen;
+entfernte Skills werden nicht reaktiviert. Historische Tabellenergebnisse ersetzen keine aktuellen
+Daten. Das oberste Agentenfeld `starters` beschreibt die veröffentlichte Version; Entwurfsstarter
+stehen unter `draft_spec.starters`.
+
+Ein Key erreicht auch die Routinen eines Agents - `GET /api/v1/triggers` sowie
+`GET`, `POST`, `PATCH` und `DELETE` unter `/api/v1/agents/{agent_id}/triggers`,
+dazu `POST .../{trigger_id}/run`, um eine sofort auszulösen - und die Modelle der
+Organisation unter `GET /api/v1/providers/model-profiles`. Drei Routen wirken auf
+den Aussteller selbst: `GET /api/v1/me/mcp-connections` listet die Dienste, die er
+mit dem eigenen Konto verbunden hat, `PUT /api/v1/users/me/locale` setzt ihm die
+Sprache der Konsole auf jedem Gerät, und `PATCH /api/v1/users/me/agent-context`
+speichert seine Rolle (`job_title`) und woran er arbeitet (`about`), was jeder
+Agent erfährt. Jede braucht einen Schlüssel, der für `agents:run` ausgestellt
+wurde.
+
+`POST /api/v1/agents` legt einen Agent aus dem Spec im Body an und lässt ein
+leeres Feld leer. Mit `"from_starter": true` füllt es, was der Spec auslässt -
+die Instruktionen, Skills, die eigenen Tools der Plattform und das Budget - aus
+dem AgenticOS-Starter-Agent, wie es **New agent** in der Konsole tut.
 
 **Ein Run setzt eine Unterhaltung fort.** Ein Aufruf ohne `conversation_id`
 öffnet eine neue Unterhaltung für den Aussteller des Schlüssels und gibt ihre Id
@@ -184,6 +281,18 @@ weil die Fortsetzung in ihrem Namen handelt. Die Unterhaltung landet in der Chat
 Ausstellers mit dem Label **API** und bleibt ausgeblendet, bis er solche
 Unterhaltungen dort per Schalter einblendet.
 
+Ein im Chat gestellter Run ist die Ausnahme vom eigenhändigen Fortsetzen. Entscheidet
+eine Person die letzte offene Freigabe oder beantwortet sie die Fragen, setzt der
+Server den Run als sie fort und postet die Antwort in den Chat. Die Entscheidung eines
+Schlüssels setzt nichts fort: Eine Person muss diesen Run innerhalb von etwa einer Stunde
+nach der letzten Entscheidung in der Konsole fortsetzen, sonst wird er beendet.
+
+`continues_in_chat` sagt das: Es steht auf `ApprovalRead`, auf `AgentRunRead` (Einzelabruf) und im
+Ergebnis eines Fortsetzens und einer Antwort. Auf `POST /agents/{id}/run` ist es
+immer false, ebenso für einen API-Schlüssel. Ist es true, rufe `/resume` nicht auf.
+Ein `/resume`, das als zweites ankommt, erhält das bestehende `400` mit dem `status`
+des Runs. Siehe [Außerhalb des Chats entschieden](channels.md#decided-outside-the-chat).
+
 `GET /api/v1/conversations/{id}/transcript` liest eine der Unterhaltungen des
 Ausstellers Zug für Zug, mit den Tools, die jeder Zug aufgerufen hat, und den
 Kosten, für einen Schlüssel mit `runs:view`.
@@ -197,6 +306,41 @@ Kosten, für einen Schlüssel mit `runs:view`.
 
     Das ist der Sinn eines einzigen Runners, und deshalb gibt es keinen
     "schnellen Weg", der ihn überspringt.
+
+### Ohne die Verbindung zu halten { #without-holding-the-connection }
+
+Ein Run von Minuten - ein Browse, eine lange Tool-Kette - hält die Anfrage die
+ganze Zeit offen, und das Lese-Timeout eines Proxys kann sie abschneiden,
+während der Run weiterläuft. Senden Sie `Prefer: respond-async`, und der Aufruf
+antwortet sofort mit `202` und einer Run-Anfrage zum Abfragen:
+
+```bash
+curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: respond-async" \
+  -H "Idempotency-Key: ticket-4711" \
+  -d '{"prompt": "Summarise this quarter for the board"}'
+# 202, Location: /api/v1/run-requests/{id}, Preference-Applied: respond-async
+
+curl "$BASE/api/v1/run-requests/$REQUEST_ID" -H "Authorization: Bearer $AGENTICOS_KEY"
+```
+
+Die Anfrage steht auf `queued`, `running`, dann `completed` mit `result` -
+demselben Body, mit dem der synchrone Aufruf antwortet - oder `failed` mit
+`error`. Ihre `conversation_id` ist ab der ersten Antwort bekannt, eine
+Folgenachricht kann also gesendet werden, bevor der Run endet. Ein Worker führt
+sie aus, durch denselben Runner, dasselbe Budget und dieselben Freigaben wie
+jede andere Oberfläche.
+
+Was sich sofort prüfen lässt, wird sofort geprüft: Eine unbekannte Konversation
+oder Anlage ist ein `404` auf den `POST`, kein Fehler, auf den man warten muss.
+Die Rechte des Schlüssels werden beim Start des Runs erneut geprüft, ein
+Schlüssel, der widerrufen wurde, während sein Run wartete, führt ihn also nicht
+aus; einer, der in der Zeit nur abgelaufen ist, schon. Nur die Person, die angefragt hat, oder ein Schlüssel von ihr kann eine
+Run-Anfrage lesen; die eines anderen antwortet `404`. Ein asynchroner Run hat
+einen Versuch - ein gescheiterter Run wird mit dem festgehalten, was er
+ausgegeben hat, und nicht wiederholt, um es nicht zweimal auszugeben.
 
 Die Route trägt eine **Rate-Limitierung und kein Berechtigungs-Tor**. Über die
 Berechtigung entscheidet der Service, anhand der Grants genau dieses Agents — ein
@@ -224,6 +368,287 @@ Die Antwort trägt außerdem
 `categories` und `tags`: jedes eindeutige Label auf den Agents, die Sie auflisten
 können, unabhängig von Filter und Seite — die Auswahl, die ein Filtermenü anbietet.
 Ein privater Agent, den Sie nicht sehen, trägt keines bei.
+
+## Einen Workflow ausführen { #running-a-workflow }
+
+Organisations-API-Keys können Runs starten und Status, Graph, Schritte, Dateien und
+Ereignisse über `/api/v1/workflow-runs` lesen. Ein Start verlangt `workflows:run`, das
+Lesen zusätzlich `workflows:view`, ein Entwurfstest `workflows:edit`. Der Worker behält
+die beim Start zugelassenen Scopes und prüft Key und Aussteller vor jedem Schritt
+erneut, auch nach einer Freigabe oder Wartezeit. Widerruf oder Löschung stoppen neue
+Arbeit mit `PRINCIPAL_REVOKED`; eine Fortsetzung erhält nie die volle Rolle des
+Ausstellers.
+
+Der Ablauf nicht: Ein abgelaufener Schlüssel startet nichts, aber ein Run, den er gültig
+gestartet hat, läuft weiter, sodass die Stunde eines OAuth-Tokens kein langes Warten
+abbricht. Key-Runs erreichen keine persönlichen Daten des Ausstellers. Das Bearbeiten
+eines Workflows verlangt weiterhin eine Sitzung.
+
+API-Schlüssel können Läufe öffentlichen Ursprungs einschließlich schlüsselgestarteter
+Läufe lesen. Persönliche, von Mitgliedern gestartete Läufe antworten mit `404`, auch
+bei Graph, Schritten, Ereignissen, Dateien, Wiederholung und Abbruch. Schlüssel können
+keine Dateien aus diesen Läufen importieren.
+
+```bash
+curl -X POST "$BASE/api/v1/workflow-runs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "'"$WORKFLOW_ID"'", "input": {"question": "How long do refunds take?"}, "deadline_seconds": 3600}'
+```
+
+Das startet einen Run der veröffentlichten Version des Workflows und antwortet
+sofort mit `201`; die Knoten laufen im Hintergrund. `input` ist das, was der Trigger [`core.input`](reference/workflow-nodes.md#core-input) des Graphen weitergibt, höchstens `WORKFLOW_RUN_MAX_INPUT_BYTES` als JSON (darüber `413`). Hier startet nur eine Version, die mit diesem Trigger oder ohne einen startet: jede andere antwortet `409
+WORKFLOW_TRIGGER_MISMATCH`, weil ein Webhook, ein Zeitplan, eine Chatnachricht oder ein Tabellen-Datensatz sie startet. `"mode": "test"` führt
+stattdessen den aktuellen Entwurf aus, mit jedem Trigger, und verlangt `workflows:edit`.
+
+Lies vor dem Aufruf `GET /api/v1/workflows/{id}/input-schema` mit
+`workflows:view`. Die Antwort enthält die veröffentlichte `version_id` und eine
+Liste `entries` mit `entry_node_id`, `trigger` und wirksamem `input_schema` für jeden
+Manual-, API-, Called-by-a-workflow- oder Form-Eingang. Übergib `version_id`, um
+eine bestimmte veröffentlichte Version zu prüfen. JSON-Schema-Verträge werden
+unverändert zurückgegeben; einfache Felder werden als JSON Schema dargestellt,
+und untypisierte Eingänge liefern `{"type": "object"}`. Verwende den Vertrag des
+gewünschten Eingangs und übergib beim Start dessen `entry_node_id`.
+
+Bisherige einfache `integer`-Felder verlangen zusätzlich ganzzahlige JSON-Tokens:
+`1` wird angenommen, `1.0` und `1e0` werden abgelehnt. Die Erkennung markiert
+diese Felder mit `x-agenticos-strict-integer: true`, auch in optionalen Feldern,
+die null erlauben. Gewöhnliches JSON Schema kann diese Schreibweise nicht
+erzwingen; seine Validierung allein reicht für diese Felder nicht aus. Die
+Serverprüfung entscheidet. Rohe JSON-Schema-Verträge nutzen die standardmäßige
+Integer-Semantik.
+
+Der optionale [JSON-Schema-Eingabevertrag](reference/workflow-nodes.md#json-schema-input-contracts)
+wird vor dem Annehmen des Runs geprüft. Eine Abweichung liefert
+`422 WORKFLOW_RUN_INPUT_INVALID` mit Feldpfaden und Meldungen in `error.details.fields`;
+es wird kein Run angelegt. Jeder Eintrag enthält `field` und `message`;
+verschachtelte Anfragepfade enthalten Array-Indizes, etwa `input.items.0.sku`.
+Für bestehende Aufrufer behält `error.details.problems` außerdem `field`, `message`
+und `type` mit Pfaden relativ zum Eingabeobjekt. Der Vertrag stammt aus der
+aktuellen veröffentlichten Version oder bei `"mode": "test"` aus dem Draft.
+Er gilt ebenso über WebSocket und MCP sowie beim Aufruf durch einen anderen
+Workflow.
+
+`deadline_seconds` (bis zu dreißig Tage) setzt eine Deadline, die jedes Mal
+geprüft wird, bevor ein Knoten ausgeführt wird: Der erste nach Ablauf fällige
+Knoten lässt den Run mit `DEADLINE_EXCEEDED` fehlschlagen, während ein bereits
+laufender Knoten oder ein Run, der auf eine Freigabe wartet, davon nicht
+unterbrochen wird. Die
+Route ist wie die Agent-Run-Route je Aufrufer begrenzt und antwortet jenseits des
+Kontingents mit `429` und `Retry-After`.
+
+`GET /api/v1/workflow-runs/{id}` liefert Status, `spent_cost`, `error` und, sobald sein Knoten [`core.output`](reference/workflow-nodes.md#core-output) gelaufen ist, `output` des
+Runs, und `POST /api/v1/workflow-runs/{id}/cancel` stoppt ihn. `GET
+/api/v1/workflow-runs/{id}/events?after=<cursor>` liefert den Ereignisstrom des
+Runs, älteste zuerst, mit einem `next_cursor`, den Sie als `after` zurückgeben:
+Er bleibt gleich, solange nichts Neueres existiert, sodass Abfragen damit einem
+laufenden Run folgen. Wer was davon darf, steht unter
+[Berechtigungen](permissions.md#workflow-runs).
+
+`GET /api/v1/workflow-runs/{id}/nodes` listet jeden Schritt, den der Run gemacht
+hat, Schleifeniterationen eingeschlossen, jeden mit seinem `scope_path`, Status,
+seinen Versuchen, Kosten und dem typisierten Fehler, mit dem er zuletzt
+fehlschlug, und `GET /api/v1/workflow-runs/{id}/graph` liefert den Graphen, den der
+Run ausführt: den seiner Version oder den Draft-Snapshot eines Test-Runs.
+
+### Das Log eines Workflows lesen { #reading-a-workflows-log }
+
+Die Zeilen, die die [Quick Logs](workflows.md#the-logs-page) eines Workflows geschrieben
+haben, lassen sich von außerhalb der Konsole lesen - mit einem Skript, einer
+Tabellenkalkulation oder einem Dashboard-Werkzeug wie Grafana oder Metabase - mit einem
+Organisations-API-Schlüssel, der `workflows:view` besitzt.
+
+Ein Schlüssel liest die Zeilen der Runs öffentlichen Ursprungs, auch der von Schlüsseln
+gestarteten: gestartet von einem beliebigen Organisationsschlüssel, von außen (Webhook,
+Formular, Kanalnachricht, Gmail, Outlook, GitHub) und jeder Run in einer Kette, die ein
+solcher begonnen hat. Zeilen von Runs, die ein Mitglied, ein Zeitplan, ein
+Tabelleneintrag, ein Chat, ein Agent oder eine App gestartet hat, fehlen, daher ist das
+Log eines Zeitplan-Workflows über einen Schlüssel leer und seine Zahlen weichen von der
+Konsole ab. Ein Workflow einer anderen Organisation oder einer, den das Mitglied des
+Schlüssels nicht ansehen darf, antwortet mit `404`; ein Schlüssel ohne `workflows:view`
+wird abgewiesen.
+
+```bash
+# Die neuesten Zeilen, je 100 (so viel passt auf eine Seite); Test-Runs bleiben außen vor
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs?outcome=error&from=2026-10-01T00:00:00Z&limit=100" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+
+# Wie viele Zeilen jeder Tag je Ergebnis hinterließ, über die letzten 30 Tage in Warschauer Tagen
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&tz=Europe/Warsaw" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflows/{id}/logs` listet die neuesten zuerst - nach `created_at`, dann
+nach `seq`, der Position, die eine Zeile beim Schreiben im Log erhielt. Einschränken
+lässt sich mit `node_instance_id` (ein Schritt), `outcome` (ein Port oder `error`; wiederholt, um einen von mehreren zu treffen, und eine
+Zeile, die über mehrere Ports ging, passt zu jedem davon), `run`
+(eine Run-ID oder ihre ersten 4 oder mehr Zeichen), `q` (Text in der Nachricht) und dem
+Zeitfenster `from` (einschließlich) und `to` (ausschließlich); `include_test=true` nimmt
+die Zeilen von Test-Runs hinzu. `skip` und `limit` blättern - `limit` höchstens 100 -,
+und `total` zählt alle passenden Zeilen, ein Client blättert also, bis `skip` ihn erreicht.
+
+`GET /api/v1/workflows/{id}/logs/summary` liefert, was ein Diagramm braucht: für die
+letzten `days` Tage (7, 30 oder 90, heute eingeschlossen) einen Eintrag pro Tag, der
+älteste zuerst, mit der Anzahl je Ergebnis; ein Tag ohne Zeilen ist trotzdem vorhanden.
+`tz`, ein IANA-Name, bestimmt, wessen Tage gezählt werden, standardmäßig UTC; die übrigen
+Filter sind die der Liste. Um es in ein Dashboard-Werkzeug zu holen, die Route als
+JSON-Datenquelle angeben, den Schlüssel als Bearer-Header mitschicken und `by_day` lesen.
+
+```bash
+# Fehler und Timeouts pro Tag über einen Monat: eine JSON-Datenquelle für ein Dashboard-Panel
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&outcome=error&outcome=timeout" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflow-runs/{id}/logs` listet die Zeilen eines Runs, die älteste zuerst
+nach `seq` (`limit` bis 500), und `GET /api/v1/workflow-logs` die neuesten Zeilen aller
+Workflows, die der Schlüssel ansehen darf, jede mit dem Namen ihres Workflows, dazu wie
+viele Zeilen jedes Ergebnis in den letzten 24 Stunden hinterließ. Die Alarmregeln auf
+einem Log gehören nicht zur öffentlichen API.
+
+### Einen Workflow exportieren und importieren { #exporting-and-importing-a-workflow }
+
+`GET /api/v1/workflows/{id}/export` (`workflows:view`) gibt den Entwurf als
+portable Datei zurück: `name`, `description`, `tags`, `settings`, `graph` und
+`unresolved`, Schritt und Feld jeder weggelassenen Ressourcenbindung. Sie enthält
+keine ID dieses Deployments und keinen Secret-Wert. `POST /api/v1/workflows/import`
+(`workflows:create`) nimmt diese Datei und antwortet mit `201`, dem neuen Entwurf
+`workflow` und seinen `unresolved`-Bindungen; ein Graph, der sich nicht parsen
+lässt oder einen Schritt nennt, den dieses Deployment nicht hat, ist ein `400`, und
+nichts entsteht.
+
+### Einem Run über einen WebSocket folgen { #following-a-run-over-a-websocket }
+
+`/api/v1/ws/workflow-runs?organization_id=<org>` authentifiziert sich wie der Socket
+des Chats, mit dem Access Token als Subprotokoll `access_token.<token>`. Sende
+`{"type": "start", "workflow_id": ..., "input": {...}}`, um einen Run zu starten,
+oder `{"type": "attach", "run_id": ..., "after": <cursor>}`, um einem zu folgen. Der
+Server sendet `{"type": "run", "run": {...}}`, wenn er zu folgen beginnt, und erneut,
+wenn der Run endet, und `{"type": "event", "event": {...}, "cursor": ...}` für jedes
+Ereignis dazwischen. Ein abgelehnter Frame bekommt `{"type": "error", "code": ...,
+"message": ...}`, und eine widerrufene Sitzung schließt den Socket mit `4001`. Ein
+Socket folgt einem Run; ein neuer Frame ersetzt den Run, dem er gefolgt ist.
+
+Ein `start`-Frame verbraucht dasselbe Kontingent pro Minute wie `POST /workflow-runs` und
+bekommt darüber hinaus `RATE_LIMIT_EXCEEDED`.
+
+### Webhooks und Zeitpläne { #workflow-webhooks-and-schedules }
+
+Webhook- und GitHub-Zustellungs-IDs überleben die Aufbewahrung von Ausführungsinhalten als minimale, zur Exposition und Organisation gehörende Tombstones. Ein Duplikat liefert weiterhin die ursprüngliche Ausführungs-UUID; Status und frühere Webhook-Antwort können bereits gelöscht sein. Das Löschen der Exposition oder Organisation beendet diese Deduplizierung. Die Migration `0230_webhook_delivery_tombstones.py` stellt bereits gelöschte Claims nicht wieder her; ein Downgrade entfernt verwaiste Tombstones vor Wiederherstellung des alten kaskadierenden Fremdschlüssels.
+
+Die Veröffentlichung automatischer Trigger und Änderungen ihrer Ausführungsrechte erfordern eine Mitgliedssitzung (`403` für Organisations-API-Schlüssel). Schlüssel dürfen manuelle Workflows veröffentlichen, Ausführungen innerhalb ihrer Scopes starten und Expositionen pausieren, aber nicht aktivieren, Geheimnisse/Formularlinks rotieren, Zeitpläne ändern oder eine neue Fehler-Workflow-Identität wählen. Diese Vorgänge hinterlegen Benutzerrechte für spätere Ereignisse.
+
+Öffentliche Workflow-Formulare erzwingen das Eingabebyte-Limit beim Lesen des Anforderungsstroms, vor JSON-Parsing und Tokenprüfung. Zu große deklarierte oder in Chunks gesendete Inhalte liefern `413`; fehlerhaftes JSON und ungültige Formularfelder liefern `422`. Jeder Eintrag von `details.problems` einer `422` ist `{field, message, type}`, wobei `type` der eigene Fehlertyp des Validators ist (`missing`, `int_type`, `extra_forbidden`, ...), sodass ein Formular je Antwort sagen kann, was es brauchte.
+
+Ein Workflow, dessen Trigger-Knoten ein Webhook oder ein Zeitplan ist, erhält seine
+Exposure, wenn diese Version veröffentlicht wird, und die Antwort der
+Veröffentlichung trägt sie als `exposure`. Das Signatur-Secret eines Webhooks steht im
+`webhook_secret` der Veröffentlichung, die ihn zum ersten Mal einschaltet, und
+nirgendwo sonst. `GET /api/v1/workflows/{id}/exposure` liest sie zurück, oder `null`
+für einen Workflow, der anders startet. `PATCH .../exposures/{exposure_id}` mit
+`{"is_active": false}` pausiert sie, und `POST .../exposures/{exposure_id}/rotate-secret`
+ersetzt das Secret eines Webhooks und gibt das neue einmal zurück. Beide verlangen
+`workflows:edit` und `workflows:run` auf dem Workflow. Die `webhook_url` eines
+Webhooks ist die Adresse, an die der Absender zustellt:
+
+```bash
+BODY='{"lead": 42}'
+SIGNATURE="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)"
+curl -X POST "$WEBHOOK_URL" \
+  -H "X-Signature-256: $SIGNATURE" \
+  -H "X-Delivery-Id: lead-42" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
+```
+
+Es antwortet mit `202` und `{"run_id": ..., "duplicate": false}`, sobald der Run
+zugelassen ist, und wartet nie auf den Run selbst. Eine bereits zugelassene
+Zustellungs-ID antwortet mit `"duplicate": true` und der ID des ersten Runs, ebenso
+dieselbe signierte Anfrage unter einer anderen ID innerhalb von 24 Stunden. Eine
+Signatur, die sich nicht verifizieren lässt, ist ein `403`, eine Zustellung ohne ID
+oder mit einem Body, der kein JSON-Objekt ist, ein `400`, und ein pausierter oder
+unbekannter Webhook ein `404`.
+
+Ein Graph mit einem Schritt [Respond to webhook](reference/workflow-nodes.md#webhook-respond)
+antwortet stattdessen mit dessen Status, Headern und JSON-Body, und eine
+Wiederholung der Zustellung bekommt dieselbe Antwort. Die Anfrage wartet höchstens
+`WORKFLOW_WEBHOOK_RESPONSE_TIMEOUT_SECONDS` darauf und antwortet dann wie oben mit
+`202`; ein Run, der vor der Antwort fehlschlägt, abgebrochen wird oder sein Budget
+aufbraucht, ist ein `500` `WORKFLOW_WEBHOOK_UNANSWERED` mit dem Run.
+
+Vor der Veröffentlichung öffnet `POST /api/v1/workflows/{id}/webhook-test`
+(`workflows:edit`) eine Test-URL für den Entwurf, zurückgegeben als `url` mit dem
+`test_token` darin und für zwei Minuten für einen Aufruf offen. Der Aufruf braucht keine
+Signatur, wird mit `{"captured": true}` beantwortet und startet keinen Run.
+`GET .../webhook-test/{token}` liest `state` (`listening`, `caught` oder `expired`)
+und die empfangene `delivery` zurück.
+
+Abgelaufene interne und OAuth-Schlüssel bleiben gespeichert, solange ein Workflow, eine Evaluation, ein Verbesserungslauf, eine Autorenanfrage, eine Skill-Prüfung, eine Fallgenerierung oder ein wartender oder laufender Hintergrundjob sie benötigt. Nach Abschluss darf die reguläre Bereinigung sie entfernen.
+
+## Mit Tabellen arbeiten { #working-with-tables }
+
+Die `values` eines Datensatzes sind nach Spalten-id geschlüsselt; `GET
+/api/v1/tables/{id}` listet die Spalten. Jeder Schreibzugriff nimmt einen
+`Idempotency-Key`: Eine Wiederholung mit demselben Schlüssel und Body antwortet mit dem
+Ergebnis des ersten Schreibzugriffs und `Idempotent-Replayed: true`, statt erneut zu
+schreiben, und derselbe Schlüssel mit anderem Body ist `422`.
+
+```bash
+curl -X POST "$BASE/api/v1/tables/$TABLE_ID/records" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Idempotency-Key: lead-ada-2026-09-29" \
+  -H "Content-Type: application/json" \
+  -d '{"external_id": "ada@example.com", "values": {"'"$EMAIL_COLUMN"'": "ada@example.com"}}'
+```
+
+`PATCH .../records/{record_id}` ändert einige Zellen und braucht die
+`expected_revision`, die Sie zuletzt gelesen haben; eine veraltete ist `409
+REVISION_CONFLICT`. `PUT .../records/by-external-id/{external_id}` legt den Datensatz
+an oder aktualisiert ihn, mit `expected_revision`, sobald er existiert. `POST
+.../records/query` filtert, durchsucht und sortiert seitenweise, und `POST
+.../records/count` sagt, wie viele Datensätze dieselben Filter und dieselbe Suche
+treffen, höchstens 100.000.
+
+Ein Workflow, dessen Trigger-Knoten **Table record** ist, läuft nach der
+Veröffentlichung für die Datensätze seiner Tabelle, die hinzugefügt, geändert oder
+gelöscht werden - je nachdem, was sein Trigger nennt. `GET
+.../triggers` listet die Workflows, die mit einer Tabelle starten, `PATCH
+.../triggers/{trigger_id}` mit `{"is_active": false}` pausiert einen, und `GET
+.../triggers/{trigger_id}/admissions` listet, was er über jeden Datensatz entschieden
+hat. Siehe [Trigger](virtual-tables.md#triggers).
+
+## Agents über A2A { #agents-over-a2a }
+
+Ein Agent, den seine Organisation über A2A anbietet, beantwortet JSON-RPC unter
+`POST /api/v1/a2a/{agent_id}`, mit denselben Keys wie `/run`; seine Agent Card liegt
+unter `GET /api/v1/a2a/{agent_id}/.well-known/agent-card.json` und braucht keinen.
+`PUT /api/v1/agents/{id}/a2a` mit `{"enabled": true}` schaltet es ein, für einen
+Aufrufer mit `agents:publish` auf diesem Agent.
+
+```bash
+curl -X POST "$BASE/api/v1/a2a/$AGENT_ID" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "message/send",
+       "params": {"message": {"role": "user", "messageId": "m1",
+                              "parts": [{"kind": "text", "text": "Review clause 7"}]}}}'
+```
+
+Die Antwort ist ein `Task`, dessen ID die des Runs ist und dessen `contextId` das
+Gespräch fortsetzt. `tasks/get` liest einen erneut. Den Rest beschreiben die
+[Kanäle](channels.md#a2a).
+
+Remote Agents, an die diese Organisation delegiert, werden unter
+`/api/v1/external-agents` registriert: `GET` listet sie (`agents:view`); `POST` mit
+einer `card_url`, optional einem `slug` und optional der `secret_id` eines API-Keys
+liest die Karte und registriert ihn, und `POST /{id}/refresh` liest sie erneut;
+`DELETE /{id}` entfernt einen (`agents:edit` für alle drei).
+
 ## Die ML-Dienste { #the-ml-services }
 
 Vier Dienste der Plattform antworten für sich allein, ohne Unterhaltung und ohne
@@ -245,10 +670,11 @@ der API in `$BASE`. Erstellen Sie den Schlüssel unter **Einstellungen → API**
 ihn einmal.
 
 **Ein Dokument in eine Wissensbasis legen und sie durchsuchen** — ein Schlüssel
-mit `collections:view` und `collections:edit` (die Vorlage *Wissen einspeisen*).
+mit `collections:view` und `collections:edit` (die Vorlage _Wissen einspeisen_).
 Das Einlesen läuft im Hintergrund, eine Suche direkt nach dem Hochladen findet das
 Dokument also womöglich noch nicht; `GET /api/v1/kb/$KB_ID/documents` zeigt seinen
-Status.
+Status, und `GET /api/v1/kb/$KB_ID/ingestion` antwortet `complete`, sobald keines
+mehr verarbeitet wird.
 
 ```bash
 # Find the knowledge base, upload a file into it, and search it.
@@ -342,7 +768,117 @@ genauso authentifiziert, mit der Organisation in `?organization_id=`, sendet er
 pro erfolgreichem Schreibvorgang über die öffentliche API in dieser Organisation
 einen JSON-Frame — `resource`, `id`, `action` (`created`, `updated` oder
 `deleted`), `surface` (`console`, `api_key`, `mcp` oder `assistant`) und wer ihn
-ausgeführt hat — und nur für Zeilen, die der Aufrufer lesen darf.
+ausgeführt hat — und nur für Zeilen, die der Aufrufer lesen darf. Änderungen,
+die niemand geschrieben hat, kommen genauso an: `run` für einen Run, der seine
+Zustände durchläuft, und `system` für die eigene geplante Arbeit der Plattform,
+etwa einen Gruppierungslauf der Wissenslücken.
+
+## Sprachanrufe { #voice-calls }
+
+Ein [Sprachanruf](voice.md) hat ein eigenes Socket, weil ein Anruf keine
+Schleife aus Runden ist: **`/api/v1/ws/voice`** für ein Mitglied und
+**`/api/v1/embed/{public_key}/voice/ws`** für einen Besucher auf einem Widget
+oder einer gehosteten Seite ([Zulassung](channels.md#the-call-socket)). Beide
+sprechen dieselben Frames, definiert in `backend/app/schemas/voice.py`.
+
+Das Socket der Konsole authentifiziert sich wie `/ws/agent`: das Token als
+Eintrag `access_token.<JWT>` in `Sec-WebSocket-Protocol` (oder das
+Same-Origin-Cookie), nie im Query-String, und die Organisation als
+`?organization_id=`. Es schließt mit `4001` ohne gültige Session und mit `4003`,
+wenn der Aufrufer kein Mitglied ist oder sich mit einem API-Schlüssel der
+Organisation authentifiziert: Ein Anruf ist ein Mensch am Mikrofon, so wie ein
+Chat-Turn ein Mensch an der Tastatur ist.
+
+Das Embed-Socket schließt mit `4029`
+jenseits eines Rate-Limits und mit `4003` bei jeder Ablehnung, die das Embed
+betrifft. Jeder Heartbeat prüft die Session erneut, sodass ein Anruf eine
+Abmeldung nicht überdauert.
+
+**Der Client sendet** JSON-Frames und über das Relay auch binäres Audio:
+
+| Frame | Felder | Wann |
+| --- | --- | --- |
+| `start` | `agent_id`, `conversation_id`, `sdp_offer` (WebRTC), `resume_of` und `resume_token` (eine Wiederverbindung), `context` (die Variablen eines Embeds) | Zuerst, innerhalb von 10 Sekunden |
+| `approval` | `id`, `decision` (`approve` oder `deny`) | Entscheidung über eine Freigabe, auf die der Anruf wartet |
+| `mute` | `muted` | Das Relay: das Mikrofon stummgeschaltet |
+| `played` | `bytes` | Das Relay: wie viel vom Audio des Agents abgespielt wurde |
+| `end` | --- | Auflegen |
+| _binär_ | 16-Bit-PCM mit der Eingangsrate des Modells | Das Relay: das Audio des Anrufers |
+
+**Der Server sendet:**
+
+| Frame | Felder | Bedeutet |
+| --- | --- | --- |
+| `answer` | `sdp` | WebRTC: die Antwort des Providers für die Peer-Verbindung des Browsers |
+| `ready` | `call_id`, `run_id`, `conversation_id`, `transport`, `input_sample_rate`, `output_sample_rate`, `cap_seconds`, `resume_token` | Der Anruf ist eingerichtet. `resume_token` wird nur hier gesendet, nur an diesen Anrufer; eine Wiederverbindung schickt es zurück |
+| `state` | `state`: `connecting`, `listening`, `user_speaking`, `thinking`, `agent_speaking`, `interrupted`, `tool_running`, `awaiting_approval` | Wer spricht oder was der Agent gerade tut |
+| `caption` | `role`, `turn_id`, `part` und eines von `delta` (anhängen), `text` (durch den bisher geprüften Text ersetzen) oder `final` | Ein Live-Untertitel |
+| `turn_saved` | `message` | Eine abgeschlossene Runde, als die Nachricht, als die sie gespeichert wurde; sie ersetzt die Untertitel mit ihrer `turn_id` |
+| `tool` | `name`, `status` (`running` oder `done`) | Ein Tool, das der Agent ausführt |
+| `approval_required` | `id`, `tool`, `args`, `said`, `timeout_seconds` | Eine Freigabe für die Person im Anruf: die exakten Argumente und was von ihr verstanden wurde |
+| `approval_unavailable` | `tool`, `args` | Ein Tool-Aufruf, den dieser Anrufer per Stimme nicht freigeben kann |
+| `approval_settled` | `id`, `outcome` (`approved`, `denied` oder `expired`) | Wie eine Freigabe ausgegangen ist |
+| `notice` | `kind`, `message` (optional) | Etwas, das in Worten zu sagen ist: ein Guardrail-Treffer, ein erreichtes Limit |
+| `limit` | `seconds_left` | Die Zeit des Anrufs ist fast um |
+| `clear_playback` | --- | Das Relay: das eingereihte Audio des Agents verwerfen |
+| `ended` | `reason`, `message` | Der Anruf ist vorbei |
+| _binär_ | 16-Bit-PCM mit der Ausgangsrate des Modells | Das Relay: das Audio des Agents |
+
+**Ein Besucher eines Widgets oder einer gehosteten Seite erfährt weniger.** Sein
+`ready` enthält kein `run_id`; `cap_seconds` ist das Limit des Anrufs - der
+längste Anruf des Agents oder was von einem fortgesetzten Anruf übrig ist. Die
+Tool-Frames folgen den Schaltern
+`show_tool_steps` und `show_tool_results` des Embeds, wie die einer getippten
+Antwort. Ohne Tool-Schritte wird kein `tool`-Frame gesendet, und
+`tool_running` kommt als `thinking`. Ohne Tool-Ergebnisse kommt
+`approval_unavailable` mit leeren `args`. Das `turn_saved` eines Besuchers
+enthält, unabhängig von den Schaltern, nur `id`, `role`, `content`,
+`interrupted` und `turn_id` der Nachricht: nie die IDs von Run, Agent oder
+Version, nie ihre Kosten oder Tool-Aufrufe.
+
+**Eine Wiederverbindung muss beweisen, dass ihr der Anruf gehört.** Ein `start`
+mit `resume_of` muss auch das `resume_token` aus dem `ready` jener Verbindung
+mitschicken. Ohne es oder mit einem falschen wird die Wiederverbindung als
+`resume_refused` abgelehnt, und der genannte Anruf bleibt unberührt. Der Server
+speichert nur einen Hash des Tokens. Ein Anruf, der schon aus 20 Verbindungen
+besteht, wird nicht mehr fortgesetzt: Auch seine nächste Wiederverbindung wird
+als `resume_refused` abgelehnt.
+
+Ein Socket, das innerhalb von 10 Sekunden kein `start` sendet, bekommt `ended`
+mit `no_start`. Ein Anruf, der nicht startet, antwortet mit `ended` und einem
+stabilen `reason`: `no_agent`, `forbidden`, `not_configured`, `bad_offer`,
+`data_channel`, `resume_refused`, `call_limit`, `not_priced`, `budget`, `busy`
+oder `line_busy`, mit einer `message`, die sich gefahrlos anzeigen lässt.
+`busy` kommt erst, nachdem ein Anruf, den dieselbe Person gerade aufgelegt hat,
+bis zu vier Sekunden hatte, um zu enden. Ein Start, der aus irgendeinem
+anderen Grund scheitert, antwortet mit `ended` und `error`.
+
+Ein Besucher, der
+als `not_configured`, `not_priced` oder `budget` abgelehnt wird oder dessen
+Anruf als `budget` endet, bekommt stattdessen
+`unavailable` mit der Meldung "Calls are not available right now.": Code und
+vollständige Meldung sind Sache des Betreibers des Agents. Ein Anruf in eine archivierte Unterhaltung wird als `forbidden`
+abgelehnt, so wie eine getippte Nachricht dorthin.
+
+Ein Anruf, der gelaufen ist, endet mit `user`, `time_limit`, `budget`,
+`disconnected`, `revoked`, `guardrail`, `shutdown` oder `error`; mit
+`time_limit`, wenn er den längsten Anruf des Agents erreicht hat. Der Anruf eines Besuchers
+endet mit `revoked`, wenn sein Embed pausiert wird, seine Anrufe abgeschaltet
+werden oder es auf einen anderen Agent zeigt. Kein Frame trägt je Zugangsdaten
+eines Providers.
+
+Fünf HTTP-Routen gehören dazu:
+
+| Route | Gate | Antwortet |
+| --- | --- | --- |
+| `GET /api/v1/agents/{agent_id}/voice` | `agents:run` auf diesem Agent, ein Grant eingeschlossen; sonst `404` | Ob ein Anruf starten würde, warum nicht (`no_voice`, `not_offered` oder `no_key`), der Transport und der längste Anruf |
+| `POST /api/v1/agents/{agent_id}/voice/preview` | `agents:edit` auf diesem Agent, ein Grant eingeschlossen; sonst `404` | Die Stimme aus dem Entwurf des Abschnitts „Stimme“, die einen festen Satz sagt, als `audio/wav`. Pro Stimme und Sprache im Cache; `RATE_LIMIT_VOICE_PREVIEW_PER_MINUTE` pro Person |
+| `GET /api/v1/providers/realtime-models` | `agents:view` | Der Realtime-Katalog, aus dem der Abschnitt Stimme auswählt |
+| `GET /api/v1/voice/usage?start=…&end=…` | `runs:view` | Anrufsekunden und Anrufe für Anrufe, die zu oder nach `start` und vor `end` begonnen haben, nach Agent (die Anrufe eines gelöschten Agents als eine Zeile ohne ID oder Namen). Ein `end`, das nicht nach `start` liegt, wird mit `422` abgelehnt |
+| `GET /api/v1/runs?modality=voice` | `runs:view` | Nur Anrufe (`text` nur für getippte Runs); ein Anruf, der sich neu verbunden hat, ist eine Zeile mit `voice_chain`, alle Verbindungen summiert |
+
+Eine Freigabe, die zu einem laufenden Anruf gehört, wird im Anruf entschieden:
+`POST /api/v1/approvals/{id}` lehnt sie mit `400` ab.
 
 ## Fehler { #errors }
 
@@ -382,9 +918,9 @@ neuen Run.
 
 ## Wiederholungen, Idempotenz und Revisionen { #retries-idempotency-and-revisions }
 
-v1 hat keinen `Idempotency-Key`-Header und keine Revisions-Vorbedingungen: kein
-`ETag`, kein `If-Match`. Ein Schreibzugriff wird angewendet, wenn er ankommt,
-und der letzte gewinnt.
+v1 hat keine Revisions-Vorbedingungen: kein `ETag`, kein `If-Match`. Ein
+Schreibzugriff wird angewendet, wenn er ankommt, und der letzte gewinnt.
+`Idempotency-Key` wird auf einer Route beachtet, dem asynchronen Run.
 
 - **`GET`, `PUT` und `DELETE` lassen sich gefahrlos wiederholen.** Zweimal lesen
   liest zweimal; etwas zu löschen, das schon weg ist, antwortet `404`, was eine
@@ -397,13 +933,20 @@ und der letzte gewinnt.
   schauen Sie nach, bevor Sie wiederholen: `GET /api/v1/runs?agent_id=…&surface=api`
   listet die Runs, neueste zuerst, und ein Listenabruf findet eine Zeile, die der
   erste Versuch doch angelegt hat.
+- **Ein asynchroner Run schon, mit einem `Idempotency-Key`.** Senden Sie
+  `Prefer: respond-async` und einen Schlüssel Ihrer Wahl, höchstens 255 Zeichen,
+  und eine Wiederholung mit demselben Schlüssel und demselben Body antwortet mit
+  derselben Run-Anfrage, in welchem Zustand sie auch ist. Derselbe Schlüssel mit
+  einem anderen Body ist ein `409`, nie ein zweiter Run. Schlüssel gelten pro
+  Organisation. Ein synchroner Aufruf mit dem Header wird mit `400` abgelehnt,
+  statt glauben zu lassen, eine Wiederholung sei sicher.
 - **`429` ist die einzige Ablehnung zum Wiederholen**, nach dem `Retry-After`,
   das sie trägt. Jedes andere `4xx` ist für diese Anfrage endgültig.
 
 ## Konventionen { #conventions }
 
-| | |
-|---|---|
+|  |  |
+| --- | --- |
 | Präfix | `/api/v1` |
 | Anlegen | `POST`, `201` |
 | Teilweises Aktualisieren | `PATCH` |
@@ -457,13 +1000,19 @@ versioniert und bewegt sich nur vorwärts.
   seine Berechtigungen und die aktuelle Rolle des Ausstellers**, wird einmal
   angezeigt und funktioniert nur in der öffentlichen API.
 - **Ein Schlüssel handelt in seiner eigenen Organisation; eine Sitzung liest
-  `X-Organization-Id`** und fällt ohne ihn auf die persönliche Organisation
-  zurück. Der falsche sieht aus wie eine fehlende Ressource.
+  `X-Organization-Id`** und fällt ohne ihn auf die Standard-, die persönliche
+  oder die einzige Organisation zurück. Der falsche sieht aus wie eine fehlende
+  Ressource.
 - Einen Agent über HTTP auszuführen ist **derselbe Runner** — Budget, Freigabe
   und Audit gelten alle.
 - Ein Skript holt sich seinen eigenen Schlüssel **ohne Browser** — anmelden,
   ausstellen, widerrufen — und `examples/public-api.sh` geht diesen Weg ganz.
 - **Nur `429` lohnt eine Wiederholung**; ein `POST` ist nicht idempotent, also
-  schauen Sie nach, bevor Sie ihn wiederholen.
+  schauen Sie nach, bevor Sie ihn wiederholen - außer bei einem asynchronen Run
+  mit `Idempotency-Key`.
+- **`Prefer: respond-async`** macht aus einem Run ein `202` und eine Run-Anfrage
+  zum Abfragen, ein langer Run hält also keine Verbindung offen.
 - **Die öffentliche API steht in `/api/v1/public/openapi.json`** und ändert
   sich in v1 nur additiv, mit 90 Tagen Deprecation; ein SDK gibt es noch nicht.
+
+Skills mit genehmigungspflichtigem Laden benötigen die Genehmigung in jedem Durchgang erneut; frühere Ladevorgänge umgehen diese Prüfung nicht.

@@ -101,6 +101,7 @@ class _Spender(AbstractCapability[Any]):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     raises: bool = False
+    billed_usd: Decimal | None = None
 
     async def before_model_request(
         self, ctx: RunContext[Any], request_context: ModelRequestContext
@@ -109,6 +110,9 @@ class _Spender(AbstractCapability[Any]):
         ctx.usage.output_tokens += self.output_tokens
         ctx.usage.cache_read_tokens += self.cache_read_tokens
         ctx.usage.cache_write_tokens += self.cache_write_tokens
+        if self.billed_usd is not None:
+            ctx.usage.requests += 1
+            ctx.usage.incr(RequestUsage(cost=self.billed_usd, provider_reported_requests=1))
         if self.raises:
             raise RuntimeError("the summary call failed after it was billed")
         return request_context
@@ -146,10 +150,9 @@ class TestConfiguration:
         """Order is the whole point of tiering: the cheap tier has to run first."""
         tiered = build_strategy(CompactionConfig(strategy="tiered"))
         assert isinstance(tiered, TieredCompaction)
-        assert [type(tier) for tier in tiered.tiers] == [
-            ClearToolResults,
-            NotifyingSummarizingCompaction,
-        ]
+        assert len(tiered.tiers) == 2
+        assert isinstance(tiered.tiers[0], ClearToolResults)
+        assert isinstance(tiered.tiers[1], NotifyingSummarizingCompaction)
 
     def test_the_window_override_reaches_every_tier(self):
         """A tier left on the registry's number is a tier with a different trigger."""
@@ -999,3 +1002,15 @@ class _NamelessModel(TestModel):
     @property
     def model_name(self) -> str:
         return ""
+
+
+async def test_compaction_books_the_provider_bill_for_a_model_outside_the_catalog() -> None:
+    ledger = SpendLedger()
+    model = TestModel(model_name="stav/unlisted-model")
+    ctx = RunContext(deps=None, model=model, usage=RunUsage())
+    capability = MeteredCompaction(wrapped=_Spender(input_tokens=43, billed_usd=Decimal("0.5")))
+    with metered_by(ledger):
+        await capability.before_model_request(ctx, _request_context([], model=model))
+    assert ledger.total_usd == Decimal("0.5")
+    assert ledger.entries[0].provider_reported
+    assert not ledger.has_unpriced_models

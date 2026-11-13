@@ -40,7 +40,7 @@ value is isolated to that request and its background children (#943).
 """
 
 
-_api_key: ContextVar[dict[str, str] | None] = ContextVar("audit_api_key", default=None)
+_api_key: ContextVar[dict[str, str | bool] | None] = ContextVar("audit_api_key", default=None)
 """The organization API key the current request authenticated with, or None.
 
 Set by the auth dependency for a key-authenticated request and folded into every
@@ -67,9 +67,16 @@ def set_acting_trigger(trigger_id: UUID, acting_as: UUID) -> None:
     _acting_trigger.set({"id": str(trigger_id), "acting_as": str(acting_as)})
 
 
-def set_api_key(api_key_id: UUID, prefix: str) -> None:
-    """Record which organization key this request authenticated with, for the audit trail."""
-    _api_key.set({"id": str(api_key_id), "prefix": prefix})
+def set_api_key(api_key_id: UUID, prefix: str, *, assistant: str | None = None) -> None:
+    """Record which organization key this request authenticated with, for the audit trail.
+
+    `assistant` names the in-app assistant whose run key it is, so an entry says the
+    Architect acted for the person rather than reading as the person at their desk.
+    """
+    entry: dict[str, str | bool] = {"id": str(api_key_id), "prefix": prefix}
+    if assistant is not None:
+        entry |= {"name": assistant, "internal": True}
+    _api_key.set(entry)
 
 
 def set_impersonator(impersonator_id: UUID | None) -> None:
@@ -168,8 +175,9 @@ async def record_audit(
     never achieved silence - `flush` leaves the session needing a rollback, so
     the request's commit raised `PendingRollbackError` and 500'd anyway.
 
-    `actor_user_id` is `None` for the one caller that has no actor: the approval
-    expiry sweep, which records that *nobody* decided. It is required rather than
+    `actor_user_id` is `None` for the callers that have no actor: the approval
+    expiry sweep, which records that *nobody* decided, and the stop of an agent run
+    a workflow run's end leaves parked. It is required rather than
     defaulted, so passing no actor stays a deliberate act at each call site
     instead of the thing that happens when an argument is forgotten.
 
@@ -191,9 +199,10 @@ async def record_audit(
     **That includes what a caller does with the entry afterwards.** The nine sites
     that follow this with `NotificationService.security_event` were writing a
     notification per recipient, each of which takes a key-share lock on that
-    recipient's `users` row - after this chain lock, while `admin_delete` takes
-    every app admin's row exclusively *before* reaching for the same chain. Two
-    transactions, the same two locks, opposite orders (#1763). They now call
+    recipient's `users` row - after this chain lock, while `admin_update` takes
+    every app admin's row exclusively, and `admin_delete` the deleted account's
+    own, *before* reaching for the same chain. Two transactions, the same two
+    locks, opposite orders (#1763). They now call
     `hold_security_audience` / `hold_configuration_audience` immediately before
     this, so the order is total: `users` rows first, the chain last.
     `tests/test_audit_lock_order.py` holds the remaining sites to it.

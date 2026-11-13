@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  useAgentAttention,
   usePeopleUsage,
   useRatingsSummary,
   useUsageByHour,
@@ -11,6 +12,7 @@ import {
   useVersionUsage,
 } from "./use-usage-stats";
 import { apiClient } from "@/lib/api-client";
+import { DASHBOARD_STALE_MS } from "@/lib/query-freshness";
 
 vi.mock("@/lib/api-client", () => ({
   apiClient: { get: vi.fn() },
@@ -314,15 +316,53 @@ describe("dashboard freshness", () => {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
 
-  it("asks again when the tab regains focus", async () => {
-    vi.mocked(apiClient.get).mockResolvedValue({ total_runs: 1 });
-    const { result } = renderHook(() => useUsageStats(PERIOD), { wrapper: appWrapper });
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(apiClient.get).toHaveBeenCalledTimes(1);
+  it("reuses its answer for half an hour, then asks again when the tab is looked at", async () => {
+    // Half an hour because what moves is pushed: the live feed marks runs stale
+    // as they change. A focus inside the window costs nothing.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.mocked(apiClient.get).mockResolvedValue({ total_runs: 1 });
+      const { result } = renderHook(() => useUsageStats(PERIOD), { wrapper: appWrapper });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    focusManager.setFocused(false);
-    focusManager.setFocused(true);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      expect(apiClient.get).toHaveBeenCalledTimes(1);
 
-    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+      vi.setSystemTime(Date.now() + DASHBOARD_STALE_MS + 1);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+
+      await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("useAgentAttention", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reads the agents that need a look in the window, and nothing while held back", async () => {
+    const item = {
+      agent_id: "a1",
+      name: "Refund desk",
+      rated_down: 5,
+      failed_runs: 0,
+      failing_suites: 1,
+      can_edit: true,
+    };
+    vi.mocked(apiClient.get).mockResolvedValue({ from: PERIOD.from, to: PERIOD.to, items: [item] });
+    const { result } = renderHook(() => useAgentAttention(PERIOD), { wrapper });
+
+    await waitFor(() => expect(result.current.agents).toEqual([item]));
+    expect(apiClient.get).toHaveBeenCalledWith("/stats/attention", {
+      params: { from: PERIOD.from, to: PERIOD.to },
+    });
+
+    vi.mocked(apiClient.get).mockClear();
+    const held = renderHook(() => useAgentAttention(PERIOD, { enabled: false }), { wrapper });
+    expect(held.result.current.agents).toEqual([]);
+    expect(apiClient.get).not.toHaveBeenCalled();
   });
 });

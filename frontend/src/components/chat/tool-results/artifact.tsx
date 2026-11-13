@@ -1,5 +1,7 @@
 "use client";
 
+import { toolLookupName } from "@/lib/tool-identity";
+
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -54,7 +56,7 @@ export function parsePublishedArtifact(result: string): PublishedArtifactPayload
 export function publishedApps(toolCalls: ToolCall[]): PublishedArtifactPayload[] {
   const apps = new Map<string, PublishedArtifactPayload>();
   for (const call of toolCalls) {
-    if (call.name !== "publish_artifact" || typeof call.result !== "string") continue;
+    if (toolLookupName(call) !== "publish_artifact" || typeof call.result !== "string") continue;
     const app = parsePublishedArtifact(call.result);
     if (app) {
       apps.delete(app.artifactId);
@@ -69,13 +71,16 @@ export function publishedApps(toolCalls: ToolCall[]): PublishedArtifactPayload[]
  *
  * The version and not the artifact, so a conversation read back after the agent
  * republished still opens what was published in it - which is the evidence the
- * run left, not whatever the link shows today.
+ * run left, not whatever the link shows today. It opens in a new tab, so the
+ * conversation stays where it was.
  */
 export function PublishedArtifactResult({ data }: { data: PublishedArtifactPayload }) {
   const t = useTranslations("chat.tools");
   return (
     <Link
       href={`${ROUTES.ARTIFACT_DETAIL(data.artifactId)}?version=${encodeURIComponent(data.versionId)}`}
+      target="_blank"
+      rel="noopener noreferrer"
       className="hover:bg-accent/40 my-1 flex items-center gap-3 rounded-xl border p-2 pr-3 transition-colors"
     >
       {/* The page itself, the way the Artifacts listing draws it: an icon and a

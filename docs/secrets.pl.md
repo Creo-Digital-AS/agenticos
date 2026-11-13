@@ -1,5 +1,5 @@
 ---
-source_sha: "965ad3ad82f8"
+source_sha: "f0b3009ed75d"
 ---
 
 # Sekrety i vault { #secrets-and-the-vault }
@@ -10,6 +10,10 @@ source_sha: "965ad3ad82f8"
     i każdy klucz API strony trzeciej na tej platformie przechodzi przez
     `app/core/vault.py`. Dodanie drugiego sposobu przechowywania poświadczenia
     w spoczynku to defekt, który usunęły dwie migracje.
+
+## W konsoli { #in-the-console }
+
+Vault pokazuje klucze, Twoje połączone konta i konta organizacji w jednej tabeli. **Dodaj klucz** zapisuje poświadczenie; **Połącz konto** pozwala wybrać konto własne lub, z odpowiednim uprawnieniem, konto organizacji. Każdy wiersz zachowuje własny dostęp i akcje: udostępnianie lub rotację klucza albo ponowne połączenie lub odłączenie konta. Tokeny OAuth pozostają ukryte, a odłączenie konta wymaga potwierdzenia.
 
 ## Szyfrowanie kopertowe { #envelope-encryption }
 
@@ -98,6 +102,10 @@ kończy z poświadczeniem, które zawodzi przy pierwszym runie. Sekret ma więc
 | `github_oauth_app` | Publiczny client id aplikacji GitHub OAuth App i jej sekret |
 | `git_token` | Token dostępu do git przez HTTPS i jedyny host, do którego wolno go wysłać |
 | `entra_app` | Tenant id, client id i client secret rejestracji aplikacji Microsoft Entra |
+| `http_credential` | Token wysyłany przez krok HTTP workflowu, opcjonalna nazwa użytkownika i originy, do których wolno go wysłać |
+| `smtp_account` | Serwer SMTP, port, TLS, nadawca i dane logowania zapieczętowane razem dla poczty workflow |
+| `microsoft_oauth_app` | Te same trzy pola, dla rejestracji aplikacji, przez którą ludzie się logują |
+| `openai_codex` | Logowanie do ChatGPT: token dostępu, refresh token i id konta |
 | `none` | Nie jest sekretem — znacznik endpointu, który nie potrzebuje poświadczenia |
 
 `github_oauth_app` jest zużywany przez platformę, a nie wybierany przez
@@ -108,10 +116,31 @@ użyte dla połączenia całej organizacji, a przy dwóch zapisanych aplikacjach
 widocznych dla organizacji łączenie zostaje odrzucone (z nazwaniem obu), zamiast
 zostać przypisane do tej, której nazwa sortuje się pierwsza.
 
+Ta sama reguła — **tylko widoczne dla organizacji** — obejmuje klucz API,
+z którym wysyłane są domyślne ustawienie zamiany mowy na tekst organizacji i
+własna para transkrypcji bota kanału: platforma wydaje go na dyktowanie każdego
+członka i każdą notatkę głosową, którą bot odbiera, więc prywatny klucz członka
+jest odrzucany przy zapisie każdego z nich, a klucz, który później stał się
+prywatny, przestaje być używany. W odróżnieniu od `github_oauth_app` te klucze
+są wskazywane po identyfikatorze, więc może ich być kilka obok siebie.
+
+Lista kluczy głosowych wskazuje widoczne klucze, których nie można wybrać,
+ponieważ są prywatne lub udostępnione tylko wybranym osobom, i wyjaśnia potrzebę
+udostępnienia ich organizacji. Logowanie ChatGPT jest rozpoznawane osobno:
+zapewnia dostęp do modeli w ramach subskrypcji ChatGPT i nie zastępuje klucza
+API OpenAI do funkcji głosowych. Lista nigdy nie zmienia automatycznie dostępu do poświadczeń.
+
 `git_token` niesie swój host, bo źródło synchronizacji Git wysyła token pod adres
 URL wybrany przez tego, kto edytuje źródło. Związany z hostem, z którym został
 dodany, token nie może zostać skierowany na inny serwer przez edycję źródła
 i żaden inny klucz nie może go zastąpić.
+
+`http_credential` to reguła `git_token` dla kroku [`http.request`](reference/workflow-nodes.md#http-request) workflowu: URL kroku wpisuje ten, kto edytuje workflow, i może on pochodzić z wejścia runa, więc originy, do których token może trafić, są zapieczętowane razem z nim, np. `https://api.example.com`. Krok sprawdza origin URL-a, który zaraz wywoła, i każdego przekierowania, za którym idzie, i nie wysyła tokena nigdzie indziej. Żaden inny rodzaj sekretu nie może go zastąpić.
+
+Pole sekretu w kroku workflow oferuje **New secret**: formularz samego vault,
+ustalony na rodzaj, który pole przyjmuje, i zapisany jako `custom`, jedyny cel
+przyjmujący dowolny kształt. Nowy sekret zostaje wybrany po zapisaniu. Jego wartość
+trafia do vault i nigdzie indziej, a graf przechowuje tylko jego id.
 
 `entra_app` to to, jako co loguje się źródło synchronizacji SharePoint albo
 OneDrive. Jego zasięg ustala się w Microsoft Entra, nie tutaj: o tym, które
@@ -121,6 +150,20 @@ witrynie, którą czyta źródło — zobacz [Konfiguracja SharePoint i
 OneDrive](howto/configure-sync-sources.md#sharepoint-and-onedrive-setup). Jego
 podpowiedź (hint) to ostatnie cztery znaki client id, który jest publiczny, a nie
 sekretu.
+
+`microsoft_oauth_app` ma te same pola i jest wydawany inaczej: flow podłączania
+triggera Outlook loguje przez niego osobę, z delegowanym `Mail.Read` tego, kto
+wyraża zgodę - jego własna skrzynka i współdzielone, które już może otworzyć -
+podczas gdy `entra_app` działa z uprawnieniami aplikacji przyznanymi dla całego
+tenanta. Jak `github_oauth_app` musi być widoczny dla organizacji i musi być
+dokładnie jeden. Zobacz [Outlook](triggers.md#outlook-1-minute-and-no-secret-anywhere).
+
+`openai_codex` to jedyny rodzaj, którego nikt nie wpisuje. Zapisuje się go przez
+[zalogowanie do ChatGPT](models.md#running-on-a-chatgpt-subscription) i zmienia
+się w trakcie używania: każde odświeżenie zużywa refresh token, więc nowa para
+jest zapieczętowywana z powrotem pod tym samym id. Jego podpowiedź to ostatnie
+cztery znaki id konta. Gdy logowanie przestaje działać, **Reconnect** loguje
+ponownie w jego miejsce.
 
 `aws_credentials` to najczytelniejszy argument za tym, żeby rodzaje w ogóle
 istniały: access key id nie jest tajny, a secret access key jest, i jedno pole
@@ -145,15 +188,64 @@ jest jeszcze otwarty.
 
 **Providerzy modeli.** Nazywani przez [profil modelu](models.md). Wydatek jest
 przypisywany do sekretu, do którego rozwiązał się dany run, i tak właśnie pytanie
-„który klucz kosztuje najwięcej" dostaje odpowiedź.
+„który klucz kosztuje najwięcej" dostaje odpowiedź. Przypisanie klucza do profilu
+pożycza go każdemu, kto na nim działa, więc utworzenie lub edycja profilu - jego
+klucza albo endpointu - wymaga `secrets:view` na tym kluczu. Usunięty klucz
+zostawia swoje profile oznaczone `missing_key`, dopóki nie dostaną innego, także
+profil przed gatewayem. Bez klucza dalej działa tylko profil celowo zapisany bez
+klucza ([Profil bez klucza](models.md#a-profile-without-a-key)).
+
+**Zamiana mowy na tekst.** Klucz API, którego przeznaczeniem jest dostawca,
+wskazany po identyfikatorze obok dostawcy i modelu wszędzie tam, gdzie
+konfiguruje się zamianę mowy na tekst: w domyślnym ustawieniu organizacji,
+w nadpisaniu agenta i we własnej parze bota kanału. Nic nie wyszukuje klucza
+w czasie działania. Klucz organizacji i bota musi być widoczny dla organizacji;
+klucz agenta podlega regule pożyczania — publikujący musi go widzieć.
+[Zapis zużycia](ml-services.md#what-is-recorded) każdej transkrypcji wskazuje
+klucz, z którym ją wysłano. Zobacz
+[do którego silnika trafia nagranie](ml-services.md#which-engine-a-recording-reaches).
+Lista agentów używających klucza nie pokazuje tego użycia.
+
+**Rozmowy głosowe.** Klucz, z którym prowadzona jest
+[rozmowa głosowa](voice.md), jest wskazany na karcie Głos (Voice) agenta, obok
+providera i modelu realtime. Jego przeznaczeniem musi być ten provider, a jego
+rodzajem rodzaj tego providera: `api_key` albo, dla Azure, sekret
+`azure_openai`, który niesie też endpoint i wersję API. Podlega regule
+pożyczania — publikujący musi go widzieć — i nic nie wyszukuje klucza w czasie
+działania. Klucz jest odpieczętowywany, by otworzyć rozmowę, i nigdy nie trafia
+do przeglądarki: serwer odpowiada na ofertę WebRTC i żaden sekret klienta nie
+jest wydawany.
+
+Aby rozłączyć rozmowę, której proces padł, sprzątanie rozmów głosowych czyta go
+przez `OrganizationSecretService.voice_call_key`, czytnik, którego tekst jawny
+trafia do endpointu rozłączania providera i nigdzie indziej. Wiersz rozmowy
+przechowuje tylko identyfikator klucza, a usunięty klucz sprawia, że agent nie
+może odbierać rozmów, dopóki nie zostanie wybrany inny.
 
 **Capabilities.** Capability deklaruje, że potrzebuje poświadczenia danego
 *rodzaju* — nigdy konkretnej instancji. Kod mówi „potrzebuję klucza API";
-`secret_id` w bindingu mówi, którego. Zobacz
+`secret_id` w bindingu mówi, którego. Gdy binding wskazuje usługę, dla której jest
+klucz - wybranego providera albo jedyną usługę capability, na przykład LlamaParse -
+publikacja odrzuca klucz zapisany dla innej usługi, bo przy każdym wywołaniu
+trafiałby do niewłaściwego providera. Klucz `custom`, a takim jest każdy klucz
+zapisany przed wprowadzeniem przeznaczeń, jest akceptowany. Zobacz
 [katalog capabilities](reference/capabilities.md#what-a-binding-may-change).
 
 **Połączenia MCP.** Tokeny bearer i ładunki OAuth, pieczętowane dla organizacji
 albo dla członka. Zobacz [MCP](mcp.md#authentication).
+
+<a id="connected-accounts"></a>
+
+**Podłączone konta.** Konto Google, jako które czyta folder
+[wirtualnego terminala](reference/capabilities.md#mirage), podłączone na stronie
+vaulta. Osoba podłącza własne konta, a agent montujący „własne konta każdej osoby”
+znajduje je, gdy ta osoba z nim rozmawia. Konta organizacji wymagają `mcp:manage`
+do podłączenia lub odłączenia i `connections:view` do wyświetlenia listy, a folder
+wskazuje jedno z nich po id. Zgoda używa sekretu `google_oauth_app` organizacji i
+prosi naraz o Dysk, Gmail, Kalendarz, Dokumenty, Arkusze i Prezentacje. Google
+pozwala odmówić dowolnego z nich, a folder, który potrzebuje odmówionego, mówi o
+tym. Zgoda to payload OAuth zapieczętowany jak w połączeniu MCP, a odpowiedź
+podaje adres konta i przyznane zakresy, nigdy token.
 
 **Boty kanałów.** Każde poświadczenie w wierszu, zapieczętowane dla organizacji
 bota jednym wspólnym `key_version`: token bota, signing secret i app token
@@ -169,6 +261,12 @@ w tym samym kształcie co signing secret bota kanału. Nigdy nie jest zwracany a
 logowany jawnie; weryfikacja odpieczętowuje go, porównuje w stałym czasie,
 a dostarczenie, które się nie powiedzie, to 403. Zobacz
 [Pojęcia](concepts.md#trigger).
+
+**Webhooki workflow.** Klucz HMAC, którym podpisywane są dostarczenia webhooka
+workflow, wygenerowany przez platformę, zapieczętowany dla organizacji i
+przechowywany w wierszu webhooka razem z jego `key_version`. Jest pokazywany raz, gdy
+jest tworzony albo wymieniany, i nigdy więcej; rotacja klucza głównego przepakowuje go
+razem z resztą. Zobacz [Workflow](workflows.md#a-webhook-or-a-schedule).
 
 **Embedy.** Widget `jwt` weryfikuje tokeny odwiedzających wobec signing secretu
 HS256, który trzyma backend klienta. Jest zapieczętowany dla organizacji agenta
@@ -193,7 +291,8 @@ przynieść własny klucz:
 | Exa | `web_research` |
 | Logfire | [Obserwowalność](reference/spec.md#observability) per agent — ślady do osobnego projektu |
 | LlamaParse | Parsowanie PDF-ów, rozliczane na własny klucz organizacji |
-| mem0 | [`memory_mem0`](reference/capabilities.md#memory-mem0) — cała capability, która trzyma semantyczne wspomnienia agenta w usłudze mem0 (chmurowej albo self-hosted), a nie tutaj. Nic nie jest zapisywane w tym wdrożeniu, więc mem0 rozlicza własny embedding poza pasmem, a wysyłanie wspomnień do chmury mem0 jest decyzją o rezydencji danych, którą podejmuje Builder. Self-hostowany `base_url` musi być https i musi być na liście dozwolonych `MEM0_ALLOWED_HOSTS`, więc klucz z vault nigdy nie trafia do originu kontrolowanego przez agenta. Dla tych wspomnień nie ma konsoli operatora: mem0 ma własny magazyn, własne listowanie i własne usuwanie. |
+| ElevenLabs | [`text_to_speech`](reference/capabilities.md#text-to-speech) — mowa głosami z konta ElevenLabs organizacji |
+| BytePlus ModelArk | [`video_generation`](reference/capabilities.md#video-generation) — modele wideo Seedance od ByteDance |
 
 ## Co nigdy się nie zdarza { #what-never-happens }
 
@@ -284,7 +383,7 @@ wciąż istnieje. Przepieczętowywany jest tylko opakowany klucz danych — ład
 pozostają nietknięte i to właśnie czyni rotację tanią.
 
 ```bash
-uv run agenticos cmd doctor    # reports whether a vault key is configured at all
+uv run agenticos cmd doctor    # says whether a dedicated key or the SECRET_KEY fallback seals the vault
 ```
 
 `make platform-bootstrap BOOTSTRAP_API_KEY=sk-...` zapisuje za ciebie pierwszy
@@ -305,3 +404,6 @@ zanim wejdziesz na żywo z wygenerowaną wartością domyślną.
   w logu, we wpisie audytu ani w wyeksportowanym specu.
 - Rotacja jest **etapowa** — skonfiguruj obie wersje, `vault-rotate --dry-run`,
   zrotuj, a potem usuń stary klucz, gdy komenda zgłosi zero niepowodzeń.
+
+
+Zgoda na źródło zewnętrznego agenta A2A obejmuje też generację autoryzacji wskazanego sekretu w sejfie. Podmiana wartości unieważnia przegląd mimo zachowania identyfikatora sekretu. Zmiana nazwy i konserwacja klucza szyfrowania zachowują tę generację. Istniejące zgody A2A po aktualizacji wymagają ponownego przeglądu.

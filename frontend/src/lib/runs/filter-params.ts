@@ -17,16 +17,20 @@
 import { formatPeriodParam, type Period } from "@/lib/dashboard/period";
 import { ROUTES } from "@/lib/constants";
 import { setUrlParam } from "@/lib/utils";
-import type { RunStatus } from "@/types/runs";
+import type { RunSource, RunStatus } from "@/types/runs";
 
 export interface RunFilters {
   status: RunStatus | "all" | "problems";
   surface: string;
+  /** Conversations, an agent answering evals, or a platform agent at work. */
+  source: RunSource | "all";
   rated: "all" | "up" | "down";
   userId: string;
   versionId: string;
   /** The model as a run recorded it - the label the dashboard's bars count. */
   model: string;
+  /** Text runs or voice calls (#54). */
+  modality: "all" | "text" | "voice";
   /** Runs from the Builder's test panel: only them, none of them, or both (#2074). */
   test: "all" | "only" | "hide";
 }
@@ -34,26 +38,39 @@ export interface RunFilters {
 export const DEFAULT_RUN_FILTERS: RunFilters = {
   status: "all",
   surface: "all",
+  source: "all",
   rated: "all",
   userId: "all",
   versionId: "all",
   model: "all",
+  modality: "all",
   test: "all",
 };
+
+/** How many filters are narrowing the list - what a phone's Filters button counts. */
+export function activeFilterCount(filters: RunFilters): number {
+  return (Object.keys(DEFAULT_RUN_FILTERS) as (keyof RunFilters)[]).filter(
+    (key) => filters[key] !== DEFAULT_RUN_FILTERS[key],
+  ).length;
+}
 
 /** The URL name of each filter. `person` reads better in a pasted link than `userId`. */
 const PARAM: Record<keyof RunFilters, string> = {
   status: "status",
   surface: "surface",
+  source: "source",
   rated: "rated",
   userId: "person",
   versionId: "version",
   model: "model",
+  modality: "modality",
   test: "test",
 };
 
 const RATINGS = new Set(["up", "down"]);
+const MODALITIES = new Set(["text", "voice"]);
 const TESTS = new Set(["only", "hide"]);
+const SOURCES = new Set(["conversation", "evaluation", "system"]);
 
 /** Activity's three tabs, in the order the strip draws them. */
 export const RUNS_TABS = ["runs", "approvals", "spend"] as const;
@@ -80,21 +97,27 @@ export function parseRunsTab(param: string | null, canDecide: boolean): RunsTab 
  *
  * Anything unrecognised falls back to "all" rather than to an error: a pasted
  * link with a status this build renamed should still open the page, narrowed by
- * whatever else it carried. `rated` is the one closed set worth checking here -
+ * whatever else it carried. `rated` and `modality` are the closed sets worth checking here -
  * the others are ids and free strings the backend answers for, and a status it
  * does not know is refused by name at the API rather than guessed at here.
  */
 export function parseRunFilters(params: URLSearchParams): RunFilters {
   const read = (key: keyof RunFilters) => params.get(PARAM[key])?.trim() || "all";
   const rated = read("rated");
+  const modality = read("modality");
   const test = read("test");
+  const source = read("source");
+  // A pasted link may still carry `every`, which named every surface: no filter.
+  const surface = read("surface");
   return {
     status: read("status") as RunFilters["status"],
-    surface: read("surface"),
+    surface: surface === "every" ? "all" : surface,
+    source: SOURCES.has(source) ? (source as RunSource) : "all",
     rated: RATINGS.has(rated) ? (rated as RunFilters["rated"]) : "all",
     userId: read("userId"),
     versionId: read("versionId"),
     model: read("model"),
+    modality: MODALITIES.has(modality) ? (modality as RunFilters["modality"]) : "all",
     test: TESTS.has(test) ? (test as RunFilters["test"]) : "all",
   };
 }

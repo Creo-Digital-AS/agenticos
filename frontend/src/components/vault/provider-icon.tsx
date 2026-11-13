@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Brain, KeyRound, TrainFront, type LucideIcon } from "lucide-react";
+import { Box, KeyRound, TrainFront, type LucideIcon } from "lucide-react";
 
 import { CustomMark, useCustomIcons } from "@/components/icons/custom-icons";
 import { GlyphIcon } from "@/components/icons/glyph";
@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 /**
  * What a service with no brand mark anywhere is drawn as: what it does.
  *
- * Neither Simple Icons nor the lobehub set carries Daytona or mem0, and the
+ * Neither Simple Icons nor the lobehub set carries Daytona, and the
  * platform's own sandbox service and a custom key are not brands at all. A
  * bordered initial for each read as unfinished rows in a vault
  * whose other rows wear real marks, so these wear the console's own icon for
@@ -21,7 +21,7 @@ const SERVICE_MARKS: Readonly<Record<string, LucideIcon>> = {
   custom: KeyRound,
   sandboxd: Box,
   daytona: Box,
-  mem0: Brain,
+  e2b: Box,
   // No icon set carries LiteLLM; its own mark is the bullet-train emoji.
   litellm: TrainFront,
 };

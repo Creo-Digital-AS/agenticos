@@ -6,14 +6,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDetailTargets } from "./detail-targets";
 import {
   AGENT_BUILDER,
+  ARTIFACT_DETAIL,
   KB_DETAIL,
   ORG_DIRECTORY,
   ORG_GROUPS,
   ORG_MEMBERS,
   ORG_ROLES,
   SETTINGS_DETAIL,
+  SKILL_DETAIL,
+  TABLE_DETAIL,
+  WORKFLOW_LOGS_DETAIL,
+  WORKFLOW_RUNS_DETAIL,
+  WORKFLOW_RUN_DETAIL,
   WORKSPACE_DETAIL,
 } from "@/lib/onboarding/tour";
+import { PAGE_SIZE } from "@/components/ui";
 import { qk } from "@/lib/query-keys";
 import { useOrgStore } from "@/stores";
 
@@ -55,35 +62,54 @@ describe("useDetailTargets", () => {
     const wrapper = wrapperWith((client) => {
       // `AgentList` object — what `useAgents` caches.
       client.setQueryData(qk.agents.list(false), {
-        items: [{ id: "agent-1", slug: "claude-code-like" }],
+        items: [{ id: "agent-1", slug: "agenticos" }],
         total: 1,
       });
       // Bare arrays — what `useKnowledgeBases` and `useOrganizationList` cache.
       // Reading these as `{ items }` (the bug) throws on `.items.find`.
       client.setQueryData(qk.kb.list(), [{ id: "kb-1", is_default: true }]);
       client.setQueryData(qk.organizations.list(), [{ id: "org-1", is_personal: true }]);
+      // `SkillList` object, under the key the Skills list's first page reads.
+      client.setQueryData(
+        qk.skills.list({
+          search: "",
+          category: "",
+          sort: "name",
+          skip: 0,
+          limit: PAGE_SIZE,
+          groupId: "",
+        }),
+        { items: [{ id: "skill-1" }], total: 1 },
+      );
     });
 
     const { result } = renderHook(() => useDetailTargets(true), { wrapper });
 
     expect(result.current[AGENT_BUILDER]?.href).toBe("/agents/agent-1");
     expect(result.current[KB_DETAIL]?.href).toBe("/rag/kb-1");
+    expect(result.current[SKILL_DETAIL]?.href).toBe("/skills/skill-1");
     expect(result.current[ORG_MEMBERS]?.href).toBe("/orgs/org-1/members");
     expect(result.current[ORG_ROLES]?.href).toBe("/orgs/org-1/roles");
     expect(result.current[ORG_GROUPS]?.href).toBe("/orgs/org-1/groups");
     expect(result.current[ORG_DIRECTORY]?.href).toBe("/orgs/org-1/directory");
-    // The two "?"-only sections need no fetch: settings resolves to its first
-    // page, a workspace to nothing to open, and neither is ever pending.
+    // The "?"-only sections need no fetch: settings resolves to its first page, a
+    // workspace, a table, a workflow's runs and log and an artifact to nothing to
+    // open, and none is ever pending.
     expect(result.current[SETTINGS_DETAIL]).toEqual({ pending: false, href: "/settings/profile" });
     expect(result.current[WORKSPACE_DETAIL]).toEqual({ pending: false, href: null });
+    expect(result.current[TABLE_DETAIL]).toEqual({ pending: false, href: null });
+    expect(result.current[WORKFLOW_RUN_DETAIL]).toEqual({ pending: false, href: null });
+    expect(result.current[WORKFLOW_RUNS_DETAIL]).toEqual({ pending: false, href: null });
+    expect(result.current[WORKFLOW_LOGS_DETAIL]).toEqual({ pending: false, href: null });
+    expect(result.current[ARTIFACT_DETAIL]).toEqual({ pending: false, href: null });
   });
 
-  it("prefers the seeded claude-code-like agent and default collection over the first row", () => {
+  it("prefers the seeded agenticos agent and default collection over the first row", () => {
     const wrapper = wrapperWith((client) => {
       client.setQueryData(qk.agents.list(false), {
         items: [
           { id: "agent-other", slug: "something-else" },
-          { id: "agent-gs", slug: "claude-code-like" },
+          { id: "agent-gs", slug: "agenticos" },
         ],
         total: 2,
       });

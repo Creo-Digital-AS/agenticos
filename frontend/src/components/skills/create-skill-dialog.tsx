@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizeIdentifier } from "@/lib/normalize-identifier";
 import {
   AudiencePicker,
   EVERYONE,
@@ -64,7 +65,10 @@ function isReadableText(file: File): boolean {
   return readsAsText(resolveFileKind(pathOf(file), file.type));
 }
 
+import type { Skill } from "@/types/providers";
+
 interface CreateSkillDialogProps {
+  onCreated?: (skill: Skill) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -81,7 +85,7 @@ const PHONE_SCROLLS = "max-md:overflow-y-auto";
  * New skill, laid out as the editor it becomes.
  *
  * The same arrangement as `SkillWorkbench`, deliberately: a strip of facts on
- * top, the body as `SKILL.md` in a file tree on the left, one pane reading a
+ * top, the body as Instructions in a file tree on the left, one pane reading a
  * file on the right. It used to be a stacked form with a lone "Content"
  * textarea, which meant the second time anybody saw their skill it looked
  * nothing like the first - and the create form was the only place in the
@@ -89,10 +93,10 @@ const PHONE_SCROLLS = "max-md:overflow-y-auto";
  *
  * What differs from the workbench is only what cannot exist yet: the name is
  * editable here because it is being chosen, there is no Enabled switch because
- * a skill is created enabled, and the files are local File objects held until
+ * the files are local File objects held until
  * the skill exists to attach them to.
  */
-export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps) {
+export function CreateSkillDialog({ open, onOpenChange, onCreated }: CreateSkillDialogProps) {
   const tErrors = useTranslations("errors");
   const t = useTranslations("skills");
   const { create, categories, suggestedCategories } = useSkills();
@@ -109,6 +113,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   const setters: Record<Field, (value: string) => void> = {
     name: setName,
@@ -153,9 +158,10 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
   }
 
   async function handleCreate() {
+    setSubmitting(true);
     try {
       const skill = await create.mutateAsync({
-        name,
+        name: normalizeIdentifier(name),
         description,
         content,
         // Whitespace-only means "no category" - the backend refuses an empty
@@ -179,6 +185,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
       setOpenPath(null);
       setAdding(false);
       setErrors({});
+      onCreated?.(skill);
       onOpenChange(false);
     } catch (error) {
       const failure = submitFailure(
@@ -191,6 +198,8 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
       );
       setErrors(failure.fields);
       if (failure.toast) toast.error(failure.toast);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -204,18 +213,28 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 max-md:flex-none">
           <div className="flex flex-wrap items-start gap-4 rounded-md border p-3">
-            <div className="w-56 shrink-0 space-y-1.5" data-tour="skill-dialog-name">
+            <div className="w-full shrink-0 space-y-1.5 md:w-56" data-tour="skill-dialog-name">
               <Label htmlFor="new-skill-name">{t("name")}</Label>
               <Input
                 id="new-skill-name"
                 value={name}
                 onChange={(event) => edit("name", event.target.value)}
+                onBlur={() => {
+                  const formatted = normalizeIdentifier(name);
+                  if (formatted !== name) edit("name", formatted);
+                }}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                aria-describedby="new-skill-name-hint"
                 placeholder="refund-policy"
                 maxLength={MAX_NAME}
                 className="font-mono"
                 aria-invalid={errors.name ? true : undefined}
               />
-              <FieldNote error={errors.name}>{t("howModelRefersSkill")}</FieldNote>
+              <div id="new-skill-name-hint">
+                <FieldNote error={errors.name}>{t("howModelRefersSkill")}</FieldNote>
+              </div>
             </div>
             <div
               className="min-w-0 flex-1 basis-72 space-y-1.5"
@@ -232,7 +251,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
               />
               <FieldNote error={errors.description}>{t("onlyPartModelReads")}</FieldNote>
             </div>
-            <div className="w-56 shrink-0 space-y-1.5">
+            <div className="w-full shrink-0 space-y-1.5 md:w-56">
               <Label htmlFor="new-skill-category">{t("category")}</Label>
               <CategoryInput
                 id="new-skill-category"
@@ -272,7 +291,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
                 <UploadButton icon={Upload} label={t("folder")} directory onPick={addFiles} />
               </div>
 
-              <div className="min-h-0 flex-1 overflow-auto rounded-md border p-1 max-md:max-h-48 max-md:min-h-24">
+              <div className="bg-background min-h-0 flex-1 overflow-auto rounded-xl border p-1 max-md:max-h-48 max-md:min-h-24">
                 <button
                   type="button"
                   onClick={() => {
@@ -288,7 +307,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
                   )}
                 >
                   <BookOpen className="text-muted-foreground h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate font-mono text-xs">{BODY}</span>
+                  <span className="truncate text-xs">{t("instructions")}</span>
                 </button>
                 <FileTree
                   nodes={tree}
@@ -326,6 +345,7 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
               ) : (
                 <FileEditor
                   name={BODY}
+                  label={t("instructions")}
                   content={content}
                   canEdit
                   // The shape a skill body takes - when it applies, then the
@@ -353,7 +373,8 @@ export function CreateSkillDialog({ open, onOpenChange }: CreateSkillDialogProps
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={!name.trim() || !description.trim() || create.isPending}
+              loading={submitting || create.isPending}
+              disabled={!name.trim() || !description.trim()}
               data-tour="skill-dialog-create"
             >
               {t("create")}

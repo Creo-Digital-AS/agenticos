@@ -1,15 +1,19 @@
 """Memory files - an agent's own notes, indexed by a `MEMORY.md` it maintains."""
 
-from __future__ import annotations
-
-from pydantic import BaseModel, Field
-
 from app.agents.capabilities._registry import (
     CapabilityBuildContext,
     CapabilityToolInfo,
     register,
 )
+from app.agents.capabilities.memory_files._approval import (
+    CORRECTION_PRIVATE_FIELDS,
+    SHARE_PRIVATE_FIELDS,
+    correction_is_wide,
+    describe_correction,
+    describe_share,
+)
 from app.agents.capabilities.memory_files._capability import MemoryFiles
+from app.agents.capabilities.memory_files._config import MemoryFilesConfig
 from app.agents.capabilities.memory_files._toolset import INDEX_NAME
 
 __all__ = [
@@ -20,29 +24,6 @@ __all__ = [
 ]
 
 MEMORY_FILES_CAPABILITY_ID = "memory_files"
-
-
-class MemoryFilesConfig(BaseModel):
-    """How an agent keeps its notes.
-
-    One field, and that is the point. This capability used to be one binding with
-    six - two store toggles, two write levers, a backend and its URL - so a
-    builder configured a matrix instead of picking a thing. Semantic recall is now
-    its own capability (`memory_mem0`) and the organisation-wide store is gone
-    (`context` already does that job), which leaves exactly one genuine choice
-    (#1470).
-    """
-
-    allow_personal: bool = Field(
-        title="Keep private notes per person",
-        default=True,
-        description=(
-            "Whether the agent keeps private notes for each person it talks to, "
-            "readable only when it is alone with them. Off drops that store "
-            "entirely, for compliance or privacy; the notes it keeps in group "
-            "chats stay."
-        ),
-    )
 
 
 @register(
@@ -61,10 +42,12 @@ class MemoryFilesConfig(BaseModel):
         CapabilityToolInfo(
             id="list_memory",
             description="List your notes for this conversation, by name and description.",
+            read_only=True,
         ),
         CapabilityToolInfo(
             id="read_memory",
             description="Read one note's body by its name.",
+            read_only=True,
         ),
         CapabilityToolInfo(
             id="write_memory",
@@ -81,8 +64,34 @@ class MemoryFilesConfig(BaseModel):
             description="Forget a note you saved, removing it entirely.",
             side_effecting=True,
         ),
+        CapabilityToolInfo(
+            id="remember",
+            description="Record one durable fact, preference or decision, with where it came from.",
+            side_effecting=True,
+        ),
+        CapabilityToolInfo(
+            id="recall",
+            description="Find recorded facts, preferences and decisions relevant to a question.",
+        ),
+        CapabilityToolInfo(
+            id="correct_memory",
+            description="Record the person's correction of a claim, keeping the history it corrects.",
+            side_effecting=True,
+        ),
+        CapabilityToolInfo(
+            id="share_memory",
+            description="Share one claim with the project or the whole organization - only when asked.",
+            side_effecting=True,
+            always_requires_approval=True,
+        ),
     ),
     config_schema=MemoryFilesConfig,
+    describers={"share_memory": describe_share, "correct_memory": describe_correction},
+    private_approval_fields={
+        "share_memory": SHARE_PRIVATE_FIELDS,
+        "correct_memory": CORRECTION_PRIVATE_FIELDS,
+    },
+    always_asks_when={"correct_memory": correction_is_wide},
 )
 def _build(ctx: CapabilityBuildContext) -> MemoryFiles:
     """Build the capability from a binding's config.

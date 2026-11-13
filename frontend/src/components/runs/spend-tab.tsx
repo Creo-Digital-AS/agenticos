@@ -4,11 +4,13 @@ import type { ReactNode } from "react";
 
 import { useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+
+import { formatUsd } from "@/components/dashboard/format";
 import { Activity, KeyRound } from "lucide-react";
 
 import { getErrorMessage } from "@/lib/api-error";
 import { AgentAvatar } from "@/components/agents/agent-avatar";
-import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { EmptyState, ErrorState } from "@/components/states";
 import {
   Button,
   Card,
@@ -21,7 +23,9 @@ import {
   ListCardControlsRow,
   type Column,
 } from "@/components/ui";
+import { CacheBustsCard } from "@/components/runs/cache-busts-card";
 import { ExportMenu } from "@/components/runs/export-menu";
+import { SpendSkeleton } from "@/components/runs/spend-skeleton";
 import { SpendByPerson } from "@/components/runs/spend-by-person";
 import { ProviderIcon } from "@/components/vault/provider-icon";
 import { usePermissions, useSpend } from "@/hooks";
@@ -67,9 +71,10 @@ function windowLabel(
 
 /** A right-aligned money cell; `partial` marks a floor the way the run table does. */
 function CostCell({ cost, partial, title }: { cost: string; partial?: boolean; title: string }) {
+  const locale = useLocale();
   return (
     <span className="font-mono text-xs tabular-nums">
-      ${Number(cost).toFixed(4)}
+      {formatUsd(cost, locale, 4)}
       {partial && (
         <span className="text-muted-foreground" title={title}>
           {" +"}
@@ -133,6 +138,7 @@ function shareColumn<T extends { cost_usd: string }>(
   const total = rows.reduce((sum, row) => sum + Number(row.cost_usd), 0);
   return {
     key: "share",
+    hideBelow: "sm",
     header,
     align: "right",
     cell: (row) => <ShareCell cost={row.cost_usd} total={total} />,
@@ -171,7 +177,7 @@ export function SpendTab({
       />
     );
   }
-  if (isLoading) return <LoadingState variant="stats" rows={2} />;
+  if (isLoading) return <SpendSkeleton />;
   // One guard for both absences: a failed request, and the body react-query
   // itself refuses (`undefined` data is an error there, so past this line the
   // answer exists - which is also what narrows the type for everything below).
@@ -210,8 +216,8 @@ export function SpendTab({
             {row.monthly_cap_usd !== null && (
               <span className="text-muted-foreground block text-xs">
                 {t("monthAgainstCap", {
-                  spent: Number(row.month_to_date_usd ?? 0).toFixed(2),
-                  cap: Number(row.monthly_cap_usd).toFixed(2),
+                  spent: formatUsd(row.month_to_date_usd, locale),
+                  cap: formatUsd(row.monthly_cap_usd, locale),
                 })}
               </span>
             )}
@@ -221,6 +227,7 @@ export function SpendTab({
     },
     {
       key: "runs",
+      hideBelow: "sm",
       header: t("runs2"),
       align: "right",
       cell: (row) => <span className="font-mono text-xs tabular-nums">{row.run_count}</span>,
@@ -260,6 +267,7 @@ export function SpendTab({
     },
     {
       key: "runs",
+      hideBelow: "sm",
       header: t("runs2"),
       align: "right",
       cell: (row) => <span className="font-mono text-xs tabular-nums">{row.run_count}</span>,
@@ -291,6 +299,7 @@ export function SpendTab({
     },
     {
       key: "runs",
+      hideBelow: "sm",
       header: t("runs2"),
       align: "right",
       cell: (row) => <span className="font-mono text-xs tabular-nums">{row.run_count}</span>,
@@ -322,22 +331,22 @@ export function SpendTab({
         <FigureCard
           label={t("spendWindow")}
           caption={t("overTheWindowAbove")}
-          value={`$${windowTotal.toFixed(2)}`}
+          value={formatUsd(windowTotal, locale)}
         />
         <FigureCard
           label={t("monthToDate")}
           caption={t("calendarAligned")}
-          value={`$${Number(spend.month_to_date_usd).toFixed(2)}`}
+          value={formatUsd(spend.month_to_date_usd, locale)}
         />
         <FigureCard
           label={t("perRun")}
           caption={t("overRunsInWindow", { count: runCount })}
-          value={runCount === 0 ? "\u2014" : `$${(windowTotal / runCount).toFixed(4)}`}
+          value={runCount === 0 ? "\u2014" : formatUsd(windowTotal / runCount, locale, 4)}
         />
         <FigureCard
           label={t("dearestAgent")}
           caption={
-            dearest === undefined ? t("noAgentHasSpent") : `$${Number(dearest.cost_usd).toFixed(2)}`
+            dearest === undefined ? t("noAgentHasSpent") : formatUsd(dearest.cost_usd, locale)
           }
           value={dearest?.agent_name ?? "\u2014"}
         />
@@ -377,8 +386,8 @@ export function SpendTab({
       <Card>
         {/* The same header grammar as the history tab's: what the card is on
             the left, its export on the right, carrying the page's window. */}
-        <CardHeader className="flex-row items-start justify-between space-y-0 border-b px-5 py-4">
-          <div className="space-y-1">
+        <CardHeader className="flex-col items-start justify-between gap-3 space-y-0 border-b px-4 py-4 sm:flex-row sm:px-5">
+          <div className="w-full min-w-0 space-y-1 sm:flex-1">
             <CardTitle className="text-sm">{t("whereTheMoneyWent")}</CardTitle>
             {/* The window the server chose, said the way it was chosen. There is no
                 `?? 30` here on purpose: `period_days` is null the moment `from` is
@@ -442,6 +451,8 @@ export function SpendTab({
           {facet === "person" && <SpendByPerson from={period.from} to={period.to} />}
         </CardContent>
       </Card>
+
+      <CacheBustsCard rows={spend.cache_by_agent_model} />
     </div>
   );
 }

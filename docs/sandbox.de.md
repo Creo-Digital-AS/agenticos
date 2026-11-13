@@ -1,5 +1,5 @@
 ---
-source_sha: "904d3115d4e7"
+source_sha: "5605d024cb81"
 ---
 
 # Der Sandbox { #the-sandbox }
@@ -21,6 +21,10 @@ von einer anderen isoliert, und wie lange davon etwas überlebt.
 [Konfiguration](configuration.md#the-services-own-settings) ist die Referenz
 Variable für Variable.
 
+Podman-Installationen verwenden den [manuellen Docker-Compose-Weg](deploy.md#podman-support)
+mit zusätzlichem Override für Sandbox-Socket und Workspace-Berechtigungen. Der
+Quickstart unterstützt Docker; `podman-compose` 1.6.0 wird nicht unterstützt.
+
 ## Was wo läuft { #what-runs-where }
 
 Drei Prozesse, und die Anordnung ist das Sicherheitsmodell:
@@ -36,7 +40,7 @@ flowchart LR
   `sandboxd` ein eigener Service ist und kein Bibliotheksaufruf: einen Container zu
   starten erfordert den Daemon, und den Daemon zu erreichen ist gleichbedeutend mit
   root auf dem Host.
-- **`sandboxd` hält den Socket und bittet den Daemon *des Hosts***, einen Container
+- **`sandboxd` hält den Socket und bittet den Daemon _des Hosts_**, einen Container
   zu starten. Ein Sandbox ist also ein **Geschwister** von `sandboxd` und kein
   Container darin. Es gibt hier kein Docker-in-Docker, nichts ist `--privileged`,
   und es läuft kein verschachtelter Daemon.
@@ -48,9 +52,67 @@ flowchart LR
 
 `sandboxd` ist der Server aus [`pydantic-ai-backend`](https://github.com/vstorm-co/pydantic-ai-backend),
 ausgeliefert als `ghcr.io/vstorm-co/sandboxd`; das Backend spricht über HTTP mit
-ihm, mit dem Token in `SANDBOXD_TOKEN`. Die beiden anderen Sandbox-Backends, die
-ein Spec benennen kann — `daytona` und `state` — sind ein gehosteter Dienst und ein
-Dokument in Postgres, und keines von beiden hat mit dem oben Genannten zu tun.
+ihm, mit dem Token in `SANDBOXD_TOKEN`. Die anderen Sandbox-Backends -
+`daytona`- und `e2b`-Verbindungen sowie `state` - sind gehostete Dienste und ein
+Dokument in Postgres, und keines davon hat mit dem oben Genannten zu tun; der
+eigene Computer der Person auch nicht (siehe [Jenseits von sandboxd](#beyond-sandboxd)).
+
+### Dienst und Backend ändern sich gemeinsam { #the-service-and-the-backend-move-together }
+
+Der Dienst und der Client des Backends stammen aus demselben Release von
+`pydantic-ai-backend`, und ein Client ruft Routen auf, die nur sein eigenes
+Release bedient. Deshalb pinnt jede Compose-Datei das Image auf genau die Version
+in `backend/uv.lock`, und ein Backend-Test schlägt fehl, wenn die Compose-Dateien
+oder das Lizenzinventar eine andere nennen. Heben Sie Lock, Compose-Dateien und
+Inventar in einer Änderung an. Ein neuer Pin ist ein Tag, den der Host noch nicht
+hat, also ziehen `make dev` und `scripts/deploy.sh` ihn beim nächsten Start.
+
+Der Pin steht im Checkout, nicht in `AGENTICOS_VERSION`. Ein Host, der das Backend
+von Hand pinnt oder zurückrollt, checkt deshalb auch den Tag dieses Releases aus
+([Ein Release pinnen](deploy.md#the-images)). Eine Installation ohne Checkout, wie
+`scripts/quickstart.sh` sie einrichtet, lädt stattdessen die `docker-compose.yml`
+dieses Releases herunter ([Installation](install.md)).
+
+Ein beweglicher Tag hat das schon einmal kaputt gemacht (#2484). Ein
+zwischengespeichertes `sandboxd:0.2` bediente eine ältere API, als der Client
+sprach, und jeder Befehl scheiterte mit `sandboxd session '…' is gone`, obwohl die
+Sitzung lebte. Die Plattform unterscheidet die beiden Fälle jetzt. Trägt eine 404
+das nackte `{"detail":"Not Found"}` von FastAPI statt des dienst-eigenen
+`No such session`, liest die Plattform den Index des Dienstes unter `/`. Fehlt
+im Index eine Route, die der Client braucht, schlägt der Tool-Aufruf fehl, und
+der Agent erfährt:
+
+```text
+The sandbox service does not serve /sessions/{session_id}/run,
+/sessions/{session_id}/runs/{run_id}/stop - its version does not match this
+platform (expected <version>). Run ghcr.io/vstorm-co/sandboxd:<version> and
+redeploy it
+```
+
+Dieselbe Prüfung behandelt einen `409` beim Verbinden einer vor dem Upgrade
+gespeicherten Sitzungsreferenz: Ein alter Dienst kann sie trotz bestehender Sitzung
+ablehnen. Nur ein bestätigter fehlender Endpunkt macht daraus einen Versionsfehler;
+normale Konflikte und nicht erreichbare Indizes behalten ihren ursprünglichen Fehler.
+
+Die Meldung lässt die Adresse des Dienstes weg, die Mitglieder und das Modell
+womöglich nicht sehen dürfen; das Backend protokolliert sie als
+`sandboxd_version_mismatch`. Die Sitzung wird nicht als verloren gemeldet, aber
+die Unterhaltung vergisst ihre gespeicherte Referenz darauf: Ein älterer Dienst
+verweigert das Anhängen an eine lebende Sitzung per Referenz. Der nächste Zug
+öffnet die Sitzung über ihren Namen, also findet die Unterhaltung nach dem
+Upgrade dieselbe Sitzung wieder, wenn der Dienst sie behalten hat.
+
+`agenticos cmd doctor` macht dieselbe Prüfung für jede registrierte Verbindung und
+nennt das Image, das laufen muss. Deployen Sie den Stack, der den Dienst
+betreibt, neu: `scripts/deploy.sh` in Produktion (es startet das Profil `sandbox`,
+wenn `SANDBOXD_TOKEN` gesetzt ist), `make dev` auf dem Laptop. `make prod` lässt
+den Dienst in Ruhe, weil es dieses Profil nicht startet; auf einem so gestarteten
+Stack ziehen und erstellen Sie ihn selbst neu:
+
+```bash
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox pull sandboxd
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox up -d sandboxd
+```
 
 !!! danger "Der Token ist root-äquivalent"
 
@@ -62,6 +124,31 @@ in Ruhe, denn ihn neu zu erzeugen verwaist jeden Workspace, den der Service gera
 hält. Auch deshalb ist das eigene Dashboard des Services aus
 (`SANDBOXD_UI_ENABLED: 0`): diese Seite bittet einen Menschen, den Token in einen
 Browser einzufügen.
+
+## Der Workspace eines neuen Agents { #a-new-agents-workspace }
+
+Ein neuer Agent beginnt mit einem Workspace, den seine Organisation veröffentlichen
+kann. Der Container-Workspace aus der Startvorlage bleibt, wenn die Organisation
+eine Standard-Sandbox-Verbindung hat oder wenn dieses Deployment `sandboxd`
+betreibt und die Organisation einen Owner hat, unter dem sich eine registrieren
+lässt — die erste Veröffentlichung richtet diese Verbindung dann ein. Andernfalls
+beginnt der Agent auf dem gespeicherten Workspace `state`: Dateien ohne Shell, die
+nichts brauchen, sodass sich ein neuer Agent auch auf einem Deployment ohne
+Sandbox-Dienst veröffentlichen lässt.
+
+Der Capability-Katalog, mit dem der Builder beginnt, und eine Vorlageninstallation
+fragen das pro Organisation, und die Antwort wird eine Minute lang behalten. Ein
+`sandboxd`, der antworten sollte und es nicht tut, wird als
+`sandbox_service_not_answering` protokolliert, und der Agent beginnt auf `state`.
+Ein bereits gespeicherter Agent behält seinen Spec.
+
+Eine Veröffentlichung, die mangels Sandbox abgelehnt wird, bietet neben dem Grund
+eine Korrektur an. **Workspace auf Dateien umstellen** schreibt den Entwurf auf den
+Workspace `state` um, speichert ihn und prüft ihn erneut. **Nicht mehr teilen, was
+dieser Agent nicht teilen kann** tut dasselbe für eine Teilen-Liste der Delegation,
+die eine Capability nennt, die der Agent nicht mehr hat, und streicht daraus auch
+`subagents`, das ein Delegat nie erbt. Keine von beiden veröffentlicht: Das bleibt ein eigener Klick. Die Codes kommen in `details.fixes`
+der Ablehnung (siehe [Architektur](architecture.md#a-refusal-that-names-a-field)).
 
 ## Eine Session, und was sich eine teilt { #a-session-and-what-shares-one }
 
@@ -127,30 +214,44 @@ Was einen Tenant vom anderen trennt:
 
 ## Welche Umgebungen ein Agent anfordern darf { #which-environments-an-agent-may-ask-for }
 
-**Eine Runtime wird ausgeliefert, und sie ist in diesem Repository definiert** —
+**Zwei Runtimes werden ausgeliefert, und sie sind in diesem Repository definiert** —
 `backend/app/core/catalog/sandbox_runtimes.json`:
 
-| | `workbench` — 1,93 GB, in etwa 65 s auf einem warmen Host gebaut |
-|---|---|
-| Gebaut auf | `python:3.12-slim` |
-| Sprachen | Python 3.12; Node 24.19.0 LTS mit npm 11 und `tsx` für TypeScript |
-| Werkzeuge | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo` |
-| Lesen | **liteparse** (`lit`) — PDFs und Bilder zu Text oder Markdown, OCR eingeschlossen; `poppler-utils` für den schnellen Weg über die Textebene und eine Seitenzahl |
-| Dokumente | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless für die Konvertierung und die Altformate |
-| Daten | `pandas`, `duckdb`, `tabulate` |
-| Diagramme und Bilder | `matplotlib` (Agg), `pillow` |
-| Web | `httpx`, `requests`, `beautifulsoup4`, `lxml`, `markdownify` |
-| Sonstiges | `pyyaml` |
-| Speicher | 2 GiB |
-| Netzwerk | ja — die einzige Runtime, die eines hat |
+|                      | `workbench` — 1,93 GB, in etwa 65 s auf einem warmen Host gebaut                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gebaut auf           | `python:3.12-slim`                                                                                                                                              |
+| Sprachen             | Python 3.12; Node 24.19.0 LTS mit npm 11 und `tsx` für TypeScript                                                                                               |
+| Coding Agents        | Claude Code 2.1.288 und Codex 0.160.0, für den [Coding Agent](reference/capabilities.md#coding-agent)                                                           |
+| Werkzeuge            | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo`                                                             |
+| Lesen                | **liteparse** (`lit`) — PDFs und Bilder zu Text oder Markdown, OCR eingeschlossen; `poppler-utils` für den schnellen Weg über die Textebene und eine Seitenzahl |
+| Dokumente            | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless für die Konvertierung und die Altformate                               |
+| Daten                | `pandas`, `duckdb`, `tabulate`                                                                                                                                  |
+| Diagramme und Bilder | `matplotlib` (Agg), `pillow`                                                                                                                                    |
+| Web                  | `httpx`, `requests`, `beautifulsoup4`, `lxml`, `markdownify`                                                                                                    |
+| Sonstiges            | `pyyaml`                                                                                                                                                        |
+| Speicher             | 2 GiB                                                                                                                                                           |
+| Netzwerk             | ja                                                                                                                                                              |
 
-Eine statt acht, und der Grund ist `prewarm`: der Service baut beim Start **jeden**
+|            | `desktop` — für die [Computer-Bedienung](reference/capabilities.md#computer-use)                   |
+| ---------- | -------------------------------------------------------------------------------------------------- |
+| Gebaut auf | `python:3.12-slim`                                                                                 |
+| Desktop    | Xvfb auf Display `:0`, XFCE, Firefox ESR; `xdotool` und `scrot`, die ihn steuern und fotografieren |
+| Werkzeuge  | `git`, `curl`, `jq`, `procps`, `unzip`                                                             |
+| Speicher   | 2 GiB                                                                                              |
+| Netzwerk   | ja, damit der Browser darauf eine Seite öffnen kann                                                |
+
+Zwei statt acht, und der Grund ist `prewarm`: der Service baut beim Start **jeden**
 Eintrag seiner Allowlist, acht Aliase sind also acht `pip install`s in einem
 Startvorgang, den niemand beobachtet, acht auf dem Host zwischengespeicherte Images,
 und ein Agent, der ein PDF lesen soll, bekommt denjenigen Alias, den sein Spec
-zufällig benannt hat. `workbench` ist darauf gebaut, die Antwort auf *schreibe und
+zufällig benannt hat. `workbench` ist darauf gebaut, die Antwort auf _schreibe und
 führe etwas Code aus, lies, was der Nutzer angehängt hat, zeichne es, hole eine
-Seite* zu sein.
+Seite_ zu sein, und sie steht an erster Stelle, ist also das, was ein Agent
+bekommt, der keine Runtime nennt.
+
+`desktop` ist das Eine, was `workbench` nicht sein kann: ein Bildschirm, den ein
+Agent mit `computer_use` ansehen und anklicken kann. Sein Desktop startet beim
+ersten Screenshot des Runs, nicht mit dem Container.
 
 Bis #1040 war dieser Katalog `BUILTIN_RUNTIMES` aus der Sandbox-Bibliothek: fünfzehn
 Rezepte, von denen ein von diesem Projekt gestartetes `sandboxd` drei erlaubte. Es
@@ -170,15 +271,15 @@ Gemessen auf `python:3.12-slim` (205 MB), arm64:
 - **LibreOffice, mit +683 MB, und es ist das wert.** Es bringt drei Dinge, die
   hier sonst nichts bringt: `lit` kann die Altformate `.doc`, `.xls` und `.ppt`
   lesen, was ein Geschäftsnutzer tatsächlich anhängt; `soffice --headless
-  --convert-to pdf deck.pptx` rendert ein Deck, das der Agent mit `python-pptx`
+--convert-to pdf deck.pptx` rendert ein Deck, das der Agent mit `python-pptx`
   gebaut hat, womit eine Präsentation zu etwas wird, das eine Person öffnen kann;
   und `--convert-to png` macht aus einer Folie ein Bild, das der Agent zurücklesen
-  und *ansehen* kann, denn `read_file` ist hier multimodal. Etwa eine Sekunde pro
+  und _ansehen_ kann, denn `read_file` ist hier multimodal. Etwa eine Sekunde pro
   Dokument nach dem ersten. Writer und Calc sind +135 MB von diesen 683 und aus
   einem Grund dabei: eine Office-Konvertierung, die für Präsentationen
   funktionierte und für Dokumente nicht, wäre eine Ausnahme im Produkt und eine
   Ausnahme im Prompt.
-- **Es funktioniert nur, weil die Runtime *gebaut* wird.** LibreOffice legt beim
+- **Es funktioniert nur, weil die Runtime _gebaut_ wird.** LibreOffice legt beim
   ersten Lauf ein Benutzerprofil an, es braucht also ein echtes Konto mit einem
   beschreibbaren Home — das der Builder anlegt, wenn `SANDBOXD_SANDBOX_UID` gesetzt
   ist (`useradd --uid 10001 --create-home`). Führen Sie dasselbe Image als nackte
@@ -187,7 +288,7 @@ Gemessen auf `python:3.12-slim` (205 MB), arm64:
   `image`-Runtime nicht einfach LibreOffice ergänzen: die beiden Entscheidungen sind
   eine Entscheidung.
 - **Node von nodejs.org, nicht aus apt.** Debians `nodejs npm` ist +398 MB und
-  liefert npm 9; das offizielle Tarball ist +239 MB *und* aktuell — und Node 20, auf
+  liefert npm 9; das offizielle Tarball ist +239 MB _und_ aktuell — und Node 20, auf
   das dieses Rezept zuerst gepinnt war, ist seit April 2026 End-of-Life. Die
   Architektur wird im Befehl erkannt, denn derselbe Katalog baut auf amd64 und
   arm64.
@@ -198,7 +299,7 @@ Gemessen auf `python:3.12-slim` (205 MB), arm64:
   Millisekunden ist das, was aus „extrahiere dieses Buch" einen Plan macht.
 - **OCR ist der Kostenpunkt, auf den es ankommt, und er ist gemessen.** `lit` führt
   OCR nur auf Seiten ohne Textebene aus, 120 generierte Seiten kosten also den
-  Bruchteil einer Sekunde — eine *gescannte* Seite kostet aber **8,8 s**, ein
+  Bruchteil einer Sekunde — eine _gescannte_ Seite kostet aber **8,8 s**, ein
   300-seitiger Scan sind also etwa 44 Minuten gegen eine Befehlsobergrenze von 300
   Sekunden: abgebrochen, ohne etwas vorzuweisen. `--target-pages 1-40` begrenzt das
   (drei gescannte Seiten in 1,6 s), und `--no-ocr` auf einem Scan **gelingt und gibt
@@ -233,7 +334,7 @@ Anfrage von jemandem scheitern.
 **Und es erfährt, wie zu arbeiten ist, nicht nur, was installiert ist.**
 
 Die Anweisung, die ihren Platz verdient, ist die, die nichts anderes lehren kann:
-*lesen Sie keine große Datei, um sie zu durchsehen*. Extrahieren Sie sie einmal in
+_lesen Sie keine große Datei, um sie zu durchsehen_. Extrahieren Sie sie einmal in
 eine Textdatei, `rg -n` für die Stellen, auf die es ankommt, `sed -n '400,460p'`, um
 eine zu lesen.
 
@@ -279,25 +380,27 @@ Ein Eintrag hat eine von zwei Formen, nie beide:
   "alias": "workbench",
   "description": "What it is for - shown in the connection dialog",
   "base_image": "python:3.12-slim",
-  "setup_commands": ["apt-get update && apt-get install -y --no-install-recommends git"],
+  "setup_commands": [
+    "apt-get update && apt-get install -y --no-install-recommends git"
+  ],
   "packages": ["pillow"],
   "mem_limit": "2g",
   "needs_network": true
 }
 ```
 
-| Feld | |
-|---|---|
-| `alias` | Was ein Spec benennt. Kleinschreibung, `[a-z][a-z0-9-]*` |
-| `description` | Gezeigt unter `Default runtime` im Connection-Dialog. Sagen Sie, *wofür* sie ist |
-| `image` | Ein fertiges Image. Startet in der Zeit, die ein Pull braucht, und installiert nichts |
-| `base_image` | Einmal bei der ersten Nutzung gebaut und danach zwischengespeichert — die Form, die installieren kann |
-| `setup_commands` | Shell zur Build-Zeit, vor den Paketen: eine apt-Schicht, ein Installer |
-| `packages` | `pip`, zur Build-Zeit installiert. Braucht ein `base_image` |
-| `env_vars` | In jedem Container auf dieser Runtime gesetzt — `MPLBACKEND`, `PYTHONUTF8` |
-| `briefing` | Sätze, die dem Modell gesagt werden und sich nicht aus den obigen Feldern ableiten lassen |
-| `mem_limit` | Dockers eigene Syntax (`2g`). Fehlt er, gilt `SANDBOXD_MEM_LIMIT` |
-| `needs_network` | Ob eine **Session** darauf ein Netzwerk bekommt. Ein Build hat immer eines |
+| Feld             |                                                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| `alias`          | Was ein Spec benennt. Kleinschreibung, `[a-z][a-z0-9-]*`                                              |
+| `description`    | Gezeigt unter `Default runtime` im Connection-Dialog. Sagen Sie, _wofür_ sie ist                      |
+| `image`          | Ein fertiges Image. Startet in der Zeit, die ein Pull braucht, und installiert nichts                 |
+| `base_image`     | Einmal bei der ersten Nutzung gebaut und danach zwischengespeichert — die Form, die installieren kann |
+| `setup_commands` | Shell zur Build-Zeit, vor den Paketen: eine apt-Schicht, ein Installer                                |
+| `packages`       | `pip`, zur Build-Zeit installiert. Braucht ein `base_image`                                           |
+| `env_vars`       | In jedem Container auf dieser Runtime gesetzt — `MPLBACKEND`, `PYTHONUTF8`                            |
+| `briefing`       | Sätze, die dem Modell gesagt werden und sich nicht aus den obigen Feldern ableiten lassen             |
+| `mem_limit`      | Dockers eigene Syntax (`2g`). Fehlt er, gilt `SANDBOXD_MEM_LIMIT`                                     |
+| `needs_network`  | Ob eine **Session** darauf ein Netzwerk bekommt. Ein Build hat immer eines                            |
 
 Vier Dinge, die die Datei Sie nicht falsch machen lässt, oder die zubeißen, wenn Sie
 diesen Abschnitt überspringen:
@@ -327,13 +430,13 @@ auseinanderlaufen kann: `backend/tests/test_sandbox_runtime_catalog.py` schlägt
 wenn eine das getan hat, benennt die Datei und sagt Ihnen, dass Sie
 `make sandbox-runtimes` ausführen sollen.
 
-Generiert *in* eine versionierte Datei, statt beim Start aus einer Nebendatei
+Generiert _in_ eine versionierte Datei, statt beim Start aus einer Nebendatei
 gelesen zu werden, denn `docker compose up` muss funktionieren, ohne vorher etwas zu
 generieren — die Alternative ist ein Deployment, das stillschweigend die eigene
 Standard-Allowlist der Bibliothek übernimmt.
 
 Und es ist kein Formular im Produkt. `PUT /policy` ändert Obergrenzen und
-Lebensdauern zur Laufzeit und lehnt die *Zusammensetzung* dieser Liste absichtlich
+Lebensdauern zur Laufzeit und lehnt die _Zusammensetzung_ dieser Liste absichtlich
 ab, ebenso `network_mode`, `oci_runtime`, `sandbox_uid`, `work_dir` und
 `persist_containers`: ein Image zu benennen ist eine Entscheidung über Isolation, und
 der Service-Token wird von einer Anwendung gehalten und nicht von demjenigen, der den
@@ -344,7 +447,7 @@ Host betreibt. Die Liste zu ändern ist ein Neustart.
 Das `Default runtime` des **Connection-Dialogs** bietet diesen Katalog an — das, was
 die Compose-Dateien dem Service gegeben haben — befüllt, bevor irgendein Host gefragt
 wurde, und markiert, sobald einer geantwortet hat. Das `Runtime` des **Agent
-Builders** bietet an, was der Service auf dieser Connection *tatsächlich* erlaubt,
+Builders** bietet an, was der Service auf dieser Connection _tatsächlich_ erlaubt,
 live von ihm gelesen, ein Alias, den er benennt, ist also einer, den der nächste
 Tool-Aufruf annimmt. Wo die beiden uneins sind, hat die zweite recht: ein Host kann
 mit einer anderen Allowlist gestartet worden sein, und ein Deployment, das eine
@@ -369,13 +472,14 @@ wenn ein Betreiber die Schaltfläche drückt.
 
 ## Wann ein Container erscheint { #when-a-container-appears }
 
-**Bei der ersten Workspace-Operation, was nicht dasselbe ist wie der erste
-Tool-Aufruf des Agents.** Ein Run stellt bereit, was jemand angehängt hat, und
-materialisiert die Skills des Agents, *bevor* das Modell aufgerufen wird, und beides
-öffnet die Session verzögert — ein Container kann also für einen Zug existieren, in
-dem der Agent nie nach der Shell gegriffen hat. Gut zu wissen beim Lesen einer
-Session-Liste: ein Sandbox, dessen Aktivitätslog nichts als Schreibvorgänge enthält,
-ist einer, den noch nichts angefordert hat.
+**Bei der ersten Workspace-Operation: einem Tool, das der Agent dort aufruft, oder
+einer angehängten Datei, die in den Workspace gelegt wird.** Die Skills des Agents
+werden in diesem Moment in den Workspace geschrieben, kurz bevor die Operation
+läuft, und nicht schon, während der Run vorbereitet wird. Ein Zug, der den Sandbox
+nie benutzt, öffnet also keine Session und startet keinen Container. Ein Zug, der
+ihn benutzt, findet die Skills bereits auf der Platte. In einer Session-Liste kann
+trotzdem ein Sandbox stehen, dessen Aktivitätslog nur Schreibvorgänge enthält: einer,
+in den eine Datei gelegt wurde und der danach unbenutzt blieb.
 
 ## Was in einem getan wurde, und wo dieser Nachweis liegt { #what-was-done-in-one-and-where-that-record-lives }
 
@@ -438,7 +542,21 @@ also etwas, wohin er blättern kann.
 geholt und gebaut, statt in der ersten Anfrage von jemandem — ein Build sind zehn
 Sekunden und mehr. Images werden zwischengespeichert, ein Host zahlt also einmal.
 
-Was zu warten bleibt: die erste Session, die *während* eines Prewarms geöffnet wird,
+Ein Deployment baut sie noch früher. `scripts/deploy.sh` führt das
+`python -m pydantic_ai_backends.remote.prepare` der Bibliothek in einem einmaligen
+Container des neuen sandboxd-Images aus, bevor der alte Dienst ersetzt wird. Ein
+Release, das eine Runtime ändert, bezahlt den Build also, während der alte Dienst
+noch bedient. Vorher wartete am 18.10.2026 der erste Chat mit Sandbox nach einem
+solchen Release minutenlang, und jede Session-Anfrage bekam 409, bis der Build
+fertig war. Ein fehlgeschlagener Build wird dort dreimal versucht und beim Start
+zweimal. Eine Runtime, die danach noch nicht gebaut ist, wird wie bisher bei
+Bedarf gebaut, und das Deploy-Log nennt sie.
+
+Solange eine Session auf einen solchen Build wartet, sagt der Chat das über dem
+Eingabefeld: „Die Sandbox wird vorbereitet“. Das Öffnen wartet bis zu zehn Minuten
+darauf, nicht die 30 Sekunden einer gewöhnlichen Anfrage.
+
+Was zu warten bleibt: eine Runtime, die das Deployment nicht vorbereiten konnte,
 und ein Host, dessen Image-Cache geleert wurde.
 `SANDBOXD_PERSIST_CONTAINERS: true` beseitigt dann den größten Teil des Rests — eine
 geschlossene Session behält ihren Container, die nächste Session auf diesem Workspace
@@ -450,8 +568,8 @@ hat, weiterhin installiert.
 Was hält:
 
 - der Sandbox kann den Docker-Socket nicht sehen; nur `sandboxd` kann das;
-- überhaupt kein Netzwerk, sofern die Runtime nicht eines anfordert, und das tut nur
-  `workbench`;
+- überhaupt kein Netzwerk, sofern die Runtime nicht eines anfordert, und beide
+  ausgelieferten Runtimes tun das;
 - 2 CPUs, 512 Prozesse und ein 64 MiB großes `tmpfs` unter `/tmp` pro Sandbox, dazu
   `SANDBOXD_EXECUTE_TIMEOUT` (300 s) auf jedem Befehl und `SANDBOXD_MAX_READ_BYTES`
   (8 MiB) auf jedem Lesevorgang;
@@ -461,7 +579,7 @@ Was hält:
   ein `chown` des Workspace auf diesen Nutzer aus, und ein unprivilegiertes
   `sandboxd` kann das nur für sich selbst tun, eine andere Nummer scheitert also bei
   der ersten Session statt beim Start. Sie gilt für eine Runtime, die dieses
-  Deployment *baut* — ein fertiges Image hat kein solches Konto und kein Virtualenv,
+  Deployment _baut_ — ein fertiges Image hat kein solches Konto und kein Virtualenv,
   ein Agent darin könnte also nichts installieren.
 
 Was bleibt, ausgesprochen statt angedeutet:
@@ -478,14 +596,14 @@ Was bleibt, ausgesprochen statt angedeutet:
 !!! warning "Ein Laptop-Vorbehalt, aber prüfen Sie ihn, bevor Sie die lokale Compose-Datei kopieren"
 
     `docker-compose.yml` veröffentlicht Postgres und Redis mit `postgres/postgres`,
-    und `workbench` ist die eine Runtime mit einem Netzwerk. Auf einem geteilten
+    und beide ausgelieferten Runtimes haben ein Netzwerk. Auf einem geteilten
     Host ist das aus einem Sandbox heraus erreichbar; `docker-compose-prod.yml`
     veröffentlicht keines von beiden.
 
 ## Was der Dateibrowser zeigt, und was er auslässt { #what-the-file-browser-shows-and-what-it-leaves-out }
 
 **Documents** (`/documents`) listet auf, was ein Agent **für eine Person** aufbewahrt, was nicht
-dieselbe Menge ist wie das, was auf dem Volume liegt. Zwei Präfixe fallen aus jeder
+dieselbe Menge ist wie das, was auf dem Volume liegt. Drei Präfixe fallen aus jeder
 Auflistung, die eine Person liest - der Liste aller Dateien, den Dateien eines
 Ordners, dem Panel einer Unterhaltung und den Dateizahlen:
 
@@ -497,9 +615,22 @@ Ordners, dem Panel einer Unterhaltung und den Dateizahlen:
   die richtige Beschwerde über die falsche Sache war (#1064).
 - das Spill-Verzeichnis — wohin die überlaufende Ausgabe eines Tools geschrieben
   wurde.
+- `.agenticos/` — die Ereignisse einer Coding-Aufgabe und die Sitzung, die die
+  nächste fortsetzt.
+
+Ebenso die Ordner, die eine Toolchain füllt, wo immer sie liegen: `.venv`, `venv`,
+`node_modules`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`,
+`.tox`, `.git`, `.next` und `.cache`. Ein Coding Agent, der eine FastAPI-App
+aufsetzte, brachte tausend davon auf die Seite, zwischen das Dutzend Dateien, das
+er schrieb.
 
 Eine Zählung muss sie ebenfalls weglassen, sonst ist ein Workspace, der vier Dateien
 meldet, während eine sichtbar ist, eine Zahl, die niemand prüfen kann.
+**Alle Dateien** gruppiert, was übrig bleibt, nach dem Workspace, der es hält,
+das neueste zuerst, unter der Unterhaltung, zu der es gehört: lose Dateien und
+Anhänge als Zeilen, jeder Ordner der obersten Ebene als eine Zeile mit seinen
+ersten Dateien, und ein Link zum Ordner für den Rest. Die neuesten Dateien stehen
+als Vorschau über den Gruppen, und eine Suche listet ihre Treffer flach.
 
 ### Wessen Workspace es ist, und wer ihn sonst sehen kann { #whose-workspace-it-is-and-who-else-can-see-it }
 
@@ -529,29 +660,78 @@ ihn davon ab.
 
 ### Einen Container aufzulisten kostet Roundtrips, deshalb sind zwei Dinge begrenzt { #listing-a-container-costs-round-trips-so-two-things-are-bounded }
 
-Das `ls` des Archivs liest ein Verzeichnis, die Auflistung läuft also: in die Breite
-zuerst, höchstens sechs Ebenen tief, mit Halt bei 2.000 Einträgen — denn ein Host,
-der ein `node_modules` hält, darf aus einem Workspace nicht zehntausend Zeilen
-machen.
+Das `ls` des Archivs liest ein Verzeichnis, die Auflistung fragt den Host deshalb
+nach seinem `tree`: eine Anfrage, in die Breite zuerst auf der eigenen Platte des
+Hosts durchlaufen, höchstens sechs Ebenen tief, mit Halt bei 2.000 Einträgen — denn
+ein Host, der ein `node_modules` hält, darf aus einem Workspace nicht zehntausend
+Zeilen machen.
 
 **Beide Grenzen werden gemeldet.** Die Seite eines Workspace sagt klar, dass dies
 nicht jede Datei ist, denn ein Baum, der ohne Ankündigung aufhört, ist einer, den
 jemand als alles liest, was der Agent aufbewahrt.
 
-Ein Verzeichnis, das nicht antwortet, wird geloggt und übersprungen. Nur wenn die
-*Wurzel* sich weigert, wird der Workspace unlesbar, denn ein Ordner, den der Agent
+Ein Verzeichnis, das nicht antwortet, wird übersprungen, und die Auflistung meldet
+sich als unvollständig. Nur wenn die
+_Wurzel_ sich weigert, wird der Workspace unlesbar, denn ein Ordner, den der Agent
 weg-chmodet hat, ist kein Host, den niemand lesen kann.
 
 Und das Vorschaubild eines Bildes ist ein `read_bytes` für diese Datei: die Endung
 und die Größe werden am Auflistungseintrag geprüft, bevor irgendetwas geholt wird,
 und ein Request zeichnet höchstens 24. Darüber hinaus behält eine Kachel das Glyph.
 
-Ein *gespeicherter* Workspace zahlt keines von beidem — seine Dateien und deren Bytes
+Ein _gespeicherter_ Workspace zahlt keines von beidem — seine Dateien und deren Bytes
 sind eine Spalte der Zeile, die die Auflistung ohnehin gelesen hat.
 
 Das **Files**-Panel im Chat und die eigene Liste eines Workspace zeichnen ihre
 Kacheln wie **All files**: die ersten Zeilen einer gespeicherten Textdatei und
 ein Bild als Vorschau innerhalb derselben Grenze.
+
+### Einen Ordner als Zip herunterladen { #downloading-a-folder-as-a-zip }
+
+Der Bereich **Files** im Chat hat **Als .zip herunterladen** für den ganzen
+Workspace und an jedem Ordner eine Download-Schaltfläche. Beide rufen
+`GET /api/v1/conversations/{id}/workspace/archive?path=<folder>` auf (ein leerer
+`path` ist der ganze Workspace), autorisiert wie `/workspace/raw`: durch das Lesen
+des Gesprächs. Eine Person, mit der der Chat geteilt wurde, kann also einen Ordner
+daraus herunterladen, und sonst niemand.
+
+Das Zip enthält, was der Bereich zeigt. Die oben genannten Präfixe und
+Werkzeugordner (`.git`, `node_modules`, `.venv`, ...) bleiben draußen. Die
+Auflistung für ein Zip reicht 64 Ebenen tief statt sechs, weil ein Repository
+tiefer ist als eine Seite voller Kacheln, und fragt den Host nach bis zu 100.000
+Einträgen, weil der Host auch die ausgeblendeten Ordner auflistet. Die Dateien
+liegen unter einem obersten Ordner, der wie der heruntergeladene Ordner heißt.
+
+Ordner sind eigene Einträge, also ist auch ein leerer Ordner im Zip, etwa einer aus
+einem angehängten Archiv. Ein leerer Ordner, allein heruntergeladen, ist ein Zip mit
+genau diesem Ordner, kein 404: Das Panel zeigt ihn, also liefert der Download, was
+gezeigt wurde. Ein Ordner, den das Panel nicht zeigt, ist ein 404.
+
+Ein Backslash, ein `%` oder ein Steuerzeichen im Namen einer Datei wird im Zip
+prozentkodiert (`a\b` wird zu `a%5Cb`), weil ein Entpacker unter Windows einen
+Backslash als Ordnertrenner liest.
+
+Sie wird vollständig aufgelistet, bevor das erste Byte gesendet wird. Ein Ordner mit
+mehr als `WORKSPACE_ARCHIVE_MAX_ENTRIES` Einträgen (Dateien und Ordner, der oberste
+Ordner eingeschlossen, gezählt wie bei einem angehängten Archiv) oder mehr als
+`WORKSPACE_ARCHIVE_MAX_BYTES`, oder einer, den der Host nicht vollständig auflisten
+konnte, wird mit 413 abgelehnt; ein Zip, dem stillschweigend Dateien fehlen, wäre
+schlimmer. Danach werden die Dateien einzeln gelesen und gestreamt.
+
+Eine Datei, die sich nach dem Start des Downloads nicht lesen lässt, wird
+ausgelassen und mit dem Grund, den der Host nennt, in einer `NOT-INCLUDED.txt` im
+obersten Ordner des Zips genannt (`_NOT-INCLUDED.txt`, wenn der Ordner eine Datei
+dieses Namens hat). Das ist eine Datei, die seit der Auflistung gelöscht wurde, oder
+eine, die größer ist als die eigene Lesegrenze des Hosts (`SANDBOXD_MAX_READ_BYTES`,
+standardmäßig 8 MiB). Antwortet der Host nicht mehr oder wachsen die Dateien nach
+der Auflistung über die Byte-Grenze, bricht der Stream ab, und der Download ist
+unvollständig und lässt sich nicht öffnen.
+
+Ein Ordner auf diesem Computer, in der Desktop-App, hat keine solche Schaltfläche:
+Er ist bereits ein Ordner auf diesem Computer.
+
+Archive gehen auch den anderen Weg: Ein an einen Chat angehängtes `.zip` oder
+`.tar.gz` wird nach `uploads/` entpackt — siehe [Archive](file-processing.md#archives).
 
 ## Wie lange irgendetwas überlebt { #how-long-anything-survives }
 
@@ -562,12 +742,12 @@ auf dem Dev-Server und in der Produktion. Dieser Bind Mount ist auch das, was da
 Files-Panel des Produkts möglich macht: einen Workspace zu lesen startet nie einen
 Container.
 
-| | Einstellung | Was geschieht |
-|---|---|---|
-| Eine untätige Session | `SANDBOXD_IDLE_TIMEOUT` 1800 s | Der Container wird geschlossen und abgeräumt. **Die Dateien bleiben** |
-| Ein gestoppter Container | `SANDBOXD_CONTAINER_TTL` 86400 s | Was die Session installiert hat — der Build, die Wheels, `node_modules` — wird zurückgeholt. Der Workspace bleibt unangetastet |
-| Das Workspace-Verzeichnis | `SANDBOXD_WORKSPACE_TTL` **nicht gesetzt** | **Unbegrenzt** aufbewahrt |
-| Der Nachweis dessen, was getan wurde | `OPERATION_RETENTION_DAYS` 30 | Der tägliche `sandbox-log-sweep` löscht die Zeilen. Die Dateien bleiben unangetastet |
+|                                      | Einstellung                                | Was geschieht                                                                                                                  |
+| ------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Eine untätige Session                | `SANDBOXD_IDLE_TIMEOUT` 1800 s             | Der Container wird geschlossen und abgeräumt. **Die Dateien bleiben**                                                          |
+| Ein gestoppter Container             | `SANDBOXD_CONTAINER_TTL` 86400 s           | Was die Session installiert hat — der Build, die Wheels, `node_modules` — wird zurückgeholt. Der Workspace bleibt unangetastet |
+| Das Workspace-Verzeichnis            | `SANDBOXD_WORKSPACE_TTL` **nicht gesetzt** | **Unbegrenzt** aufbewahrt                                                                                                      |
+| Der Nachweis dessen, was getan wurde | `OPERATION_RETENTION_DAYS` 30              | Der tägliche `sandbox-log-sweep` löscht die Zeilen. Die Dateien bleiben unangetastet                                           |
 
 Die letzte Zeile ist die Voreinstellung der Bibliothek und sie ist Absicht — die
 Notizen und Skripte sind die Arbeit, und der Nutzer eines Agents erwartet sie nächste
@@ -584,15 +764,82 @@ Woche.
 Eine Unterhaltung zu löschen räumt ihren Workspace über das Produkt ab, hier geht es
 also um das, was niemand löscht, und nicht darum, was sie tun.
 
+Dieses Aufräumen hängt nicht davon ab, ob der Anbieter gerade antwortet. Das
+Löschen schreibt in derselben Transaktion einen Grabstein für jede entfernte
+Sandbox, und ein Destroy entfernt ihn, sobald der Anbieter ihn bestätigt. Ist der
+Sandbox-Host down, wird ein Daytona-Schlüssel abgelehnt oder startet der Worker
+dazwischen neu, versucht es der Sweep `sandbox-destroy-retry` des Workers erneut.
+Die Pause verdoppelt sich jedes Mal, von 2 Minuten bis 6 Stunden, bis der Destroy
+gelingt. Hinter einer Daytona-Sandbox steht keine TTL, also beendet nur das sie.
+
+Auch eine abgeschaltete Verbindung bekommt ihre Sandboxes entfernt, denn
+Abschalten stoppt neue Arbeit, nicht die Rechnung. Eine Verbindung mit
+verbliebenen Tombstones lässt sich nicht löschen: Die Tombstones gingen mit ihr,
+und sie sind die einzige Aufzeichnung dessen, was beim Anbieter noch läuft. Kann
+der Sweep nie gelingen, weil die Zugangsdaten der Verbindung gelöscht oder
+widerrufen wurden, lösche die Sandboxes in der Konsole des Anbieters. Lösche dann
+die Verbindung erneut und bestätige das: Ihre Tombstones werden vergessen, und
+ihre Anzahl landet im Audit-Log.
+
+## Jenseits von sandboxd { #beyond-sandboxd }
+
+Zwei weitere Orte, an denen die Sandbox-Werkzeuge eines Runs arbeiten können - mit
+denselben Werkzeugen und ohne die Abschottung von oben.
+
+**Eine E2B-Verbindung.** Eine Sandbox-Verbindung der Art `e2b` betreibt Sandboxes
+auf dem eigenen [E2B](https://e2b.dev)-Konto der Organisation: Ihr API-Schlüssel
+ist das Vault-Secret der Verbindung, und die Standard-Runtime der Verbindung nennt
+eine E2B-Vorlage - leer für die Standardvorlage von E2B, `desktop` für die
+Vorlage, die Computer Use steuert. Jedes Anlegen, Verbinden und Zerstören geschieht
+mit diesem Schlüssel, nie mit einem `E2B_API_KEY`, den der Prozess des Deployments
+zufällig hat, also laufen die Sandboxes jeder Organisation auf ihrem eigenen Konto
+und werden dort abgerechnet. Eine Sandbox wird am Ende ihrer Stunde pausiert statt
+beendet, damit ein länger gültiger Workspace seine Dateien behält, und der
+Zerstörungs-Sweep beendet sie wie eine Daytona-Sandbox.
+
+**Eine OpenSandbox-Verbindung.** Wähle `opensandbox` unter **Einstellungen → Sandboxes → Verbindungen**, trage die vom Backend erreichbare Server-URL ein, wähle dessen API-Schlüssel im Tresor und ein Image wie `python:3.12-slim`. Das Image benötigt eine POSIX-Shell und grundlegende Dateitools. Der Server wird separat betrieben; Docker und Kubernetes werden unterstützt. Siehe die [OpenSandbox-Serverkonfiguration](https://open-sandbox.ai/getting-started/configuration). Verwende server/execd `release-1.2.0` oder spätere kompatible Versionen; execd benötigt mindestens 1.1.1 für Befehlsausgaben. AgenticOS nutzt SDK 1.2 ohne Wiederholung von Befehlen oder Erstellung.
+
+**Server und Image testen** erstellt eine temporäre Sandbox, prüft die Shell und entfernt sie. Dieser ausdrückliche Test kann das Image herunterladen und Kapazität nutzen; das Öffnen des Formulars erstellt nichts. Veröffentliche einen Agenten mit der vorhandenen Sandbox-Fähigkeit auf dieser Verbindung. Datei- und Shell-Werkzeuge sowie Freigabebereiche bleiben verfügbar. Der Image-Standard der Verbindung erlaubt 512 Zeichen, der optionale Runtime-Override eines Agenten weiterhin 64.
+
+Optionaler **Secure Access** benötigt das Kubernetes-Ingress-Gateway von OpenSandbox. Docker lehnt diesen Modus ab. Er gilt für neue Arbeitsbereiche; eine Änderung erstellt vorhandene Dateien nie neu. Setze den Arbeitsbereich ausdrücklich zurück oder verschiebe ihn, um seinen Modus zu ändern. AgenticOS nutzt immer den authentifizierten API-Server-Proxy. Das schützt Endpunktzugriff, nicht Laufzeitisolation oder ausgehenden Verkehr. Der API-Schlüssel verwaltet alle Sandboxes dieses Servers: getrennte AgenticOS-Verbindungen schaffen weder getrennte Serverschlüssel noch Laufzeitisolation zwischen Organisationen. Betreiber müssen Server, Docker-Socket, Workloads und Netze isolieren; verwende getrennte Server, wenn ein gemeinsamer außerhalb der Vertrauensgrenze liegt. Halte die API privat oder hinter authentifiziertem TLS; veröffentliche keine Sandbox-Endpunkte.
+
+Ein späterer Turn verbindet den gespeicherten Arbeitsbereich erneut. Fehlende oder unerreichbare Arbeitsbereiche werden abgelehnt; ihre Referenz bleibt erhalten, statt stillschweigend leere Dateien anzulegen. Setze sie nach der Dateiwiederherstellung ausdrücklich zurück. Das Turn-Ende schließt HTTP-Clients; der Arbeitsbereich bleibt gemäß seinem Bereich erhalten. Die bestehende dauerhafte Löschwarteschlange übernimmt die Bereinigung. Behalte Verbindung und Schlüssel bis zum Erfolg ausstehender Löschungen. AgenticOS listet nicht alle Sandboxes des Servers auf; sandboxd-spezifische Sitzungs- und Limitansichten gelten nicht für diesen Anbieter.
+
+Validiert wurden Docker-Lebenszyklus, Dateierhalt, Wiederverbindung, Ablehnung fehlender Arbeitsbereiche und Bereinigung auf server/execd 1.2.0. Kubernetes Secure Access wurde nicht auf einem echten Cluster geprüft. Das Downgrade von `0317_opensandbox_connections.py` wird verweigert, solange OpenSandbox-Verbindungen oder Runtime-Namen mit mehr als 64 Zeichen existieren.
+
+**Der eigene Computer der Person.** In der [Desktop-App](desktop.md#work-on-this-computer)
+kann ein Chat in einem Ordner auf dem Computer arbeiten, auf dem sie läuft. Die
+Werkzeuge erreichen ihn über die Verbindung der App zum Server, und die App - nicht
+dieser Server - lehnt jeden Ordner und Modus ab, den die Person nicht gewährt hat;
+Schreibzugriffe laufen unter Seatbelt auf macOS oder bubblewrap auf Linux. Nur die
+eigenen Chats einer Person und Trigger, die als ihr Ersteller handeln, erreichen
+ihren Computer; ein Run wartet bis zu zehn Minuten, bis er sich verbindet. Nichts
+davon wird hier gehalten: Es gibt keine Workspace-Zeile und keine Sitzung zum
+Aufräumen.
+
 ## Zusammenfassung { #recap }
 
 - Der API-Container **hält keinen Docker-Socket**. `sandboxd` tut es, und ein
   Sandbox ist sein Geschwister und kein Container darin.
 - Ein **Session-Schlüssel** faltet Scope, Organisation, Backend-Art und Host
   zusammen — was genau das ist, was entscheidet, wer sich einen Container teilt.
+- **Zwei Runtimes werden ausgeliefert**, `workbench` und `desktop`, und dem Modell
+  wird gesagt, was in der ist, auf der es läuft, komponiert aus demselben Katalog,
+  der sie gebaut hat.
+
+- Ein **neuer Agent beginnt auf einem Workspace, den seine Organisation
+  veröffentlichen kann**: dem Container-Workspace, wo eine Verbindung besteht oder
+  sich einrichten lässt, sonst auf `state`.
 - **Eine Runtime wird ausgeliefert**, `workbench`, und dem Modell wird gesagt, was
   darin ist, komponiert aus demselben Katalog, der sie gebaut hat.
 - Der Nachweis dessen, was ein Agent getan hat, liegt in **der Tabelle dieser
   Plattform**, hält einen Pfad und nie eine Nutzlast, und überlebt den Agent.
 - **Dateien werden unbegrenzt aufbewahrt**, sofern Sie `SANDBOXD_WORKSPACE_TTL` nicht
   setzen. Der Plattenverbrauch wächst nur.
+- **E2B und der eigene Computer der Person** sind ebenfalls Sandboxes: die eine
+  auf dem eigenen Schlüssel der Organisation, der andere an das gebunden, was die
+  Person auf ihm gewährt hat.
+
+Das Backend `state` zählt Dateien und leere Verzeichnisse zum Speicherlimit, auch beim abschließenden Zusammenführen gleichzeitiger Änderungen. Passen einzeln akzeptierte Dokumente nicht gemeinsam hinein, bleibt das gemeinsame Dokument unverändert und der spätere Stand wird als Wiederherstellungskopie unter **Documents** bestätigt. Der Run speichert einen Fehler mit der Workspace-ID der Kopie; eine Projektänderung meldet einen Konflikt statt Erfolg. Projektkopien erfordern sowohl Anzeige- als auch Nutzungszugriff. Ein Fremdschlüssel löscht die Kopie zusammen mit ihrer Quelle, auch bei gleichzeitiger Datenlöschung. Wird das Limit unter die Größe eines bestehenden Dokuments gesenkt, darf dieses weiterhin schrumpfen.
+
+Die Workbench-Anweisungen erklären Agenten, dass Befehle unter POSIX `/bin/sh` und nicht unter Bash laufen. Zum Beispiel erstellt `mkdir -p sources inbox notes` drei Ordner; `{sources,inbox,notes}` wird von dieser Shell nicht expandiert. Projektdateien gehören nach `/workspace`; das Benutzerverzeichnis (`~`) liegt außerhalb der gemeinsamen Dateien. Jeder Befehl startet einen neuen Prozess: Shellvariablen und Verzeichniswechsel gelten nicht für den nächsten Aufruf. Agenten sollen Fehler prüfen und Dateien vor einer Erfolgsmeldung verifizieren.

@@ -10,9 +10,41 @@ import type { CapabilityBindingSpec, CapabilityCatalogEntry } from "@/types/agen
 
 import type { ContextFileSummary } from "@/types/providers";
 
-const { imageProviders } = vi.hoisted(() => ({ imageProviders: vi.fn() }));
+const { imageProviders, speechProviders, videoProviders } = vi.hoisted(() => ({
+  imageProviders: vi.fn(),
+  speechProviders: vi.fn(),
+  videoProviders: vi.fn(),
+}));
 vi.mock("@/hooks/use-model-providers", () => ({
   useImageProviders: () => imageProviders(),
+  useTextToSpeechProviders: () => speechProviders(),
+  useVideoProviders: () => videoProviders(),
+}));
+
+// The terminal's panel reads what can be mounted and the organization's accounts;
+// `mirage-section` covers both, so here the deployment offers scratch space alone.
+vi.mock("@/hooks/use-mirage-backends", () => ({
+  useMirageBackends: () => ({
+    data: {
+      installed: true,
+      items: [
+        {
+          name: "ram",
+          title: "Scratch space",
+          group: "scratch",
+          credential: "none",
+          available: true,
+          reason: null,
+          options_schema: { type: "object", properties: {} },
+          secret_fields: [],
+          required_secrets: [],
+          secret_purposes: ["ram"],
+          address_fields: [],
+        },
+      ],
+    },
+    isError: false,
+  }),
 }));
 
 // The memory panel's one action, which needs a query client this file does not
@@ -23,6 +55,25 @@ vi.mock("@/hooks/use-memory", () => ({
 
 vi.mock("@/hooks", () => ({
   useSecrets: () => ({ secrets: [], isLoading: false, error: null }),
+  // Table resources are available through the platform MCP.
+  useAllTables: () => ({
+    tables: [{ id: "t-1", name: "Leads", description: null }],
+    isLoading: false,
+  }),
+  // The workflows panel lists the organization's workflows; `workflows-section` covers it.
+  useWorkflows: () => ({
+    workflows: [
+      {
+        id: "w-1",
+        name: "Refund",
+        description: null,
+        status: "published",
+        current_version_id: "v-1",
+        live_trigger: "trigger.manual",
+      },
+    ],
+    isLoading: false,
+  }),
   // The workspace section reads both: where sandboxes may run, and what the
   // chosen host allows. Neither is this file's subject - `workspace-section`
   // covers them - so both answer empty, which is a deployment that registered
@@ -39,12 +90,13 @@ vi.mock("@/hooks", () => ({
     promote: { mutate: vi.fn(), isPending: false },
   }),
   usePermissions: () => ({ can: () => true, isLoading: false }),
+  useExternalAgents: () => ({ agents: [], isLoading: false, error: null }),
   useAgentVersions: () => ({ versions: [], isLoading: false }),
   useAllAgentVersions: () => ({ versions: [], isLoading: false }),
   useModelProviders: () => ({ catalog: [], profiles: [], isLoading: false }),
   useKnowledgeBases: () => ({ kbs: [], isLoading: false }),
   useSkills: () => ({ skills: [], total: 0, isLoading: false }),
-  useProviderModels: () => ({ models: [], source: null, isLoading: false }),
+  useProviderModels: () => ({ models: [], refused: [], source: null, isLoading: false }),
   useSecretPurposes: () => ({ purposes: [], isLoading: false }),
 }));
 
@@ -55,6 +107,7 @@ const CHARTS: CapabilityCatalogEntry = {
   category: "analysis",
   description: "Draw a chart so the user can see the numbers rather than read them.",
   side_effecting: false,
+  voice: "live",
   scopes: [],
   tools: [
     {
@@ -93,14 +146,6 @@ const MEMORY_FILES: CapabilityCatalogEntry = {
   description: "Notes the agent keeps of its own across conversations.",
   tools: [{ id: "read_memory", name: "read_memory", description: "Read one note by name." }],
   contracts: [],
-};
-
-const MEMORY_MEM0: CapabilityCatalogEntry = {
-  ...MEMORY_FILES,
-  id: "memory_mem0",
-  name: "Memory (mem0)",
-  description: "Semantic memory kept in a mem0 service rather than here.",
-  tools: [{ id: "recall", name: "recall", description: "Recall facts by meaning." }],
 };
 
 const CONTEXT: CapabilityCatalogEntry = {
@@ -173,6 +218,8 @@ function renderWorkbench(props: Partial<Parameters<typeof CapabilityWorkbench>[0
       onChange={vi.fn()}
       subagents={[]}
       onSubagentsChange={vi.fn()}
+      externalAgents={[]}
+      onExternalAgentsChange={vi.fn()}
       resources={NO_RESOURCES}
       modelProfileId={null}
       {...props}
@@ -196,23 +243,24 @@ describe("the capability workbench", () => {
     expect(screen.getByText("Clear this agent's memory")).toBeInTheDocument();
   });
 
-  it("says the clear does not reach mem0 when the agent also keeps memories there", async () => {
-    // mem0 addresses memories per person, so nothing can empty one agent's
-    // namespace wholesale - and somebody believing it did would stop looking.
-    renderWorkbench({
-      catalog: [MEMORY_FILES, MEMORY_MEM0],
-      selected: [binding("memory_files"), binding("memory_mem0")],
-    });
-
-    await openCapability("Memory files");
-
-    expect(screen.getByText(/does not reach/)).toBeInTheDocument();
-  });
-
   it("offers no clear for a capability that keeps nothing", async () => {
     renderWorkbench({ selected: [binding("charts")] });
 
     await openCapability("Charts");
+
+    expect(screen.queryByText("Clear this agent's memory")).not.toBeInTheDocument();
+  });
+
+  it("offers no clear for a spec no agent holds yet", async () => {
+    // A workflow step's agent before its first run: there are no notes to clear,
+    // and no agent to clear them on.
+    renderWorkbench({
+      agentId: null,
+      catalog: [MEMORY_FILES],
+      selected: [binding("memory_files")],
+    });
+
+    await openCapability("Memory files");
 
     expect(screen.queryByText("Clear this agent's memory")).not.toBeInTheDocument();
   });
@@ -232,6 +280,12 @@ describe("the capability workbench", () => {
 
     await openCapability("Charts");
 
+    expect(screen.queryByText("For example")).not.toBeInTheDocument();
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "Charts" })).getByRole("button", {
+        name: "More information",
+      }),
+    );
     expect(screen.getByText("For example")).toBeInTheDocument();
     expect(screen.getByText("Sales this month by region, as bars")).toBeInTheDocument();
     expect(screen.getByText("Never changes the data it draws.")).toBeInTheDocument();
@@ -357,7 +411,7 @@ describe("the capability workbench", () => {
     await openCapability("Charts");
 
     const panel = screen.getByRole("group", { name: "Charts" });
-    expect(within(panel).getByText("charts")).toBeInTheDocument();
+    expect(within(panel).getByRole("switch", { name: "Charts enabled" })).toBeChecked();
     expect(screen.queryByRole("group", { name: "Context" })).not.toBeInTheDocument();
   });
 
@@ -625,6 +679,34 @@ describe("context, the capability that reads the files", () => {
     size_bytes: 120,
   } as ContextFileSummary;
 
+  it("writes per-agent file policy without changing shared content or other settings", async () => {
+    const onChange = vi.fn();
+    const configured = {
+      ...binding("context"),
+      config: {
+        expose_read_tool: false,
+        file_settings: { [FILE.id]: { mode: "link", enabled: true } },
+      },
+    };
+    renderWorkbench({
+      catalog: [CONTEXT],
+      selected: [configured],
+      onChange,
+      resources: { ...NO_RESOURCES, contextFiles: [FILE], contextTotal: 1, contextIds: [FILE.id] },
+    });
+    await openCapability("Context");
+    await userEvent.click(screen.getByRole("switch", { name: "Use in this agent" }));
+    expect(onChange).toHaveBeenCalledWith({
+      ...configured,
+      config: {
+        expose_read_tool: false,
+        file_settings: { [FILE.id]: { mode: "link", enabled: false } },
+      },
+    });
+    expect(FILE.mode).toBe("inject");
+    expect(FILE.enabled).toBe(true);
+  });
+
   it("opens on what the capability was given, not on its settings", async () => {
     // The files are what somebody came to this panel to change; `expose_read_tool`
     // and a tool's prompt text are set once. Under Settings, where the picker
@@ -652,6 +734,91 @@ describe("context, the capability that reads the files", () => {
 
     expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: "Context files" })).toBeNull();
+  });
+});
+
+/**
+ * A system agent's Toolbox: the same workbench, handed only what it may bind.
+ *
+ * Nobody is there to approve anything while it runs and its save refuses an
+ * approval, so neither the capability nor a tool offers one; and the platform
+ * hands each run its knowledge bases, so Knowledge sets the search's steps
+ * instead of offering collections.
+ */
+describe("a system agent's workbench", () => {
+  const KNOWLEDGE: CapabilityCatalogEntry = {
+    ...CHARTS,
+    id: "knowledge",
+    name: "Knowledge search",
+    category: "knowledge",
+    description: "Search the organization's knowledge bases.",
+    tools: [{ id: "search_documents", name: "search_documents", description: "Search." }],
+    contracts: [],
+  };
+
+  const COLLECTION = { id: "k1", name: "Handbook" } as AgentResources["collections"][number];
+
+  function renderSystem(props: Partial<Parameters<typeof CapabilityWorkbench>[0]> = {}) {
+    const onMaxSteps = vi.fn();
+    renderWorkbench({
+      catalog: [KNOWLEDGE, CONTEXT],
+      selected: [binding("knowledge")],
+      resources: { ...NO_RESOURCES, collections: [COLLECTION] },
+      system: { kind: "judge", maxSteps: 4, onMaxSteps },
+      ...props,
+    });
+    return onMaxSteps;
+  }
+
+  it("opens Knowledge on the search's steps, with no collection to pick", async () => {
+    const onMaxSteps = renderSystem();
+    await openCapability("Knowledge search");
+
+    expect(screen.getByRole("tab", { name: "Knowledge base" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.queryByRole("tab", { name: "Collections" })).toBeNull();
+    expect(screen.queryByText("Handbook")).toBeNull();
+    const steps = screen.getByRole("spinbutton", { name: "Max steps" });
+    expect(steps).toHaveValue(4);
+    await userEvent.clear(steps);
+    expect(onMaxSteps).toHaveBeenLastCalledWith(null);
+  });
+
+  it("offers no approval, for the capability or for any of its tools", async () => {
+    renderSystem();
+    await openCapability("Knowledge search");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.queryByText("Human approval")).toBeNull();
+    await openTools();
+    const row = screen.getByRole("listitem", { name: "search_documents" });
+    expect(within(row).queryByText("Approval")).toBeNull();
+    expect(within(row).getByLabelText("Description the model reads")).toBeEnabled();
+  });
+
+  it("keeps both approvals on an ordinary agent's panel", async () => {
+    renderSystem({ system: undefined });
+    await openCapability("Knowledge search");
+
+    expect(screen.getByRole("tab", { name: "Collections" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByText("Human approval")).toBeInTheDocument();
+    await openTools();
+    const row = screen.getByRole("listitem", { name: "search_documents" });
+    expect(within(row).getByText("Approval")).toBeInTheDocument();
+  });
+
+  it("takes nothing from a reader who may not edit it", async () => {
+    renderSystem({ disabled: true });
+    await openCapability("Knowledge search");
+
+    expect(screen.getByRole("switch", { name: "Knowledge search enabled" })).toBeDisabled();
+    expect(
+      screen.getByRole("switch", { name: "Give this agent Knowledge search", hidden: true }),
+    ).toBeDisabled();
+    expect(screen.getByRole("spinbutton", { name: "Max steps" })).toBeDisabled();
   });
 });
 
@@ -711,6 +878,54 @@ describe("image generation, whose model is a provider and a model", () => {
   });
 });
 
+describe("workflows, whose grants are the workflows it may start", () => {
+  const WORKFLOWS: CapabilityCatalogEntry = {
+    ...CHARTS,
+    id: "workflows",
+    name: "Workflows",
+    category: "automation",
+    description: "Start published workflows as tools, and read what they answered.",
+    tools: [],
+    contracts: [],
+    config_schema: null,
+  };
+
+  it("opens its own panel rather than the generated form", async () => {
+    renderWorkbench({ catalog: [WORKFLOWS, CHARTS], selected: [binding("workflows")] });
+
+    await openCapability("Workflows");
+
+    expect(screen.getByRole("checkbox", { name: "Let the agent start Refund" })).toBeVisible();
+  });
+
+  it("grants it from the panel's own switch", async () => {
+    const onToggle = vi.fn();
+    renderWorkbench({ catalog: [WORKFLOWS, CHARTS], selected: [binding("workflows")], onToggle });
+
+    await openCapability("Workflows");
+    await userEvent.click(screen.getByRole("switch", { name: "Workflows enabled" }));
+
+    expect(onToggle).toHaveBeenCalledWith("workflows");
+  });
+});
+
+it("routes workflows through MCP while keeping stored workflow bindings editable", async () => {
+  renderWorkbench({
+    catalog: [
+      { ...CHARTS, id: "workflows", name: "Workflows" },
+      { ...CHARTS, id: "knowledge", name: "Knowledge" },
+      CHARTS,
+    ],
+    selected: [],
+  });
+  expect(screen.queryByRole("button", { name: "Workflows" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Tables" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "More information" }));
+  expect(
+    screen.getByText(/Workflows and Tables are tools in the AgenticOS MCP server/),
+  ).toBeVisible();
+});
+
 describe("the workbench as illustrated cards", () => {
   it("shelves the catalog by category and opens settings in a panel", async () => {
     const PORTALS = { ...CHARTS, id: "portals", name: "Portals", category: "teleportation" };
@@ -760,5 +975,206 @@ describe("the workbench as illustrated cards", () => {
     });
 
     expect(screen.getAllByText("Recommended")).toHaveLength(1);
+  });
+});
+
+/** Text to speech has a panel of its own too: a provider, a model and a voice. */
+describe("text to speech, whose voice is a provider, a model and a voice", () => {
+  beforeAll(() => {
+    speechProviders.mockReturnValue({
+      providers: [
+        {
+          provider: "openai",
+          name: "OpenAI",
+          formats: ["mp3"],
+          account_voices: false,
+          models: [
+            {
+              id: "gpt-4o-mini-tts",
+              name: "GPT-4o mini TTS",
+              description: "The default.",
+              max_characters: 4096,
+              takes_instructions: true,
+              voices: [{ id: "marin", name: "Marin", description: "" }],
+            },
+          ],
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  const SPEECH: CapabilityCatalogEntry = {
+    ...CHARTS,
+    id: "text_to_speech",
+    name: "Text to speech",
+    category: "analysis",
+    description: "Speak a text aloud as an audio clip.",
+    tools: [{ id: "generate_speech", name: "generate_speech", description: "Speak." }],
+    contracts: [],
+    config_schema: null,
+  };
+
+  it("opens its own panel rather than the generated form", async () => {
+    renderWorkbench({ catalog: [SPEECH, CHARTS], selected: [binding("text_to_speech")] });
+
+    await openCapability("Text to speech");
+
+    expect(screen.getByLabelText("Provider")).toBeVisible();
+    expect(screen.getByLabelText("Voice")).toHaveTextContent("Marin");
+  });
+
+  it("grants it from the panel's own switch", async () => {
+    const onToggle = vi.fn();
+    renderWorkbench({ catalog: [SPEECH, CHARTS], onToggle });
+
+    await openCapability("Text to speech");
+    await userEvent.click(screen.getByRole("switch", { name: "Text to speech enabled" }));
+
+    expect(onToggle).toHaveBeenCalledWith("text_to_speech");
+  });
+});
+
+/** Video generation has a panel of its own: a provider, a model, a resolution and a shape. */
+describe("video generation, whose clip is a provider, a model and what it renders", () => {
+  beforeAll(() => {
+    videoProviders.mockReturnValue({
+      providers: [
+        {
+          provider: "xai",
+          name: "xAI (Grok)",
+          models: [
+            {
+              id: "grok-imagine-video-1.5",
+              name: "Grok Imagine Video 1.5",
+              description: "Native 1080p.",
+              min_seconds: 1,
+              max_seconds: 15,
+              duration_choosable: true,
+              aspect_ratios: ["16:9"],
+              resolutions: ["720p"],
+              audio: "always",
+              first_frame: true,
+            },
+          ],
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  const VIDEO: CapabilityCatalogEntry = {
+    ...CHARTS,
+    id: "video_generation",
+    name: "Video generation",
+    category: "analysis",
+    description: "Make a short video from a text description.",
+    tools: [{ id: "generate_video", name: "generate_video", description: "Film." }],
+    contracts: [],
+    config_schema: null,
+  };
+
+  it("opens its own panel rather than the generated form", async () => {
+    renderWorkbench({ catalog: [VIDEO, CHARTS], selected: [binding("video_generation")] });
+
+    await openCapability("Video generation");
+
+    expect(screen.getByLabelText("Provider")).toBeVisible();
+    expect(screen.getByLabelText("Resolution")).toHaveTextContent("720p");
+  });
+
+  it("grants it from the panel's own switch", async () => {
+    const onToggle = vi.fn();
+    renderWorkbench({ catalog: [VIDEO, CHARTS], onToggle });
+
+    await openCapability("Video generation");
+    await userEvent.click(screen.getByRole("switch", { name: "Video generation enabled" }));
+
+    expect(onToggle).toHaveBeenCalledWith("video_generation");
+  });
+});
+
+describe("the workbench as illustrated cards", () => {
+  it("shelves the catalog by category and opens settings in a panel", async () => {
+    const PORTALS = { ...CHARTS, id: "portals", name: "Portals", category: "teleportation" };
+    renderWorkbench({ catalog: [CHARTS, CONTEXT, PORTALS], selected: [binding("charts")] });
+
+    expect(screen.getByRole("region", { name: "Work with data" })).toBeInTheDocument();
+    // A category the console has no words for yet keeps the registry's own.
+    expect(screen.getByRole("region", { name: "teleportation" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Knowledge and memory" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Context settings" }));
+    const panel = screen.getByRole("dialog");
+    expect(within(panel).getByRole("heading", { name: "Context settings" })).toBeInTheDocument();
+    expect(within(panel).getByRole("switch", { name: "Context enabled" })).toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("says when a search matches nothing", async () => {
+    renderWorkbench();
+
+    await userEvent.type(screen.getByPlaceholderText("Search capabilities…"), "teleport");
+
+    expect(screen.getByText(/teleport/)).toBeInTheDocument();
+    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+  });
+
+  it("marks a recommended capability on its card", () => {
+    renderWorkbench({
+      catalog: [
+        {
+          ...CHARTS,
+          recommended: {
+            id: "charts",
+            config: {},
+            approval: "default",
+            tool_approval: {},
+            tool_overrides: {},
+            secret_id: null,
+            enabled: true,
+          },
+        },
+        CONTEXT,
+      ],
+    });
+
+    expect(screen.getAllByText("Recommended")).toHaveLength(1);
+  });
+});
+
+describe("the virtual terminal", () => {
+  const MIRAGE: CapabilityCatalogEntry = {
+    ...CHARTS,
+    id: "mirage",
+    name: "Mirage (virtual terminal)",
+    category: "files",
+    description: "Mounts services as folders.",
+    tools: [],
+    contracts: [],
+    config_schema: null,
+  };
+
+  it("opens its own panel, where each folder picks a service", async () => {
+    renderWorkbench({ catalog: [MIRAGE, CHARTS], selected: [binding("mirage")] });
+
+    await openCapability("Mirage (virtual terminal)");
+
+    expect(screen.getByRole("button", { name: "Add integration" })).toBeVisible();
+  });
+
+  it("routes the terminal switch to its capability binding", async () => {
+    const onToggle = vi.fn();
+    renderWorkbench({ catalog: [MIRAGE], selected: [binding("mirage")], onToggle });
+    await openCapability("Mirage (virtual terminal)");
+    await userEvent.click(
+      screen.getByRole("switch", { name: "Mirage (virtual terminal) enabled" }),
+    );
+    expect(onToggle).toHaveBeenCalledWith("mirage");
   });
 });

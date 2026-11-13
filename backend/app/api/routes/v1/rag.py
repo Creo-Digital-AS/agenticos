@@ -54,10 +54,12 @@ from app.api.deps import (
 )
 from app.api.public_api import INTERNAL, PUBLIC
 from app.api.routes.v1._stored_bytes import stored_file_response
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import BadRequestError, NotFoundError
+from app.core.field_errors import refused_field
 from app.core.permissions import Perm
 from app.schemas.rag import (
     EmbeddingModelsResponse,
+    EndpointEmbeddingModels,
     RAGCollectionInfo,
     RAGCollectionList,
     RAGDocumentList,
@@ -83,9 +85,10 @@ from app.schemas.sync_source import (
     SyncSourceUpdate,
 )
 from app.services.ingestion_config import PdfParserName, parse_override
+from app.services.model_profile import validate_endpoint_url
 from app.services.rag import embedding_providers
 from app.services.rag.config import get_supported_formats
-from app.services.rag.filters import resolve_legacy_filter, scope_for_tenant
+from app.services.rag.filters import resolve_legacy_filter, scope_for
 
 router = APIRouter(dependencies=[PUBLIC])
 
@@ -111,6 +114,38 @@ async def list_embedding_models() -> Any:
             }
             for entry in embedding_providers.providers()
         ],
+    }
+
+
+@router.get(
+    "/embedding-models/{provider}",
+    response_model=EndpointEmbeddingModels,
+    dependencies=[Depends(require(Perm.CONNECTIONS_MANAGE))],
+)
+async def list_embedding_models_at(provider: str, base_url: str) -> Any:
+    """The embedding models a custom endpoint serves, for the create form's picker.
+
+    A regional endpoint serves a subset of its provider's models - OpenRouter's
+    EU endpoint has none of OpenAI's - so the form asks the endpoint rather than
+    offering the whole catalog and letting the first upload fail. It needs the
+    authority that setting a custom endpoint needs, because it makes a request
+    to an address the caller chose; no credential is sent with it.
+    """
+    entry = embedding_providers.get(provider)
+    if entry is None or provider != "openrouter":
+        raise refused_field(
+            "embedding_base_url", "A custom embedding endpoint is supported only for OpenRouter"
+        )
+    try:
+        url = await validate_endpoint_url(base_url.strip())
+    except BadRequestError as error:
+        raise refused_field("embedding_base_url", error.message) from error
+    served = await embedding_providers.models_at(entry, url)
+    models = entry.models if served is None else served
+    return {
+        "provider": entry.provider,
+        "models": [{"model": model.model, "dim": model.dim} for model in models],
+        "source": "curated" if served is None else "live",
     }
 
 
@@ -183,7 +218,6 @@ async def create_collection(
 )
 async def drop_collection(
     name: str,
-    rag_doc_svc: RAGDocumentSvc,
     kb_svc: KnowledgeBaseSvc,
     access: CollectionAccessSvc,
     ctx: Auth,
@@ -196,18 +230,22 @@ async def drop_collection(
     be used to confirm a deletion, and that 204 was also what another tenant's
     collection returned.
 
-    The document rows and the KB row go in the request; the stored files and the
-    vector table are torn down by the durable cleanup the services hand over after
-    the commit, which takes the collection-teardown lock and re-reads the reference
-    check before dropping only what no base still claims (#1347, #1349, #1355, #913).
-    So the route no longer wires a store in.
+    The resolved base's document rows, the unfiled rows of its tenant, and its
+    KB row go in the request; the
+    stored files and the vector table are torn down by the durable cleanup the
+    service hands over after the commit, which takes the collection-teardown lock
+    and drops only a name the delete reserved
+    (#1347, #1349, #1355, #913). The name is not tenant-unique, so while
+    another base - possibly another organization's - still holds it, only this
+    base's documents go and its chunks are purged from the kept table (#2560).
+    When it is the last holder the table goes too, and another tenant's unfiled
+    rows under the name stay, marked as failed (#2568), unless the table holds
+    unfiled chunks the base does not take - an operator's `rag-ingest`, another
+    tenant's: then it stays for them, the same purge applies, and those rows are
+    left as they are (#2747). So the route no longer wires a store in.
     """
     collection = await access.writable(ctx, name)
-    # delete_for_rag_collection takes the collection's teardown lock; it must run
-    # before the document rows are deleted, because a concurrent org purge takes that
-    # lock before touching the same rows and the opposite order deadlocks (#1387).
     await kb_svc.delete_for_rag_collection(collection)
-    await rag_doc_svc.delete_by_collection(collection.collection_name)
 
 
 @router.get(
@@ -218,14 +256,24 @@ async def drop_collection(
 async def get_collection_info(
     name: str,
     vector_store: VectorStoreSvc,
+    rag_doc_svc: RAGDocumentSvc,
     access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
-    """Retrieve stats for a specific collection."""
+    """Retrieve stats for a specific collection, and whether it is still indexing.
+
+    `indexing_status` is `indexing` while any of the collection's documents is
+    queued or being ingested and `complete` once none is; `processing_count`,
+    `indexed_count` and `failed_count` say how many documents are in each state.
+    A failed document does not keep the collection `indexing` - it shows in
+    `failed_count`. Wait for `complete` before relying on search results:
+    `total_vectors` grows while the worker is still working through an upload.
+    """
     collection = await access.readable(ctx, name)
-    return await vector_store.get_collection_info(
-        collection.collection_name, ctx.organization_id, tenant=collection.vector_tenant
+    info = await vector_store.get_collection_info(
+        collection.collection_name, collection.vector_scope, ctx.organization_id
     )
+    return await rag_doc_svc.collection_info(info, kb=collection)
 
 
 @router.get(
@@ -241,9 +289,7 @@ async def list_documents(
 ) -> Any:
     """List all documents in a specific collection."""
     collection = await access.readable(ctx, name)
-    return await vector_store.get_document_list(
-        collection.collection_name, collection.vector_tenant
-    )
+    return await vector_store.get_document_list(collection.collection_name, collection.vector_scope)
 
 
 @router.post(
@@ -264,19 +310,19 @@ async def search_documents(
     from it - see `CollectionAccessService.readable_all`.
     """
     names = request.collection_names or [request.collection_name]
-    # The authorized knowledge base for each name carries the tenant its rows are
-    # scoped by; threading it through means the search reads the base the caller
-    # was authorized for, not a same-named base in their organization the store
-    # would otherwise resolve without checking resource access (#1684).
+    # The authorized knowledge base for each name carries the scope its rows are
+    # read under; threading it through means the search reads the base the caller
+    # was authorized for, not a same-named base the store would otherwise resolve
+    # without checking resource access (#1684, #2537).
     kbs = await access.readable_all(ctx, names)
     collections = [kb.collection_name for kb in kbs]
-    # One scope per base, built from *its own* resolved tenant - `AppScope` for
-    # an app-scoped base every organization reads, `TenantScope` for an org one -
+    # One scope per base, built from *its own* vector scope - `AppScope` for a
+    # base with no tenant, `TenantScope` for an org one, each naming the base -
     # never from `ctx.organization_id` directly, which cannot match an app-scoped
-    # base's untagged rows (#1684, FA-039). The request body carries business
-    # filters only, so a supplied filter can only narrow, never widen, access
-    # (FA-039 §2.2).
-    scopes = {kb.collection_name: scope_for_tenant(kb.vector_tenant) for kb in kbs}
+    # base's untagged rows (#1684, FA-039), nor tell two same-named bases of one
+    # tenant apart (#2537). The request body carries business filters only, so a
+    # supplied filter can only narrow, never widen, access (FA-039 §2.2).
+    scopes = {kb.collection_name: scope_for(kb.vector_scope) for kb in kbs}
     filters = resolve_legacy_filter(request.filter, request.filters)
     if len(collections) > 1:
         results = await retrieval_service.retrieve_multi(
@@ -323,7 +369,7 @@ async def list_filter_values(
     values = await vector_store.distinct_metadata_values(
         collection.collection_name,
         ["organizational_unit"],
-        scope_for_tenant(collection.vector_tenant),
+        scope_for(collection.vector_scope),
     )
     return RAGFilterValues(organizational_unit=values.get("organizational_unit", []))
 
@@ -344,7 +390,7 @@ async def delete_document(
     """Delete a specific document by its ID from a collection."""
     collection = await access.writable(ctx, name)
     success = await ingestion_service.remove_document(
-        collection.collection_name, document_id, tenant=collection.vector_tenant
+        collection.collection_name, document_id, scope=collection.vector_scope
     )
     if not success:
         raise NotFoundError(
@@ -508,8 +554,8 @@ async def list_sync_logs(
     limit: int = Query(20, ge=1, le=100),
 ) -> Any:
     """List sync operation logs for the caller's collections."""
-    collections = await access.readable_names_for(ctx, collection_name)
-    return await rag_sync_svc.list_sync_logs(collections=collections, limit=limit)
+    scope = await access.readable_sync_log_scope(ctx, collection_name)
+    return await rag_sync_svc.list_sync_logs(scope=scope, limit=limit)
 
 
 # Console-only: it reads a directory on the deployment's own disk, which an
@@ -572,18 +618,21 @@ async def cancel_sync(
 )
 async def list_sync_sources(
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
     collection_name: str | None = Query(None, description="Filter by KB collection name"),
 ) -> Any:
     """List sync sources for the active organization.
 
-    Pass `collection_name` to see only sources assigned to a specific KB.
-    Omit it to list all org-level integrations (assigned and unassigned).
+    With `connections:manage`, every source of the organization, assigned and
+    unassigned - the list `/org/integrations` returns. Without it, the sources
+    feeding a knowledge base the caller can read, and no unassigned ones. Pass
+    `collection_name` to see only one collection's sources; without the
+    permission, a collection the caller cannot read, or that does not exist, is
+    404.
     """
-    return await sync_source_svc.list_sources(
-        organization_id=ctx.organization_id,
-        collection_name=collection_name,
-    )
+    sources = await access.readable_sync_sources(ctx, collection_name)
+    return sync_source_svc.as_list(sources)
 
 
 @router.post(
@@ -604,9 +653,14 @@ async def create_sync_source(
     that can later be cloned into one or more knowledge bases. Naming a
     collection the caller cannot write is refused: a sync writes *into* the
     collection, so pointing one at another tenant's is an injection, not a read.
+    The base checked is the one the sync writes into, not any writable base of
+    that name (`CollectionAccessService.source_target`).
+
+    Only `connections:manage` lists an unassigned source, so a caller without it
+    keeps the id from this response.
     """
     if data.collection_name is not None:
-        await access.writable(ctx, data.collection_name)
+        await access.source_target(ctx, data.collection_name)
     return await sync_source_svc.create_source(data, ctx=ctx)
 
 
@@ -631,7 +685,7 @@ async def clone_sync_source(
     The clone is independent - its own schedule and sync history.
     """
     source = await access.sync_source(ctx, source_id)
-    await access.writable(ctx, data.collection_name)
+    await access.source_target(ctx, data.collection_name)
     return await sync_source_svc.clone_source(str(source.id), data, ctx=ctx)
 
 
@@ -647,10 +701,20 @@ async def update_sync_source(
     access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
-    """Update an existing sync source configuration."""
-    source = await access.sync_source(ctx, source_id)
+    """Update an existing sync source configuration.
+
+    The source must be one the caller may change: in their organization, and
+    when it feeds a knowledge base, one they can write - detaching it with
+    `collection_name: null`, or changing its config, credential or schedule,
+    changes what that base syncs. Moving it also needs write on the base it
+    moves to (`CollectionAccessService.source_target`). Only `connections:manage`
+    lists a source once it is detached.
+    """
+    # The target first: it takes the name's lock, and the source's row comes after
+    # it, the order a base's deletion takes them in.
     if data.collection_name is not None:
-        await access.writable(ctx, data.collection_name)
+        await access.source_target(ctx, data.collection_name)
+    source = await access.writable_sync_source(ctx, source_id)
     return await sync_source_svc.update_source(str(source.id), data, ctx=ctx)
 
 
@@ -666,8 +730,12 @@ async def delete_sync_source(
     access: CollectionAccessSvc,
     ctx: Auth,
 ) -> None:
-    """Delete a sync source configuration."""
-    source = await access.sync_source(ctx, source_id)
+    """Delete a sync source configuration.
+
+    A source feeding a knowledge base is deleted only by a caller who can
+    write that base (`CollectionAccessService.writable_sync_source`).
+    """
+    source = await access.writable_sync_source(ctx, source_id)
     await sync_source_svc.delete_source(str(source.id), ctx=ctx)
 
 
@@ -682,8 +750,13 @@ async def trigger_sync_source(
     access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
-    """Trigger a manual sync for a configured source."""
-    source = await access.sync_source(ctx, source_id)
+    """Trigger a manual sync for a configured source.
+
+    A run writes into the base the source feeds, so it takes write access to
+    that base (`CollectionAccessService.writable_sync_source`).
+    """
+    source = await access.writable_sync_source(ctx, source_id)
+    sync_source_svc.refuse_paused(source)
     sync_log = await sync_source_svc.trigger_sync(str(source.id), user_id=ctx.user_id)
     return RAGSyncResponse(
         id=str(sync_log.id),

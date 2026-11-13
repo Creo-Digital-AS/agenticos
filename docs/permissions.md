@@ -58,8 +58,9 @@ A boolean on the user, entirely outside organizations. Two effects:
    organization, and none of them can express "every organization"
    ([Governance](governance.md#alerts)).
 2. **A bypass in `AuthContext.permissions`**, which returns every permission at
-   `Scope.ALL` - in every organization, including ones where they hold no
-   membership.
+   `Scope.ALL` - in every organization they are a member of. It does not reach
+   one where they hold no membership: the active organization is resolved before
+   any permission is read, and that refuses a non-member, an app admin included.
 
 The bypass is deliberate and the docstring says why: such a person administers
 the deployment and already has database access, so pretending otherwise would be
@@ -87,8 +88,15 @@ Two kinds of permission, and they behave differently.
 
 **Global** permissions are binary and org-wide: `members:view`, `members:manage`, `roles:manage`,
 `org:settings`, `org:delete`, `budgets:manage`, `approvals:decide`,
-`connections:view`, `connections:manage`, `channels:manage`,
-`runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`.
+`promotions:override`, `connections:view`, `connections:manage`, `channels:manage`,
+`runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`, `personal:consent`.
+
+Approving personal routines and watches requires the explicit `personal:consent` scope, selected under **Custom** when issuing a key or authorizing an MCP client. It is excluded from every preset, including **Full access**. The confirmation allows the credential to approve persistent routines and watches using your personal connections and data; ordinary `agents:run` and `runs:view` scopes do not. Existing keys and MCP authorizations gain no personal consent automatically.
+
+`promotions:override` promotes a version onto an
+[environment its eval suites guard](environments.md#guarding-a-promotion-with-evals)
+although they have not passed on it, and changes which suites guard one. Owners
+and admins hold it; promoting at all is still `agents:publish` on the agent.
 
 `api_keys:create` lets a member issue [API keys](api.md#organization-api-keys)
 for themselves; `api_keys:manage` lists and revokes everybody's. A key holds a
@@ -118,6 +126,22 @@ subset of the permissions here, never more than its issuer holds now.
     edit and delete as well. Nothing here implies one permission from another, so a
     role that manages connections holds both.
 
+    `connections:manage` also edits model profiles, and an edit moves every agent
+    on the profile, including agents the editor cannot edit: a new endpoint gets
+    their requests from the next run. The key is still protected. Setting a
+    profile's key, or moving the endpoint of a profile that has one, needs
+    `secrets:view` on that key
+    ([Models](models.md#changing-a-profiles-key-or-endpoint)).
+
+    `connections:manage` is also what lists the organization's sync integrations:
+    the sources of every base, with their configuration, the vault secret each
+    uses and their last error, and the unassigned ones. `/org/integrations`
+    and `GET /rag/sync/sources` return that list, and the knowledge base wizard's
+    offer to reuse one (`GET /kb/{kb_id}/sync-sources/org-integrations`) returns
+    it without the base it is open on. Reading one base, or holding a grant on it,
+    does not open that list. Without the permission, `GET /rag/sync/sources` lists only the sources that feed a base
+    the caller reads, and the wizard leaves out the offer.
+
 **Resource** permissions carry a `Scope`, because they answer the second question
 a role cannot: not "may this role touch agents?" but *which* agents.
 
@@ -131,7 +155,7 @@ those shared with it; `ALL` sees every one.
 Ordered `NONE < OWN < SHARED < TEAM < ALL`.
 
 | Scope | Reaches |
-|---|---|
+| --- | --- |
 | `NONE` | nothing |
 | `OWN` | rows this person owns |
 | `SHARED` | their own, plus anything org-visible |
@@ -150,7 +174,7 @@ Ordered `NONE < OWN < SHARED < TEAM < ALL`.
 ### The built-in roles
 
 | Role | Idea | Agents | Secrets | Global |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `owner` | owns the organization | all `ALL` | `ALL` | everything, including `org:delete` |
 | `admin` | runs it day to day | all `ALL` | `ALL` | everything **except** `org:delete` |
 | `builder` | builds, and learns from the whole org | `view`/`run` `ALL`, `edit`/`publish` `SHARED` | `view` `SHARED`, `edit` `OWN` | `mcp:manage` `SHARED`, `connections:view`+`connections:manage`, `runs:view`, `ml:invoke`, `api_keys:create`, `members:view` |
@@ -250,10 +274,11 @@ draft cannot run and no exposure reaches it either way, so what this decides is
 who can see it, not what it does.
 
 | Level | Allows |
-|---|---|
+| --- | --- |
 | `read` | see the configuration |
 | `use` | also run or attach it |
 | `edit` | also change it |
+| `edit_data` | also change what data the page shows - [pages only](#a-page-that-reads-data) |
 
 In the console this is one dialog, the way a document is shared: the **Share**
 button on an agent, a skill, a knowledge base or a context file - at any time
@@ -269,11 +294,10 @@ or a group, and a group from another organization reaches nobody here even if a
 row named one.
 
 The table is deliberately generic - `resource_type` + `resource_id`, with no
-foreign key to the target - because agents, collections, skills, context files
-and stored keys all share the same rules. The trade-off is that the database
-cannot cascade-delete
-a grant when its target goes away, so services delete grants alongside the
-resource.
+foreign key to the target - because agents, collections, skills, context files,
+[tables](virtual-tables.md), workflows and stored keys all share the same
+rules. The trade-off is that the database cannot cascade-delete a grant when
+its target goes away, so services delete grants alongside the resource.
 
 ## How the layers combine
 
@@ -349,10 +373,23 @@ exactly the moment it should be narrowed to nothing.
 rows already loaded, it returns the subset the caller may exercise a permission
 on, applying the same `max(role scope, grant)` rule per row but reading every
 grant in one lookup rather than one per row (and none at all when the role
-reaches everything). It is what fills a listing's per-row capability flags -
-`AgentRead.can_run`, the floor for offering "new trigger" on a card - so a Viewer
-granted run on one agent sees the control there and nowhere else. A context with
-no subject, and an empty input, both resolve to the empty set before any query.
+reaches everything).
+
+`accessible_ids` is what fills a listing's per-row capability flags -
+`AgentRead.can_run`, the floor for offering "new trigger" on a card,
+`AgentRead.can_edit`, which the console reads for the agent page's edit
+controls, testing a draft and stopping an eval run, and `AgentRead.can_publish`,
+for publishing - so a Viewer granted run on one agent sees the control there and
+nowhere else.
+
+A context with no subject, and an empty input, both resolve to the empty set
+before any query.
+
+Context, skill and vault listings carry `can_edit` for each resource. The console
+uses that effective access for editing, deletion and sharing, and for rotating a
+key. A Viewer with an edit grant gets those controls; a Builder with only read
+access to another person's private resource does not. Collection creation still
+uses the role's permission. The server checks access again on every write.
 
 The agents, skills and kb listings also take `?shared_with_me=true`: only rows
 deliberately shared with the caller - org-visible or explicitly granted, and
@@ -362,6 +399,73 @@ listing, so the filter fetches them anyway - without that, a Builder's "shared
 with me" would degenerate into "the whole organization minus mine". For kb it
 also excludes personal rows (the caller's by construction) and app-scope rows
 (the deployment's - never shared *with* anybody).
+
+### Workflow runs
+
+A run has no visibility of its own: it inherits its workflow's. Starting one
+takes `workflows:run` on the workflow, and a `test` run of the unpublished draft
+takes `workflows:edit` as well. Reading a run and its events takes
+`workflows:view`, and the unfiltered list shows runs of the workflows the caller
+can see - their own, organization-visible ones and those shared with them. A run
+the caller cannot see answers exactly like a run that does not exist.
+
+**Cancelling is narrower than starting.** The person who started a run may
+cancel it while they may still run the workflow, and anyone who may edit the
+workflow may cancel any of its runs. A Member who can run an organization-visible
+workflow can stop their own runs, not a colleague's; seeing the run without
+either right is refused with `403`. Retrying a cancelled run takes the same right,
+so a run somebody stopped is not started again by a member who could not stop it.
+
+**A run acts as the person who started it, checked again at every node.** A
+node can be dispatched days after the run began, so each dispatch requires the
+account to still be active, still a member of the organization - an app admin
+included, as on every request - and still allowed `workflows:run` on the
+workflow, and `workflows:edit` as well for a `test` run. When any of that has
+changed, the run
+fails with `PRINCIPAL_REVOKED` before the node's handler runs. A run needs a
+person to act as, so a context with no subject cannot start one.
+
+## A page that reads data { #a-page-that-reads-data }
+
+A published [page bound to table data](artifacts.md#live-data) is the one place a
+person reads a table **on somebody else's authority**. Every viewer is served the
+page's records through its page queries, read with the access of the page's
+**owner**, whatever their own role or grants on the table. So the layers above
+decide who may open the page, and a further set of rules decides who may widen that.
+
+**The owner's access backs every load.** The page's owner must be an active member and
+hold `read` on every table the queries reach, on every serve; otherwise the data is
+`unavailable` (`creator_gone`, `creator_lost_access`). The person publishing is held to
+reading every table too, at publish, so nobody binds what they cannot read.
+
+**Consent shares it.** The owner's agreement to share a version's data is per
+version, given as themselves (not under impersonation, not through an API key, never by an
+agent tool), and stored with the owner's membership. An Owner or Admin - `artifacts:edit`
+at scope `ALL` - may confirm for the owner, audited as such. A grant to edit
+the page is not enough. Any editor may withdraw it, since withdrawing only narrows; it also lowers
+every `edit_data` grant on the page to `edit`.
+
+**`edit_data` is a grant level, not a role.** "Can edit, including data" sits above `edit`
+and is accepted for pages only (a database constraint refuses it elsewhere). It is a
+standing consent to that person's, or that group's, republishes. Only the owner, or an
+Owner or Admin, as themselves, grants or raises it, after confirming what it allows.
+Anyone who can edit lowers it. It is read as a grant level (`grant_level`), never
+through `resolve_access`, and no role scope implies it.
+
+**Ownership is changed, never claimed.** The owner, or an Owner or Admin for any
+page, hands it to an active member as themselves; a grant to edit does not allow it.
+The switch voids every consent, drops `edit_data` grants to `edit` and turns auto-consent
+off. Taking over an owner-less page by making it private is the same act and the same rule.
+
+**Widening is guarded.** In front of the generic sharing routes sits a guard for pages that read
+data: a wider visibility, a new grant or a higher level is the owner's call, or an Owner's
+or Admin's for them, once the data is confirmed. Anyone else with `edit` gets a
+[request](artifacts.md#share-requests) in place of a refusal. Narrowing is open to every
+editor, and a page that reads no data keeps the generic rules. Admins act directly
+rather than file a request. The three permissions a page uses are `artifacts:view`,
+`artifacts:edit` and, for tables, `tables:view`; Owner, Admin, Builder and Operator hold
+the first and the last at scope `ALL`, which is why they are part of every page's
+audience.
 
 ## Where the gates go
 
@@ -404,6 +508,21 @@ refusals.
     these rows says so in its own copy, because a permission wider than its
     subjects expect is only defensible if they can find that out. A narrower answer
     would be a permission of its own, not a quieter route.
+
+### A system agent is an organization setting { #system-agents }
+
+A [system agent](concepts.md#system-agents) - a judge, a case generator, a gap
+drafter or classifier, the authoring assistant - grades, drafts or proposes for
+everyone who uses what it serves. So changing one takes `org:settings` on top of
+`agents:edit` or `agents:publish` on the row: its draft, a YAML import, a
+publish, a restore, archiving or deleting it, its environments. A Builder would
+otherwise reach the seeded ones through their organization-wide visibility.
+Reading, running and creating one keep their usual permissions; a judge a
+Builder makes for a dataset publishes at once, and later changes need an
+administrator.
+
+The check is in `AgentRegistryService.get`, so every write path holds it, and
+`can_edit`/`can_publish` read false for a caller without it.
 
 ## Delegation is not a privilege boundary
 
@@ -494,7 +613,7 @@ created by somebody who did have a role.
 ## What the frontend reads
 
 | Endpoint | Answers |
-|---|---|
+| --- | --- |
 | `GET /me/permissions` | the caller's role, `is_app_admin`, and every permission with its scope |
 | `GET /roles/catalog` | the whole catalog and what each role bundles |
 
@@ -512,6 +631,8 @@ these APIs gains nothing.
   never narrows.**
 - `require(...)` goes on **collection** routes. Anything acting on one row hands
   the decision to a service that calls `resolve_access`.
+- A page that reads table data is read with its **owner's** access and shared only by
+  the owner's consent; widening it is the owner's, and anyone else files a request.
 - A surface with nobody in front of it runs as **whoever published it**, falling
   back to `viewer` when that person left or was deactivated.
 

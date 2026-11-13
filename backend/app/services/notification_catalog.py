@@ -10,8 +10,6 @@ producer or default audience, which are decided at each producer's own call
 site as later phases wire them in.
 """
 
-from __future__ import annotations
-
 import enum
 
 from app.db.models.notification import NotificationEventType
@@ -38,6 +36,8 @@ class ContentGate(enum.Enum):
     COLLECTIONS_VIEW = "collections_view"
     ANNOUNCEMENT_AUDIENCE = "announcement_audience"
     ARTIFACTS_VIEW = "artifacts_view"
+    WORKFLOWS_VIEW = "workflows_view"
+    SHARED_CONVERSATION = "shared_conversation"
 
 
 # Decision 1's "Content gated on" column, read by event type. A row with no
@@ -45,6 +45,7 @@ class ContentGate(enum.Enum):
 # beyond the tenant/membership check every row already gets from the read
 # paths' own organization scoping.
 CONTENT_GATE: dict[NotificationEventType, ContentGate] = {
+    NotificationEventType.RESOURCE_SHARED: ContentGate.SHARED_CONVERSATION,
     NotificationEventType.APPROVAL_REQUESTED: ContentGate.DEGRADE,
     NotificationEventType.USAGE_REPORT: ContentGate.RUNS_VIEW,
     NotificationEventType.AGENT_USAGE_REPORT: ContentGate.RUNS_VIEW,
@@ -52,19 +53,40 @@ CONTENT_GATE: dict[NotificationEventType, ContentGate] = {
     NotificationEventType.INGESTION_FAILED: ContentGate.COLLECTIONS_VIEW,
     NotificationEventType.SECURITY_EVENT: ContentGate.ORG_ADMIN_OR_APP_ADMIN,
     NotificationEventType.CONFIGURATION_CHANGED: ContentGate.APP_ADMIN,
+    NotificationEventType.BACKGROUND_TASK_PAUSED: ContentGate.APP_ADMIN,
     NotificationEventType.ANNOUNCEMENT: ContentGate.ANNOUNCEMENT_AUDIENCE,
+    # Names a page and who switched its owner, never what it shows: only someone
+    # who may still open the page is shown the row.
+    NotificationEventType.ARTIFACT_OWNER_CHANGED: ContentGate.ARTIFACTS_VIEW,
+    # Names a page, who asked and what - never what the page reads: only someone who
+    # may open the page is shown the row.
+    NotificationEventType.ARTIFACT_SHARE_REQUESTED: ContentGate.ARTIFACTS_VIEW,
     NotificationEventType.ARTIFACT_VERSION_PUBLISHED: ContentGate.ARTIFACTS_VIEW,
+    NotificationEventType.EVAL_SUITE_FAILED: ContentGate.RUNS_VIEW,
+    NotificationEventType.EVAL_RUN_FINISHED: ContentGate.RUNS_VIEW,
+    NotificationEventType.CASE_GENERATION_FINISHED: ContentGate.RUNS_VIEW,
+    NotificationEventType.EVAL_SUITE_REEVALUATED: ContentGate.RUNS_VIEW,
+    NotificationEventType.PROMOTION_OVERRIDDEN: ContentGate.RUNS_VIEW,
+    # Names a workflow and how many of its log lines matched, never the lines: only
+    # someone who may still view the workflow is shown the row.
+    NotificationEventType.WORKFLOW_LOG_ALERT: ContentGate.WORKFLOWS_VIEW,
 }
 
-# `security_event` and `configuration_changed` bypass preference entirely on
-# both channels (Decision 4) - the same shape the deployment already applies
+# `security_event`, `configuration_changed` and `background_task_paused` bypass
+# preference entirely on both channels (Decision 4) - the same shape the deployment already applies
 # to the impersonation notice and the organization's own budget cap. The write
 # helper also consults `services/rate_limit.py` before a write for one of
 # these, keyed on `(actor_user_id, event_type)` (Decision 1's rate-limit note):
 # an ordinary write access must not become an unmetered fan-out against every
 # admin in an organization.
 MANDATORY_EVENT_TYPES: frozenset[NotificationEventType] = frozenset(
-    {NotificationEventType.SECURITY_EVENT, NotificationEventType.CONFIGURATION_CHANGED}
+    {
+        NotificationEventType.SECURITY_EVENT,
+        NotificationEventType.CONFIGURATION_CHANGED,
+        # A kind of background job stopped until somebody resumes it: work is
+        # piling up behind it, and nobody may have opted out of hearing so.
+        NotificationEventType.BACKGROUND_TASK_PAUSED,
+    }
 )
 
 

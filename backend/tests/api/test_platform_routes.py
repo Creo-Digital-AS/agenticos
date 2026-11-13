@@ -17,13 +17,13 @@ is refused somewhere; isolating a single permission is what makes "this route is
 gated on *this* permission, and nothing else" an assertion rather than a hope.
 """
 
-from __future__ import annotations
-
 import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Protocol
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -37,11 +37,14 @@ from app.api import deps
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, RunExecutionError
 from app.core.permissions import ROLE_PERMS, AuthContext, OrgRoleName, Perm, Scope
+from app.db.models.ml_service_call import MLServiceCall
 from app.db.models.resource_grant import Visibility
 from app.main import app
-from app.repositories.agent_run import WindowAggregates, WindowBreakdown
+from app.repositories.agent_run import ApprovalRow, WindowAggregates, WindowBreakdown
 from app.schemas.agent import ParkedCall, ParkedQuestion
 from app.services.agent_runner import RunSegment
+from app.services.ml import MLService
+from app.services.parked_runs import Continued, DecidedApproval
 from app.services.sharing import SharingService
 from app.services.stats import StatsService
 from app.services.transcript import RecordedToolCall
@@ -133,17 +136,22 @@ _SERVICE_DEPS = (
     deps.get_approval_service,
     deps.get_skill_service,
     deps.get_context_service,
+    deps.get_virtual_table_service,
+    deps.get_durable_task_service,
     deps.get_memory_service,
     deps.get_model_profile_service,
     deps.get_sharing_service,
     deps.get_mcp_connection_service,
     deps.get_secret_service,
+    deps.get_openai_codex_service,
     deps.get_knowledge_base_service,
     deps.get_collection_access_service,
     deps.get_sync_source_service,
     deps.get_rag_document_service,
     deps.get_stats_service,
     deps.get_ml_service,
+    deps.get_workflow_registry_service,
+    deps.get_voice_usage_service,
 )
 
 Provider = Callable[[], object]
@@ -240,6 +248,8 @@ _SPEC: dict[str, Any] = {"name": "Support"}
 # tests/test_agent_registry.py, tests/test_skills.py and the grant flows in
 # tests/integration/test_platform_flows.py.
 CALLS: tuple[Call, ...] = (
+    Call("GET", "/approvals/consents", Perm.APPROVALS_DECIDE),
+    Call("DELETE", "/approvals/{approval_id}/consent", Perm.APPROVALS_DECIDE),
     Call("GET", "/api-keys/scopes", Perm.API_KEYS_CREATE),
     Call(
         "POST",
@@ -249,8 +259,10 @@ CALLS: tuple[Call, ...] = (
     ),
     Call("PATCH", "/assistant", Perm.ORG_SETTINGS, body={"enabled": False}),
     Call("GET", "/agents/capabilities", Perm.AGENTS_VIEW),
+    Call("GET", "/agents/capabilities/mirage/backends", Perm.AGENTS_VIEW),
     Call("GET", "/agents/prompt-variables", Perm.AGENTS_VIEW),
     Call("GET", "/agents/templates", Perm.AGENTS_VIEW),
+    Call("GET", "/agents/platform-mcp-tools", Perm.AGENTS_VIEW),
     Call(
         "POST",
         "/agents/templates/install",
@@ -259,7 +271,12 @@ CALLS: tuple[Call, ...] = (
     ),
     Call("GET", "/agents/mcp-catalog", Perm.AGENTS_VIEW),
     Call("GET", "/agents", Perm.AGENTS_VIEW),
+    # How close the organization is to its agent limit: only a caller who can
+    # create an agent has a use for it.
+    Call("GET", "/agents/ceiling", Perm.AGENTS_EDIT),
     Call("POST", "/agents", Perm.AGENTS_EDIT, body={"spec": _SPEC}),
+    # A system agent is an agent too, so it is gated like `create`.
+    Call("POST", "/agents/system", Perm.AGENTS_EDIT, body={"kind": "judge", "name": "Grader"}),
     # Promoting a specialist creates an agent, so it is gated like `create` - and
     # this is where "a specialist created inside someone else's run does not become
     # their agent" is enforced: a caller without `agents:edit` is refused before the
@@ -315,6 +332,8 @@ CALLS: tuple[Call, ...] = (
     ),
     Call("GET", "/skills", Perm.SKILLS_VIEW),
     Call("GET", "/skills/gallery", Perm.SKILLS_VIEW),
+    Call("GET", "/skills/gallery/preview", Perm.SKILLS_VIEW, query="?key=healthcare/consent"),
+    Call("GET", "/skills/behind-main", Perm.SKILLS_VIEW),
     Call(
         "POST",
         "/skills/gallery/install",
@@ -334,6 +353,74 @@ CALLS: tuple[Call, ...] = (
         Perm.CONTEXT_EDIT,
         body={"name": "glossary", "description": "What the words mean"},
     ),
+    Call("GET", "/datasets", Perm.DATASETS_VIEW),
+    Call("POST", "/datasets", Perm.DATASETS_EDIT, body={"name": "refund questions"}),
+    # A knowledge gap is made of people's questions, so every route reads them
+    # only with runs:view; which collection, agent and dataset is the service's.
+    Call("GET", "/knowledge-gaps", Perm.RUNS_VIEW),
+    Call("GET", "/knowledge-gaps/collections/{knowledge_base_id}", Perm.RUNS_VIEW),
+    Call("POST", "/knowledge-gaps/collections/{knowledge_base_id}/regroup", Perm.RUNS_VIEW),
+    Call("POST", "/knowledge-gaps/collections/{knowledge_base_id}/classify", Perm.RUNS_VIEW),
+    Call("GET", "/knowledge-gaps/agents/{agent_id}", Perm.RUNS_VIEW),
+    Call("GET", "/knowledge-gaps/{topic_id}", Perm.RUNS_VIEW),
+    Call("POST", "/knowledge-gaps/{topic_id}/dismiss", Perm.RUNS_VIEW),
+    Call("POST", "/knowledge-gaps/{topic_id}/reopen", Perm.RUNS_VIEW),
+    Call("POST", "/knowledge-gaps/{topic_id}/draft", Perm.RUNS_VIEW),
+    Call("GET", "/knowledge-gaps/{topic_id}/draft/estimate", Perm.RUNS_VIEW),
+    Call(
+        "PUT",
+        "/knowledge-gaps/{topic_id}/draft",
+        Perm.RUNS_VIEW,
+        body={"title": "Parking", "content": "Visitors park on level -1."},
+    ),
+    Call(
+        "POST",
+        "/knowledge-gaps/{topic_id}/document",
+        Perm.RUNS_VIEW,
+        body={"title": "Parking", "content": "Visitors park on level -1."},
+    ),
+    Call(
+        "POST",
+        "/knowledge-gaps/{topic_id}/dataset",
+        Perm.RUNS_VIEW,
+        body={"dataset_id": "00000000-0000-0000-0000-000000000001"},
+    ),
+    Call("GET", "/datasets/review-queue", Perm.DATASETS_VIEW),
+    Call("GET", "/eval-runs/recent", Perm.RUNS_VIEW),
+    Call(
+        "GET",
+        "/datasets/judge-agreement",
+        Perm.DATASETS_VIEW,
+        query="?judge=00000000-0000-0000-0000-000000000001",
+    ),
+    Call("GET", "/tables", Perm.TABLES_VIEW),
+    Call("POST", "/tables", Perm.TABLES_CREATE, body={"name": "orders"}),
+    Call("GET", "/workflows/node-catalog", Perm.WORKFLOWS_VIEW),
+    Call("GET", "/workflows/summary", Perm.WORKFLOWS_VIEW, query="?from=2020-01-01&to=2020-01-07"),
+    Call("GET", "/workflows", Perm.WORKFLOWS_VIEW),
+    Call("POST", "/workflows", Perm.WORKFLOWS_CREATE, body={"name": "Import orders"}),
+    Call(
+        "POST",
+        "/workflows/prepare",
+        Perm.WORKFLOWS_CREATE,
+        body={
+            "name": "Prepare orders",
+            "graph": {
+                "entry_node_id": str(_SOME_ID),
+                "nodes": [
+                    {
+                        "id": str(_SOME_ID),
+                        "definition_id": "trigger.manual",
+                        "definition_version": 1,
+                        "config": {},
+                        "layout": {"x": 0, "y": 0},
+                    }
+                ],
+            },
+        },
+    ),
+    Call("POST", "/workflows/import", Perm.WORKFLOWS_CREATE, body={"name": "Imported"}),
+    Call("GET", "/workflow-runs", Perm.WORKFLOWS_VIEW),
     # Which providers exist and what shape of credential each takes is read by
     # the Builder's model picker, so it is gated on seeing agents rather than on
     # managing connections. Knowing Bedrock wants a key pair is not a secret.
@@ -348,6 +435,17 @@ CALLS: tuple[Call, ...] = (
     Call("GET", "/agents/mcp-servers", Perm.AGENTS_VIEW),
     Call("GET", "/providers/image-models", Perm.AGENTS_VIEW),
     Call("GET", "/providers/speech-to-text-models", Perm.AGENTS_VIEW),
+    Call("GET", "/providers/text-to-speech-models", Perm.AGENTS_VIEW),
+    Call("GET", "/providers/video-models", Perm.AGENTS_VIEW),
+    Call("GET", "/providers/realtime-models", Perm.AGENTS_VIEW),
+    # The organization's call minutes by agent, for the dashboard figure and the
+    # Voice card: what the organization spent time on, read like its runs.
+    Call(
+        "GET",
+        "/voice/usage",
+        Perm.RUNS_VIEW,
+        query="?start=2020-01-01T00:00:00Z&end=2020-01-02T00:00:00Z",
+    ),
     Call("GET", "/providers/model-profiles", Perm.AGENTS_VIEW),
     Call(
         "POST",
@@ -361,6 +459,12 @@ CALLS: tuple[Call, ...] = (
             "model": "gpt-4.1",
             "secret_id": "00000000-0000-0000-0000-000000000001",
         },
+    ),
+    Call(
+        "PATCH",
+        "/providers/model-profiles/{profile_id}",
+        Perm.CONNECTIONS_MANAGE,
+        body={"secret_id": "00000000-0000-0000-0000-000000000001"},
     ),
     Call("DELETE", "/providers/model-profiles/{profile_id}", Perm.CONNECTIONS_MANAGE),
     Call("GET", "/audit", Perm.AUDIT_READ),
@@ -417,10 +521,25 @@ CALLS: tuple[Call, ...] = (
         body={"name": "github", "url": "https://mcp.example.com/mcp"},
     ),
     Call(
+        # A polled mailbox's check interval, one setting for every trigger on it.
+        "PUT",
+        "/mcp-connections/portals/{connection_id}/poll-interval",
+        Perm.MCP_MANAGE,
+        body={"poll_interval_minutes": 5},
+    ),
+    Call(
         "PATCH",
         "/mcp-connections/{connection_id}",
         Perm.MCP_MANAGE,
         body={"is_enabled": False},
+    ),
+    # Believing a server's `readOnlyHint` lets an eval call its tools live, so it is
+    # the same authority as editing the connection, not a lesser one.
+    Call(
+        "PATCH",
+        "/mcp-connections/{connection_id}",
+        Perm.MCP_MANAGE,
+        body={"trust_read_only_hints": True},
     ),
     Call("DELETE", "/mcp-connections/{connection_id}", Perm.MCP_MANAGE),
     Call("GET", "/mcp-connections/{connection_id}/calls", Perm.MCP_MANAGE),
@@ -430,6 +549,10 @@ CALLS: tuple[Call, ...] = (
     # caller's scope and grants against the row - `readable_kb`/`writable_kb`.
     Call("GET", "/kb", Perm.COLLECTIONS_VIEW),
     Call("POST", "/kb", Perm.COLLECTIONS_EDIT, body={"name": "Docs", "scope": "org"}),
+    # The exception under /kb/{kb_id}: the organization's integrations - every
+    # base's, not this one's - which `/org/integrations` gates the same way, so
+    # no grant on the base in the path could widen it (#2745).
+    Call("GET", "/kb/{kb_id}/sync-sources/org-integrations", Perm.CONNECTIONS_MANAGE),
     # Org-level sync integrations hold encrypted credentials, so the whole
     # surface is `connections:manage` - the permission, not a role-name list,
     # which is what this router used to check.
@@ -460,6 +583,15 @@ CALLS: tuple[Call, ...] = (
         body={
             "name": "Weather API",
             "value": {"kind": "api_key", "api_key": "not-a-real-key"},
+        },
+    ),
+    Call(
+        "POST",
+        "/secrets/openai-codex",
+        Perm.SECRETS_EDIT,
+        body={
+            "name": "ChatGPT",
+            "callback_url": "http://localhost:1455/auth/callback?code=c&state=s",
         },
     ),
     # Where sandboxes run, split across two gates. The reads carry
@@ -493,6 +625,9 @@ CALLS: tuple[Call, ...] = (
     Call("POST", "/ml/audio/transcriptions", Perm.ML_INVOKE, upload=True),
     Call("POST", "/ml/privacy/pii", Perm.ML_INVOKE, body={"text": "hello"}),
     Call("GET", "/ml/calls", Perm.ML_INVOKE),
+    # The transcription summary names agents and bots, so it reads like `/spend`:
+    # `ml:invoke` alone (every Member) is not enough (#1797).
+    Call("GET", "/ml/calls/summary", Perm.RUNS_VIEW),
     Call("GET", "/ml/calls/{call_id}", Perm.ML_INVOKE),
     Call("DELETE", "/local-services/{service_id}", Perm.CONNECTIONS_MANAGE),
     Call("GET", "/sandbox-connections", Perm.CONNECTIONS_VIEW),
@@ -543,8 +678,12 @@ CALLS: tuple[Call, ...] = (
     # read it is exactly whoever may accept it.
     Call("GET", "/skill-changes", Perm.SKILLS_EDIT),
     Call("GET", "/skill-changes/{proposal_id}", Perm.SKILLS_EDIT),
-    Call("POST", "/skill-changes/{proposal_id}/apply", Perm.SKILLS_EDIT),
-    Call("POST", "/skill-changes/{proposal_id}/discard", Perm.SKILLS_EDIT),
+    Call("POST", "/skill-changes/{proposal_id}/apply", Perm.SKILLS_EDIT, body={"revision": 1}),
+    Call("POST", "/skill-changes/{proposal_id}/discard", Perm.SKILLS_EDIT, body={"revision": 1}),
+    Call("GET", "/context-changes", Perm.CONTEXT_EDIT),
+    Call("GET", "/context-changes/{proposal_id}", Perm.CONTEXT_EDIT),
+    Call("POST", "/context-changes/{proposal_id}/apply", Perm.CONTEXT_EDIT, body={"revision": 1}),
+    Call("POST", "/context-changes/{proposal_id}/discard", Perm.CONTEXT_EDIT, body={"revision": 1}),
 )
 
 WRITE_CALLS: tuple[Call, ...] = tuple(call for call in CALLS if call.method != "GET")
@@ -754,6 +893,29 @@ _PLATFORM_PREFIXES = (
     # Context files, shaped exactly like skills: the collection routes gate on
     # context:view/edit, the per-file routes resolve grants in the service.
     "/context",
+    # Datasets, the same shape: collection routes gate on datasets:view/edit,
+    # the per-dataset routes - cases, versions, import, export - in the service.
+    "/datasets",
+    "/knowledge-gaps",
+    # Eval runs resolve the agent's and the dataset's grants in the service; the
+    # organization-wide recent list gates on runs:view.
+    "/eval-runs",
+    # Virtual tables, shaped the same way: the collection routes gate on
+    # tables:view and tables:create, every per-table route resolves the table's
+    # visibility and grants in the service.
+    "/tables",
+    # Workflows, shaped the same way again: the collection routes (list,
+    # create, the node catalog) gate on workflows:view/create, every
+    # per-workflow route resolves the workflow's visibility and grants in
+    # the service.
+    "/workflows",
+    # Workflow runs (#1788): `POST`/`GET` a run names an existing workflow -
+    # in the body or the path - and every one of these routes resolves
+    # access against *that* workflow rather than gating on a role, the same
+    # split `/workflows` itself uses. `GET /workflow-runs` (the true
+    # collection: it can list across every workflow the caller may see) is
+    # the one exception and keeps a `workflows:view` gate.
+    "/workflow-runs",
     # Memory routes carry no `require()`: every one acts on one agent's memory and the
     # service resolves access against that agent, so the sweep must reach them here.
     "/memory",
@@ -795,6 +957,9 @@ _PLATFORM_PREFIXES = (
     # rather than by a person in a browser, which is precisely why the sweep has
     # to see them: nobody would notice an ungated one from the console.
     "/ml",
+    # Call minutes (#54). The call socket itself is `/ws/voice`, outside this
+    # prefix, and an agent's readiness lives under `/agents`.
+    "/voice",
 )
 
 
@@ -890,6 +1055,9 @@ RESOURCE_AWARE_SERVICES = (
     # A secret is a shared resource: who may edit or delete one is its grants'
     # answer, resolved inside the service exactly as it is for an agent.
     deps.get_secret_service,
+    # A ChatGPT sign-in is a secret written another way: putting a new one in
+    # place of an old one is the secret service's rotation, grants and all.
+    deps.get_openai_codex_service,
     # Same shape again: a widget is one agent's public face, so who may publish
     # or take one down is `agents:publish` on that agent, resolved against its
     # grants rather than tested as a role.
@@ -900,6 +1068,64 @@ RESOURCE_AWARE_SERVICES = (
     # or delete one is its grants' answer, resolved inside the service. Every
     # per-file route (`GET/PATCH/DELETE /context/{id}`) depends on it.
     deps.get_context_service,
+    # A dataset is a shared resource like a context file: who may read its cases,
+    # change them, import or export them is its grants' answer, in the service.
+    deps.get_dataset_service,
+    # A knowledge gap belongs to a collection: reading one resolves the caller's
+    # access to that knowledge base, and adding it to a dataset to that dataset.
+    deps.get_knowledge_gap_service,
+    # Scoring acts on one dataset: configuring it, scoring against it and
+    # recording a verdict resolve the dataset's grants in the service.
+    deps.get_scoring_service,
+    # Generated cases ride on their dataset: drafting and deciding them is
+    # `datasets:edit` on that dataset, resolved against its grants in the service.
+    deps.get_case_generation_service,
+    # An agent's test set acts on one agent, resolved against its grants in the
+    # service, which also refuses a role that may not edit datasets.
+    deps.get_agent_test_set_service,
+    # An eval run acts on one agent and one dataset, each resolved against its
+    # grants in the service.
+    deps.get_eval_run_service,
+    # A table is a shared resource like a context file: who may read or write it
+    # (and every record in it) is its grants' answer, resolved inside the service.
+    deps.get_virtual_table_service,
+    deps.get_durable_task_service,
+    # The same service on the session a CSV export streams from.
+    deps.get_streaming_virtual_table_service,
+    # A workflow is a shared resource shaped the same way: who may read, edit the
+    # draft or publish it is its grants' answer, resolved inside the service.
+    # Every per-workflow route (`GET/PATCH .../draft/POST .../publish`) depends on it.
+    deps.get_workflow_registry_service,
+    # A workflow's figures are read for whoever may view that workflow, resolved
+    # against its grants inside the service, exactly as the workflow itself is.
+    deps.get_workflow_stats_service,
+    # A step's evals are its workflow's: writing and trying them is
+    # `workflows:edit` on that workflow, resolved against its grants.
+    deps.get_workflow_eval_service,
+    # Exporting a workflow reads it through the same registry, so the file is
+    # `workflows:view` on that workflow, resolved against its grants (#1953).
+    deps.get_workflow_portable_service,
+    # A workflow run has no grants of its own: `WorkflowExecutionService`
+    # resolves access against the *workflow* it belongs to, the same
+    # indirection `get_agent_exposure_service` uses for a binding and its
+    # agent. `POST /workflow-runs`, `GET/POST .../{id}...` all depend on it.
+    deps.get_workflow_execution_service,
+    # A workflow's webhooks and schedules have no grants of their own either:
+    # `WorkflowExposureService` resolves `workflows:view`/`edit`/`run` against
+    # the workflow in the path, per workflow rather than per role (#1792).
+    deps.get_workflow_exposure_service,
+    # A webhook's test URL is the same: opening one and reading what it caught
+    # resolve `workflows:edit` against the workflow in the path (#1949).
+    deps.get_workflow_webhook_test_service,
+    # A saved view is a sub-resource of one table: listing and reading resolve
+    # against the table's own grants, and changing or deleting one additionally
+    # requires being its owner or a `tables:edit` scope of `ALL`, decided inside
+    # the service rather than at a route gate.
+    deps.get_table_view_service,
+    # A table's triggers are a sub-resource of one table too: every route
+    # resolves `tables:view`/`edit` against the table in the path, and making or
+    # changing one also resolves `workflows:run` on its workflow (#1785).
+    deps.get_table_trigger_service,
     # A memory file rides on its parent agent: every `/memory` route resolves access
     # to the agent, per agent rather than per role.
     deps.get_memory_service,
@@ -1070,9 +1296,37 @@ class TestSharingRoutesRefuseWithoutAGrant:
         async with as_role(OrgRoleName.MEMBER, overrides) as client:
             response = await client.request(method, _url(path), json=body)
 
-        # Reading reports the row as missing rather than forbidden, so ids
-        # cannot be probed; changing it is an outright refusal.
-        assert response.status_code == (404 if method == "GET" else 403)
+        # A row the caller cannot view is reported as missing, reading and
+        # changing alike, so the sharing routes cannot be used to probe ids (#2619).
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        # An MCP server is seen and managed by one permission, so nobody can view
+        # one they may not edit.
+        [
+            call
+            for call in _sharing_calls()
+            if call[0] != "GET" and not call[1].startswith("/mcp-connections/")
+        ],
+        ids=lambda value: value if isinstance(value, str) else "",
+    )
+    async def test_a_member_who_can_view_but_not_edit_is_forbidden(
+        self, method: str, path: str, body: dict[str, Any] | None, as_role: ClientFactory
+    ) -> None:
+        """An org-visible row: they know it exists, so the refusal can say why."""
+        resource = _SomeoneElsesResource(
+            organization_id=_ORGANIZATION_ID, visibility=Visibility.ORG.value
+        )
+        session = _NoGrantsSession(resource)
+        overrides = {
+            deps.get_db_session: lambda: session,
+            deps.get_sharing_service: lambda: SharingService(session),
+        }
+        async with as_role(OrgRoleName.MEMBER, overrides) as client:
+            response = await client.request(method, _url(path), json=body)
+
+        assert response.status_code == 403
 
 
 class TestReadingWhatARunIsParkedOn:
@@ -1101,22 +1355,53 @@ class TestReadingWhatARunIsParkedOn:
                         tool_call_id="call-1",
                         tool_name="send_email",
                         tool_args={"to": "ada@example.com"},
-                    )
+                    ),
+                    ParkedCall(
+                        id=shared_id,
+                        tool_call_id="call-2",
+                        tool_name="change_ticket",
+                        tool_args={"table_id": "6f1c"},
+                        capability_tool_id="update_record",
+                        context={"table": "Support"},
+                    ),
                 ]
 
+        shared_id = uuid4()
         overrides = {deps.get_agent_runner_service: lambda: _Parked()}
         async with as_role(only(Perm.APPROVALS_DECIDE), overrides) as client:
             response = await client.get(_url(f"/runs/{run.id}/parked"))
 
         assert response.status_code == 200
+        # The names a reloaded card puts into its sentence travel with the arguments,
+        # and a call nobody described says so with a null rather than an empty object.
         assert response.json() == [
             {
                 "id": str(approval_id),
                 "tool_call_id": "call-1",
                 "tool_name": "send_email",
                 "tool_args": {"to": "ada@example.com"},
+                "capability_tool_id": None,
+                "context": None,
                 "account": None,
-            }
+                "can_remember": False,
+                "subagent_name": None,
+                "content_hidden": False,
+                "always_asks": False,
+            },
+            {
+                "id": str(shared_id),
+                "tool_call_id": "call-2",
+                # Renamed by its binding: the stable id is what the card words it by.
+                "tool_name": "change_ticket",
+                "tool_args": {"table_id": "6f1c"},
+                "capability_tool_id": "update_record",
+                "context": {"table": "Support"},
+                "account": None,
+                "can_remember": False,
+                "subagent_name": None,
+                "content_hidden": False,
+                "always_asks": False,
+            },
         ]
 
     async def test_a_run_in_another_organization_reads_as_absent(
@@ -1137,6 +1422,50 @@ class TestReadingWhatARunIsParkedOn:
         assert response.status_code == 404
 
 
+class TestTheQueueNamesWhatItAsks:
+    """`GET /approvals` carries each row's `context`, the names its ids stand for."""
+
+    async def test_a_described_row_comes_back_with_its_names(
+        self, as_role: ClientFactory, synthetic_roles: None
+    ) -> None:
+        row = ApprovalRow(
+            id=uuid4(),
+            run_id=uuid4(),
+            agent_id=uuid4(),
+            agent_name="Support",
+            tool_id="change_ticket",
+            tool_args={"table_id": "6f1c"},
+            capability_tool_id="update_record",
+            context={"table": "Support"},
+            account=None,
+            subagent_name=None,
+            subagent_agent_id=None,
+            status="pending",
+            triggered_by_user_id=None,
+            triggered_by_email=None,
+            decided_by_user_id=None,
+            decided_by_email=None,
+            decided_at=None,
+            decided_via="click",
+            note=None,
+            created_at=None,
+        )
+
+        class _Queue:
+            async def list_approvals(self, *args: Any, **kwargs: Any) -> Any:
+                return [row], 1
+
+        overrides = {deps.get_approval_service: lambda: _Queue()}
+        async with as_role(only(Perm.APPROVALS_DECIDE), overrides) as client:
+            response = await client.get(_url("/approvals"))
+
+        assert response.status_code == 200
+        [item] = response.json()["items"]
+        assert item["context"] == {"table": "Support"}
+        assert item["tool_args"] == {"table_id": "6f1c"}
+        assert (item["tool_id"], item["capability_tool_id"]) == ("change_ticket", "update_record")
+
+
 class TestResumeConveysAFailedContinuation:
     """A resume whose continuation raised is a 5xx that still names the run's status.
 
@@ -1153,6 +1482,9 @@ class TestResumeConveysAFailedContinuation:
         run_id = uuid4()
 
         class _Failing:
+            async def get_run(self, *args: Any, **kwargs: Any) -> Any:
+                return MagicMock(surface="web")
+
             async def resume(self, *args: Any, **kwargs: Any) -> Any:
                 raise RunExecutionError(
                     details={"run_id": str(run_id), "status": "failed"}
@@ -1188,9 +1520,14 @@ class TestResumeAnswersWithWhatTheContinuationDid:
             cost_usd=Decimal("0.02"),
             input_tokens=13,
             output_tokens=7,
+            cache_read_tokens=9,
+            cache_write_tokens=2,
         )
 
         class _Resuming:
+            async def get_run(self, *args: Any, **kwargs: Any) -> Any:
+                return MagicMock(surface="web")
+
             async def resume(self, *args: Any, **kwargs: Any) -> Any:
                 return RunSegment(
                     output="",
@@ -1234,6 +1571,39 @@ class TestResumeAnswersWithWhatTheContinuationDid:
         # updates it, rather than putting the same command in the turn twice.
         assert response.json()["settled"] == [{"tool_call_id": "call-0", "result": "read 6 sheets"}]
         assert response.json()["conversation_id"] == str(run.conversation_id)
+        # The cache split, so the resumed turn's cost can be read like any other (#2170).
+        assert (response.json()["cache_read_tokens"], response.json()["cache_write_tokens"]) == (
+            9,
+            2,
+        )
+
+
+class TestAContinuationSaysWhereItsAnswerGoes:
+    async def test_a_continuation_result_says_whether_its_answer_goes_to_the_chat(self) -> None:
+        from app.api.routes.v1._run_results import run_result
+
+        run = MagicMock(
+            id=uuid4(),
+            conversation_id=None,
+            status="completed",
+            cost_usd=Decimal("0"),
+            cost_is_partial=False,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        segment = RunSegment(output="done", run=run, tool_calls=[], settled={})
+        service = MagicMock(
+            parked_calls=AsyncMock(return_value=[]), parked_questions=AsyncMock(return_value=[])
+        )
+        ctx = AuthContext(user_id=uuid4(), organization_id=uuid4(), role=OrgRoleName.OWNER)
+
+        told = await run_result(service, ctx, segment, continues_in_chat=True)
+        plain = await run_result(service, ctx, segment)
+
+        assert told.continues_in_chat is True
+        assert plain.continues_in_chat is False
 
 
 # -- the stats routes, whose gate is the scope parameter ----------------------
@@ -1266,10 +1636,15 @@ class TestStatsScopeIsDecidedInTheService:
             (
                 "window_aggregates",
                 WindowAggregates(
-                    total=0, cost_usd=Decimal(0), distinct_users=0, p50_ms=None, p95_ms=None
+                    total=0,
+                    cost_usd=Decimal(0),
+                    distinct_users=0,
+                    p50_ms=None,
+                    p95_ms=None,
+                    eval_cost_usd=Decimal(0),
                 ),
             ),
-            ("window_totals", (0, Decimal(0))),
+            ("window_totals", (0, Decimal(0), Decimal(0), Decimal(0))),
             ("runs_by_bin", []),
             (
                 "window_breakdown",
@@ -1349,6 +1724,30 @@ class TestStatsScopeIsDecidedInTheService:
 
         assert response.status_code == 200
 
+    async def test_who_needs_attention_is_refused_without_runs_view(
+        self,
+        synthetic_roles: None,
+        as_role: ClientFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Counts over everybody's runs: the gate `scope=org` has, with no scope to ask."""
+        for target, value in (
+            ("message_rating_repo.down_rated_by_agent", {}),
+            ("agent_run_repo.failed_by_agent", {}),
+            ("eval_suite_repo.list_for_organization", []),
+            ("eval_suite_repo.latest_results", {}),
+            ("agent_repo.get_many", {}),
+            ("accessible_ids", set()),
+        ):
+            monkeypatch.setattr(f"app.services.stats.{target}", AsyncMock(return_value=value))
+        async with as_role(all_but(Perm.RUNS_VIEW), self._service()) as client:
+            refused = await client.get(_url("/stats/attention"))
+        async with as_role(only(Perm.RUNS_VIEW), self._service()) as client:
+            answered = await client.get(_url("/stats/attention"))
+
+        assert refused.status_code == 403
+        assert answered.status_code == 200 and answered.json()["items"] == []
+
     async def test_naming_the_organizations_people_is_refused_without_runs_view(
         self, synthetic_roles: None, stats_repos: None, as_role: ClientFactory
     ) -> None:
@@ -1365,6 +1764,78 @@ class TestStatsScopeIsDecidedInTheService:
             response = await client.get(_url("/stats/usage", "?scope=own&group_by=user"))
 
         assert response.status_code == 200
+
+
+class TestTheMLCallLogsAttribution:
+    """`GET /ml/calls` is `ml:invoke`, and the agent, bot and surface on it are
+    `runs:view` - the summary's gate, since filtering by agent is its breakdown
+    asked for one row at a time (#1797). A route gate cannot say "this half of
+    the answer needs more", so the service and the serializer do."""
+
+    _AGENT = uuid4()
+
+    @pytest.fixture
+    def logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        row = MLServiceCall(
+            id=uuid4(),
+            organization_id=_ORGANIZATION_ID,
+            service="speech_to_text",
+            status="succeeded",
+            input_bytes=10,
+            units=3,
+            unit="seconds",
+            duration_ms=900,
+            provider="openai",
+            model="whisper-1",
+            surface="chat",
+            agent_id=self._AGENT,
+            audio_ms=2500,
+            created_at=datetime.now(UTC),
+        )
+        repo = "app.services.ml.facade.ml_service_call_repo"
+        monkeypatch.setattr(f"{repo}.list_for", AsyncMock(return_value=[row]))
+        monkeypatch.setattr(f"{repo}.count_for", AsyncMock(return_value=1))
+        monkeypatch.setattr(f"{repo}.get", AsyncMock(return_value=row))
+
+    @staticmethod
+    def _service() -> dict[Callable[..., object], Provider]:
+        return {deps.get_ml_service: lambda: MLService(MagicMock())}
+
+    @pytest.mark.parametrize(
+        "query", ["agent_id=" + str(_SOME_ID), "channel_bot_id=" + str(_SOME_ID), "surface=chat"]
+    )
+    async def test_an_attribution_filter_without_runs_view_is_refused(
+        self, synthetic_roles: None, logged: None, as_role: ClientFactory, query: str
+    ) -> None:
+        async with as_role(all_but(Perm.RUNS_VIEW), self._service()) as client:
+            response = await client.get(_url("/ml/calls", f"?{query}"))
+
+        assert response.status_code == 403
+
+    async def test_ml_invoke_alone_reads_the_log_without_the_attribution(
+        self, synthetic_roles: None, logged: None, as_role: ClientFactory
+    ) -> None:
+        async with as_role(only(Perm.ML_INVOKE), self._service()) as client:
+            listed = await client.get(_url("/ml/calls"))
+            one = await client.get(_url("/ml/calls/{call_id}"))
+
+        assert listed.status_code == 200
+        (item,) = listed.json()["items"]
+        for read in (item, one.json()):
+            assert (read["agent_id"], read["channel_bot_id"], read["surface"]) == (None, None, None)
+            assert (read["provider"], read["audio_ms"]) == ("openai", 2500)
+
+    async def test_runs_view_reads_and_filters_by_the_attribution(
+        self, synthetic_roles: None, logged: None, as_role: ClientFactory
+    ) -> None:
+        async with as_role(all_but(Perm.CONNECTIONS_MANAGE), self._service()) as client:
+            listed = await client.get(_url("/ml/calls", f"?agent_id={self._AGENT}"))
+            one = await client.get(_url("/ml/calls/{call_id}"))
+
+        assert listed.status_code == 200
+        (item,) = listed.json()["items"]
+        assert (item["agent_id"], item["surface"]) == (str(self._AGENT), "chat")
+        assert one.json()["agent_id"] == str(self._AGENT)
 
 
 # -- the inverse guard, for routes that are deliberately open -----------------
@@ -1386,6 +1857,12 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # link's own bucket bounding a guessing loop.
         ("POST", f"{settings.API_V1_STR}/public/apps/{{public_key}}/unlock"),
         ("POST", f"{settings.API_V1_STR}/public/artifacts/{{public_key}}/unlock"),
+        # A workflow's form (`trigger.form`). The link is the page's only
+        # credential, minted at publish with 192 bits and replaced on request;
+        # reading and submitting are counted per form before anything is read, and
+        # each submission is a run as the member who published the form.
+        ("GET", f"{settings.API_V1_STR}/public/workflow-forms/{{token}}"),
+        ("POST", f"{settings.API_V1_STR}/public/workflow-forms/{{token}}"),
         # The public API's own OpenAPI document (#1796): the contract an
         # integrator writes a client against, before they hold a key.
         ("GET", f"{settings.API_V1_STR}/public/openapi.json"),
@@ -1469,6 +1946,16 @@ V1 = settings.API_V1_STR
 # in the diff of this list is a route a reviewer will look at.
 UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        # Twilio fetches staged MMS bytes with an expiring, media-bound token.
+        ("GET", f"{V1}/sms/media/{{media_id}}"),
+        # A BlueBubbles bridge supplies its configured bearer credential, not a user session.
+        ("POST", f"{V1}/imessage/{{bot_id}}/webhook"),
+        # Twilio callbacks verify the provider signature and call/endpoint binding.
+        ("POST", f"{V1}/phone/inbound/{{endpoint_id}}"),
+        ("POST", f"{V1}/phone/inbound-status/{{endpoint_id}}"),
+        ("POST", f"{V1}/phone/status/{{call_id}}"),
+        # Media streams additionally require the call's signed nonce and receipt.
+        ("WEBSOCKET", f"{V1}/phone/media/{{call_id}}"),
         # Custom brand icons. The consumer is a CSS mask URL in the browser,
         # which cannot attach a bearer token; what they reveal - which marks
         # this deployment ships - is what any signed-in page renders anyway.
@@ -1495,6 +1982,13 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{V1}/auth/password-reset/confirm"),
         ("POST", f"{V1}/auth/magic-link/request"),
         ("POST", f"{V1}/auth/magic-link/verify"),
+        # A phone signing in by scanning the code a signed-in console shows
+        # (#2097). The phone has no session yet - that is what it is getting -
+        # and the single-use, one-minute code is the credential, as a magic
+        # link's token is.
+        ("POST", f"{V1}/auth/pairing-codes/redeem"),
+        # Preview uses the same short-lived code without creating a session.
+        ("POST", f"{V1}/auth/pairing-codes/preview"),
         # Confirming a staged email address (#1772). The link is followed from
         # the *new* address, routinely in a different browser from the one that
         # asked for the change, so there is no session to carry - the token is
@@ -1550,10 +2044,26 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # 403 that names nothing, and the link's bucket counts every attempt.
         ("POST", f"{V1}/public/apps/{{public_key}}/unlock"),
         ("POST", f"{V1}/public/artifacts/{{public_key}}/unlock"),
-        # The library set a published page may load (#1971): three static files
-        # this repository ships, named in `ARTIFACT_LIBRARY`, which a page in an
-        # opaque origin fetches with no credentials by construction.
-        ("GET", f"{V1}/artifact-content/lib/{{name}}"),
+        # A workflow's form. The link is the page's only credential, 192 bits,
+        # replaced on request; reading and submitting are counted per form before
+        # anything is read, and a submission is a run as the form's publisher.
+        # Refusals: `tests/integration/test_workflow_exposures.py::TestForms`.
+        ("GET", f"{V1}/public/workflow-forms/{{token}}"),
+        ("POST", f"{V1}/public/workflow-forms/{{token}}"),
+        # The library set a published page may load (#1971): static files this
+        # repository ships, named in `ARTIFACT_LIBRARY` - a path, since three.js
+        # keeps its package layout (#2171) - which a page in an opaque origin
+        # fetches with no credentials by construction.
+        ("GET", f"{V1}/artifact-content/lib/{{name:path}}"),
+        # The renderer a visual is drawn in (#2171): one fixed page holding no
+        # drawing - the console posts it in - under the app sandbox policy, framed
+        # only by the console.
+        ("GET", f"{V1}/artifact-content/visual-frame"),
+        # Map tiles for a visual or an app (#2302): every page loads them, saved
+        # or shared, from an opaque origin with no credentials. Three numbers
+        # checked against the zoom, fetched from the operator's tile server, and
+        # counted per address - nothing of a tenant's is reachable here.
+        ("GET", f"{V1}/artifact-content/tiles/{{z}}/{{x}}/{{y}}"),
         # The document another site frames for a public link (#1973). The key is
         # the capability, as for the link itself, and its policy lets only the
         # origins the artifact names frame it.
@@ -1585,6 +2095,11 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # would simply mean the integration never worked.
         ("POST", f"{V1}/slack/{{bot_id}}/events"),
         ("POST", f"{V1}/telegram/{{bot_id}}/webhook"),
+        # SMS and e-mail are the same arrangement: Twilio signs its request with the
+        # account's auth token, and a mail relay signs its own with the bot's secret;
+        # each handler verifies that against the bot named in the path (#2082).
+        ("POST", f"{V1}/sms/{{bot_id}}/webhook"),
+        ("POST", f"{V1}/email/{{bot_id}}/inbound"),
         # Mattermost is the same arrangement with a weaker primitive: it does
         # not sign bodies, so the handler compares the shared token the
         # integration was created with, and refuses when none is configured.
@@ -1601,6 +2116,14 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # deployment's signature over its state - neither has a session.
         ("POST", f"{V1}/mattermost/{{bot_id}}/commands"),
         ("POST", f"{V1}/mattermost/{{bot_id}}/dialogs"),
+        # An A2A agent card (#2092): read before a caller authenticates, because
+        # it is what says how to. Only an agent its organization chose to serve
+        # has one; every other id is a 404.
+        ("GET", f"{V1}/a2a/{{agent_id}}/.well-known/agent-card.json"),
+        # Teams (#1985): every activity carries a Bot Connector JWT, verified
+        # against the issuer's published keys, this bot's app id as audience and
+        # the activity's own service before anything in the body is used.
+        ("POST", f"{V1}/teams/{{bot_id}}/messages"),
         # An event trigger's inbound webhook. Same arrangement as Slack: GitHub
         # and the email relay sign the body with the trigger's own secret, and the
         # service verifies that HMAC against the trigger named in the path. A
@@ -1611,6 +2134,23 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # installation, so the path names nothing and the installation id in the
         # payload selects the grant whose secret verifies the HMAC (#1072).
         ("POST", f"{V1}/webhooks/github-app"),
+        # A workflow webhook's inbound door (#1792). The sender signs the body with
+        # the exposure's own secret and the service verifies that HMAC against the
+        # exposure in the path; the run then acts as the member who set it up.
+        ("POST", f"{V1}/workflow-webhooks/{{exposure_id}}"),
+        # A webhook's test URL (#1949). The draft it is for has no signing secret
+        # yet, so the unguessable token in the path is the credential: minted by
+        # an editor, open for one call for two minutes, and the call is only kept
+        # for that editor to read - it never starts a run.
+        ("POST", f"{V1}/workflow-webhook-tests/{{token}}"),
+        # A GitHub trigger's door. GitHub signs the body under the trigger's own
+        # secret in `X-Hub-Signature-256`, verified like a webhook's before
+        # anything is read past the row; the run acts as the publisher.
+        ("POST", f"{V1}/workflow-github/{{exposure_id}}"),
+        # A run's resume link (#1947). The link a Resume link step hands on is the
+        # credential: the run's id and a MAC of it under the deployment's secret,
+        # compared in constant time, and a wrong one answers as if no run existed.
+        ("POST", f"{V1}/workflow-resume/{{run_id}}/{{token}}"),
         # The public face of an embedded agent. There is no session to have:
         # these are reached from a stranger's browser on somebody else's site.
         # What authorises them is the widget's key plus the `Origin` the browser
@@ -1635,6 +2175,12 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", f"{V1}/embed/{{public_key}}/logo"),
         # A widget's agent picture, on the same terms as a page's logo (#2006).
         ("GET", f"{V1}/embed/{{public_key}}/avatar"),
+        # A file an agent generated for a hosted page's visitor, who has no
+        # session (#2309). An `<img>` or `<video>` cannot send a header, so the
+        # credential is a short-lived link signed for that one file on that one
+        # page, minted only for a file the visitor's own run stored, and counted
+        # per link by its rate bucket.
+        ("GET", f"{V1}/embed/{{public_key}}/generated/{{filename}}"),
         # The one open route on this surface that *writes*, and the only one whose
         # exemption is about more than a read. It exists because a page whose
         # operator ticked "a visitor may attach a file" has to accept bytes from
@@ -1644,6 +2190,25 @@ UNAUTHENTICATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # to whoever published the page, because `chat_files.user_id` is NOT NULL
         # and a stranger has nobody to be.
         ("POST", f"{V1}/embed/{{public_key}}/files"),
+        # Dictation on a hosted page or a widget set to `server` (#1797). Admitted
+        # as the surface it arrives on - a widget by its allow-list and token, a
+        # page by its continuity key - and refused unless that embed's own setting
+        # is `server`. Nothing is stored; each attempt is a paid call to the
+        # organization's provider, bounded per address, per link and, for a `jwt`
+        # widget, per visitor.
+        ("POST", f"{V1}/embed/{{public_key}}/dictation"),
+        # A visitor's voice call (#54). Admitted as the embed's own socket - a
+        # widget by its allow-list and token, a page by this deployment's origin
+        # and its continuity key - and only while that embed's voice switch is
+        # on. Each call is a paid realtime session: starts are bounded per address
+        # and per link, each call by the organization's call cap, monthly minutes
+        # and the agent's budget, and tools needing approval are left out.
+        ("WEBSOCKET", f"{V1}/embed/{{public_key}}/voice/ws"),
+        # The widget's call UI, fetched by `widget.js` when a visitor opens the
+        # panel of a widget whose calls are on. A script like `widget.js`: no
+        # secret, decides nothing, 404 unless that widget is active with its
+        # voice switch on; the socket above is where a call is admitted.
+        ("GET", f"{V1}/embed/{{public_key}}/voice.js"),
     }
 )
 
@@ -1828,6 +2393,7 @@ class TestAQuestionTheRunParkedOn:
     ) -> None:
         run = self._run()
         service = MagicMock(
+            get_run=AsyncMock(return_value=MagicMock(surface="web")),
             answer=AsyncMock(
                 return_value=RunSegment(
                     output="Done, casually.", run=run, tool_calls=[], settled={}
@@ -1843,6 +2409,47 @@ class TestAQuestionTheRunParkedOn:
         assert response.status_code == 200
         assert response.json()["output"] == "Done, casually."
         assert service.answer.call_args.args[2] == {"ask-1": [{"selected": ["Casual"]}]}
+
+    async def test_a_decision_answers_with_whether_it_continues_in_the_chat(
+        self, as_role: ClientFactory, synthetic_roles: None
+    ) -> None:
+        approval = SimpleNamespace(
+            id=uuid4(),
+            run_id=uuid4(),
+            agent_id=uuid4(),
+            tool_id="send_email",
+            tool_args={},
+            status="approved",
+            created_at=datetime(2026, 11, 3, tzinfo=UTC),
+            decided_at=datetime(2026, 11, 3, tzinfo=UTC),
+        )
+        parked = MagicMock(decide=AsyncMock(return_value=DecidedApproval(approval, True)))
+        async with as_role(
+            only(Perm.APPROVALS_DECIDE), {deps.get_parked_run_service: lambda: parked}
+        ) as client:
+            response = await client.post(_url(f"/approvals/{approval.id}"), json={"approved": True})
+
+        assert response.status_code == 200
+        assert response.json()["continues_in_chat"] is True
+
+    async def test_a_resume_answers_with_whether_its_answer_goes_to_the_chat(
+        self, as_role: ClientFactory, synthetic_roles: None
+    ) -> None:
+        run = self._run()
+        segment = RunSegment(output="Sent.", run=run, tool_calls=[], settled={})
+        parked = MagicMock(resume=AsyncMock(return_value=Continued(segment, True)))
+        runner = MagicMock(
+            parked_calls=AsyncMock(return_value=[]), parked_questions=AsyncMock(return_value=[])
+        )
+        overrides = {
+            deps.get_parked_run_service: lambda: parked,
+            deps.get_agent_runner_service: lambda: runner,
+        }
+        async with as_role(only(Perm.APPROVALS_DECIDE), overrides) as client:
+            response = await client.post(_url(f"/runs/{run.id}/resume"))
+
+        assert response.status_code == 200
+        assert response.json()["continues_in_chat"] is True
 
     async def test_an_answer_with_nothing_in_it_is_refused_before_the_service(
         self, as_role: ClientFactory, synthetic_roles: None

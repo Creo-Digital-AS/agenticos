@@ -10,6 +10,8 @@ import { useRouter } from "next/navigation";
 import { getErrorMessage } from "@/lib/api-error";
 import { ExportMenu } from "@/components/runs/export-menu";
 import { RunFilterBar } from "@/components/runs/run-filter-bar";
+import { ListFilters } from "@/components/ui/list-filters";
+import { activeFilterCount } from "@/lib/runs/filter-params";
 import { RunTable, type RunSort } from "@/components/runs/run-table";
 import { VersionStrip } from "@/components/runs/version-strip";
 import { ErrorState, LoadingState } from "@/components/states";
@@ -26,6 +28,7 @@ import {
 } from "@/components/ui";
 import { ROUTES } from "@/lib/constants";
 import { useAgents, useMembers, usePermissions, useRuns } from "@/hooks";
+import { useJudges } from "@/hooks/use-agents";
 import { useOrgStore } from "@/stores";
 import { formatPeriodParam, periodEnd, periodStart, type Period } from "@/lib/dashboard/period";
 import { isNarrowed, type RunFilters } from "@/lib/runs/filter-params";
@@ -33,8 +36,8 @@ import { setUrlParam } from "@/lib/utils";
 import { Perm } from "@/types/permissions";
 import type { RunStatus } from "@/types/runs";
 
-/** "What went wrong" as one choice - the query the two statuses exist apart for. */
-const PROBLEM_STATUSES: RunStatus[] = ["failed", "budget_exceeded"];
+/** "What went wrong" as one choice - the query the statuses exist apart for. */
+const PROBLEM_STATUSES: RunStatus[] = ["failed", "budget_exceeded", "loop_stopped"];
 
 /** One server page - `GET /runs`' own default, so an unpaged call reads the same. */
 const PAGE_SIZE = 50;
@@ -100,11 +103,13 @@ export function RunHistoryTab({
   // column is too. The member list is any member's to read.
   const canAgents = can(Perm.agentsView);
   const { agents: agentRows } = useAgents({ enabled: canAgents });
+  // Judges are agents every other list leaves out, and their grading runs here too.
+  const { agents: judges } = useJudges({ enabled: canAgents });
   const activeOrgId = useOrgStore((state) => state.activeOrgId);
   const { members } = useMembers(activeOrgId ?? "");
   const agentsById = useMemo(
-    () => new Map(agentRows.map((agent) => [agent.id, agent])),
-    [agentRows],
+    () => new Map([...agentRows, ...judges].map((agent) => [agent.id, agent])),
+    [agentRows, judges],
   );
   const membersById = useMemo(
     () => new Map(members.map((member) => [member.user_id, member])),
@@ -167,6 +172,8 @@ export function RunHistoryTab({
           ? PROBLEM_STATUSES
           : [filters.status],
     surface: filters.surface === "all" ? undefined : filters.surface,
+    source: filters.source === "all" ? undefined : filters.source,
+    modality: filters.modality === "all" ? undefined : filters.modality,
     modelLabel: filters.model === "all" ? undefined : filters.model,
     userId: filters.userId === "all" ? undefined : filters.userId,
     agentVersionId: filters.versionId === "all" ? undefined : filters.versionId,
@@ -191,6 +198,8 @@ export function RunHistoryTab({
       filters.status === "problems" ? PROBLEM_STATUSES.join(",") : filters.status;
   }
   if (filters.surface !== "all") exportParams.surface = filters.surface;
+  if (filters.source !== "all") exportParams.source = filters.source;
+  if (filters.modality !== "all") exportParams.modality = filters.modality;
   if (filters.model !== "all") exportParams.model_label = filters.model;
   if (filters.rated !== "all") exportParams.rated = filters.rated;
   if (filters.userId !== "all") exportParams.user_id = filters.userId;
@@ -213,8 +222,8 @@ export function RunHistoryTab({
             title - so this card reads as the same container as the vault's or
             the workspaces'. The export sits in the header's right, where every
             list card keeps its primary control. */}
-        <CardHeader className="shrink-0 flex-row items-start justify-between space-y-0 border-b px-5 py-4">
-          <div className="space-y-1">
+        <CardHeader className="shrink-0 flex-col items-start justify-between gap-3 space-y-0 border-b px-4 py-4 sm:flex-row sm:px-5">
+          <div className="w-full min-w-0 space-y-1 sm:flex-1">
             <CardTitle className="text-sm">{t("runHistory2")}</CardTitle>
             <CardDescription className="text-xs">
               {t.rich("runHistoryDescription", { em: (chunks) => <em>{chunks}</em> })}
@@ -258,13 +267,15 @@ export function RunHistoryTab({
               {canView && (
                 <ListCardControlsRow className="shrink-0">
                   {periodControl}
-                  <RunFilterBar
-                    filters={filters}
-                    period={period}
-                    onChange={onFiltersChange}
-                    agentId={agentId}
-                    onAgentChange={changeAgent}
-                  />
+                  <ListFilters active={activeFilterCount(filters) + (agentId === null ? 0 : 1)}>
+                    <RunFilterBar
+                      filters={filters}
+                      period={period}
+                      onChange={onFiltersChange}
+                      agentId={agentId}
+                      onAgentChange={changeAgent}
+                    />
+                  </ListFilters>
                 </ListCardControlsRow>
               )}
               {!canView ? (

@@ -1,7 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList, continuesTurn, endsTurn, lastToolTurnIndex, turnUsage } from "./message-list";
+import {
+  MessageList,
+  askedBefore,
+  coalesceActivity,
+  continuesTurn,
+  endsTurn,
+  lastToolTurnIndex,
+  layoutMessages,
+} from "./message-list";
 import type { ChatMessage } from "@/types";
 
 const state = vi.hoisted(() => ({
@@ -13,11 +21,18 @@ const state = vi.hoisted(() => ({
     continuesTurn: boolean;
     canRegenerate: boolean;
     openLastStep: boolean;
+    request?: string;
   }[],
 }));
 
 vi.mock("@/hooks", () => ({ useAgents: () => ({ agents: state.agents }) }));
-
+const navigation = vi.hoisted(() => ({ push: vi.fn(), pointAt: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: navigation.push }) }));
+vi.mock("@/lib/assistant-highlight", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/assistant-highlight")>()),
+  pointAt: navigation.pointAt,
+}));
+// The extras are tested on their own; the list decides which agent they name.
 // The item is tested on its own; what this asserts is what the list decides to
 // hand it - which agent, where in a group, and whether it may be regenerated.
 vi.mock("./message-item", () => ({
@@ -28,6 +43,7 @@ vi.mock("./message-item", () => ({
     continuesTurn,
     openLastStep,
     onRegenerate,
+    request,
   }: {
     message: ChatMessage;
     agent?: { name: string };
@@ -35,6 +51,7 @@ vi.mock("./message-item", () => ({
     continuesTurn?: boolean;
     openLastStep?: boolean;
     onRegenerate?: () => void;
+    request?: string;
   }) => {
     state.rendered.push({
       id: message.id,
@@ -43,6 +60,7 @@ vi.mock("./message-item", () => ({
       continuesTurn: continuesTurn === true,
       canRegenerate: onRegenerate !== undefined,
       openLastStep: openLastStep === true,
+      request,
     });
     return (
       <div data-testid={`message-${message.id}`}>
@@ -217,9 +235,9 @@ describe("the transcript", () => {
       />,
     );
 
-    expect(rendered("m-1")?.groupPosition).toBe("first");
-    expect(rendered("m-2")?.groupPosition).toBe("middle");
-    expect(rendered("m-3")?.groupPosition).toBe("last");
+    expect(rendered("m-1")).toBeUndefined();
+    expect(rendered("m-2")).toBeUndefined();
+    expect(rendered("m-3")?.groupPosition).toBe("single");
   });
 
   it("calls a group of one a single", () => {
@@ -390,8 +408,8 @@ describe("one run drawn as one turn", () => {
       />,
     );
 
-    expect(rendered("m-1")?.continuesTurn).toBe(false);
-    expect(rendered("m-2")?.continuesTurn).toBe(true);
+    expect(rendered("m-1")).toBeUndefined();
+    expect(rendered("m-2")?.continuesTurn).toBe(false);
   });
 });
 
@@ -429,7 +447,7 @@ describe("where a turn's time and cost belong", () => {
       message({ id: "b", runId: "r-9" }),
     ];
 
-    expect(turnUsage(messages, 1)).toBe(USAGE);
+    expect(layoutMessages(messages)[1]?.turnUsage).toBe(USAGE);
   });
 
   it("prefers the last figure in the turn, which is the run's total by then", () => {
@@ -439,7 +457,7 @@ describe("where a turn's time and cost belong", () => {
       message({ id: "b", runId: "r-9", usage: later }),
     ];
 
-    expect(turnUsage(messages, 1)).toBe(later);
+    expect(layoutMessages(messages)[1]?.turnUsage).toBe(later);
   });
 
   it("never reaches back past the turn it belongs to", () => {
@@ -449,7 +467,7 @@ describe("where a turn's time and cost belong", () => {
       message({ id: "b", runId: "r-9" }),
     ];
 
-    expect(turnUsage(messages, 1)).toBeUndefined();
+    expect(layoutMessages(messages)[1]?.turnUsage).toBeUndefined();
   });
 });
 
@@ -495,4 +513,200 @@ describe("where the transcript crosses into another day", () => {
     );
     expect(screen.getAllByRole("separator").map((pill) => pill.textContent)).toEqual(["Yesterday"]);
   });
+});
+
+describe("askedBefore", () => {
+  it("finds the question an answer replied to, and whether a conversation came before it", () => {
+    const messages = [
+      message({ id: "u1", role: "user", content: "Do you gift wrap?" }),
+      message({ id: "a1" }),
+      message({ id: "u2", role: "user", content: "How long do refunds take?" }),
+      message({ id: "a2" }),
+      message({ id: "a3" }),
+    ];
+
+    expect(askedBefore(messages, 1)).toEqual({ question: "Do you gift wrap?", earlier: false });
+    expect(askedBefore(messages, 4)).toEqual({
+      question: "How long do refunds take?",
+      earlier: true,
+    });
+    expect(askedBefore(messages, 2)).toBeUndefined();
+    expect(askedBefore([message()], 0)).toBeUndefined();
+  });
+});
+
+describe("a console link an agent wrote", () => {
+  it("opens the page in the console and points at the control it names", async () => {
+    const { container } = render(<MessageList messages={[message({ id: "m-1" })]} />);
+    const link = document.createElement("a");
+    link.setAttribute("href", "/mcp-servers?highlight=mcp-add");
+    container.firstElementChild?.appendChild(link);
+
+    link.click();
+
+    expect(navigation.push).toHaveBeenCalledWith("/mcp-servers");
+    expect(navigation.pointAt).toHaveBeenCalledWith("mcp-add", "/mcp-servers");
+  });
+
+  it("leaves a link to anywhere else to the browser", () => {
+    navigation.push.mockClear();
+    const { container } = render(<MessageList messages={[message({ id: "m-1" })]} />);
+    const link = document.createElement("a");
+    link.setAttribute("href", "https://example.com/");
+    link.addEventListener("click", (event) => event.preventDefault());
+    container.firstElementChild?.appendChild(link);
+
+    link.click();
+
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+
+  it("opens a console page with nothing to point at", () => {
+    navigation.pointAt.mockClear();
+    const { container } = render(<MessageList messages={[message({ id: "m-1" })]} />);
+    const link = document.createElement("a");
+    link.setAttribute("href", "/routines");
+    container.firstElementChild?.appendChild(link);
+
+    link.click();
+
+    expect(navigation.push).toHaveBeenCalledWith("/routines");
+    expect(navigation.pointAt).not.toHaveBeenCalled();
+  });
+});
+
+describe("the request a skill can be made of", () => {
+  const asked = message({ id: "q", role: "user", content: "Compare the vendors" });
+
+  it("hands the answer that ends the turn what the person asked", () => {
+    const messages = [
+      asked,
+      message({ id: "a", runId: "r-1" }),
+      message({ id: "b", runId: "r-1" }),
+    ];
+
+    expect([0, 1, 2].map((i) => layoutMessages(messages)[i]?.request)).toEqual([
+      undefined,
+      undefined,
+      "Compare the vendors",
+    ]);
+  });
+
+  it("has nothing to hand an answer with no request above it", () => {
+    expect(layoutMessages([message({ id: "a" })])[0]?.request).toBeUndefined();
+  });
+
+  it("has nothing to hand when the request was only a file", () => {
+    const messages = [message({ id: "q", role: "user", content: "" }), message({ id: "a" })];
+
+    expect(layoutMessages(messages)[1]?.request).toBeUndefined();
+  });
+
+  it("offers it in a chat but not in the test panel", () => {
+    const messages = [asked, message({ id: "a" })];
+    const { rerender } = render(<MessageList messages={messages} />);
+    expect(rendered("a")?.request).toBe("Compare the vendors");
+
+    state.rendered = [];
+    rerender(<MessageList messages={messages} pins={{ pinned: [], toggle: vi.fn() }} />);
+    expect(rendered("a")?.request).toBeUndefined();
+  });
+});
+
+it("reads group identities linearly even for one long segmented turn", () => {
+  const reads = vi.fn(() => "one-group");
+  const messages = Array.from({ length: 1000 }, (_, index) => {
+    const row = message({ id: String(index), runId: "one-run" });
+    Object.defineProperty(row, "groupId", { get: reads });
+    return row;
+  });
+  const layout = layoutMessages(messages);
+  expect(reads.mock.calls.length).toBeLessThan(10000);
+  expect(layout[0]?.groupPosition).toBe("first");
+  expect(layout[500]?.groupPosition).toBe("middle");
+  expect(layout[999]?.groupPosition).toBe("last");
+});
+
+describe("chronological run segments", () => {
+  it("keeps one activity history and the delegate when later segments arrive", () => {
+    const task = {
+      id: "task-1",
+      name: "task",
+      args: { subagent_type: "architect" },
+      status: "completed" as const,
+      result: "Recommendation",
+    };
+    const first = message({ id: "segment-1", runId: "run-1", content: "", toolCalls: [task] });
+    const next = message({
+      id: "segment-2",
+      runId: "run-1",
+      content: "",
+      toolCalls: [{ id: "create", name: "agenticos_create_task", args: {}, status: "completed" }],
+    });
+    const final = message({ id: "segment-3", runId: "run-1", content: "Finished." });
+    const result = coalesceActivity([first, next, final]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.toolCalls?.map((call) => call.id)).toEqual(["task-1", "create"]);
+    expect(result[0]?.content).toBe("Finished.");
+    expect(result[0]?.renderKey).toBe("segment-1");
+    expect(result[0]?.id).toBe("segment-3");
+    expect(first.toolCalls).toEqual([task]);
+  });
+  it("retains intermediate prose inside its run and separates different runs", () => {
+    const messages = [
+      message({ runId: "r1", content: "Checking the project." }),
+      message({ id: "m2", runId: "r1", content: "" }),
+      message({ id: "m3", runId: "r2", content: "Next turn" }),
+    ];
+    const result = coalesceActivity(messages);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.parts?.map((part) => part.content)).toContain("Checking the project.");
+    expect(result[1]).toBe(messages[2]);
+  });
+});
+
+it("joins commentary and tool segments into one stable run without changing their order", () => {
+  const first = message({
+    id: "first",
+    runId: "run",
+    agentId: "main",
+    content: "Checking Poland.",
+    parts: [{ id: "intro", type: "text", content: "Checking Poland." }],
+  });
+  const work = message({
+    id: "work",
+    runId: "run",
+    agentId: "main",
+    content: "Checking Norway.",
+    parts: [
+      { id: "tool", type: "tool", toolCall: TOOL },
+      { id: "progress", type: "text", content: "Checking Norway." },
+    ],
+  });
+  const final = message({
+    id: "final",
+    runId: "run",
+    agentId: "main",
+    content: "Comparison.",
+    parts: [{ id: "answer", type: "text", content: "Comparison." }],
+  });
+  const [combined] = coalesceActivity([first, work, final]);
+  expect(combined?.renderKey).toBe("first");
+  expect(combined?.id).toBe("final");
+  expect(combined?.content).toBe("Comparison.");
+  expect(combined?.parts?.map((part) => part.id)).toEqual(["intro", "tool", "progress", "answer"]);
+  expect(first.parts).toHaveLength(1);
+});
+
+it("does not combine another agent or cross a user reply", () => {
+  const first = message({ id: "first", runId: "run", agentId: "main" });
+  const specialist = message({ id: "child", runId: "run", agentId: "reviewer" });
+  const user = message({ id: "user", role: "user", content: "Continue." });
+  const next = message({ id: "next", runId: "run", agentId: "reviewer" });
+  expect(coalesceActivity([first, specialist, user, next])).toEqual([
+    first,
+    specialist,
+    user,
+    next,
+  ]);
 });

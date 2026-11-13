@@ -1,12 +1,16 @@
 """Agent environment repository (PostgreSQL async)."""
 
+from collections.abc import Collection, Sequence
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, or_, select
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.agent_environment import AgentEnvironment
+from app.db.locks import LockScope, hold_subject_shared
+from app.db.models.agent import AgentVersion
+from app.db.models.agent_environment import AgentEnvironment, AgentEnvironmentConnection
 
 
 async def lock(db: AsyncSession, environment_id: UUID) -> None:
@@ -26,7 +30,9 @@ async def get(
     db: AsyncSession, environment_id: UUID, *, organization_id: UUID
 ) -> AgentEnvironment | None:
     result = await db.execute(
-        select(AgentEnvironment).where(
+        select(AgentEnvironment)
+        .execution_options(populate_existing=True)
+        .where(
             AgentEnvironment.id == environment_id,
             AgentEnvironment.organization_id == organization_id,
         )
@@ -49,6 +55,7 @@ async def list_for_agent(
             AgentEnvironment.organization_id == organization_id,
         )
         .order_by(AgentEnvironment.is_default.desc(), AgentEnvironment.name)
+        .execution_options(populate_existing=True)
     )
     return list(result.scalars().all())
 
@@ -61,7 +68,9 @@ async def get_default_for_agent(db: AsyncSession, *, agent_id: UUID) -> AgentEnv
     one row can match.
     """
     result = await db.execute(
-        select(AgentEnvironment).where(
+        select(AgentEnvironment)
+        .execution_options(populate_existing=True)
+        .where(
             AgentEnvironment.agent_id == agent_id,
             AgentEnvironment.is_default.is_(True),
         )
@@ -94,6 +103,9 @@ async def create(
     logfire_token_secret_id: UUID | None = None,
     service_name: str | None = None,
 ) -> AgentEnvironment:
+    # Pinning a version is how an environment comes to name its model profiles,
+    # so it is held off while one of them is being deleted (#2478).
+    await hold_subject_shared(db, LockScope.MODEL_PROFILE_REFERENCES, organization_id)
     environment = AgentEnvironment(
         organization_id=organization_id,
         agent_id=agent_id,
@@ -114,6 +126,10 @@ async def create(
 async def update(
     db: AsyncSession, *, environment: AgentEnvironment, update_data: dict[str, Any]
 ) -> AgentEnvironment:
+    if "version_id" in update_data:
+        await hold_subject_shared(
+            db, LockScope.MODEL_PROFILE_REFERENCES, environment.organization_id
+        )
     for field, value in update_data.items():
         setattr(environment, field, value)
     await db.flush()
@@ -130,7 +146,9 @@ async def following_latest(
     whatever mode it was in, which made "publish" and "deploy" one word.
     """
     result = await db.execute(
-        select(AgentEnvironment).where(
+        select(AgentEnvironment)
+        .execution_options(populate_existing=True)
+        .where(
             AgentEnvironment.agent_id == agent_id,
             AgentEnvironment.organization_id == organization_id,
             AgentEnvironment.tracks_latest.is_(True),
@@ -142,3 +160,82 @@ async def following_latest(
 async def delete(db: AsyncSession, *, environment: AgentEnvironment) -> None:
     await db.delete(environment)
     await db.flush()
+
+
+async def list_connections(
+    db: AsyncSession, *, environment_ids: Sequence[UUID], organization_id: UUID
+) -> list[AgentEnvironmentConnection]:
+    """The connection overrides of several environments, in a stable order."""
+    if not environment_ids:
+        return []
+    result = await db.execute(
+        select(AgentEnvironmentConnection)
+        .where(
+            AgentEnvironmentConnection.environment_id.in_(list(environment_ids)),
+            AgentEnvironmentConnection.organization_id == organization_id,
+        )
+        .order_by(AgentEnvironmentConnection.kind, AgentEnvironmentConnection.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def replace_connections(
+    db: AsyncSession,
+    *,
+    environment_id: UUID,
+    organization_id: UUID,
+    connections: Sequence[AgentEnvironmentConnection],
+) -> None:
+    """Make `connections` the environment's whole set of overrides.
+
+    The set is edited as one list in the Builder, so it is written as one:
+    a partial update would have to say which override a row is, and the only
+    identity an override has is what it overrides.
+    """
+    await db.execute(
+        sql_delete(AgentEnvironmentConnection).where(
+            AgentEnvironmentConnection.environment_id == environment_id,
+            AgentEnvironmentConnection.organization_id == organization_id,
+        )
+    )
+    for connection in connections:
+        connection.environment_id = environment_id
+        connection.organization_id = organization_id
+        db.add(connection)
+    await db.flush()
+
+
+async def served(
+    db: AsyncSession, *, organization_id: UUID
+) -> list[tuple[AgentEnvironment, AgentVersion]]:
+    """Every environment of the organization's agents, with the version it serves."""
+    result = await db.execute(
+        select(AgentEnvironment, AgentVersion)
+        .join(AgentVersion, AgentVersion.id == AgentEnvironment.version_id)
+        .where(AgentEnvironment.organization_id == organization_id)
+        .order_by(AgentEnvironment.agent_id, AgentEnvironment.created_at)
+    )
+    return list(result.tuples().all())
+
+
+async def served_mentioning(
+    db: AsyncSession, needles: Collection[str], *, organization_id: UUID
+) -> list[tuple[AgentEnvironment, AgentVersion]]:
+    """The environments whose served spec contains any of `needles` anywhere in its text.
+
+    A cheap first pass, as `agent_repo.drafts_mentioning` is for drafts: an id an inline
+    specialist binds sits deep in a capability's config, where no JSON path reaches.
+    """
+    if not needles:
+        return []
+    text = cast(AgentVersion.spec, Text)
+    result = await db.execute(
+        select(AgentEnvironment, AgentVersion)
+        .join(AgentVersion, AgentVersion.id == AgentEnvironment.version_id)
+        .where(
+            AgentEnvironment.organization_id == organization_id,
+            or_(*(text.contains(needle, autoescape=True) for needle in needles)),
+        )
+        .order_by(AgentEnvironment.agent_id, AgentEnvironment.created_at)
+    )
+    return list(result.tuples().all())

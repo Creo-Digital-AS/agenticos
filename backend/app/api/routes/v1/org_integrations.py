@@ -53,10 +53,9 @@ async def list_org_integrations(
 
     Returns both unassigned (org-level) and KB-assigned sources.
 
-    This is the only way to enumerate the *unassigned* ones - every other
-    listing is scoped to a collection, and a source with no `collection_name`
-    belongs to none - which is what the "Reusable integrations" section on
-    `/kb` reads. It keeps the assigned rows in the response because they are
+    This enumerates the *unassigned* ones, which a listing scoped to a
+    collection cannot - a source with no `collection_name` belongs to none -
+    and is what the "Reusable integrations" section on `/kb` reads. It keeps the assigned rows in the response because they are
     the same organisation's, and a caller wanting the full picture has nowhere
     else to get it; the UI filters to what its own surface owns.
     """
@@ -84,14 +83,19 @@ async def list_org_connectors(
 async def create_org_integration(
     data: SyncSourceCreate,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
     """Create an org-level integration.
 
     Omit `collection_name` to keep it unassigned - it can be cloned
     into multiple knowledge bases later.  Pass a `collection_name` to
-    immediately wire it to a specific KB collection.
+    immediately wire it to a specific KB collection: the caller must be able
+    to write the base its sync writes into, as on every other route that points
+    a source at a collection (`CollectionAccessService.source_target`, #2537).
     """
+    if data.collection_name is not None:
+        await access.source_target(ctx, data.collection_name)
     return await sync_source_svc.create_source(data, ctx=ctx)
 
 
@@ -125,6 +129,7 @@ async def trigger_org_integration(
 ) -> Any:
     """Manually trigger a sync run for an org integration."""
     source = await access.sync_source(ctx, str(source_id))
+    sync_source_svc.refuse_paused(source)
     sync_log = await sync_source_svc.trigger_sync(str(source.id), user_id=ctx.user_id)
     return RAGSyncResponse(
         id=str(sync_log.id),

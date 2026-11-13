@@ -3,14 +3,154 @@
 Provides a class-based Redis client for connection management and operations.
 """
 
+import json
+from collections.abc import Sequence
+
 from redis import asyncio as aioredis
 
 from app.core.config import settings
+
+_DELETE_IF_EQUALS = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+"""
 
 _DELETE_IF_EQUAL = (
     "if redis.call('get', KEYS[1]) == ARGV[1] then "
     "return redis.call('del', KEYS[1]) else return 0 end"
 )
+
+_RESERVE_NUMBERS = """
+local now = tonumber(redis.call('TIME')[1])
+local count = tonumber(ARGV[1])
+local highest = tonumber(ARGV[2])
+local pending = cjson.decode(redis.call('GET', KEYS[3]) or '{}')
+local pruned = false
+for code, _ in pairs(pending) do
+  local issued = redis.call('ZSCORE', KEYS[2], code)
+  if not issued then
+    redis.call('ZADD', KEYS[2], 'NX', now, code)
+  elseif tonumber(issued) + tonumber(ARGV[5]) < now then
+    pending[code] = nil
+    pruned = true
+  end
+end
+if pruned then
+  if next(pending) == nil then
+    redis.call('DEL', KEYS[3])
+  else
+    redis.call('SET', KEYS[3], cjson.encode(pending), 'KEEPTTL')
+  end
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - tonumber(ARGV[3]))
+local last = tonumber(redis.call('GET', KEYS[1]) or '0')
+for step = 0, highest - 1 do
+  local start = (last + step) % highest + 1
+  if start + count - 1 <= highest then
+    local free = true
+    for n = start, start + count - 1 do
+      if pending[tostring(n)] or redis.call('ZSCORE', KEYS[2], n) then
+        free = false
+        break
+      end
+    end
+    if free then
+      for n = start, start + count - 1 do
+        redis.call('ZADD', KEYS[2], now, n)
+      end
+      redis.call('SET', KEYS[1], start + count - 1, 'EX', ARGV[4])
+      redis.call('EXPIRE', KEYS[2], ARGV[4])
+      return start
+    end
+  end
+end
+return 0
+"""
+
+_NUMBERED_ANSWER = """
+local value = cjson.decode(redis.call('GET', KEYS[1]) or '{}')[ARGV[1]]
+if not value then
+  return false
+end
+local issued = redis.call('ZSCORE', KEYS[2], ARGV[1])
+if issued and tonumber(issued) + tonumber(ARGV[2]) < tonumber(redis.call('TIME')[1]) then
+  return false
+end
+return value
+"""
+
+_PRUNE_BOUNDED_VALUES = """
+local now = tonumber(redis.call('TIME')[1])
+local used = tonumber(redis.call('GET', KEYS[3]) or '0')
+for _, handle in ipairs(redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now)) do
+  used = used - tonumber(redis.call('HGET', KEYS[1], handle) or '0')
+  redis.call('HDEL', KEYS[1], handle)
+  redis.call('ZREM', KEYS[2], handle)
+  redis.call('DEL', ARGV[1] .. handle)
+end
+used = math.max(0, used)
+local function save()
+  if redis.call('HLEN', KEYS[1]) == 0 then
+    redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+  else
+    redis.call('SET', KEYS[3], used, 'EX', ARGV[2])
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+    redis.call('EXPIRE', KEYS[2], ARGV[2])
+  end
+end
+"""
+
+_CACHE_BOUNDED_VALUES = (
+    _PRUNE_BOUNDED_VALUES
+    + """
+local amount = 0
+local added = 0
+for i = 5, #ARGV, 2 do
+  local previous = redis.call('HGET', KEYS[1], ARGV[i])
+  amount = amount + #ARGV[i + 1] - tonumber(previous or '0')
+  if not previous then added = added + 1 end
+end
+if used + amount > tonumber(ARGV[3]) or
+  redis.call('HLEN', KEYS[1]) + added > tonumber(ARGV[4]) then
+  save()
+  return 0
+end
+for i = 5, #ARGV, 2 do
+  redis.call('SET', ARGV[1] .. ARGV[i], ARGV[i + 1], 'EX', ARGV[2])
+  redis.call('HSET', KEYS[1], ARGV[i], #ARGV[i + 1])
+  redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), ARGV[i])
+end
+used = used + amount
+save()
+return 1
+"""
+)
+
+_TAKE_BOUNDED_VALUE = (
+    _PRUNE_BOUNDED_VALUES
+    + """
+local value = redis.call('GETDEL', ARGV[1] .. ARGV[3])
+used = math.max(0, used - tonumber(redis.call('HGET', KEYS[1], ARGV[3]) or '0'))
+redis.call('HDEL', KEYS[1], ARGV[3])
+redis.call('ZREM', KEYS[2], ARGV[3])
+save()
+return value
+"""
+)
+
+_UPDATE_MAPPING = """
+local values = cjson.decode(redis.call('get', KEYS[1]) or '{}')
+for key, value in pairs(cjson.decode(ARGV[1])) do values[key] = value end
+for _, key in ipairs(cjson.decode(ARGV[2])) do values[key] = nil end
+if next(values) == nil then
+  redis.call('del', KEYS[1])
+else
+  redis.call('set', KEYS[1], cjson.encode(values), 'EX', ARGV[3])
+end
+return 1
+"""
 
 
 class RedisClient:
@@ -94,6 +234,102 @@ class RedisClient:
             raise RuntimeError("Redis client not connected")
         return bool(await self.client.expire(key, ttl))
 
+    async def reserve_numbers(
+        self,
+        counter: str,
+        *,
+        issued: str,
+        pending: str,
+        count: int,
+        highest: int,
+        quarantine: int,
+        answerable: int,
+        ttl: int,
+    ) -> int:
+        """Reserve `count` consecutive numbers from 1 to `highest`, or return 0 when none are free.
+
+        The block starts after the last one reserved and wraps around, skipping a number
+        still named in the JSON object at `pending` or reserved within `quarantine`
+        seconds - `issued` holds when each was. A number in `pending` reserved over
+        `answerable` seconds ago no longer answers, so it is dropped from `pending` first;
+        one with no reservation time is stamped now and lapses in turn. Reserving nothing
+        changes nothing else.
+        """
+        result = await self.raw.eval(
+            _RESERVE_NUMBERS,
+            3,
+            counter,
+            issued,
+            pending,
+            count,
+            highest,
+            quarantine,
+            ttl,
+            answerable,
+        )
+        if not isinstance(result, int):
+            raise TypeError("Redis returned an invalid number reservation")
+        return result
+
+    async def numbered_answer(
+        self, mapping: str, *, issued: str, number: str, ttl: int
+    ) -> str | None:
+        """What `number` names in the JSON object at `mapping`, unless it was reserved over
+        `ttl` seconds ago, by the Redis clock `reserve_numbers` stamps it with."""
+        result = await self.raw.eval(_NUMBERED_ANSWER, 2, mapping, issued, number, ttl)
+        if result is None:
+            return None
+        return result.decode() if isinstance(result, bytes) else str(result)
+
+    async def cache_bounded_values(
+        self, key: str, *, values: dict[str, str], capacity: int, ttl: int, max_items: int
+    ) -> bool:
+        """Store a batch atomically; expired or consumed entries never retain capacity."""
+        if capacity <= 0 or ttl <= 0 or max_items <= 0:
+            raise ValueError("Bounded caches require positive capacity, TTL and item limit")
+        if not values:
+            return True
+        entries = [part for handle, value in values.items() for part in (handle, value)]
+        stored = await self.raw.eval(
+            _CACHE_BOUNDED_VALUES,
+            3,
+            f"{key}:sizes",
+            f"{key}:expires",
+            f"{key}:used",
+            f"{key}:file:",
+            ttl,
+            capacity,
+            max_items,
+            *entries,
+        )
+        return bool(stored)
+
+    async def take_bounded_value(self, key: str, handle: str, *, ttl: int) -> str | None:
+        """Consume and release an entry exactly once, including concurrent readers."""
+        if ttl <= 0:
+            raise ValueError("Bounded caches require a positive TTL")
+        value = await self.raw.eval(
+            _TAKE_BOUNDED_VALUE,
+            3,
+            f"{key}:sizes",
+            f"{key}:expires",
+            f"{key}:used",
+            f"{key}:file:",
+            ttl,
+            handle,
+        )
+        if value is not None and not isinstance(value, str):
+            raise TypeError("Redis returned invalid cached text")
+        return value
+
+    async def update_mapping(
+        self, key: str, *, updates: dict[str, str], remove: Sequence[str] = (), ttl: int
+    ) -> None:
+        """Merge/remove JSON fields atomically without losing concurrent prompt changes."""
+        await self.raw.eval(
+            _UPDATE_MAPPING, 1, key, json.dumps(updates), json.dumps(list(remove)), ttl
+        )
+
     async def delete_if_equal(self, key: str, value: str) -> bool:
         """Delete a key only while it still holds `value` - a lease given back by its holder."""
         if not self.client:
@@ -107,6 +343,18 @@ class RedisClient:
         if not self.client:
             raise RuntimeError("Redis client not connected")
         return await self.client.delete(key)  # type: ignore[no-any-return]
+
+    async def delete_if_equals(self, key: str, value: str) -> bool:
+        """Delete `key` only while it still holds `value`, in one atomic step.
+
+        How a claim taken with `set(..., nx=True)` is released by its own holder
+        alone: a holder that outlived the key's TTL finds another holder's value
+        there and leaves it. Returns whether this call deleted the key.
+        """
+        if not self.client:
+            raise RuntimeError("Redis client not connected")
+        deleted = await self.client.eval(_DELETE_IF_EQUALS, 1, key, value)
+        return bool(deleted)
 
     async def getdel(self, key: str) -> str | None:
         """Read a key and delete it in one atomic step (Redis GETDEL).
@@ -144,6 +392,14 @@ class RedisClient:
         # The stubs union a sync and an async return; this client is the async one.
         items = await self.client.lrange(key, 0, -1)  # ty: ignore[invalid-await]
         return [str(item) for item in items]
+
+    async def hash_all(self, key: str) -> dict[str, str]:
+        """Every field of a hash, and its value (Redis HGETALL)."""
+        if not self.client:
+            raise RuntimeError("Redis client not connected")
+        # The stubs union a sync and an async return; this client is the async one.
+        fields = await self.client.hgetall(key)  # ty: ignore[invalid-await]
+        return {str(field): str(value) for field, value in fields.items()}
 
     async def exists(self, key: str) -> bool:
         """Check if key exists."""

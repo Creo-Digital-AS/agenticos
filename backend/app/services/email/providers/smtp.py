@@ -1,7 +1,10 @@
 """SMTP email provider using aiosmtplib."""
 
+import asyncio
 import logging
 import uuid
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -56,7 +59,10 @@ class SMTPProvider:
             if message.from_name
             else message.from_email
         )
-        msg = MIMEMultipart("alternative")
+        body = MIMEMultipart("alternative")
+        body.attach(MIMEText(message.text, "plain"))
+        body.attach(MIMEText(message.html, "html"))
+        msg = MIMEMultipart("mixed") if message.attachments else body
         msg["Subject"] = message.subject
         msg["From"] = from_addr
         msg["To"] = ", ".join(message.to)
@@ -65,20 +71,32 @@ class SMTPProvider:
         if message.reply_to:
             msg["Reply-To"] = message.reply_to
 
-        msg.attach(MIMEText(message.text, "plain"))
-        msg.attach(MIMEText(message.html, "html"))
+        for name, value in message.headers.items():
+            msg[name] = value
+        if message.attachments:
+            msg.attach(body)
+            for attachment in message.attachments:
+                maintype, _, subtype = attachment.mime_type.partition("/")
+                part = MIMEBase(maintype or "application", subtype or "octet-stream")
+                part.set_payload(attachment.content)
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", "attachment", filename=attachment.filename)
+                msg.attach(part)
 
         implicit_tls = self.use_tls and self._implicit_tls()
         try:
-            await aiosmtplib.send(
-                msg,
-                hostname=self.host,
-                port=self.port,
-                username=self.username or None,
-                password=self.password or None,
-                use_tls=implicit_tls,
-                start_tls=self.use_tls and not implicit_tls,
-            )
+            async with asyncio.timeout(30):
+                await aiosmtplib.send(
+                    msg,
+                    hostname=self.host,
+                    port=self.port,
+                    username=self.username or None,
+                    password=self.password or None,
+                    use_tls=implicit_tls,
+                    start_tls=self.use_tls and not implicit_tls,
+                    timeout=30,
+                    validate_certs=True,
+                )
             msg_id = f"smtp_{uuid.uuid4()}"
             logger.info(
                 "smtp_email_sent",
@@ -89,9 +107,9 @@ class SMTPProvider:
                 },
             )
             return SendResult(provider_message_id=msg_id, accepted=True)
-        except Exception as exc:
+        except (aiosmtplib.SMTPException, OSError, TimeoutError) as exc:
             logger.error(
                 "smtp_email_failed",
-                extra={"error": str(exc), "to": message.to},
+                extra={"error_kind": type(exc).__name__, "to": message.to},
             )
-            return SendResult(provider_message_id="", accepted=False, error=str(exc))
+            return SendResult(provider_message_id="", accepted=False, error="SMTP delivery failed")

@@ -1,5 +1,5 @@
 ---
-source_sha: "cf1f7216bba3"
+source_sha: "107659f9bab3"
 ---
 
 # Berechtigungen { #permissions }
@@ -66,8 +66,10 @@ Ein Boolean am Nutzer, gänzlich außerhalb von Organisationen. Zwei Wirkungen:
    Organisation auflöst und keiner von ihnen "jede Organisation" ausdrücken
    kann ([Governance](governance.md#alerts)).
 2. **Eine Umgehung in `AuthContext.permissions`**, die jede Berechtigung auf
-   `Scope.ALL` zurückgibt - in jeder Organisation, auch in solchen, in denen die
-   Person keine Mitgliedschaft hat.
+   `Scope.ALL` zurückgibt - in jeder Organisation, in der die Person Mitglied ist.
+   Eine Organisation, in der sie keine Mitgliedschaft hat, erreicht sie nicht: Die
+   aktive Organisation wird aufgelöst, bevor irgendeine Berechtigung gelesen wird,
+   und diese Auflösung weist ein Nicht-Mitglied ab, einen App-Admin eingeschlossen.
 
 Die Umgehung ist Absicht, und der Docstring sagt warum: Eine solche Person
 verwaltet das Deployment und hat ohnehin Datenbankzugriff, sodass etwas anderes
@@ -98,8 +100,16 @@ Zwei Arten von Berechtigung, und sie verhalten sich unterschiedlich.
 
 **Globale** Berechtigungen sind binär und organisationsweit: `members:view`, `members:manage`,
 `roles:manage`, `org:settings`, `org:delete`, `budgets:manage`,
-`approvals:decide`, `connections:view`, `connections:manage`,
-`channels:manage`, `runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`.
+`approvals:decide`, `promotions:override`, `connections:view`, `connections:manage`,
+`channels:manage`, `runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`, `personal:consent`.
+
+Für das Genehmigen persönlicher Routinen und Watches ist der ausdrückliche Scope `personal:consent` nötig, ausgewählt unter **Custom** beim Ausstellen eines Schlüssels oder Autorisieren eines MCP-Clients. Er ist in keiner Voreinstellung enthalten, auch nicht in **Full access**. Die Bestätigung erlaubt dem Zugang, dauerhafte Routinen und Watches mit Ihren persönlichen Verbindungen und Daten zu genehmigen; die üblichen Scopes `agents:run` und `runs:view` erlauben das nicht. Bestehende Schlüssel und MCP-Autorisierungen erhalten diese persönliche Zustimmung nicht automatisch.
+
+`promotions:override` promotet eine Version auf eine
+[Umgebung, die ihre Eval-Suites bewachen](environments.md#guarding-a-promotion-with-evals),
+obwohl sie auf ihr nicht bestanden haben, und ändert, welche Suites eine
+bewachen. Owner und Admins haben es; überhaupt zu promoten bleibt
+`agents:publish` auf dem Agent.
 
 `api_keys:create` erlaubt einem Mitglied,
 [API-Schlüssel](api.md#organization-api-keys) für sich auszustellen;
@@ -133,9 +143,28 @@ Teilmenge dieser Berechtigungen, nie mehr, als sein Aussteller jetzt hat.
     eine Berechtigung aus einer anderen, also hält eine Rolle, die Connections
     verwaltet, beide.
 
+    `connections:manage` bearbeitet auch Model-Profile, und eine Bearbeitung
+    stellt jeden Agent auf dem Profil um, auch Agents, die der Bearbeitende nicht
+    bearbeiten darf: ein neuer Endpunkt erhält ihre Anfragen ab dem nächsten Run.
+    Der Schlüssel bleibt geschützt. Einem Profil einen Schlüssel zu geben oder
+    den Endpunkt eines Profils mit Schlüssel zu verschieben, braucht
+    `secrets:view` auf diesem Schlüssel
+    ([Modelle](models.md#changing-a-profiles-key-or-endpoint)).
+
+    `connections:manage` listet auch die Sync-Integrationen der Organisation
+    auf: die Quellen jeder Base, mit ihrer Konfiguration, dem Vault-Secret, das
+    jede nutzt, und ihrem letzten Fehler, sowie die nicht zugeordneten Quellen.
+    `/org/integrations` und `GET /rag/sync/sources` liefern diese Liste, und das
+    Angebot des Knowledge-Base-Assistenten, eine davon wiederzuverwenden
+    (`GET /kb/{kb_id}/sync-sources/org-integrations`), liefert sie ohne die Base,
+    auf der es geöffnet ist. Eine Base zu lesen oder einen Grant auf sie zu halten,
+    öffnet diese Liste nicht. Ohne die
+    Berechtigung listet `GET /rag/sync/sources` nur die Quellen, die eine Base
+    speisen, die der Aufrufer liest, und der Assistent lässt das Angebot weg.
+
 **Ressourcen**-Berechtigungen tragen einen `Scope`, denn sie beantworten die
 zweite Frage, die eine Rolle nicht kann: nicht "darf diese Rolle Agents
-anfassen?", sondern *welche* Agents.
+anfassen?", sondern _welche_ Agents.
 
 `mcp:manage` ist eine davon: Ein MCP-Server der Organisation lässt sich auf
 Gruppen oder Personen einschränken, wie ein Skill
@@ -148,7 +177,7 @@ geteilten; `ALL` sieht jeden.
 Geordnet als `NONE < OWN < SHARED < TEAM < ALL`.
 
 | Scope | Erreicht |
-|---|---|
+| --- | --- |
 | `NONE` | nichts |
 | `OWN` | Zeilen, die dieser Person gehören |
 | `SHARED` | ihre eigenen, plus alles organisationsweit Sichtbare |
@@ -169,7 +198,7 @@ benutzerdefinierte Rollen.
 ### Die eingebauten Rollen { #the-built-in-roles }
 
 | Rolle | Gedanke | Agents | Secrets | Global |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `owner` | besitzt die Organisation | alles `ALL` | `ALL` | alles, einschließlich `org:delete` |
 | `admin` | führt sie im Tagesgeschäft | alles `ALL` | `ALL` | alles **außer** `org:delete` |
 | `builder` | baut, und lernt von der ganzen Organisation | `view`/`run` `ALL`, `edit`/`publish` `SHARED` | `view` `SHARED`, `edit` `OWN` | `mcp:manage` `SHARED`, `connections:view`+`connections:manage`, `runs:view`, `ml:invoke`, `api_keys:create`, `members:view` |
@@ -196,7 +225,7 @@ Berechtigungen auf statt zu denen von jemand anderem.
 ### Wer welche Rolle vergeben darf { #who-may-hand-out-which-role }
 
 `roles:manage` zu halten besagt, dass ein Mitglied Rollen ändern darf; es besagt
-nicht, *welche*. `assignable_roles` beantwortet das aus dem Katalog: Eine Rolle
+nicht, _welche_. `assignable_roles` beantwortet das aus dem Katalog: Eine Rolle
 darf eine vergeben, deren Befugnis sie strikt übertrifft - jede Berechtigung, die
 die angebotene Rolle hält, mindestens ebenso weit beim Vergebenden, plus etwas,
 das der Vergebende hält und sie nicht. Zwei Folgen, und beide sind gewollt:
@@ -227,7 +256,7 @@ Seite früher zwei Vorstellungen von "welcher Mandant" hielt.
 
 Heute sind es eine. Der `ActiveOrgGuard` des Dashboards übernimmt die
 Organisation, die ein Pfad benennt, bevor die Seite irgendetwas fragt, sodass
-das, was ein Aufrufer dort darf, das ist, was er *dort* darf (#1032).
+das, was ein Aufrufer dort darf, das ist, was er _dort_ darf (#1032).
 
 **Eine Einladung ist ein Link, und der Absender bekommt immer eine Kopie davon.**
 
@@ -251,7 +280,7 @@ bietet das an, was `assignableRoles` in
 `GET /roles/catalog` ohnehin samt den Berechtigungen jeder Rolle zurückgibt.
 
 Es ist Arithmetik auf dem Client, aus demselben Grund wie auf dem Server: Eine
-Auswahl, die eine *Liste* hielt, bot jede Rolle außer `owner` an, wer auch immer
+Auswahl, die eine _Liste_ hielt, bot jede Rolle außer `owner` an, wer auch immer
 fragte, sodass einem Admin Admin angeboten und er nach dem Tippen der
 E-Mail-Adresse abgelehnt wurde (#1028).
 
@@ -279,17 +308,18 @@ ohnehin nicht laufen und keine Exposure erreicht ihn, also entscheidet das, wer
 ihn sieht, nicht was er tut.
 
 | Stufe | Erlaubt |
-|---|---|
+| --- | --- |
 | `read` | die Konfiguration zu sehen |
 | `use` | sie außerdem auszuführen oder anzuhängen |
 | `edit` | sie außerdem zu ändern |
+| `edit_data` | außerdem zu ändern, welche Daten die Seite zeigt - [nur bei Seiten](#a-page-that-reads-data) |
 
 In der Konsole ist das ein Dialog, so wie man ein Dokument teilt: Der Button
 **Share** eines Agents, eines Skills, einer Wissensdatenbank oder einer
 Kontextdatei - jederzeit nach dem Anlegen, nicht nur dabei - fügt eine Person
 oder Gruppe auf einer Stufe hinzu, listet
 auf, wer Zugriff hat, den Besitzer zuerst, und setzt den **Allgemeinen Zugriff** -
-*Nur Personen mit Zugriff* ist `private`, *Alle in der Organisation* ist `org`.
+_Nur Personen mit Zugriff_ ist `private`, _Alle in der Organisation_ ist `org`.
 
 Ein Grant an eine Gruppe erreicht, wer in dem Moment in der Gruppe ist, in dem der
 Zugriff geprüft wird: Der Gruppe beizutreten heißt also, den Zugriff zu gewinnen,
@@ -300,8 +330,8 @@ Gruppe, und eine Gruppe aus einer anderen Organisation erreicht hier niemanden,
 selbst wenn eine Zeile eine benennen würde.
 
 Die Tabelle ist bewusst generisch - `resource_type` + `resource_id`, ohne
-Fremdschlüssel auf das Ziel -, weil Agents, Collections, Skills, Context-Dateien
-und gespeicherte Schlüssel alle denselben Regeln folgen. Der Preis dafür ist,
+Fremdschlüssel auf das Ziel -, weil Agents, Collections, Skills, Context-Dateien,
+[Tabellen](virtual-tables.md), Workflows und gespeicherte Schlüssel alle denselben Regeln folgen. Der Preis dafür ist,
 dass die Datenbank einen Grant nicht per Cascade löschen kann, wenn sein Ziel
 verschwindet, sodass Services Grants zusammen mit der Ressource löschen.
 
@@ -351,7 +381,7 @@ Rolle ist das, was auflöst, was der Agent erreichen darf.
 Die Antwort ist **wer die Oberfläche veröffentlicht hat**, und der Rückfall ist
 der Teil, den man kennen sollte: `viewer`, wenn diese Person kein Mitglied mehr
 ist, `viewer`, wenn ihr Konto deaktiviert wurde, und `viewer`, wenn überhaupt
-kein Veröffentlichender erfasst wurde. Ein Weggang darf nicht still *erweitern*,
+kein Veröffentlichender erfasst wurde. Ein Weggang darf nicht still _erweitern_,
 was eine öffentliche Oberfläche erreicht, und ein Widget auf der Seite eines
 Kunden überlebt die Person, die es eingefügt hat.
 
@@ -386,12 +416,24 @@ sie auf nichts verengt werden sollte.
 bereits geladener Zeilen gibt es die Teilmenge zurück, auf der der Aufrufer eine
 Berechtigung ausüben darf, wendet dieselbe Regel `max(role scope, grant)` je
 Zeile an, liest aber jeden Grant in einem Nachschlagen statt einem je Zeile (und
-gar keinen, wenn die Rolle alles erreicht). Es ist das, was die
-Capability-Kennzeichen je Zeile einer Auflistung füllt - `AgentRead.can_run`, die
-Untergrenze dafür, auf einer Karte "new trigger" anzubieten - sodass ein Viewer,
-dem run auf einem Agent gewährt wurde, die Bedienung dort und sonst nirgends
-sieht. Ein Kontext ohne Subjekt und eine leere Eingabe lösen beide vor jeder
-Abfrage zur leeren Menge auf.
+gar keinen, wenn die Rolle alles erreicht).
+
+`accessible_ids` ist das, was die
+Capability-Kennzeichen je Zeile einer Auflistung füllt - `AgentRead.can_run`,
+die Untergrenze dafür, auf einer Karte "new trigger" anzubieten,
+`AgentRead.can_edit`, aus dem die Konsole liest, ob sie die Bearbeitung auf der
+Agent-Seite, das Testen eines Drafts und das Stoppen eines Eval-Runs anbietet,
+und `AgentRead.can_publish` für das Veröffentlichen - sodass ein Viewer, dem run
+auf einem Agent gewährt wurde, die Bedienung dort und sonst nirgends sieht.
+
+Ein Kontext ohne Subjekt und eine leere Eingabe lösen beide vor jeder Abfrage
+zur leeren Menge auf.
+
+Listen von Kontexten, Skills und Tresorschlüsseln liefern `can_edit` pro Ressource.
+Die Konsole verwendet diesen effektiven Zugriff zum Bearbeiten, Löschen, Teilen
+und Rotieren von Schlüsseln. Ein Viewer mit Edit-Grant erhält die Steuerelemente;
+ein Builder mit reinem Lesezugriff auf fremde private Ressourcen nicht. Erstellen
+folgt weiterhin der Rollenberechtigung. Der Server prüft jeden Schreibzugriff erneut.
 
 Die Auflistungen für Agents, Skills und die kb nehmen außerdem
 `?shared_with_me=true` entgegen: nur Zeilen, die bewusst mit dem Aufrufer geteilt
@@ -401,8 +443,90 @@ verlangt: Eine Rolle, die alles erreicht, schlägt ihre Grants für eine schlich
 Auflistung nie nach, also holt der Filter sie trotzdem - ohne das würde "shared
 with me" eines Builders zu "die ganze Organisation minus meins" verkommen. Für
 die kb schließt er außerdem persönliche Zeilen aus (die des Aufrufers von
-Hause aus) und Zeilen mit App-Scope (die des Deployments - nie *mit* jemandem
+Hause aus) und Zeilen mit App-Scope (die des Deployments - nie _mit_ jemandem
 geteilt).
+
+### Workflow-Runs { #workflow-runs }
+
+Ein Run hat keine eigene Sichtbarkeit: Er erbt die seines Workflows. Einen zu
+starten verlangt `workflows:run` auf dem Workflow, ein `test`-Run des
+unveröffentlichten Entwurfs zusätzlich `workflows:edit`. Einen Run und seine
+Ereignisse zu lesen verlangt `workflows:view`, und die ungefilterte Liste zeigt
+Runs der Workflows, die der Aufrufer sieht - seine eigenen, die für die
+Organisation sichtbaren und die mit ihm geteilten. Ein Run, den der Aufrufer
+nicht sieht, antwortet genau wie ein Run, den es nicht gibt.
+
+**Abbrechen ist enger gefasst als Starten.** Wer einen Run gestartet hat, darf
+ihn abbrechen, solange er den Workflow noch ausführen darf, und wer den Workflow
+bearbeiten darf, darf jeden seiner Runs abbrechen. Ein Member, der einen für die
+Organisation sichtbaren Workflow ausführen darf, stoppt seine eigenen Runs,
+nicht die eines Kollegen; wer den Run sieht, aber keines der beiden Rechte hat,
+wird mit `403` abgewiesen. Einen abgebrochenen Run zu wiederholen braucht dasselbe
+Recht, sodass ein von jemandem gestoppter Run nicht von einem Mitglied neu
+gestartet wird, das ihn nicht hätte stoppen können.
+
+**Ein Run handelt im Namen der Person, die ihn gestartet hat, und die wird bei
+jedem Knoten erneut geprüft.** Ein Knoten kann Tage nach dem Start des Runs
+ausgeführt werden, deshalb verlangt jede Ausführung, dass das Konto noch aktiv
+ist, noch Mitglied der Organisation ist - auch ein App-Admin, wie bei jeder
+Anfrage - und noch `workflows:run` auf dem Workflow hat, bei einem `test`-Run
+zusätzlich `workflows:edit`. Hat sich daran etwas geändert, schlägt der Run mit
+`PRINCIPAL_REVOKED` fehl, bevor der Handler des Knotens läuft. Ein Run braucht
+eine Person, in deren Namen er handelt, also kann ein Kontext ohne Subjekt keinen
+starten.
+
+## Eine Seite, die Daten liest { #a-page-that-reads-data }
+
+Eine veröffentlichte [Seite, die an Tabellendaten gebunden ist](artifacts.md#live-data),
+ist der eine Ort, an dem eine Person eine Tabelle **mit der Befugnis eines anderen**
+liest. Jedem Betrachter werden die Datensätze der Seite über ihre Seitenabfragen
+ausgeliefert, gelesen mit dem Zugriff des **Besitzers** der Seite, gleich welche
+Rolle oder Grants er selbst auf der Tabelle hat. Die Schichten oben entscheiden
+also, wer die Seite öffnen darf, und ein weiterer Satz Regeln entscheidet, wer das
+erweitern darf.
+
+**Der Zugriff des Besitzers deckt jedes Laden.** Der Besitzer der Seite muss ein
+aktives Mitglied sein und bei jeder Auslieferung `read` auf jeder Tabelle haben,
+die die Abfragen erreichen; andernfalls sind die Daten `unavailable`
+(`creator_gone`, `creator_lost_access`). Wer veröffentlicht, muss beim
+Veröffentlichen ebenfalls jede Tabelle lesen können, damit niemand bindet, was er
+nicht lesen darf.
+
+**Die Einwilligung teilt sie.** Das Einverständnis des Besitzers, die Daten einer
+Version zu teilen, gilt pro Version, wird als er selbst erteilt (nicht unter
+Impersonation, nicht über einen API-Key, nie durch ein Agent-Tool) und mit der
+Mitgliedschaft des Besitzers gespeichert. Ein Owner oder Admin - `artifacts:edit`
+im Scope `ALL` - darf für den Besitzer bestätigen, entsprechend auditiert. Ein
+Grant zum Bearbeiten der Seite genügt nicht. Jeder Editor darf sie zurückziehen,
+da das Zurückziehen nur einschränkt; dabei fällt auch jeder `edit_data`-Grant auf
+der Seite auf `edit`.
+
+**`edit_data` ist eine Grant-Stufe, keine Rolle.** „Can edit, including data“ liegt
+über `edit` und wird nur für Seiten akzeptiert (eine Datenbank-Constraint lehnt es
+anderswo ab). Es ist eine dauerhafte Einwilligung in die erneuten
+Veröffentlichungen dieser Person oder dieser Gruppe. Nur der Besitzer oder ein
+Owner oder Admin, als er selbst, erteilt oder erhöht es, nachdem er bestätigt hat,
+was es erlaubt. Wer bearbeiten darf, senkt es. Es wird als Grant-Stufe
+(`grant_level`) gelesen, nie über `resolve_access`, und kein Rollenscope
+impliziert es.
+
+**Der Besitzer wird gewechselt, nie beansprucht.** Der Besitzer oder für jede Seite
+ein Owner oder Admin übergibt sie als er selbst an ein aktives Mitglied; ein Grant
+zum Bearbeiten erlaubt das nicht. Der Wechsel macht jede Einwilligung ungültig,
+senkt `edit_data`-Grants auf `edit` und schaltet die automatische Einwilligung aus.
+Eine Seite ohne Besitzer zu übernehmen, indem man sie privat macht, ist derselbe
+Vorgang und dieselbe Regel.
+
+**Erweitern ist abgesichert.** Vor den generischen Freigabe-Routen sitzt ein Wächter
+für Seiten, die Daten lesen: Eine weitere Sichtbarkeit, ein neuer Grant oder eine
+höhere Stufe ist die Entscheidung des Besitzers oder die eines Owners oder Admins
+für ihn, sobald die Daten bestätigt sind. Jeder andere mit `edit` bekommt statt
+einer Ablehnung eine [Anfrage](artifacts.md#share-requests). Einschränken steht
+jedem Editor offen, und eine Seite, die keine Daten liest, behält die generischen
+Regeln. Admins handeln direkt, statt eine Anfrage zu stellen. Die drei Berechtigungen,
+die eine Seite nutzt, sind `artifacts:view`, `artifacts:edit` und, für Tabellen,
+`tables:view`; Owner, Admin, Builder und Operator halten die erste und die letzte
+im Scope `ALL`, weshalb sie zur Zielgruppe jeder Seite gehören.
 
 ## Wo die Tore sitzen { #where-the-gates-go }
 
@@ -452,6 +576,24 @@ die Ablehnungen.
     vertretbar, wenn sie das herausfinden können. Eine engere Antwort wäre eine
     eigene Berechtigung, keine leisere Route.
 
+### Ein System-Agent ist eine Einstellung der Organisation { #system-agents }
+
+Ein [System-Agent](concepts.md#system-agents) - ein Bewerter, ein
+Fallgenerator, ein Lücken-Entwerfer oder -Klassifizierer, der
+Verbesserungsassistent - bewertet, entwirft oder schlägt vor für alle, die
+nutzen, was er bedient. Ihn zu ändern braucht darum `org:settings` zusätzlich zu
+`agents:edit` oder `agents:publish` auf der Zeile: sein Draft, ein YAML-Import,
+eine Veröffentlichung, eine Wiederherstellung, Archivieren oder Löschen, seine
+Umgebungen. Sonst erreichte ein Builder die mitgelieferten über ihre
+organisationsweite Sichtbarkeit. Lesen, Ausführen und Anlegen behalten ihre
+üblichen Berechtigungen; ein Bewerter, den ein Builder für ein Dataset anlegt,
+wird sofort veröffentlicht, und spätere Änderungen brauchen einen
+Administrator.
+
+Die Prüfung steckt in `AgentRegistryService.get`, also hält sie jeder
+Schreibweg ein, und `can_edit`/`can_publish` sind für einen Aufrufer ohne sie
+falsch.
+
 ## Delegation ist keine Privilegiengrenze { #delegation-is-not-a-privilege-boundary }
 
 Ein Agent kann [an einen anderen Agent
@@ -472,7 +614,7 @@ Das ist Absicht, und die Alternative ist schlechter. Ein erneutes Prüfen je
 Aufrufer würde einen veröffentlichten Agent für eine Kollegin funktionieren
 lassen und für eine andere nicht, auf derselben Version, wobei der Unterschied
 nirgends sichtbar wäre - und es hieße, dass die Antwort eines Support-Agents
-davon abhinge, welche seiner Delegates dem *Fragenden* gewährt worden waren.
+davon abhinge, welche seiner Delegates dem _Fragenden_ gewährt worden waren.
 Einen Delegate zu verleihen heißt zu verleihen, was man hält, genau wie das
 Binden einer Collection.
 
@@ -526,14 +668,14 @@ das Audit-Protokoll und das Approval-Tor schlüsseln alle auf eines.
 
 Die Oberflächen, die Menschen offenstehen, die dieses Deployment nicht benennen
 kann, nutzen diesen Konstruktor nicht. Eine gehostete Seite, ein Widget und ein
-Channel führen den Zug jeweils unter dem aus, der ihn *veröffentlicht* hat - der
+Channel führen den Zug jeweils unter dem aus, der ihn _veröffentlicht_ hat - der
 Eigentümer des Embeds oder das Binding, das den Agent auf den Bot gesetzt hat -,
 mit Rückfall auf `viewer`, wenn diese Person die Organisation verlassen hat oder
 ihr Konto deaktiviert wurde, sodass keines von beidem still erweitern kann, was
 eine öffentliche Oberfläche erreicht. Das Subjekt ist daher ein echtes, und es
 ist nicht die Person, die die Nachricht getippt hat.
 
-Ein Channel-Absender, der ein Mitgliedskonto verknüpft *hat*, läuft als dieses
+Ein Channel-Absender, der ein Mitgliedskonto verknüpft _hat_, läuft als dieses
 Mitglied — und derselbe verbundene Lesezugriff entscheidet, ob er noch eines ist.
 Deaktivierung lässt sowohl die Mitgliedschaftszeile als auch die Verknüpfung des
 Chat-Kontos bestehen, sodass eine allein von der Mitgliedschaft abgelesene Rolle
@@ -555,7 +697,7 @@ hat, angelegt von jemandem, der sehr wohl eine Rolle hatte.
 ## Was das Frontend liest { #what-the-frontend-reads }
 
 | Endpunkt | Antwortet |
-|---|---|
+| --- | --- |
 | `GET /me/permissions` | die Rolle des Aufrufers, `is_app_admin` und jede Berechtigung samt ihrem Scope |
 | `GET /roles/catalog` | den ganzen Katalog und was jede Rolle bündelt |
 
@@ -575,6 +717,9 @@ ausführt, sodass ein Client, der diese APIs ignoriert, nichts gewinnt.
   erweitert; er verengt nie.**
 - `require(...)` gehört an **Collection**-Routen. Alles, was auf einer Zeile
   handelt, übergibt die Entscheidung einem Service, der `resolve_access` aufruft.
+- Eine Seite, die Tabellendaten liest, wird mit dem Zugriff ihres **Besitzers**
+  gelesen und nur mit dessen Einwilligung geteilt; sie zu erweitern ist Sache des
+  Besitzers, und jeder andere stellt eine Anfrage.
 - Eine Oberfläche, vor der niemand steht, läuft als **wer sie veröffentlicht
   hat**, mit Rückfall auf `viewer`, wenn diese Person gegangen ist oder
   deaktiviert wurde.

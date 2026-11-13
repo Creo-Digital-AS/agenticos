@@ -11,6 +11,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { fetchDataUri } from "./favicon";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = join(here, "..", "src", "lib", "mcp-logos.generated.ts");
 /**
@@ -44,23 +46,6 @@ function hostOf(url: string | null): string | null {
   }
 }
 
-/** Google's favicon service — follows redirects to the actual PNG. */
-function faviconUrl(domain: string): string {
-  return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`;
-}
-
-async function fetchDataUri(domain: string): Promise<string | null> {
-  try {
-    const res = await fetch(faviconUrl(domain), { redirect: "follow" });
-    if (!res.ok) return null;
-    const type = res.headers.get("content-type") ?? "image/png";
-    const b64 = Buffer.from(await res.arrayBuffer()).toString("base64");
-    return `data:${type};base64,${b64}`;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The logo for `host`, walking up its parent domains on a miss.
  *
@@ -78,10 +63,16 @@ const BRAND_DOMAIN: Readonly<Record<string, string>> = {
   "ai.todoist.net": "todoist.com",
 };
 
+const fetched = new Map<string, Promise<string | null>>();
+
 async function fetchLogoFor(host: string): Promise<string | null> {
-  const labels = (BRAND_DOMAIN[host] ?? host).split(".");
+  const brand = host.endsWith(".googleapis.com") ? "google.com" : (BRAND_DOMAIN[host] ?? host);
+  const labels = brand.split(".");
   for (let start = 0; start <= labels.length - 2; start++) {
-    const uri = await fetchDataUri(labels.slice(start).join("."));
+    const domain = labels.slice(start).join(".");
+    const pending = fetched.get(domain) ?? fetchDataUri(domain);
+    fetched.set(domain, pending);
+    const uri = await pending;
     if (uri) return uri;
   }
   return null;

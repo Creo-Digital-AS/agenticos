@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CapabilityResources, resourceTabKey, type AgentResources } from "./capability-resources";
 import type { KnowledgeBase } from "@/types";
+import type { SystemAgentKind } from "@/types/agents";
 import type { ContextFileSummary, SkillSummary } from "@/types/providers";
 
 /**
@@ -42,9 +43,10 @@ const SKILL = {
   description: "How refunds work.",
   file_count: 2,
   category: null,
-  enabled: true,
+  visibility: "org",
+  excerpt: "",
   built_in: false,
-} as SkillSummary;
+} satisfies SkillSummary;
 
 const RESOURCES: AgentResources = {
   contextFiles: [FILE],
@@ -81,6 +83,12 @@ describe("the tab a capability's resources get", () => {
 
   it("gives no tab to a capability that reads nothing of the organization's", () => {
     expect(resourceTabKey("charts")).toBeUndefined();
+  });
+
+  it("names a system agent's Knowledge tab for its search, which picks no collection", () => {
+    expect(resourceTabKey("knowledge", true)).toBe("systemAgentKnowledge");
+    expect(resourceTabKey("context", true)).toBe("contextFilesHeading");
+    expect(resourceTabKey("skills", true)).toBe("skillsHeading");
   });
 });
 
@@ -119,6 +127,20 @@ describe("what a capability reads of the organization's", () => {
     expect(screen.queryByText("refund-policy")).toBeNull();
     await userEvent.click(screen.getByText("artifact-pages"));
     expect(resources.onSkillToggle).toHaveBeenCalledWith("s2");
+  });
+
+  it("offers the visual-design skill where the agent draws, and says when it is missing", () => {
+    const design = { ...SKILL, id: "s3", name: "visual-design", description: "Draw well." };
+    mount("visuals", { skills: [SKILL, design], skillTotal: 2 });
+
+    expect(resourceTabKey("visuals")).toBe("visualDesignHeading");
+    expect(screen.getByText("visual-design")).toBeInTheDocument();
+    expect(screen.queryByText("refund-policy")).toBeNull();
+  });
+
+  it("says the visual-design skill is missing where the library has none", () => {
+    mount("visuals");
+    expect(screen.getByText(/no visual-design skill/)).toBeInTheDocument();
   });
 
   it("does not call the agent's other skills missing from the page-style tab", () => {
@@ -203,5 +225,116 @@ describe("what the context capability will actually attach", () => {
     mount("context", { contextIds: ["f9"] });
 
     expect(screen.queryByText(/read tools/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * A system agent is run by the platform, which hands each run the knowledge bases
+ * it is about, and its publish refuses any file or skill narrower than the whole
+ * organization - the page narrows the lists, and the panels say so.
+ */
+describe("what a system agent's capability panels offer", () => {
+  function mountSystem(
+    capabilityId: string,
+    {
+      enabled = true,
+      kind = "classifier",
+      resources = RESOURCES,
+    }: { enabled?: boolean; kind?: SystemAgentKind; resources?: AgentResources } = {},
+  ) {
+    const onMaxSteps = vi.fn();
+    render(
+      <CapabilityResources
+        capabilityId={capabilityId}
+        enabled={enabled}
+        resources={resources}
+        disabled={!enabled}
+        system={{ kind, maxSteps: 2, onMaxSteps }}
+      />,
+    );
+    return onMaxSteps;
+  }
+
+  it("sets how a search runs in place of the collections it would pick", () => {
+    mountSystem("knowledge");
+
+    expect(screen.queryByText("Handbook")).toBeNull();
+    expect(screen.getByText(/already answers a question before calling it a gap/)).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "Max steps" })).toHaveValue(2);
+  });
+
+  it("leaves the steps inert until the search is switched on", () => {
+    mountSystem("knowledge", { enabled: false });
+
+    expect(screen.getByRole("spinbutton", { name: "Max steps" })).toBeDisabled();
+  });
+
+  it.each([
+    ["context", "glossary"],
+    ["skills", "refund-policy"],
+  ])("says the %s it offers are what the whole organization shares", (id, offered) => {
+    mountSystem(id, { kind: "judge" });
+
+    expect(screen.getByText(offered)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Only what is shared with the whole organization is offered: the platform runs this agent for everyone.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("offers a classifier's skills it still holds only to take off", async () => {
+    const onSkillToggle = vi.fn();
+    mountSystem("skills", { resources: { ...RESOURCES, skillIds: ["s1"], onSkillToggle } });
+
+    expect(
+      screen.getByText(/A classifier reads no skills, so none can be added here/),
+    ).toBeVisible();
+    expect(screen.queryByText(/Only what is shared with the whole organization/)).toBeNull();
+    await userEvent.click(screen.getByRole("checkbox", { name: "refund-policy" }));
+    expect(onSkillToggle).toHaveBeenCalledWith("s1");
+  });
+
+  it("lists nothing to pick for a classifier that holds only the switch", () => {
+    mountSystem("skills", { enabled: false });
+
+    expect(screen.getByText(/A classifier reads no skills/)).toBeVisible();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByText(/Write one/)).toBeNull();
+  });
+
+  it("says nothing of it on an ordinary agent's panel", () => {
+    mount("context");
+
+    expect(screen.queryByText(/Only what is shared with the whole organization/)).toBeNull();
+  });
+});
+
+describe("inline resource creation", () => {
+  it.each([
+    ["skills", "New skill"],
+    ["context", "New context file"],
+  ])("offers creation in the %s panel, even when empty", async (capability, label) => {
+    const create = vi.fn();
+    mount(capability, {
+      skills: [],
+      contextFiles: [],
+      onCreateSkill: create,
+      onCreateContext: create,
+    });
+    await userEvent.click(screen.getByRole("button", { name: label }));
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps creation available beside existing choices", async () => {
+    const create = vi.fn();
+    mount("skills", { onCreateSkill: create });
+    await userEvent.click(screen.getByRole("button", { name: "New skill" }));
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("does not offer creation without the caller's create permission", () => {
+    mount("skills");
+    expect(screen.queryByRole("button", { name: "New skill" })).not.toBeInTheDocument();
   });
 });

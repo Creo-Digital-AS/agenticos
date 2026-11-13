@@ -32,8 +32,6 @@ replacing it - what the library's own sweep cannot reach is a `sync` delegation,
 which has a handle and no task - and it says what the sweep does not guarantee.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -484,6 +482,10 @@ class _LazyAgent:
         nobody shared the sandbox with ran its own `execute` in the parent's
         container.
         """
+        from pydantic_ai.workspaces import Workspace
+
+        if isinstance(self._delegate.workspace, Workspace):
+            return {**kwargs, "workspace": self._delegate.workspace}
         if self._delegate.workspace == "parent":
             return kwargs
         return {**kwargs, "workspace": "new" if self._delegate.workspace == "own" else None}
@@ -533,6 +535,7 @@ class _LazyAgent:
             "deps": replace(
                 clone,
                 kb_collection_names=list(self._delegate.collection_names),
+                kb_vector_scopes=dict(self._delegate.collection_scopes),
                 request_approval=(
                     None if self._journal.in_background() else clone.request_approval
                 ),

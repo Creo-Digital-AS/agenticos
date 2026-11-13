@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import * as adminBackgroundJobs from "./admin/background-jobs/[[...path]]/route";
 import * as adminConversations from "./admin/conversations/route";
 import * as adminOrganizations from "./admin/organizations/route";
 import * as adminOrganization from "./admin/organizations/[id]/route";
@@ -23,14 +24,28 @@ import * as approvals from "./approvals/[[...path]]/route";
 import * as apps from "./apps/[[...path]]/route";
 import * as audit from "./audit/[[...path]]/route";
 import * as catalog from "./catalog/[[...path]]/route";
+import * as phone from "./phone/[[...path]]/route";
 import * as channels from "./channels/[[...path]]/route";
+import * as codingAccounts from "./coding-accounts/[[...path]]/route";
 import * as context from "./context/[[...path]]/route";
 import * as conversations from "./conversations/[[...path]]/route";
+import * as datasets from "./datasets/[[...path]]/route";
+import * as authoring from "./authoring/[[...path]]/route";
+import * as evalRuns from "./eval-runs/[[...path]]/route";
+import * as evalSuites from "./eval-suites/[[...path]]/route";
+import * as externalAgents from "./external-agents/[[...path]]/route";
+import * as visuals from "./visuals/[[...path]]/route";
+import * as improvements from "./improvements/[[...path]]/route";
 import * as kb from "./kb/[[...path]]/route";
+import * as knowledgeGaps from "./knowledge-gaps/[[...path]]/route";
 import * as localServices from "./local-services/[[...path]]/route";
 import * as mcpConnections from "./mcp-connections/[[...path]]/route";
 import * as mcpOauth from "./mcp-oauth/[[...path]]/route";
 import * as memory from "./memory/[[...path]]/route";
+import * as outcomes from "./outcomes/[[...path]]/route";
+import * as systemAgents from "./system-agents/[[...path]]/route";
+import * as mlCalls from "./ml/calls/[[...path]]/route";
+import * as projects from "./projects/[[...path]]/route";
 import * as browserSignIns from "./browser-sign-ins/[[...path]]/route";
 import * as channelLink from "./me/channel-link/[[...path]]/route";
 import * as notifications from "./notifications/[[...path]]/route";
@@ -43,6 +58,8 @@ import * as myMcpConnection from "./me/mcp-connections/[id]/route";
 import * as myMcpConnectionTest from "./me/mcp-connections/[id]/test/route";
 import * as mcpOauthStart from "./me/mcp-connections/oauth/start/route";
 import * as slashCommands from "./me/slash-commands/[[...path]]/route";
+import * as receivedInvitations from "./invitations/received/route";
+import * as acceptReceivedInvitation from "./invitations/received/[id]/accept/route";
 import * as orgs from "./orgs/route";
 import * as org from "./orgs/[id]/route";
 import * as orgInvitations from "./orgs/[id]/invitations/route";
@@ -70,14 +87,29 @@ import * as triggerTemplates from "./trigger-templates/[[...path]]/route";
 import * as sandboxConnections from "./sandbox-connections/[[...path]]/route";
 import * as sandboxWorkspaces from "./sandbox-workspaces/[[...path]]/route";
 import * as secrets from "./secrets/[[...path]]/route";
+import * as push from "./push/[[...path]]/route";
 import * as sessions from "./sessions/[[...path]]/route";
 import * as skillChanges from "./skill-changes/[[...path]]/route";
+import * as skillChecks from "./skill-checks/[[...path]]/route";
+import * as skillImprovements from "./skill-improvements/[[...path]]/route";
+import * as contextChanges from "./context-changes/[[...path]]/route";
 import * as skills from "./skills/[[...path]]/route";
 import * as spend from "./spend/[[...path]]/route";
 import * as stats from "./stats/[[...path]]/route";
+import * as tables from "./tables/[[...path]]/route";
+import * as tasks from "./tasks/[[...path]]/route";
 import * as triggerPortals from "./trigger-portals/[[...path]]/route";
 import * as triggers from "./triggers/[[...path]]/route";
 import * as users from "./users/[userId]/route";
+import * as workflowApprovals from "./workflow-approvals/[[...path]]/route";
+import * as workflowLogs from "./workflow-logs/[[...path]]/route";
+import * as workflowRuns from "./workflow-runs/[[...path]]/route";
+import * as workflows from "./workflows/[[...path]]/route";
+import * as userLocale from "./users/me/locale/route";
+import * as mySuggestions from "./me/suggestions/[[...path]]/route";
+import * as myOnboarding from "./me/onboarding/[[...path]]/route";
+import * as myWatches from "./me/watches/[[...path]]/route";
+import * as voice from "./voice/[[...path]]/route";
 
 /**
  * Every mount of the shared forwarder.
@@ -93,6 +125,7 @@ const MOUNTED: [string, Record<string, unknown>][] = [
   ["admin/organizations", adminOrganizations],
   ["admin/organizations/[id]", adminOrganization],
   ["admin/ratings/summary", adminRatingsSummary],
+  ["admin/background-jobs", adminBackgroundJobs],
   ["admin/settings", adminSettings],
   ["admin/stats", adminStats],
   ["admin/system", adminSystem],
@@ -111,11 +144,22 @@ const MOUNTED: [string, Record<string, unknown>][] = [
   ["channels", channels],
   ["context", context],
   ["conversations", conversations],
+  ["datasets", datasets],
+  ["eval-runs", evalRuns],
+  ["eval-suites", evalSuites],
+  ["authoring", authoring],
+  ["external-agents", externalAgents],
+  ["visuals", visuals],
+  ["improvements", improvements],
   ["kb", kb],
+  ["knowledge-gaps", knowledgeGaps],
   ["local-services", localServices],
   ["mcp-connections", mcpConnections],
   ["mcp-oauth", mcpOauth],
   ["memory", memory],
+  ["outcomes", outcomes],
+  ["system-agents", systemAgents],
+  ["ml/calls", mlCalls],
   ["me/channel-link", channelLink],
   ["me/mcp-connections", myMcpConnections],
   ["me/mcp-connections/[id]", myMcpConnection],
@@ -123,6 +167,7 @@ const MOUNTED: [string, Record<string, unknown>][] = [
   ["me/mcp-connections/oauth/start", mcpOauthStart],
   ["me/slash-commands", slashCommands],
   ["notifications", notifications],
+  ["projects", projects],
   ["orgs", orgs],
   ["orgs/[id]", org],
   ["orgs/[id]/invitations", orgInvitations],
@@ -150,27 +195,75 @@ const MOUNTED: [string, Record<string, unknown>][] = [
   ["sandbox-workspaces", sandboxWorkspaces],
   ["trigger-templates", triggerTemplates],
   ["secrets", secrets],
+  ["push", push],
   ["sessions", sessions],
   ["skill-changes", skillChanges],
+  ["skill-checks", skillChecks],
+  ["skill-improvements", skillImprovements],
+  ["context-changes", contextChanges],
   ["skills", skills],
   ["spend", spend],
   ["stats", stats],
+  ["tables", tables],
+  ["tasks", tasks],
   ["trigger-portals", triggerPortals],
   ["triggers", triggers],
   ["users/[userId]", users],
+  ["workflow-approvals", workflowApprovals],
+  ["workflow-runs", workflowRuns],
+  ["workflows", workflows],
+  ["users/me/locale", userLocale],
+  ["voice", voice],
   ["me/permissions", permissions],
   ["me/dashboard-layout", dashboardLayout],
   ["me/dashboard-layout/presets", dashboardPresets],
   ["me/dashboard-layout/presets/[presetId]", dashboardPreset],
+  ["me/suggestions", mySuggestions],
+  ["me/watches", myWatches],
 ];
 
 const VERBS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 describe("the proxied route mounts", () => {
+  it("limits received invitations to session-authenticated reads and acceptance", async () => {
+    const { NextRequest } = await import("next/server");
+    expect(Object.keys(receivedInvitations)).toEqual(["GET"]);
+    expect(Object.keys(acceptReceivedInvitation)).toEqual(["POST"]);
+    expect(
+      (await receivedInvitations.GET(new NextRequest("http://localhost/api/invitations/received")))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await acceptReceivedInvitation.POST(
+          new NextRequest("http://localhost/api/invitations/received/invite/accept", {
+            method: "POST",
+          }),
+        )
+      ).status,
+    ).toBe(401);
+  });
+  it("mounts only the supported start verbs behind session authentication", async () => {
+    const { NextRequest } = await import("next/server");
+    expect(Object.keys(myOnboarding).sort()).toEqual(["GET", "PATCH", "POST"]);
+    const response = await myOnboarding.GET(new NextRequest("http://localhost/api/me/onboarding"));
+    expect(response.status).toBe(401);
+  });
   it.each(MOUNTED)("%s handles every verb", (_name, module) => {
     for (const verb of VERBS) {
       expect(typeof module[verb], verb).toBe("function");
     }
+  });
+
+  it("mounts the workflow logs as a read-only forwarder that refuses an unauthenticated request", async () => {
+    const { NextRequest } = await import("next/server");
+
+    expect(Object.keys(workflowLogs)).toEqual(["GET"]);
+    const response = await workflowLogs.GET(
+      new NextRequest("http://localhost:3000/api/workflow-logs"),
+    );
+
+    expect(response.status).toBe(401);
   });
 
   it("mounts one forwarder per file rather than sharing an instance", () => {
@@ -192,4 +285,20 @@ describe("the proxied route mounts", () => {
       expect(response.status, name).toBe(401);
     }
   });
+});
+
+it("the phone proxy exposes only its read and admitted effect verbs", () => {
+  expect(typeof phone.GET).toBe("function");
+  expect(typeof phone.POST).toBe("function");
+  expect(typeof phone.PUT).toBe("function");
+  expect(Object.keys(phone).sort()).toEqual(["GET", "POST", "PUT"]);
+});
+
+it("coding accounts forwards only credential operations and requires a session", async () => {
+  const { NextRequest } = await import("next/server");
+  expect(Object.keys(codingAccounts).sort()).toEqual(["DELETE", "GET", "PATCH", "POST"]);
+  const response = await codingAccounts.GET(
+    new NextRequest("http://localhost:3000/api/coding-accounts"),
+  );
+  expect(response.status).toBe(401);
 });

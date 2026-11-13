@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import EmailStr, Field
+from pydantic import ConfigDict, EmailStr, Field
 
 from app.schemas.base import BaseSchema
 from app.schemas.conversation import ConversationAgent
@@ -18,7 +18,44 @@ __all__ = [
     "ConversationShareCreate",
     "ConversationShareList",
     "ConversationShareRead",
+    "SharedConversationRead",
 ]
+
+
+class SharedVisual(BaseSchema):
+    """A drawing in a shared thread, as a finished document - never the call that made it."""
+
+    id: str
+    title: str
+    kind: Literal["svg", "html", "mermaid"]
+    content: str = Field(description="The drawing, revisions applied and pictures inlined")
+
+
+class SharedDraftField(BaseSchema):
+    """One part of a shared draft, with the indentation and line breaks it was written with."""
+
+    # BaseSchema strips whitespace; a field's text is shown and copied as typed.
+    model_config = ConfigDict(str_strip_whitespace=False)
+
+    name: str | None = None
+    text: str
+    format: str
+
+
+class SharedDraftVersion(BaseSchema):
+    """One take on a shared draft; its label is the tab when there are several."""
+
+    label: str | None = None
+    fields: list[SharedDraftField]
+
+
+class SharedDraft(BaseSchema):
+    """A draft in a shared thread, rebuilt from the call that wrote it - never the call."""
+
+    id: str
+    title: str
+    kind: str
+    versions: list[SharedDraftVersion]
 
 
 class ConversationShareCreate(BaseSchema):
@@ -35,6 +72,12 @@ class ConversationShareCreate(BaseSchema):
     )
     permission: Literal["view", "edit"] = Field(default="view", description="Access level")
     generate_link: bool = Field(default=False, description="Generate a public share link")
+
+
+class ConversationShareUpdate(BaseSchema):
+    """Change what a share with a person lets them do."""
+
+    permission: Literal["view", "edit"] = Field(description="Access level")
 
 
 class ConversationShareRead(BaseSchema):
@@ -71,6 +114,7 @@ class AdminConversationRead(BaseSchema):
         default_factory=list,
         description="Every agent that answered here, in the order they first did",
     )
+    coding_agents: list[Literal["claude_code", "codex"]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -80,3 +124,35 @@ class AdminConversationList(BaseSchema):
 
     items: list[AdminConversationRead]
     total: int
+
+
+class SharedMessageRead(BaseSchema):
+    """One message of a conversation opened by its share link."""
+
+    id: UUID
+    role: str
+    content: str | None = None
+    created_at: datetime | None = None
+    visuals: list[SharedVisual] = Field(default_factory=list)
+    drafts: list[SharedDraft] = Field(default_factory=list)
+
+
+class SharedConversationBody(BaseSchema):
+    id: UUID
+    title: str | None = None
+    messages: list[SharedMessageRead]
+
+
+class SharedConversationShare(BaseSchema):
+    """The link itself, without its token: whoever opened it already holds that."""
+
+    id: UUID
+    permission: Literal["view", "edit"]
+
+
+class SharedConversationRead(BaseSchema):
+    """A conversation opened by its share link, with no account."""
+
+    show_agenticos_attribution: bool = True
+    conversation: SharedConversationBody
+    share: SharedConversationShare

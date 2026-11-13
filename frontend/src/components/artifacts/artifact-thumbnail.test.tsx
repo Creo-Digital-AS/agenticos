@@ -49,6 +49,17 @@ describe("ArtifactThumbnail", () => {
     expect(container.querySelector("iframe")).toBeNull();
   });
 
+  it("never asks for the page's data, whichever version it shows", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    vi.stubGlobal("ResizeObserver", undefined);
+    useArtifactViewMock.mockReturnValue({ data: undefined });
+
+    render(<ArtifactThumbnail artifactId="a1" title="Report" versionId="v2" />);
+
+    // The fourth argument is the data flag; a thumbnail leaves it off.
+    expect(useArtifactViewMock).toHaveBeenLastCalledWith("a1", "v2", false);
+  });
+
   it("loads the page, inert and sandboxed, once near, scaled to fit, and fades it in", () => {
     const seen = installObservers();
     useArtifactViewMock.mockReturnValue({ data: undefined });
@@ -79,7 +90,7 @@ describe("ArtifactThumbnail", () => {
     expect(screen.getByTitle("Report")).toBe(frame);
   });
 
-  it("unmounts the page when the card leaves the viewport, and paints it again on return", () => {
+  it("keeps the page it loaded when the card leaves the viewport and comes back", () => {
     const seen = installObservers();
     useArtifactViewMock.mockReturnValue({
       data: { url: "https://content.test/t" },
@@ -88,15 +99,48 @@ describe("ArtifactThumbnail", () => {
     const { container } = render(<ArtifactThumbnail artifactId="a1" title="Report" />);
 
     act(() => seen.intersection?.([{ isIntersecting: true, contentRect: { width: 0 } }]));
-    fireEvent.load(container.querySelector("iframe")!);
-    expect(container.querySelector("[data-unavailable]")).toBeNull();
+    const frame = container.querySelector("iframe")!;
+    fireEvent.load(frame);
 
-    // A scripted page in a card nobody can see is stopped, not left running.
+    // Scrolling past and back neither asks for a new address nor reloads the
+    // page: each of those was a request to the server per card per scroll.
     act(() => seen.intersection?.([{ isIntersecting: false, contentRect: { width: 0 } }]));
-    expect(container.querySelector("iframe")).toBeNull();
-    expect(container.querySelector("[data-unavailable]")).not.toBeNull();
-
     act(() => seen.intersection?.([{ isIntersecting: true, contentRect: { width: 0 } }]));
+
+    expect(container.querySelector("iframe")).toBe(frame);
+    expect(frame).toHaveAttribute("data-loaded", "true");
+    expect(container.querySelector("[data-unavailable]")).toBeNull();
+    // With an address in hand the query stops, so nothing mints another.
+    expect(useArtifactViewMock).toHaveBeenLastCalledWith("a1", null, false);
+  });
+
+  it("keeps the first address when the query answers with a new one", () => {
+    // A reconnect refetches every enabled query; a new address as `src` would
+    // reload every thumbnail a reader had scrolled past.
+    const seen = installObservers();
+    useArtifactViewMock.mockReturnValue({ data: { url: "https://content.test/first" } });
+    const { container, rerender } = render(<ArtifactThumbnail artifactId="a1" title="Report" />);
+    act(() => seen.intersection?.([{ isIntersecting: true, contentRect: { width: 0 } }]));
+
+    useArtifactViewMock.mockReturnValue({ data: { url: "https://content.test/second" } });
+    rerender(<ArtifactThumbnail artifactId="a1" title="Report" />);
+
+    expect(container.querySelector("iframe")).toHaveAttribute("src", "https://content.test/first");
+  });
+
+  it("asks for a new address when it is pointed at another version", () => {
+    const seen = installObservers();
+    useArtifactViewMock.mockReturnValue({ data: { url: "https://content.test/v1" } });
+    const { container, rerender } = render(
+      <ArtifactThumbnail artifactId="a1" title="Report" versionId="v1" />,
+    );
+    act(() => seen.intersection?.([{ isIntersecting: true, contentRect: { width: 0 } }]));
+    fireEvent.load(container.querySelector("iframe")!);
+
+    useArtifactViewMock.mockReturnValue({ data: { url: "https://content.test/v2" } });
+    rerender(<ArtifactThumbnail artifactId="a1" title="Report" versionId="v2" />);
+
+    expect(container.querySelector("iframe")).toHaveAttribute("src", "https://content.test/v2");
     expect(container.querySelector("iframe")).toHaveAttribute("data-loaded", "false");
   });
 
@@ -121,5 +165,39 @@ describe("ArtifactThumbnail", () => {
     expect(container.querySelector("[data-unavailable='true']")).not.toBeNull();
     expect(container.querySelectorAll(".animate-pulse")).toHaveLength(0);
     expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("answers a thumbnail's ready with no data", () => {
+    const seen = installObservers();
+    useArtifactViewMock.mockReturnValue({
+      data: { url: "https://content.test/t", nonce: "n1", live: true },
+      isError: false,
+    });
+    const { container } = render(<ArtifactThumbnail artifactId="a1" title="Report" />);
+    act(() => seen.intersection?.([{ isIntersecting: true, contentRect: { width: 0 } }]));
+    const frame = container.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(() => {});
+    const ready = (n: string) =>
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { type: "agenticos:ready", n, subscribes: true },
+            source: frame.contentWindow,
+          }),
+        );
+      });
+
+    fireEvent.load(frame);
+    ready("n0");
+    expect(post).not.toHaveBeenCalled();
+    ready("n1");
+    ready("n1");
+    expect(post).toHaveBeenCalledTimes(1);
+    // The page resolves every name it declares as unavailable, at once.
+    expect(post).toHaveBeenCalledWith({ type: "agenticos:data", n: "n1", bindings: {} }, "*");
+
+    fireEvent.load(frame);
+    ready("n1");
+    expect(post).toHaveBeenCalledTimes(2);
   });
 });

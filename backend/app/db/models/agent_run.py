@@ -29,7 +29,7 @@ from sqlalchemy import (
     Text,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,8 +41,8 @@ class RunStatus(enum.StrEnum):
     """Where a run ended up.
 
     `AWAITING_APPROVAL` is a real terminal-ish state, not a transient one: the
-    run is parked until a human decides, which may be tomorrow. `BUDGET_EXCEEDED`
-    and `GUARDRAIL_BLOCKED` are separated from `FAILED` for the same reason - each
+    run is parked until a human decides, which may be tomorrow. `BUDGET_EXCEEDED`,
+    `GUARDRAIL_BLOCKED` and `LOOP_STOPPED` are separated from `FAILED` for the same reason - each
     is not a malfunction but the platform working, and an operator filtering for
     problems should not have to wade through them. A guardrail that redacted rather
     than blocked leaves no trace here: the run `COMPLETED`, which is the point.
@@ -54,10 +54,12 @@ class RunStatus(enum.StrEnum):
     CANCELLED = "cancelled"
     AWAITING_APPROVAL = "awaiting_approval"
     AWAITING_ANSWER = "awaiting_answer"
-    """Parked on an `ask_user` question the person left without answering (#2064).
+    """Parked on an unanswered `ask_user` question (#2064).
     It resumes when they answer and ends, the agent told so, after a day."""
     BUDGET_EXCEEDED = "budget_exceeded"
     GUARDRAIL_BLOCKED = "guardrail_blocked"
+    LOOP_STOPPED = "loop_stopped"
+    """Stopped for looping on its tool calls after it was warned (#2086)."""
 
     @classmethod
     def parse_csv(cls, raw: str | None) -> list[str] | None:
@@ -110,10 +112,45 @@ class RunSurface(enum.StrEnum):
     SLACK = "slack"
     TELEGRAM = "telegram"
     MATTERMOST = "mattermost"
+    # Another system's agent sent it a task over A2A (#2092).
+    A2A = "a2a"
+    TEAMS = "teams"
+    SMS = "sms"
+    EMAIL = "email"
+    IMESSAGE = "imessage"
+
+    DISCORD = "discord"
     # A run nobody typed into: the agent-triggers heartbeat fired it on a
     # schedule. The one member here assigned by a machine rather than a surface a
     # person reached the agent through (agenticos#44).
     SCHEDULE = "schedule"
+    # Kept apart so a filter can leave evaluation out of production traffic.
+    EVAL = "eval"
+    # A workflow's `agent.run` step: the run a graph asked for, at the version the
+    # step pins, as the workflow run's principal (#1789).
+    WORKFLOW = "workflow"
+    # Work the platform did for a person on its own initiative, in the background
+    # (#2301): noticing a request they keep repeating, writing their first
+    # messages. Metered against the organization's per-person proactivity limit.
+    FOLLOW_UPS = "follow_ups"
+    """Optional next-step generation after a saved answer; never an active chat turn."""
+    PROACTIVE = "proactive"
+
+
+# The chat platforms a person reaches an agent through. A run parked on one of
+# them can be continued in the chat it was asked in.
+CHANNEL_SURFACES = frozenset(
+    {
+        RunSurface.SLACK,
+        RunSurface.TELEGRAM,
+        RunSurface.MATTERMOST,
+        RunSurface.TEAMS,
+        RunSurface.DISCORD,
+        RunSurface.SMS,
+        RunSurface.EMAIL,
+        RunSurface.IMESSAGE,
+    }
+)
 
 
 class RunOrder(enum.StrEnum):
@@ -152,6 +189,21 @@ class RunRating(enum.StrEnum):
     DOWN = "down"
 
 
+class RunSource(enum.StrEnum):
+    """Whose work a run was, as Activity's Source filter asks.
+
+    `CONVERSATION` is every surface a person, a client or a schedule reaches an
+    agent through. `EVALUATION` is one of the organization's agents answering an
+    eval case - an eval run, or Improve measuring a candidate. `SYSTEM` is a
+    platform agent (`AgentKind` other than `AGENT`) at work: the judge, the
+    improver, the knowledge-gap classifier and drafter, the case generator.
+    """
+
+    CONVERSATION = "conversation"
+    EVALUATION = "evaluation"
+    SYSTEM = "system"
+
+
 class AgentRun(Base, TimestampMixin):
     """One execution of one agent version."""
 
@@ -159,6 +211,12 @@ class AgentRun(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    improvement_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("improvement_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -209,6 +267,17 @@ class AgentRun(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    routine_origin_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    """Immutable routine provenance; survives deletion so a parked run cannot lose its guard."""
+    routine_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="trigger", server_default="trigger"
+    )
+    routine_activation_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    routine_policy: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="SET NULL"),
@@ -262,6 +331,23 @@ class AgentRun(Base, TimestampMixin):
     # continue on exactly what it was running.
     test_spec: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
+    # The skill versions this run served, its inline specialists' included; null for
+    # a run from before skills were versioned.
+    skill_version_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), nullable=True
+    )
+
+    # Only a completed run that reached workspace attachment setup closes their window.
+    earlier_attachments_checked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Null until a run's finish records the skills it used; false for good once a
+    # segment's write failed, and for every run from before `run_skill_uses`. Only
+    # true says what the run used - the others are unknown, which is not none.
+    skill_uses_recorded: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=True, server_default=text("true")
+    )
+
     # The run this one was delegated from, and the delegation's own id inside it.
     # Both null for a run somebody started, which is every run except a
     # delegation to a published agent - an inline specialist has no agent to
@@ -287,6 +373,20 @@ class AgentRun(Base, TimestampMixin):
     subagent_task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     surface: Mapped[str] = mapped_column(String(16), nullable=False, default=RunSurface.WEB.value)
+    # `voice` for a call (#54). Its own column rather than a `RunSurface` member,
+    # for the reason that enum's docstring gives: where a run came from and how
+    # it was held are two questions, and a call in the widget is still the widget.
+    modality: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="text", server_default="text"
+    )
+    system_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    """The platform role that did this work, when no agent's instructions ran (#2575).
+
+    A system role's model call is recorded under the starter agent so it has a row,
+    a cost and a trace, but it is not the starter's work: this says whose it was,
+    so Activity can name `memory_maintenance` rather than an agent that never ran,
+    and a role's spend is counted apart from a person's own proactivity limit.
+    """
     status: Mapped[str] = mapped_column(
         String(24), nullable=False, default=RunStatus.RUNNING.value, index=True
     )
@@ -310,10 +410,38 @@ class AgentRun(Base, TimestampMixin):
     )
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Of `input_tokens`, which by Pydantic AI's convention includes them: those
+    # served from the provider's cache, and those written to it. Priced apart, so
+    # a run is reconciled with a provider's console from these (#2170).
+    cache_read_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    cache_write_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # Numeric, not float: costs are summed into monthly totals that must not drift.
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal(0))
     # True when some model in the run had no price - the cost is then a floor.
     cost_is_partial: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Tool calls whose arguments arrived as malformed JSON and were repaired
+    # before validation (#2105) - how often a model needed it.
+    tool_args_repaired: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    # Prompt-cache collapses on this run's own requests (#2109): a *bust* is a
+    # prefix that moved while the provider should still have held it, an
+    # *expiry* one whose retention had passed, and the missed tokens what earlier
+    # requests had cached that these did not read back. On the row, beside the
+    # cost they explain, so they can be counted per agent and model; each
+    # request's own mark is in the run's manifest.
+    cache_busts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    cache_expiries: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    cache_missed_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     # The trace lives in Logfire; we keep the id so the UI can deep-link into it
     # instead of duplicating spans into our database.
@@ -329,8 +457,27 @@ class AgentRun(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stamped every few seconds by the process executing the run
+    # (`app.services.run_heartbeat`), so a run whose process died is told apart
+    # from a slow one in minutes rather than hours. A raw UPDATE, not the ORM,
+    # so it leaves `updated_at` - the run's last transition - alone.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Set when the chat was told this park could not continue, so the safety net
+    # does not tell it a second time; cleared when the run leaves the queue. A
+    # column rather than a `paused_state` key: `PausedRunState` is
+    # `extra="forbid"`, so a key there would make the run unreadable to an older
+    # process on a rollback or a rolling deploy.
+    chat_notice_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
+        CheckConstraint(
+            "routine_kind IN ('trigger', 'watch') AND "
+            "(routine_kind != 'watch' OR (routine_origin_id IS NOT NULL AND routine_policy IS NOT NULL))",
+            name="ck_agent_runs_routine_policy",
+        ),
         # Monthly spend, per organization. Read before *every* model request to
         # check the budget, so it is the most frequently served query here.
         Index("ix_agent_runs_org_started", "organization_id", "started_at"),
@@ -342,6 +489,7 @@ class AgentRun(Base, TimestampMixin):
             "started_at",
             "provider",
         ),
+        CheckConstraint("modality IN ('text', 'voice')", name="ck_agent_runs_modality"),
     )
 
     def __repr__(self) -> str:
@@ -425,6 +573,16 @@ class ToolApproval(Base, TimestampMixin):
     )
     tool_id: Mapped[str] = mapped_column(String(64), nullable=False)
     tool_args: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
+    # The stable id the capability declares the tool under. `tool_id` is the name the
+    # model called, which a binding may have renamed, so a surface that words the
+    # call by tool reads this one. Null for a tool no capability owns, and on rows
+    # parked before it was stored.
+    capability_tool_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The ids in `tool_args` as names - `{"view": "Closed tickets"}` - resolved by
+    # the tool's describer as the run's person when the call was parked, so the
+    # card and the queue can say what is being approved in words. Null when the
+    # tool has no describer or describing it failed; the arguments stay the record.
+    context: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
 
     # Which delegate asked, when the ask came from inside a delegation. `agent_id`
     # above is the agent whose *run* this is - the one the queue is scoped by and
@@ -465,6 +623,15 @@ class ToolApproval(Base, TimestampMixin):
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remember_scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    always_asks: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    """Whether only a person's answer to this call could let it run, so it is never remembered.
+
+    Written when the call is parked rather than looked up from the tool later,
+    because a tool may ask always for some calls and not others.
+    """
 
     # How, not what. A row approved by a click and one granted in advance by a
     # conversation's approval mode are both `approved`, and telling them apart is
@@ -493,6 +660,17 @@ class ToolApproval(Base, TimestampMixin):
         # `status` index the column declares cannot serve it - every row in the
         # deployment shares four status values.
         Index("ix_tool_approvals_org_status", "organization_id", "status"),
+        Index(
+            "ix_tool_approval_consent",
+            "organization_id",
+            "decided_by_user_id",
+            "tool_id",
+            postgresql_where=text("remember_scope IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "remember_scope IS NULL OR (remember_scope IN ('conversation', 'agent') AND status = 'approved' AND decided_via = 'click')",
+            name="ck_tool_approval_consent",
+        ),
     )
 
     def __repr__(self) -> str:

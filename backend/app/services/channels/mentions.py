@@ -36,20 +36,23 @@ role and grants exactly as it would for the same request from the web app. A
 handle typed into a public channel is a name, not a key.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import re
+from collections.abc import AsyncGenerator, Set
 from dataclasses import dataclass, field
 from decimal import Decimal
+from io import BytesIO
 from typing import Any
 from uuid import UUID
 
+from botocore.exceptions import BotoCoreError, ClientError
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.capabilities.channel_tools import ChannelDirectory
 from app.agents.capabilities.charts._spec import parse_chart_spec
+from app.agents.capabilities.image_generation._toolset import parse_generated_image
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
 from app.core.permissions import AuthContext
 from app.db.models.agent_exposure import AgentExposure
@@ -57,11 +60,24 @@ from app.db.models.agent_run import RunStatus, RunSurface
 from app.db.models.chat_file import ChatFile
 from app.db.models.organization import Organization
 from app.repositories import agent_exposure_repo, agent_repo, member_repo
+from app.services import generated_media, visual_render
 from app.services.access import publisher_context
 from app.services.agent_runner import AgentRunnerService, RunStream
-from app.services.channels.base import ROOM_HANDLES, OutgoingAttachment, channel_key
+from app.services.channels.attachments import MAX_OUTBOUND_BYTES
+from app.services.channels.base import (
+    ROOM_HANDLES,
+    IncomingMessage,
+    OutgoingAttachment,
+    channel_key,
+)
 from app.services.channels.chart_png import render_chart_png
+from app.services.channels.formatting import (
+    LINK_ACCOUNT_INSTRUCTION,
+    authored_prompt,
+)
+from app.services.channels.next_steps import next_steps_of
 from app.services.channels.steering import current_steering, is_asked_aside
+from app.services.file_storage import get_file_storage
 from app.services.transcript import RecordedToolCall
 from app.services.usage_report import (
     UsageReportService,
@@ -69,6 +85,7 @@ from app.services.usage_report import (
     needs_sandbox_sample,
     should_report,
 )
+from app.services.visual import DREW, VISUAL_TOOLS
 
 # Matches a leading handle and keeps everything after it as the prompt. Anchored
 # at the start on purpose: a slug appearing mid-sentence is someone talking
@@ -88,6 +105,11 @@ _SURFACES: dict[str, RunSurface] = {
     "slack": RunSurface.SLACK,
     "telegram": RunSurface.TELEGRAM,
     "mattermost": RunSurface.MATTERMOST,
+    "teams": RunSurface.TEAMS,
+    "sms": RunSurface.SMS,
+    "email": RunSurface.EMAIL,
+    "imessage": RunSurface.IMESSAGE,
+    "discord": RunSurface.DISCORD,
 }
 
 
@@ -108,7 +130,7 @@ def drawn_chart(called: list[RecordedToolCall]) -> bytes | None:
     it through `asyncio.to_thread`, never inline.
     """
     for call in reversed(called):
-        if call.tool_name != _CHART_TOOL or call.result is None:
+        if call.renderer_name != _CHART_TOOL or call.result is None:
             continue
         spec = parse_chart_spec(call.result)
         if spec is None:
@@ -121,10 +143,114 @@ def drawn_chart(called: list[RecordedToolCall]) -> bytes | None:
     return None
 
 
+def _photo_png(content: bytes) -> bytes:
+    """Decode bounded model output before giving adapters an actual PNG."""
+    with Image.open(BytesIO(content)) as image:
+        if image.width * image.height > 4096 * 4096:
+            raise ValueError("Generated picture exceeds the pixel limit")
+        output = BytesIO()
+        image.convert("RGBA").save(output, format="PNG")
+    png = output.getvalue()
+    if len(png) > MAX_OUTBOUND_BYTES:
+        raise ValueError("Generated picture exceeds the channel byte limit")
+    return png
+
+
+async def _generated_picture(filename: str, organization_id: UUID) -> bytes | None:
+    """Read only the tenant's stored generation receipt, never its URL or workspace path."""
+    stored = await generated_media.open_generated_media(organization_id, filename)
+    if not 0 < stored.size <= MAX_OUTBOUND_BYTES:
+        return None
+    # The range also bounds a file replaced between the size check and the read.
+    stream = await get_file_storage().open_range(stored.storage_path, 0, MAX_OUTBOUND_BYTES)
+    content = bytearray()
+    try:
+        async for chunk in stream:
+            content.extend(chunk)
+    finally:
+        if isinstance(stream, AsyncGenerator):
+            await stream.aclose()
+    if len(content) > MAX_OUTBOUND_BYTES:
+        return None
+    return await asyncio.to_thread(_photo_png, bytes(content))
+
+
+async def drawn_picture(
+    called: list[RecordedToolCall],
+    *,
+    organization_id: UUID,
+    conversation_id: UUID | None,
+    notices: list[str] | None = None,
+    generated_files: Set[str] = frozenset(),
+) -> bytes | None:
+    """The last picture this turn made: a generated photo, chart, or visual the deployment's browser drew.
+
+    A reply carries one image, so it is the last picture this turn made. A visual with
+    no browser to draw it with gives none, and records a delivery notice in
+    `notices` so the channel does not silently confirm a missing picture.
+    """
+    for call in reversed(called):
+        if call.result is None:
+            continue
+        if call.renderer_name == "generate_image":
+            image = parse_generated_image(call.result)
+            if image is None:
+                continue
+            try:
+                # MCP tools can reuse this name and forge a receipt. Only the
+                # runner's store-generated provenance may authorize an embed.
+                picture = None
+                if image.filename is not None and image.filename in generated_files:
+                    async with asyncio.timeout(15):
+                        picture = await _generated_picture(image.filename, organization_id)
+            except (
+                NotFoundError,
+                OSError,
+                ValueError,
+                Image.DecompressionBombError,
+                BotoCoreError,
+                ClientError,
+            ):
+                logger.warning(
+                    "Could not prepare a generated picture for a channel reply", exc_info=True
+                )
+                picture = None
+            if picture is not None:
+                return picture
+            if notices is not None:
+                notices.append(
+                    "The generated image could not be attached to this reply. "
+                    "It has not been delivered to this channel. Open the conversation in "
+                    "AgenticOS to check the image or ask the operator to check media storage."
+                )
+            return None
+        if call.renderer_name == _CHART_TOOL:
+            return await asyncio.to_thread(drawn_chart, [call])
+        # A visual the tool refused - a retry, the last attempt's refusal - is no
+        # drawing; and one that cannot be drawn here leaves an earlier chart to go.
+        if call.renderer_name in VISUAL_TOOLS and call.result.startswith(DREW):
+            picture = await visual_render.picture_of_turn(
+                [(c.tool_call_id, c.renderer_name or "", c.args, c.result) for c in called],
+                organization_id=organization_id,
+                conversation_id=conversation_id,
+            )
+            if picture is not None:
+                return picture
+            if notices is not None:
+                notices.append(
+                    "The visual could not be attached to this reply. It is saved in the "
+                    "conversation in AgenticOS. Ask the deployment operator to check the "
+                    "visual renderer."
+                )
+                # One failed render already covered all this turn's visuals.
+                notices = None
+    return None
+
+
 _CHART_TOOL = "create_chart"
 """What the charts capability registers. One name, read in one place."""
 
-_LINK_FIRST = "Link your account before talking to an agent - send /link to this bot."
+_LINK_FIRST = LINK_ACCOUNT_INSTRUCTION
 
 # Said when the handle names a real agent that nobody has made available here.
 # Deliberately *not* the same answer a typo gets: the bindings are new, so the
@@ -171,13 +297,14 @@ def parse_mention(text: str) -> Mention | None:
     addressing an agent, which makes this a property of the parser rather than a
     refusal further down.
     """
-    match = _MENTION.match(text)
-    if match is None:
-        return None
-    slug, prompt = match.group(1), match.group(2).strip()
-    if not prompt or slug in ROOM_HANDLES:
-        return None
-    return Mention(slug=slug, prompt=prompt)
+    while match := _MENTION.match(text):
+        slug, prompt = match.group(1), match.group(2).strip()
+        if not prompt:
+            return None
+        if slug not in ROOM_HANDLES:
+            return Mention(slug=slug, prompt=prompt)
+        text = prompt
+    return None
 
 
 class UnaddressedMessage(Exception):
@@ -202,6 +329,9 @@ class AnsweredTurn:
     refused: list[str] = field(default_factory=list)
     """Produced files the reply names instead of carrying."""
 
+    delivery_notices: list[str] = field(default_factory=list)
+    """Delivery failures, already phrased for the reader rather than as file paths."""
+
     awaiting_approval_run_id: UUID | None = None
     """The run parked on a decision, when that is how the turn ended.
 
@@ -217,6 +347,9 @@ class AnsweredTurn:
 
     run_id: UUID | None = None
     """The run that answered, so the thumbs under the answer can rate it (#2084)."""
+
+    next_steps: list[str] = field(default_factory=list)
+    """What the answer offered to do next, posted under it as buttons (#2301)."""
 
     image_png: bytes | None = None
     """A chart the turn drew, rendered for a surface that cannot run Recharts.
@@ -254,6 +387,7 @@ class ChannelAgentRouter:
         text: str,
         *,
         platform: str,
+        incoming: IncomingMessage | None = None,
         organization_id: UUID,
         bot_id: UUID,
         user_id: UUID | None,
@@ -273,6 +407,8 @@ class ChannelAgentRouter:
         Args:
             text: The raw incoming message, handle included.
             platform: Which channel it arrived on, for the run's surface.
+            incoming: Normalized platform event for request-only author labels;
+                authorization still uses the separately resolved channel identity.
             organization_id: The bot's organization; the slug is resolved here
                 and nowhere else, so one workspace cannot reach another's agents.
             bot_id: The bot the message arrived on. An agent answers through it
@@ -357,15 +493,19 @@ class ChannelAgentRouter:
 
         produced: list[OutgoingAttachment] = []
         refused: list[str] = []
+        notices: list[str] = []
         called: list[RecordedToolCall] = []
+        generated_files: set[str] = set()
         answer, run = await self.runner.execute(
             ctx,
             agent.id,
             mention.prompt,
+            said=mention.prompt,
             attachments=attachments,
             outbound=produced,
             outbound_refused=refused,
             tool_calls=called,
+            generated_files=generated_files,
             stream=stream,
             surface=_SURFACES.get(platform, RunSurface.API),
             # A question is asked here as buttons and answered later (#2064) - of
@@ -385,6 +525,7 @@ class ChannelAgentRouter:
             # Without it a named agent answered an existing thread as though it
             # were empty, because only the default path prepended the backfill.
             message_history=message_history,
+            channel_author_context="" if incoming is None else authored_prompt("", incoming),
             # The same rule as the default path: a mention from a member speaks
             # through that person's own MCP accounts, and the room reads the
             # answer exactly as it reads the question. `sender`, not `user_id`,
@@ -403,13 +544,21 @@ class ChannelAgentRouter:
             ),
             attachments=produced,
             refused=refused,
-            image_png=await asyncio.to_thread(drawn_chart, called),
+            delivery_notices=notices,
+            image_png=await drawn_picture(
+                called,
+                organization_id=run.organization_id,
+                conversation_id=run.conversation_id,
+                notices=notices,
+                generated_files=generated_files,
+            ),
             awaiting_approval_run_id=(
                 run.id if run.status == RunStatus.AWAITING_APPROVAL else None
             ),
             parked_run_id=run.id if run.status in _PARKED else None,
             status=run.status,
             run_id=run.id,
+            next_steps=next_steps_of(called),
         )
 
     async def answer_default(
@@ -417,6 +566,7 @@ class ChannelAgentRouter:
         text: str,
         *,
         platform: str,
+        incoming: IncomingMessage | None = None,
         organization_id: UUID,
         bot_id: UUID,
         user_id: UUID | None,
@@ -440,10 +590,10 @@ class ChannelAgentRouter:
 
         Args:
             text: The whole incoming message; there is no handle to strip.
+            incoming: Normalized platform event for this turn's author labels.
             message_history: The channel thread so far, in Pydantic AI's format.
-                A direct-message bot is a conversation, not a sequence of
-                one-shot prompts, and the mention path's statelessness is about
-                shared channels, not about this one.
+                Both routes receive saved turns and the initial thread backfill
+                so follow-ups retain earlier authors and tool results.
 
         Raises:
             BadRequestError: If the bot exposes no agent. The message says what
@@ -474,15 +624,19 @@ class ChannelAgentRouter:
         )
         produced: list[OutgoingAttachment] = []
         refused: list[str] = []
+        notices: list[str] = []
         called: list[RecordedToolCall] = []
+        generated_files: set[str] = set()
         answer, run = await self.runner.execute(
             ctx,
             agent.id,
             text,
+            said=text,
             attachments=attachments,
             outbound=produced,
             outbound_refused=refused,
             tool_calls=called,
+            generated_files=generated_files,
             stream=stream,
             surface=_SURFACES.get(platform, RunSurface.API),
             # A question is asked here as buttons and answered later (#2064) - of
@@ -506,6 +660,7 @@ class ChannelAgentRouter:
             # room's to use.
             acts_for_sender=sender is not None,
             message_history=message_history,
+            channel_author_context="" if incoming is None else authored_prompt("", incoming),
             exposure=exposure,
         )
         return AnsweredTurn(
@@ -514,13 +669,21 @@ class ChannelAgentRouter:
             ),
             attachments=produced,
             refused=refused,
-            image_png=await asyncio.to_thread(drawn_chart, called),
+            delivery_notices=notices,
+            image_png=await drawn_picture(
+                called,
+                organization_id=run.organization_id,
+                conversation_id=run.conversation_id,
+                notices=notices,
+                generated_files=generated_files,
+            ),
             awaiting_approval_run_id=(
                 run.id if run.status == RunStatus.AWAITING_APPROVAL else None
             ),
             parked_run_id=run.id if run.status in _PARKED else None,
             status=run.status,
             run_id=run.id,
+            next_steps=next_steps_of(called),
         )
 
     async def _with_usage(

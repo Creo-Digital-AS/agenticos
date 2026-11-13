@@ -15,8 +15,6 @@ still there - when it is fixed, the last test in this file fails and the module 
 away. What a client actually receives is `tests/api/test_method_not_allowed.py`.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 import pytest
@@ -46,6 +44,20 @@ class TestTheWrapper:
 
         assert otel_compat.route_details({"path": "/api/v1/auth/login"}) == "/api/v1/auth/login"
 
+    def test_a_fallback_path_does_not_name_a_span_after_an_artifact_s_credential(self, monkeypatch):
+        """A wrong-method request to a signed content address names its span after
+        the raw path, and that span is exported wherever tracing is configured."""
+
+        def raises(_scope: Any) -> Any:
+            raise AttributeError("'_IncludedRouter' object has no attribute 'path'")
+
+        monkeypatch.setattr(otel_compat, "_upstream_route_details", raises)
+
+        assert (
+            otel_compat.route_details({"path": "/api/v1/artifact-content/eyJsecret.eyJx.sig"})
+            == "/api/v1/artifact-content/[REDACTED]"
+        )
+
     def test_a_scope_with_no_path_is_still_answered(self, monkeypatch):
         def raises(_scope: Any) -> Any:
             raise AttributeError("no path")
@@ -66,6 +78,37 @@ class TestTheWrapper:
             otel_compat.route_details({"path": "/x"})
 
 
+class TestTheRouteListIsFlattenedOnce:
+    """Upstream rebuilt every included router's dependants on every request to
+    produce the same list - the largest single cost of a request on prod (#2226)."""
+
+    def test_the_same_list_is_flattened_once(self, monkeypatch):
+        calls: list[int] = []
+
+        def upstream(routes: list[Any]) -> Any:
+            calls.append(len(routes))
+            return iter(routes)
+
+        monkeypatch.setattr(otel_compat, "_upstream_flatten_routes", upstream)
+        monkeypatch.setattr(otel_compat, "_flattened", {})
+        routes = ["a", "b"]
+
+        assert list(otel_compat.flatten_routes(routes)) == ["a", "b"]
+        assert list(otel_compat.flatten_routes(routes)) == ["a", "b"]
+        assert calls == [2]
+
+    def test_a_list_that_grows_is_flattened_again(self, monkeypatch):
+        """A test adding a route to the app must see it matched."""
+        monkeypatch.setattr(otel_compat, "_upstream_flatten_routes", iter)
+        monkeypatch.setattr(otel_compat, "_flattened", {})
+        routes = ["a"]
+        otel_compat.flatten_routes(routes)
+
+        routes.append("b")
+
+        assert list(otel_compat.flatten_routes(routes)) == ["a", "b"]
+
+
 class TestInstallingIt:
     def test_it_replaces_the_helper_that_raises(self):
         import opentelemetry.instrumentation.fastapi as instrumentation
@@ -73,6 +116,7 @@ class TestInstallingIt:
         otel_compat.patch_route_details()
 
         assert instrumentation._get_route_details.__module__ == otel_compat.__name__
+        assert instrumentation._flatten_routes is otel_compat.flatten_routes
 
     def test_patching_twice_does_not_wrap_the_wrapper(self):
         """The lifespan and the import-time test client both instrument, and a

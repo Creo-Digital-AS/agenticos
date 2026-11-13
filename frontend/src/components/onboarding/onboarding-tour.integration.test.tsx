@@ -7,11 +7,12 @@ import { toast } from "sonner";
 
 import { OnboardingTour } from "./onboarding-tour";
 import { RestartTourButton } from "./restart-tour-button";
-import { activateTab, pulse, waitForElement } from "@/components/onboarding/spotlight";
+import { pulse, waitForElement } from "@/components/onboarding/spotlight";
+import { activateTab } from "@/lib/activate-tab";
 import { apiClient } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
 import { qk } from "@/lib/query-keys";
-import { visibleTourSteps } from "@/lib/onboarding/tour";
+import { stepsForPage, visibleTourSteps } from "@/lib/onboarding/tour";
 import { useAuthStore, useOnboardingStore } from "@/stores";
 import { Perm, type Permission } from "@/types/permissions";
 import type { DriveStep } from "driver.js";
@@ -47,13 +48,13 @@ const spotlight = vi.hoisted(() => ({ highlight: vi.fn(), destroy: vi.fn() }));
 vi.mock("@/components/onboarding/spotlight", () => ({
   createTourDriver: () => ({ highlight: spotlight.highlight, destroy: spotlight.destroy }),
   waitForElement: vi.fn(async () => ({}) as Element),
-  activateTab: vi.fn(),
   pulse: vi.fn(async () => {}),
   isTypingTarget: vi.fn(() => false),
   revealDisclosures: vi.fn(),
   keepClearOf: vi.fn(),
   prefersReducedMotion: () => false,
 }));
+vi.mock("@/lib/activate-tab", () => ({ activateTab: vi.fn() }));
 // The light the reader sees. `focus` records what it was pointed at and resolves
 // at once, unless a test holds it to prove what waits for the light to land.
 const light = vi.hoisted(() => ({
@@ -97,7 +98,7 @@ function servePermissions(permissions: readonly string[]) {
   vi.mocked(apiClient.get).mockImplementation((path: string) => {
     if (path === "/agents") {
       return Promise.resolve({
-        items: [{ id: "agent-1", slug: "claude-code-like", name: "Claude Code like" }],
+        items: [{ id: "agent-1", slug: "agenticos", name: "AgenticOS" }],
         total: 1,
       });
     }
@@ -112,6 +113,12 @@ function servePermissions(permissions: readonly string[]) {
         items: [{ id: "org-1", is_personal: true, name: "Personal" }],
         total: 1,
       });
+    }
+    if (path.startsWith("/datasets?")) {
+      return Promise.resolve({ items: [{ id: "dataset-1", name: "Refunds" }], total: 1 });
+    }
+    if (path.startsWith("/skills?")) {
+      return Promise.resolve({ items: [{ id: "skill-1", name: "refund-policy" }], total: 1 });
     }
     return Promise.resolve({
       organization_id: "org-1",
@@ -137,13 +144,21 @@ function shownStep(): DriveStep {
 beforeEach(() => {
   vi.clearAllMocks();
   nav.pathname = "/dashboard";
-  useOnboardingStore.setState({ isOpen: false, index: 0, mode: "tour", flowId: null, offer: null });
+  useOnboardingStore.setState({
+    isOpen: false,
+    index: 0,
+    mode: "tour",
+    flowId: null,
+    offer: null,
+    systemAgentPage: false,
+  });
   useAuthStore.setState({ user: user(), isAuthenticated: true, isLoading: false });
 });
 
 describe("OnboardingTour", () => {
-  it("auto-opens on the dashboard and welcomes a new user", async () => {
+  it("opens the requested tour and welcomes the reader", async () => {
     servePermissions(OWNER);
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
     expect(shownStep().popover?.progressText).toBe(`Step 1 of ${OWNER_LAUNCH}`);
@@ -151,6 +166,7 @@ describe("OnboardingTour", () => {
 
   it("offers the console's languages on the welcome card, and only there (#2072)", async () => {
     servePermissions(OWNER);
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
@@ -171,9 +187,53 @@ describe("OnboardingTour", () => {
     expect(shownStep().popover?.onPopoverRender).toBeUndefined();
   });
 
+  it("asks the reader's role on the welcome card and keeps it on their account (#2301)", async () => {
+    servePermissions(OWNER);
+    vi.mocked(apiClient.patch).mockResolvedValue(user({ job_title: "Sales" }));
+    useAuthStore.setState({ user: user({ job_title: "Finance" }) });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
+
+    const description = document.createElement("div");
+    shownStep().popover?.onPopoverRender?.({ description } as never, {} as never);
+    const roles = description.querySelector(
+      '[aria-label="What do you do? Your agents will know."]',
+    );
+    const buttons = Array.from(roles?.querySelectorAll("button") ?? []);
+    expect(buttons.find((b) => b.getAttribute("aria-pressed") === "true")?.textContent).toBe(
+      "Finance",
+    );
+    buttons.find((b) => b.textContent === "Sales")?.click();
+
+    await waitFor(() =>
+      expect(apiClient.patch).toHaveBeenCalledWith("/users/me", { job_title: "Sales" }),
+    );
+    await waitFor(() => expect(useAuthStore.getState().user?.job_title).toBe("Sales"));
+  });
+
+  it("lets a role that could not be saved go quietly, for Settings to hold", async () => {
+    servePermissions(OWNER);
+    vi.mocked(apiClient.patch).mockRejectedValue(new Error("offline"));
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
+
+    const description = document.createElement("div");
+    shownStep().popover?.onPopoverRender?.({ description } as never, {} as never);
+    const roles = description.querySelector(
+      '[aria-label="What do you do? Your agents will know."]',
+    );
+    Array.from(roles?.querySelectorAll("button") ?? [])[0]?.click();
+
+    await waitFor(() => expect(apiClient.patch).toHaveBeenCalled());
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("advances to the next highlight when Next is clicked", async () => {
     // The bug this replaces: a click on Next did nothing once a spotlight was up.
     servePermissions(OWNER);
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
@@ -184,6 +244,7 @@ describe("OnboardingTour", () => {
 
   it("shows a view-only member their shorter tour", async () => {
     servePermissions(VIEWER);
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() =>
       expect(shownStep().popover?.progressText).toBe(`Step 1 of ${VIEWER_LAUNCH}`),
@@ -193,6 +254,7 @@ describe("OnboardingTour", () => {
   it("persists completion when the tour is closed", async () => {
     servePermissions(OWNER);
     vi.mocked(apiClient.patch).mockResolvedValue(user({ onboarding_completed_at: "2026-02-02" }));
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
@@ -209,6 +271,7 @@ describe("OnboardingTour", () => {
     // its last page; closing it should land them on the home they started from.
     servePermissions(OWNER);
     vi.mocked(apiClient.patch).mockResolvedValue(user({ onboarding_completed_at: "2026-02-02" }));
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
@@ -221,6 +284,7 @@ describe("OnboardingTour", () => {
     // first agent together. Declining is silent; the Agents "?" re-offers it.
     servePermissions(OWNER);
     useOnboardingStore.setState({ isOpen: true, index: 999, mode: "tour" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
 
@@ -234,6 +298,7 @@ describe("OnboardingTour", () => {
     // tips. A "?" replay itself gets no reminder: it was opened from the "?".
     servePermissions(OWNER);
     vi.mocked(apiClient.patch).mockResolvedValue(user({ onboarding_completed_at: "2026-02-02" }));
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
 
@@ -246,9 +311,11 @@ describe("OnboardingTour", () => {
   it("offers the section's create flow when a '?' walk runs to its end", async () => {
     // Every section's "?" ends by asking whether to make the thing the section
     // is for - the re-entry into the interactive flows.
+    // The Skills walk ends on a skill's own page, which is where the reader is.
     servePermissions(OWNER);
-    nav.pathname = "/skills";
+    nav.pathname = "/skills/skill-1";
     useOnboardingStore.setState({ isOpen: true, index: 99, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
 
@@ -256,11 +323,30 @@ describe("OnboardingTour", () => {
     expect(useOnboardingStore.getState().offer).toBe("create-skill");
   });
 
+  it.each([
+    [false, "test-change"],
+    [true, null],
+  ])(
+    "on an agent's page where it is a system agent's: %s, ends a '?' walk offering %s",
+    async (systemAgentPage, offered) => {
+      // Nobody tests a change to a system agent against a dataset.
+      servePermissions(OWNER);
+      nav.pathname = "/agents/agent-1";
+      useOnboardingStore.setState({ isOpen: true, index: 99, mode: "page", systemAgentPage });
+      render(<OnboardingTour />, { wrapper });
+      await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
+
+      act(() => shownStep().popover?.onNextClick?.(undefined, {} as DriveStep, {} as never));
+      expect(useOnboardingStore.getState().offer).toBe(offered);
+    },
+  );
+
   it("a '?' walk closed early makes no create offer", async () => {
     // Leaving is not finishing, so an early close asks nothing.
     servePermissions(OWNER);
     nav.pathname = "/skills";
     useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
 
@@ -273,6 +359,7 @@ describe("OnboardingTour", () => {
     servePermissions(OWNER);
     nav.pathname = "/agents";
     useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
 
@@ -282,6 +369,36 @@ describe("OnboardingTour", () => {
     expect(toast.info).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["/agents/agent-1/improve/session-1", "Steps"],
+    ["/agents/agent-1/improve/new", "Improve"],
+    ["/agents/agent-1/evals/run-1", "The verdict"],
+  ])("walks the '?' on %s where it was opened, never to its page id", async (path, title) => {
+    servePermissions(OWNER);
+    nav.pathname = path;
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
+
+    expect(shownStep().popover?.title).toBe(title);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("describes a session's stop where the reader is once they have left it", async () => {
+    servePermissions(OWNER);
+    nav.pathname = "/agents/agent-1/improve/session-1";
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    const view = render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
+    spotlight.highlight.mockClear();
+
+    nav.pathname = "/agents/agent-1";
+    view.rerender(<OnboardingTour />);
+    await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
+    expect(shownStep().element).toBeUndefined();
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
   it("asks for the detail lists only when the walk has somewhere to open", async () => {
     // Three list queries stand behind the detail stops. The vault section has no
     // detail view, so a "?" there used to fetch agents, collections and
@@ -289,6 +406,7 @@ describe("OnboardingTour", () => {
     servePermissions(OWNER);
     nav.pathname = ROUTES.VAULT;
     useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
 
@@ -296,6 +414,8 @@ describe("OnboardingTour", () => {
     expect(asked).not.toContain("/agents");
     expect(asked).not.toContain("/kb");
     expect(asked).not.toContain("/orgs");
+    expect(asked.some((path) => path.startsWith("/datasets?"))).toBe(false);
+    expect(asked.some((path) => path.startsWith("/skills?"))).toBe(false);
   });
 
   it("asks for them on a walk that does step into a detail view", async () => {
@@ -304,11 +424,37 @@ describe("OnboardingTour", () => {
     servePermissions(OWNER);
     nav.pathname = ROUTES.AGENTS;
     useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
 
     await waitFor(() =>
       expect(vi.mocked(apiClient.get).mock.calls.map(([path]) => path)).toContain("/agents"),
     );
+  });
+});
+
+describe("the tables walk", () => {
+  it("'?' on a table shows that table's controls where the reader is, with their copy", async () => {
+    // With no detail target for the table pseudo-page, the engine read it as a
+    // route and pushed to `table-detail`, which loaded a table of that id.
+    servePermissions(OWNER);
+    nav.pathname = "/tables/t-1";
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
+    render(<OnboardingTour />, { wrapper });
+
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Its columns"));
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("'?' on the catalog captions its stops with their copy, not their keys", async () => {
+    servePermissions(OWNER);
+    nav.pathname = ROUTES.TABLES;
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
+    render(<OnboardingTour />, { wrapper });
+
+    await waitFor(() => expect(shownStep().popover?.title).toBe("Your tables"));
   });
 });
 
@@ -349,6 +495,7 @@ describe("OnboardingTour's light", () => {
     target.dataset.tour = "agent-instructions-header";
     serveElements(tab("agent-tab-build", "active"), target);
     openBuilderHelp();
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
 
     await waitFor(() => expect(light.focus).toHaveBeenCalledWith(target));
@@ -356,6 +503,160 @@ describe("OnboardingTour's light", () => {
     // be asked for more than once — but the light never goes anywhere else.
     expect(light.focus.mock.calls.every(([element]) => element === target)).toBe(true);
     expect(pulse).not.toHaveBeenCalled();
+    expect(activateTab).not.toHaveBeenCalled();
+  });
+
+  it("selects an inactive tab even when its target is already mounted and visible", async () => {
+    const trigger = tab("agent-tab-build", "inactive");
+    trigger.setAttribute("role", "tab");
+    trigger.setAttribute("aria-expanded", "true");
+    const target = document.createElement("div");
+    target.dataset.tour = "agent-instructions-header";
+    document.body.append(trigger, target);
+    try {
+      serveElements(trigger, target);
+      openBuilderHelp();
+      useOnboardingStore.setState({
+        index: stepsForPage("/agents/agent-1", () => true).findIndex(
+          (step) => step.id === "agent-instructions",
+        ),
+      });
+      render(<OnboardingTour />, { wrapper });
+
+      await waitFor(() => expect(light.focus).toHaveBeenCalledWith(target));
+      expect(activateTab).toHaveBeenCalledWith(trigger);
+    } finally {
+      trigger.remove();
+      target.remove();
+    }
+  });
+
+  it("leaves a disclosure closed when its target is visible outside it", async () => {
+    const trigger = document.createElement("button");
+    trigger.dataset.tour = "agent-tab-build";
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-controls", "secondary-actions");
+    const target = document.createElement("div");
+    target.dataset.tour = "agent-instructions-header";
+    document.body.append(trigger, target);
+    try {
+      serveElements(trigger, target);
+      openBuilderHelp();
+      useOnboardingStore.setState({
+        index: stepsForPage("/agents/agent-1", () => true).findIndex(
+          (step) => step.id === "agent-instructions",
+        ),
+      });
+      render(<OnboardingTour />, { wrapper });
+
+      await waitFor(() => expect(light.focus).toHaveBeenCalledWith(target));
+      expect(activateTab).not.toHaveBeenCalled();
+    } finally {
+      trigger.remove();
+      target.remove();
+    }
+  });
+
+  it("skips an absent optional stop at once on a page that has finished loading", async () => {
+    // Seven optional settings stops live on the other settings pages; each waited
+    // its turn, and the caption of the stop before them sat unchanged meanwhile.
+    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const tabs = document.createElement("div");
+    tabs.dataset.tour = "settings-tabs";
+    serveElements(tabs);
+    servePermissions(OWNER);
+    nav.pathname = "/settings/profile";
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(light.focus).toHaveBeenCalledWith(tabs));
+    expect(vi.mocked(waitForElement).mock.calls.at(-1)?.[2]).toBeUndefined();
+
+    now.mockReturnValue(9_000);
+    act(() => shownStep().popover?.onNextClick?.(undefined, {} as DriveStep, {} as never));
+    await waitFor(() =>
+      expect(vi.mocked(waitForElement)).toHaveBeenCalledWith(
+        '[data-tour="settings-appearance"]',
+        expect.any(AbortSignal),
+        0,
+      ),
+    );
+    now.mockRestore();
+  });
+
+  it("passes an absent stop in the direction the reader moved, and counts only present ones", async () => {
+    // On a skill's page on main, the catch-up stop never mounts: Next skips it on to
+    // the stop after, and Back from there skips it back to the stop before.
+    const steps = stepsForPage("/skills/skill-1", () => true);
+    const absent = steps.findIndex((one) => one.id === "skill-catch-up");
+    const present = steps
+      .filter((one) => one.id !== "skill-catch-up")
+      .map((one) => {
+        const element = document.createElement("div");
+        element.dataset.tour = one.target ?? one.id;
+        return element;
+      });
+    const tabs = steps
+      .flatMap((one) => [one.activate ?? []].flat().map((id) => tab(id, "active")))
+      .filter(
+        (element, i, all) => all.findIndex((x) => x.dataset.tour === element.dataset.tour) === i,
+      );
+    serveElements(...present, ...tabs);
+    servePermissions(OWNER);
+    nav.pathname = "/skills/skill-1";
+    useOnboardingStore.setState({ isOpen: true, index: absent - 1, mode: "page" });
+    render(<OnboardingTour />, { wrapper });
+    const total = steps.length;
+    await waitFor(() =>
+      expect(shownStep().popover?.progressText).toBe(`Step ${absent} of ${total}`),
+    );
+
+    act(() => shownStep().popover?.onNextClick?.(undefined, {} as DriveStep, {} as never));
+    await waitFor(() => expect(useOnboardingStore.getState().index).toBe(absent + 1));
+    await waitFor(() =>
+      expect(shownStep().popover?.progressText).toBe(`Step ${absent + 1} of ${total - 1}`),
+    );
+
+    act(() => shownStep().popover?.onPrevClick?.(undefined, {} as DriveStep, {} as never));
+    await waitFor(() => expect(useOnboardingStore.getState().index).toBe(absent - 1));
+    await waitFor(() =>
+      expect(shownStep().popover?.progressText).toBe(`Step ${absent} of ${total - 1}`),
+    );
+  });
+
+  it("leaves an open popover open rather than pressing its trigger shut", async () => {
+    const trigger = tab("chat-settings", "inactive");
+    trigger.setAttribute("data-state", "open");
+    const target = document.createElement("div");
+    target.dataset.tour = "chat-approval-mode";
+    serveElements(trigger, target);
+    servePermissions(OWNER);
+    nav.pathname = ROUTES.CHAT;
+    const steps = stepsForPage(ROUTES.CHAT, () => true);
+    useOnboardingStore.setState({
+      isOpen: true,
+      index: steps.findIndex((step) => step.id === "chat-approval-mode"),
+      mode: "page",
+    });
+    render(<OnboardingTour />, { wrapper });
+
+    await waitFor(() => expect(light.focus).toHaveBeenCalledWith(target));
+    expect(activateTab).not.toHaveBeenCalled();
+  });
+
+  it("goes straight to the target when the wizard is already on its step", async () => {
+    const step = document.createElement("li");
+    step.setAttribute("aria-current", "step");
+    const button = step.appendChild(document.createElement("button"));
+    button.dataset.tour = "improvement-step-understand";
+    const target = document.createElement("div");
+    target.dataset.tour = "improvement-evidence";
+    serveElements(button, target);
+    servePermissions(OWNER);
+    nav.pathname = "/agents/agent-1/improve/session-1";
+    useOnboardingStore.setState({ isOpen: true, index: 1, mode: "page" });
+    render(<OnboardingTour />, { wrapper });
+
+    await waitFor(() => expect(light.focus).toHaveBeenCalledWith(target));
     expect(activateTab).not.toHaveBeenCalled();
   });
 
@@ -378,6 +679,7 @@ describe("OnboardingTour's light", () => {
         : Promise.resolve(),
     );
     openBuilderHelp();
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
 
     await waitFor(() => expect(light.focus).toHaveBeenCalledWith(trigger));
@@ -388,6 +690,38 @@ describe("OnboardingTour's light", () => {
     await waitFor(() => expect(activateTab).toHaveBeenCalledWith(trigger));
     expect(pulse).toHaveBeenCalledWith(trigger, expect.any(AbortSignal), expect.any(Number));
     await waitFor(() => expect(light.focus).toHaveBeenLastCalledWith(target));
+  });
+
+  it("keeps Back and Next live while a tab is pressed and its section never shows", async () => {
+    // The dataset's Grading stop sat for its whole wait with both buttons greyed.
+    const trigger = tab("agent-tab-build", "inactive");
+    serveElements(trigger);
+    openBuilderHelp();
+    useOnboardingStore.setState({ index: 1 });
+    render(<OnboardingTour />, { wrapper });
+
+    await waitFor(() => expect(activateTab).toHaveBeenCalledWith(trigger));
+    await waitFor(() => expect(shownStep().element).toBeUndefined());
+    for (const [step] of spotlight.highlight.mock.calls as [DriveStep][]) {
+      expect(step.popover?.disableButtons).toBeUndefined();
+    }
+  });
+
+  it("steps once for a held arrow, not once for every repeat", async () => {
+    servePermissions(OWNER);
+    nav.pathname = ROUTES.AGENTS;
+    useOnboardingStore.setState({ isOpen: true, index: 0, mode: "page" });
+    render(<OnboardingTour />, { wrapper });
+    await waitFor(() => expect(spotlight.highlight).toHaveBeenCalled());
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", repeat: true }));
+    });
+    expect(useOnboardingStore.getState().index).toBe(0);
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    });
+    expect(useOnboardingStore.getState().index).toBe(1);
   });
 
   it("presses the sidebar link that leads to another page, then goes there", async () => {
@@ -401,6 +735,7 @@ describe("OnboardingTour's light", () => {
     );
     const chat = visibleTourSteps(() => true).findIndex((step) => step.page === ROUTES.CHAT);
     useOnboardingStore.setState({ isOpen: true, index: chat, mode: "tour" });
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
 
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(ROUTES.CHAT));
@@ -414,6 +749,7 @@ describe("OnboardingTour's light", () => {
 
   it("lights nothing on a step that describes no control", async () => {
     servePermissions(OWNER);
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(shownStep().popover?.title).toBe("Welcome to AgenticOS"));
     expect(light.focus).toHaveBeenLastCalledWith(null);
@@ -422,6 +758,7 @@ describe("OnboardingTour's light", () => {
   it("takes the light down with the tour", async () => {
     servePermissions(OWNER);
     vi.mocked(apiClient.patch).mockResolvedValue(user({ onboarding_completed_at: "2026-02-02" }));
+    if (!useOnboardingStore.getState().isOpen) useOnboardingStore.getState().openTour();
     render(<OnboardingTour />, { wrapper });
     await waitFor(() => expect(light.focus).toHaveBeenCalled());
 

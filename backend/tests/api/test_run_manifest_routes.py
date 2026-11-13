@@ -12,8 +12,6 @@ not owned - which is why the gate sweep in `tests/api/test_platform_routes.py`
 reaches it through the runner service.
 """
 
-from __future__ import annotations
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -72,6 +70,7 @@ async def test_the_record_is_served_as_it_was_stored() -> None:
             "settings": {"temperature": 0.2},
             "requests": [{"index": 0, "duration_ms": 812, "input_tokens": 1200}],
             "messages": [{"kind": "request", "parts": []}],
+            "transcript": [{"kind": "response", "parts": [{"content": "A finding"}]}],
         }
     )
     service = MagicMock(get_run_manifest=AsyncMock(return_value=record))
@@ -87,6 +86,7 @@ async def test_the_record_is_served_as_it_was_stored() -> None:
     assert body["settings"] == {"temperature": 0.2}
     assert body["requests"][0]["duration_ms"] == 812
     assert body["truncated"] is False
+    assert body["transcript"][0]["parts"][0]["content"] == "A finding"
 
 
 async def test_a_record_from_an_older_build_still_serializes() -> None:
@@ -136,3 +136,35 @@ async def test_a_caller_without_runs_view_is_refused() -> None:
         response = await client.get(f"/api/v1/runs/{uuid4()}/manifest")
 
     assert response.status_code == 403
+
+
+@pytest.mark.security
+async def test_a_script_waiting_for_approval_keeps_its_inner_call_identity() -> None:
+    record = _manifest(
+        {
+            "code_runs": [
+                {
+                    "tool_call_id": "script",
+                    "code": "await write(i=1)",
+                    "calls": [
+                        {
+                            "tool_call_id": "script__1",
+                            "tool": "write",
+                            "args": '{"i":1}',
+                            "status": "awaiting_approval",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    service = MagicMock(get_run_manifest=AsyncMock(return_value=record))
+    async with _client(service) as client:
+        response = await client.get(f"/api/v1/runs/{record.run_id}/manifest")
+    assert response.status_code == 200, response.text
+    assert response.json()["code_runs"][0]["calls"][0] == {
+        "tool_call_id": "script__1",
+        "tool": "write",
+        "args": '{"i":1}',
+        "status": "awaiting_approval",
+    }

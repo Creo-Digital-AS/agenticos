@@ -5,20 +5,26 @@ import { useLocale, useTranslations } from "next-intl";
 import type { LucideIcon } from "lucide-react";
 
 import {
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useChooseLocale } from "@/hooks/use-choose-locale";
 import { useMounted } from "@/hooks/use-mounted";
+import { useResolvedTheme } from "@/hooks/use-resolved-theme";
+import { LookPreview } from "@/components/settings/look-preview";
+import { isLook, LOOKS } from "@/lib/appearance";
 import { getLocaleFlag, getLocaleLabel, locales, type Locale } from "@/i18n";
-import { usePathname, useRouter } from "@/lib/locale-navigation";
 import { getResolvedTheme, useThemeStore, type Theme } from "@/stores/theme-store";
 
 /**
- * The two preferences that belong to the person rather than to the page:
- * which theme, and which language.
+ * The preferences that belong to the person rather than to the page: which
+ * theme and which language. The rest of them - the voice glow and motion - live
+ * with the theme under Settings → Profile → Appearance.
  *
  * They used to be two icon buttons in a strip at the foot of the column,
  * beside search and the bell. That strip mixed two things a person does
@@ -32,9 +38,9 @@ import { getResolvedTheme, useThemeStore, type Theme } from "@/stores/theme-stor
  * current value on the trigger, so the menu answers "what language is this in"
  * without a second click.
  *
- * Submenus rather than a flat list of seven rows: the account menu's own
- * entries are the organization, the profile and signing out, and burying those
- * under three themes and three languages inverts what it is for.
+ * Submenus rather than a flat list of rows: the account menu's own entries are
+ * the organization, the profile and signing out, and burying those under three
+ * themes and three languages inverts what it is for.
  *
  * Each choice is a Radix `RadioItem`, not a `<button role="menuitemradio">`.
  * The hand-rolled version looked identical and was unreachable: Radix builds a
@@ -55,10 +61,12 @@ const THEME_LABEL: Record<Theme, string> = {
   system: "system",
 };
 
-/** Light, dark, or whatever the machine says - as a named submenu. */
+/** Theme and style share the same preferences as the full Appearance settings. */
 export function AppearanceMenu() {
   const t = useTranslations("theme");
-  const { theme, setTheme } = useThemeStore();
+  const ta = useTranslations("appearance");
+  const { theme, setTheme, look, setLook } = useThemeStore();
+  const resolved = useResolvedTheme();
   // `false` on the server, `true` once hydrated - `useMounted` says why.
   const mounted = useMounted();
 
@@ -73,13 +81,18 @@ export function AppearanceMenu() {
         <TriggerIcon className="h-4 w-4 shrink-0" aria-hidden />
         <span className="flex-1">{t("appearance")}</span>
         {mounted ? (
-          <span className="text-muted-foreground text-xs">{t(THEME_LABEL[current])}</span>
+          <span className="text-muted-foreground text-xs">{ta(`looks.${look}.name`)}</span>
         ) : null}
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-40">
+      <DropdownMenuSubContent className="w-56">
+        <DropdownMenuLabel className="text-muted-foreground text-xs">
+          {ta("theme")}
+        </DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={mounted ? current : undefined}
-          onValueChange={(next) => setTheme(next as Theme)}
+          onValueChange={(next) => {
+            if (next === "light" || next === "dark" || next === "system") setTheme(next);
+          }}
         >
           {(["light", "dark", "system"] as const).map((option) => {
             const Icon = THEME_ICON[option];
@@ -90,6 +103,23 @@ export function AppearanceMenu() {
               </DropdownMenuRadioItem>
             );
           })}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-muted-foreground text-xs">
+          {ta("look")}
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={mounted ? look : undefined}
+          onValueChange={(next) => {
+            if (isLook(next)) setLook(next);
+          }}
+        >
+          {LOOKS.map((option) => (
+            <DropdownMenuRadioItem key={option} value={option} className="gap-3 py-2">
+              <LookPreview look={option} dark={resolved === "dark"} className="h-8 w-12 shrink-0" />
+              {ta(`looks.${option}.name`)}
+            </DropdownMenuRadioItem>
+          ))}
         </DropdownMenuRadioGroup>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -112,8 +142,7 @@ export function AppearanceMenu() {
 export function LanguageMenu() {
   const t = useTranslations("common");
   const locale = useLocale() as Locale;
-  const router = useRouter();
-  const pathname = usePathname();
+  const choose = useChooseLocale();
 
   return (
     <DropdownMenuSub>
@@ -125,10 +154,11 @@ export function LanguageMenu() {
       <DropdownMenuSubContent className="w-44">
         <DropdownMenuRadioGroup
           value={locale}
-          // Through `locale-navigation`, never `next/navigation`: the locale
-          // lives in a cookie as well as in the path, and a switch that only
-          // rewrites the URL survives exactly one navigation.
-          onValueChange={(next) => router.push(pathname, { locale: next as Locale })}
+          // Kept on the account, and switched through `locale-navigation` -
+          // never `next/navigation`: the locale lives in a cookie as well as in
+          // the path, and a switch that only rewrites the URL survives exactly
+          // one navigation.
+          onValueChange={(next) => choose(next as Locale)}
         >
           {locales.map((option) => (
             <DropdownMenuRadioItem key={option} value={option} className="gap-2.5">

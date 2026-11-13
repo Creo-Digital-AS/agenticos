@@ -11,8 +11,7 @@ person an AI Architect run acts for. How a refusal is answered is a parameter:
 the server sends an MCP client a tool error carrying the API's own reason.
 """
 
-from __future__ import annotations
-
+import json as json_module
 from collections.abc import Callable
 from typing import Any
 
@@ -26,6 +25,13 @@ _TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 Refusal = Callable[[str], dict[str, Any]]
 """How a refused call is answered: raise, or return what the caller should see."""
+
+_NOT_EMPTY = (
+    "This call failed; it is not an empty result, so never report it as none. "
+    "Verify the id with the matching listing tool before retrying. A 404 can "
+    "also mean this caller cannot read that resource; never bypass its permissions."
+)
+"""Said with a refusal a model might otherwise read as "nothing found"."""
 
 
 class PlatformApi:
@@ -65,10 +71,17 @@ class PlatformApi:
         body = response.json()
         if response.is_error:
             error = body.get("error", {}) if isinstance(body, dict) else {}
-            return self._on_refusal(
-                f"{response.status_code} {error.get('code', 'ERROR')}: "
-                f"{error.get('message', 'The request was refused')}"
-            )
+            if response.status_code < 500:
+                detail: dict[str, Any] = {
+                    "status": response.status_code,
+                    "code": error.get("code", "ERROR"),
+                    "message": error.get("message", "The request was refused"),
+                    "details": error.get("details", {}),
+                }
+                if response.status_code in (404, 422):
+                    detail["hint"] = _NOT_EMPTY
+                return self._on_refusal(json_module.dumps({"error": detail}))
+            return self._on_refusal("The platform request failed; check its server log")
         return body
 
     def refuse(self, message: str) -> Any:

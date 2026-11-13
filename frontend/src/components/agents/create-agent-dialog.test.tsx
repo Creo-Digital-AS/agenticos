@@ -12,6 +12,11 @@ vi.mock("@/lib/api-client", () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/components/authoring/describe-with-architect", () => ({
+  DescribeWithArchitect: ({ onAsked }: { onAsked: () => void }) => (
+    <button onClick={onAsked}>Describe it to the Architect</button>
+  ),
+}));
 
 import { toast } from "sonner";
 
@@ -60,6 +65,12 @@ describe("CreateAgentDialog", () => {
     vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0 });
   });
 
+  it("closes once the description was handed to the Architect", async () => {
+    const { onOpenChange } = open();
+    await userEvent.click(screen.getByRole("button", { name: "Describe it to the Architect" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("shows the handle the name will produce, while it is being typed", async () => {
     // The handle is what a duplicate is refused on, what Slack resolves, and
     // the one thing about an agent that cannot be changed afterwards. A reader
@@ -100,8 +111,25 @@ describe("CreateAgentDialog", () => {
     );
   });
 
+  it("asks the server for the rest of the starter agent, which only it holds (#2301)", async () => {
+    // Its instructions, skills, the platform's tools and its budget - an agent
+    // made any other way keeps an empty field empty.
+    vi.mocked(apiClient.post).mockResolvedValue({ id: "a1", name: "Support Copilot" });
+    open();
+
+    await userEvent.type(name(), "Support Copilot");
+    await userEvent.click(create());
+
+    await waitFor(() =>
+      expect(apiClient.post).toHaveBeenCalledWith(
+        "/agents",
+        expect.objectContaining({ from_starter: true }),
+      ),
+    );
+  });
+
   it("starts every agent with the starter agent's recommended capabilities", async () => {
-    // What the Claude Code like template binds, config and all - ask_user among
+    // What the AgenticOS template binds, config and all - ask_user among
     // them (#2064) - and nothing the catalog does not recommend.
     const sandbox = {
       id: "sandbox",
@@ -154,6 +182,21 @@ describe("CreateAgentDialog", () => {
         }),
       ),
     );
+  });
+
+  it("asks again what a new agent starts with each time it opens", async () => {
+    const asked = () =>
+      vi.mocked(apiClient.get).mock.calls.filter(([path]) => path === "/agents/capabilities")
+        .length;
+    const { rerender } = render(
+      <CreateAgentDialog open={false} onOpenChange={vi.fn()} onCreated={vi.fn()} />,
+      { wrapper },
+    );
+    await waitFor(() => expect(asked()).toBe(1));
+
+    rerender(<CreateAgentDialog open onOpenChange={vi.fn()} onCreated={vi.fn()} />);
+
+    await waitFor(() => expect(asked()).toBe(2));
   });
 
   it("sends private when private is asked for", async () => {
@@ -275,5 +318,11 @@ describe("CreateAgentDialog", () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(apiClient.post).not.toHaveBeenCalled();
+  });
+
+  it("creates user agents without a separate system-agent mode", () => {
+    open();
+    expect(screen.queryByRole("radio", { name: "System agent" })).toBeNull();
+    expect(screen.getByText("Describe it to the Architect")).toBeInTheDocument();
   });
 });

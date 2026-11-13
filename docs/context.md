@@ -15,6 +15,8 @@ It is the answer to a problem every company hits at its third agent — the same
 three paragraphs pasted into three sets of instructions, and then edited in one
 of them.
 
+In the Agent Builder, **Context → New context file** creates a file directly in the capability panel and attaches it to the current draft, enabling Context. You can then choose how that agent uses it. Publishing remains a separate step. Creation requires permission to edit both the agent and context files.
+
 ## Where it sits between skills and knowledge
 
 Three things put text in front of a model, and choosing wrongly is the usual
@@ -35,8 +37,7 @@ body.
 
 ## Two modes, and the difference is cost
 
-Every context file carries a mode, and it decides how the file reaches the
-model.
+Each attached context file has a mode in the agent’s **Context** capability settings. The same shared file can be injected for one agent, linked for another, or switched off for a third.
 
 === "`inject` — always there"
 
@@ -81,13 +82,41 @@ That is the whole point, and the thing to be careful about: a change to an
 injected file is a change to every agent that carries it. Treat it as the
 shared, load-bearing text it is.
 
-The capability has one setting worth knowing. Turning **off** the read tool
+In the Builder, each selected file has **Use in this agent** and a mode selector. These settings belong to the agent draft and take effect when published. The library editor only changes shared content and description; its format follows the filename. Existing agent versions without per-file overrides retain their previous mode and availability.
+
+The capability also controls whether its read tool is available. Turning **off** the read tool
 means only injected files reach the model and nothing is read on demand — a
 reasonable choice when you want an agent's inputs entirely predictable.
 
 You can also start from the file: **Add to an agent** on its card adds it to the
 agent's draft with the Context capability switched on, and the card says which
 agents carry it already. A knowledge base has the same action on its own page.
+
+## Changes the assistant proposes
+
+**Improve with the assistant**, in a file's editor, asks the
+[authoring assistant](authoring.md#context-files) for a better body, written from
+the runs of the agents that read the file. What it proposes is not applied: it
+waits above the list on the Context page, with why, the runs it rests on, and
+the agents bound to the file.
+
+Applying it is the same as editing the file by hand - live at once for every
+agent whose published version reads the file - so **Check with evals** comes
+first, on one of those agents. Beside **Apply** the change says what applying
+does: each agent and environment it goes live for, the eval suites it queues,
+and the guards that check it only at the agent's next promotion. A file
+somebody edited after the change was proposed refuses the change; the edit is
+never written over.
+
+Asking the assistant again rewrites the waiting change rather than adding a
+second one. A decision names the version of the change you read, so of two made
+at once only one counts, and a page opened before the rewrite is refused with
+"The proposal changed since you opened it" until you review the new version. A
+change that says what the file already says is not proposed at all.
+
+Any edit to a file - applied or made by hand - and deleting it queue the eval
+suites that run when a dependency changes, for every agent that reads it, and
+applying a change tells the owners of those agents.
 
 ## Access
 

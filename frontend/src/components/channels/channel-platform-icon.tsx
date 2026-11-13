@@ -1,4 +1,5 @@
-import { MessageSquare } from "lucide-react";
+import { Mail, Smartphone } from "lucide-react";
+import { ChatIcon as MessageSquare } from "@/components/icons/product-icons";
 
 import { brandMark } from "@/components/icons/brand-icon";
 import { cn } from "@/lib/utils";
@@ -8,6 +9,12 @@ const MARKS = {
   slack: brandMark("slack"),
   telegram: brandMark("telegram"),
   mattermost: brandMark("mattermost"),
+  teams: brandMark("microsoftteams"),
+  sms: Smartphone,
+  email: Mail,
+  imessage: MessageSquare,
+
+  discord: brandMark("discord"),
 } as const;
 
 /**
@@ -15,9 +22,9 @@ const MARKS = {
  *
  * The same reason the vault draws a provider logo rather than a row of
  * identical text: a channels list is scanned, not read, and "which of these is
- * the Slack one" is the first question asked of it. Monochrome `currentColor`
- * like every other brand mark in the console - a column where Slack is four
- * colours and Mattermost is ink reads as two different products.
+ * the Slack one" is the first question asked of it. Each in its brand's own
+ * colours, as every service mark in the console is: Slack's four, Telegram's
+ * blue, Mattermost's.
  *
  * A platform this build has no mark for falls back to a speech bubble rather
  * than to nothing: the tile is what gives the row its left edge, and a missing

@@ -11,10 +11,11 @@ import type { Permission } from "@/types/permissions";
 /**
  * The categories/tags editor on the agent detail page.
  *
- * It hangs off the same role-level `canEdit` every editing control on the page
- * does - the avatar precedent it copies. So the contract is "no `agents:edit`
- * role, no editor", the same one the gallery card holds, and it is proven the
- * way the frontend rule wants: a mocked API, an assertion on what renders.
+ * It hangs off the same `canEdit` every editing control on the page does - the
+ * avatar precedent it copies - which is this caller's access to this agent: a
+ * grant widens what the role allows, and a role that may edit agents may still
+ * not reach this one. Proven the way the frontend rule wants: a mocked API, an
+ * assertion on what renders.
  */
 
 const AGENT: AgentDetail = {
@@ -44,6 +45,7 @@ const AGENT: AgentDetail = {
     budget: null,
   },
 };
+const EDITABLE: AgentDetail = { ...AGENT, can_edit: true };
 
 const mutation = () => ({
   mutate: vi.fn(),
@@ -54,6 +56,7 @@ const mutation = () => ({
 });
 
 let allowed: Set<Permission>;
+let shown: AgentDetail = EDITABLE;
 
 vi.mock("@/hooks", async () => {
   // The real one: the Builder keeps its tab in `?tab=`, as local state here.
@@ -62,10 +65,10 @@ vi.mock("@/hooks", async () => {
   return {
     useUrlState,
     useAgent: () => ({
-      agent: AGENT,
+      agent: shown,
       isLoading: false,
       saveDraft: mutation(),
-      validate: vi.fn().mockResolvedValue({ problems: [], fields: [] }),
+      validate: vi.fn().mockResolvedValue({ problems: [], fields: [], fixes: [] }),
       publish: mutation(),
       rollback: mutation(),
       setAvatar: mutation(),
@@ -88,6 +91,7 @@ vi.mock("@/hooks", async () => {
     useExposures: () => ({ exposures: [] }),
     useKnowledgeBases: () => ({ kbs: [], isLoading: false, listError: null }),
     useMcpCatalog: () => ({ servers: [], isLoading: false, error: null }),
+    usePlatformMcpTools: () => ({ tools: [], isLoading: false, error: null }),
     useModelProviders: () => ({ profiles: [], profilesStatus: "loaded" }),
     useMcpConnections: () => ({ connections: [] }),
     useOrgMcpConnections: () => ({
@@ -118,10 +122,12 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 // The heavy children the build view mounts, each reaching for its own data.
 // Stubbed to nothing: this test is about the page's gate, not their internals.
 vi.mock("@/components/agents/publish-state", () => ({ PublishState: () => null }));
+vi.mock("@/components/authoring/assistant-strip", () => ({ AssistantStrip: () => null }));
 vi.mock("@/components/agents/stale-references", () => ({ StaleReferences: () => null }));
 vi.mock("@/components/agents/model-profile-picker", () => ({ ModelProfilePicker: () => null }));
 vi.mock("@/components/agents/model-settings-form", () => ({ ModelSettingsForm: () => null }));
 vi.mock("@/components/agents/thinking-setting", () => ({ ThinkingSetting: () => null }));
+vi.mock("@/components/agents/voice-card", () => ({ VoiceCard: () => null }));
 // The test panel brings the whole chat with it, and is not what this test is about.
 vi.mock("@/components/agents/test-panel/test-panel", () => ({ TestPanel: () => null }));
 
@@ -147,10 +153,28 @@ async function mount() {
 }
 
 describe("the detail page's metadata editor gate", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    shown = EDITABLE;
+  });
 
-  it("shows the editor to a caller who may edit the agent", async () => {
-    allowed = new Set([Perm.agentsEdit]);
+  it("sends a workflow step's own agent to its workflow and edits nothing here", async () => {
+    // Its spec is the step's, versioned with the workflow; an edit here would be
+    // overwritten by the step's next run, so the page offers none.
+    allowed = new Set([Perm.agentsEdit, Perm.agentsPublish]);
+    shown = { ...AGENT, workflow_id: "wf1" };
+    await mount();
+
+    expect(await screen.findByText(/configured in a workflow step/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open the workflow" })).toHaveAttribute(
+      "href",
+      "/workflows/wf1",
+    );
+    expect(screen.queryByRole("textbox", { name: "Add a category" })).toBeNull();
+  });
+
+  it("shows the editor to a caller who may edit the agent, by a grant alone", async () => {
+    allowed = new Set();
     await mount();
 
     expect(await screen.findByRole("textbox", { name: "Add a category" })).toBeInTheDocument();
@@ -181,8 +205,9 @@ describe("the detail page's metadata editor gate", () => {
     searchParams = new URLSearchParams();
   });
 
-  it("hides the editor from a caller who may not edit", async () => {
-    allowed = new Set();
+  it("hides the editor from a caller who may not edit this agent, whatever the role says", async () => {
+    allowed = new Set([Perm.agentsEdit]);
+    shown = AGENT;
     await mount();
 
     // The instructions card renders for everyone; the editor does not.

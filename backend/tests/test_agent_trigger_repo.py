@@ -9,8 +9,6 @@ locking and the CHECK constraints are proven against a live database in
 `tests/integration/test_agent_trigger_schema.py`.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -66,6 +64,10 @@ def _scalars(values: list[object]):
     return MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=values))))
 
 
+def _tuples(values: list[object]):
+    return MagicMock(tuples=MagicMock(return_value=MagicMock(all=MagicMock(return_value=values))))
+
+
 def _scalars_first(value: object):
     return MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=value))))
 
@@ -90,7 +92,7 @@ class TestReading:
         trigger_id = uuid.uuid4()
         session = _RecordingSession(_scalar(None))
         await agent_trigger_repo.get_by_id(session, trigger_id)
-        assert set(_filters(session).values()) == {trigger_id}
+        assert set(_filters(session).values()) == {trigger_id, "waiting"}
 
     async def test_a_run_log_conversation_maps_back_to_its_trigger(self):
         """How a conversation read learns the thread is a trigger's run-log. Filtered
@@ -99,7 +101,7 @@ class TestReading:
         conversation_id = uuid.uuid4()
         session = _RecordingSession(_scalars_first(None))
         await agent_trigger_repo.get_by_conversation_id(session, conversation_id)
-        assert set(_filters(session).values()) == {conversation_id}
+        assert set(_filters(session).values()) == {conversation_id, "waiting"}
 
     async def test_the_connection_sweep_reads_only_that_accounts_rows_in_the_org(self):
         """`list_for_connection` feeds the pre-delete hook sweep; without the
@@ -246,7 +248,7 @@ class TestClaiming:
     async def test_the_claim_is_due_active_and_locked(self):
         """The whole no-double-fire and no-overlap guard lives in this statement."""
         now = datetime(2026, 6, 1, tzinfo=UTC)
-        session = _RecordingSession(_scalars([]))
+        session = _RecordingSession(_tuples([]))
         await agent_trigger_repo.claim_due(session, now=now)
 
         sql = _sql(session)
@@ -269,18 +271,18 @@ class TestClaiming:
         a *crashed* run's durable `running` row from wedging the schedule for
         ever is the stale-run sweep, not this predicate - it ends such a row
         `failed` within its ceiling (#1078)."""
-        session = _RecordingSession(_scalars([]))
+        session = _RecordingSession(_tuples([]))
         await agent_trigger_repo.claim_due(session, now=datetime(2026, 6, 1, tzinfo=UTC))
 
         sql = _sql(session)
         exists_clause = sql.split("not (exists", 1)[1].split("))", 1)[0]
         assert "status in" in exists_clause
 
-    async def test_a_claim_returns_the_rows_it_locked(self):
-        rows = [MagicMock(), MagicMock()]
-        session = _RecordingSession(_scalars(rows))
+    async def test_a_claim_returns_the_rows_it_locked_each_with_whether_it_is_busy(self):
+        free, busy = MagicMock(), MagicMock()
+        session = _RecordingSession(_tuples([(free, False), (busy, True)]))
         claimed = await agent_trigger_repo.claim_due(session, now=datetime(2026, 6, 1, tzinfo=UTC))
-        assert claimed == rows
+        assert claimed == [(free, False), (busy, True)]
 
     async def test_a_renewal_moves_only_its_own_ticket_and_reports_a_miss(self):
         """The renewal is the same conditional UPDATE as the clear - a renewer

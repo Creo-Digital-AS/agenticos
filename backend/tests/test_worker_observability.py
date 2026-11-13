@@ -1,16 +1,16 @@
 """Tracing in a process that is not the API.
 
-`serve()` gives each flow run its own subprocess, which imports the flow's
-module and runs none of the API's startup. So the question worth pinning is not
-that Logfire works - it is that the one flow which runs a whole agent sets
-tracing up for itself, and under a name a dashboard can tell apart from the
-API's.
+The worker runs none of the API's startup, so the question worth pinning is not
+that Logfire works - it is that the worker sets tracing up for itself, under a
+name a dashboard can tell apart from the API's. That it does so on start is
+`test_worker_main.py`.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from app import __version__
 from app.core.config import settings
 from app.core.logfire_setup import WORKER_SERVICE_SUFFIX, setup_worker_observability
 
@@ -30,6 +30,7 @@ class TestTheWorkersOwnConfiguration:
         kwargs = logfire.configure.call_args.kwargs
         assert kwargs["service_name"] == f"{settings.LOGFIRE_SERVICE_NAME}{WORKER_SERVICE_SUFFIX}"
         assert kwargs["environment"] == settings.LOGFIRE_ENVIRONMENT
+        assert kwargs["service_version"] == __version__
         logfire.instrument_pydantic_ai.assert_called_once_with()
 
     def test_the_api_keeps_the_deployments_own_service_name(self):
@@ -40,40 +41,4 @@ class TestTheWorkersOwnConfiguration:
             setup_logfire()
 
         assert logfire.configure.call_args.kwargs["service_name"] == settings.LOGFIRE_SERVICE_NAME
-
-
-class TestAFiredRunSetsItselfUp:
-    async def test_the_flow_configures_tracing_before_it_runs_the_agent(self):
-        """The whole of #1700: without this the deployment-wide token instruments
-        every run the API serves and no fired one, and the run's
-        `logfire_trace_id` is null because nothing was tracing to read an id
-        from. Redaction is set up in the same breath and for the same reason -
-        the process ran neither (#440)."""
-        from app.worker.tasks import trigger_tasks
-
-        service = MagicMock()
-        service.return_value.fire = MagicMock(return_value=None)
-
-        with (
-            patch(f"{trigger_tasks.__name__}.setup_worker_observability") as observability,
-            patch(f"{trigger_tasks.__name__}.setup_logging") as logging_setup,
-            patch(f"{trigger_tasks.__name__}.get_worker_db_context") as db_context,
-            patch("app.services.agent_trigger.AgentTriggerService") as trigger_service,
-            # Patched, not run: it would leave this process's change feed holding
-            # a Redis client for every test after this one.
-            patch("app.services.change_feed.connect_in_worker", new=AsyncMock()) as live_updates,
-        ):
-            db_context.return_value.__aenter__.return_value = MagicMock()
-            trigger_service.return_value.fire = _noop
-            await trigger_tasks.run_scheduled_trigger_flow.fn(
-                "11111111-1111-1111-1111-111111111111"
-            )
-
-        observability.assert_called_once_with()
-        logging_setup.assert_called_once_with()
-        # So the run it fires reaches an open Activity page (#2099).
-        live_updates.assert_awaited_once_with()
-
-
-async def _noop(*args: object, **kwargs: object) -> None:
-    return None
+        assert logfire.configure.call_args.kwargs["service_version"] == __version__

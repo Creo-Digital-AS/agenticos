@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
 from app.db.models.resource_grant import Visibility
+from app.db.vector_tables import VectorScope
 
 
 class KBScope(enum.StrEnum):
@@ -22,6 +23,14 @@ class KnowledgeBase(TimestampMixin, Base):
     """Named, scoped wrapper around a vector-store collection."""
 
     __tablename__ = "knowledge_bases"
+
+    gap_drafter_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+
+    gap_classifier_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -58,6 +67,8 @@ class KnowledgeBase(TimestampMixin, Base):
     # `EmbeddingService` - which is why an organization holding an OpenAI key
     # could not use it and a rotated key meant re-ingesting the collection.
     # Values are ids from `app/core/catalog/embedding_providers.json`.
+    embedding_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
     embedding_provider: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="openrouter"
     )
@@ -113,6 +124,23 @@ class KnowledgeBase(TimestampMixin, Base):
         if self.scope == KBScope.APP.value:
             return None
         return self.organization_id
+
+    @property
+    def vector_scope(self) -> VectorScope:
+        """The chunks of the shared runtime table this base holds (#2537).
+
+        Its own chunks, and the unfiled chunks its tenant holds - except for a
+        personal base outside any organization, whose tenant `None` is the app
+        scope's: its own chunks are always filed under it, and the unfiled ones
+        with no tenant need explicit operator provenance to join an app-scoped base.
+        """
+        tenant = self.vector_tenant
+        return VectorScope(
+            tenant=tenant,
+            knowledge_base_id=self.id,
+            takes_unfiled=self.scope == KBScope.APP.value or tenant is not None,
+            operator_unfiled_only=tenant is None,
+        )
 
     def __repr__(self) -> str:
         return f"<KnowledgeBase(id={self.id}, name={self.name!r}, scope={self.scope})>"

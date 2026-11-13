@@ -1,9 +1,13 @@
 "use client";
 
+import { ListChecks, RefreshCw } from "lucide-react";
+import { DocumentIcon as Files } from "@/components/icons/product-icons";
+
 import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { ROUTES } from "@/lib/constants";
+import { Perm } from "@/types/permissions";
 import {
   Alert,
   AlertDescription,
@@ -28,11 +32,13 @@ import { EmbeddingDialog } from "@/components/kb/embedding-dialog";
 import { IngestionDialog } from "@/components/kb/ingestion-dialog";
 import { IngestionPanel } from "@/components/kb/ingestion-panel";
 import { UploadOverrideDialog } from "@/components/kb/upload-override-dialog";
+import { KnowledgeGapsPanel } from "@/components/knowledge-gaps/knowledge-gaps-panel";
+import { gapStatus } from "@/lib/knowledge-gap-status";
 import { useKBDetail, usePermissions, usePollWhileIngesting, useUrlState } from "@/hooks";
+import { useUrlOverlay } from "@/hooks/use-url-state";
 import { overrideSize } from "@/lib/ingestion-config";
 import type { SyncSourceRead } from "@/lib/rag-api";
 import type { IngestionOverride, KBDocument } from "@/types";
-import { Perm } from "@/types/permissions";
 import { useTranslations } from "next-intl";
 
 interface KBDetailPageProps {
@@ -40,14 +46,17 @@ interface KBDetailPageProps {
 }
 
 /** Which section of a knowledge base is on screen. `?tab=` from the start (#939). */
-type KBTab = "documents" | "ingestion" | "sync";
+type KBTab = "documents" | "ingestion" | "sync" | "gaps";
 
-function parseTab(value: string | null): KBTab {
+/** `gaps` only for a caller who may see it: a link naming it otherwise opens the documents. */
+function parseTab(value: string | null, maySeeGaps: boolean): KBTab {
+  if (value === "gaps") return maySeeGaps ? value : "documents";
   return value === "ingestion" || value === "sync" ? value : "documents";
 }
 
 export default function KBDetailPage({ params }: KBDetailPageProps) {
   const t = useTranslations("pages.kb");
+  const tGaps = useTranslations("knowledgeGaps");
   const router = useRouter();
   const { id } = use(params);
 
@@ -65,13 +74,17 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
   // hydration mismatch and flashes the documents before the named section
   // appears.
   const [tabParam, setTabParam] = useUrlState("tab");
-  const tab = parseTab(tabParam);
+  // A run in Activity links to the gap topic it drafted.
+  const [topicParam, topicView] = useUrlOverlay("topic");
+  const [gapStatusParam, setGapStatusParam] = useUrlState("status");
   const setTab = (next: KBTab) => setTabParam(next === "documents" ? null : next);
   const {
     kb,
     documents,
     documentsTotal,
     hasMoreDocuments,
+    ingestion,
+    ingestionPending,
     syncSources,
     orgIntegrations,
     connectors,
@@ -83,6 +96,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     uploadProgress,
     error,
     refresh,
+    refreshIngestion,
     loadMoreDocuments,
     updateIngestion,
     updateEmbeddings,
@@ -90,19 +104,28 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     deleteDocument,
     deleteCollection,
     createSyncSource,
+    updateSyncSource,
     cloneSyncSource,
     triggerSyncSource,
     deleteSyncSource,
   } = useKBDetail(id);
 
-  // Presentation, never enforcement - the write routes resolve access per
-  // row on the server. A Viewer holds `collections:view` only; offering them
-  // upload and delete would be offering actions that can only refuse.
+  // The same per-resource decision as the write routes, including grants.
+  const mayEdit = kb?.can_edit === true;
+  // A topic is made of people's questions, which the server shows only to a
+  // member who reads every run.
   const { can } = usePermissions();
-  const mayEdit = can(Perm.collectionsEdit);
+  const maySeeGaps = can(Perm.runsView);
+  const tab = parseTab(tabParam, maySeeGaps);
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [creatingSource, setCreatingSource] = useState(false);
+  // Kept after the wizard closes, so it does not turn back into the create
+  // form while it animates out; opening it to connect is what clears it.
+  const [editingSource, setEditingSource] = useState<SyncSourceRead | null>(null);
+  // Bumped each time the wizard opens, so a save that finishes after it was
+  // dismissed and reopened does not close the newer one.
+  const wizardSession = useRef(0);
   const [viewerDoc, setViewerDoc] = useState<KBDocument | null>(null);
   const [ingestionOpen, setIngestionOpen] = useState(false);
   const [embeddingOpen, setEmbeddingOpen] = useState(false);
@@ -161,7 +184,9 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
     refresh();
   }, [refresh]);
 
-  usePollWhileIngesting(documents, refresh);
+  // The loaded documents alone stop the poll as soon as their page has settled,
+  // which a large batch does long before the rest of it (#2486).
+  usePollWhileIngesting(documents, refreshIngestion, ingestionPending);
 
   const handleFiles = async (files: FileList | null) => {
     if (!mayEdit || !files || files.length === 0) return;
@@ -186,7 +211,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
   if (!kb) return null;
 
   return (
-    <FileDropZone collectionName={kb.name} onFiles={handleFiles}>
+    <FileDropZone collectionName={kb.name} onFiles={handleFiles} className="flex flex-1 flex-col">
       <input
         ref={fileInputRef}
         type="file"
@@ -215,6 +240,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
         documentsTotal={documentsTotal}
         loadedVectors={loadedVectors}
         hasMoreDocuments={hasMoreDocuments}
+        ingestion={ingestion}
       />
 
       {/* Reached only with a `kb` in hand, so this is a refresh that failed, with
@@ -290,20 +316,32 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
           its panel with `aria-controls`, so a root that closed after the list
           left those references dangling and the visible section with no
           `role="tabpanel"` and no relationship to the tab that chose it. */}
-      <Tabs value={tab} onValueChange={(next) => setTab(next as KBTab)}>
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next as KBTab)}
+        className="flex flex-1 flex-col"
+      >
         <TabsList data-tour="kb-tabs">
           <TabsTrigger value="documents" data-tour="kb-tab-documents">
+            <Files className="size-4 shrink-0" aria-hidden />
             {t("documents")}
           </TabsTrigger>
           <TabsTrigger value="ingestion" data-tour="kb-tab-ingestion">
+            <ListChecks className="size-4 shrink-0" aria-hidden />
             {t("howDocumentsAreRead")}
           </TabsTrigger>
           <TabsTrigger value="sync" data-tour="kb-tab-sync">
+            <RefreshCw className="size-4 shrink-0" aria-hidden />
             {t("syncSources")}
           </TabsTrigger>
+          {maySeeGaps && (
+            <TabsTrigger value="gaps" data-tour="kb-tab-gaps">
+              {tGaps("tab")}
+            </TabsTrigger>
+          )}
         </TabsList>
 
-        <TabsContent value="documents">
+        <TabsContent value="documents" className="flex flex-1 flex-col">
           <DocumentsTable
             kbId={id}
             documents={documents}
@@ -319,8 +357,8 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
           />
         </TabsContent>
 
-        <TabsContent value="ingestion">
-          <div className="mb-8" data-tour="kb-ingestion">
+        <TabsContent value="ingestion" className="flex flex-1 flex-col">
+          <div className="flex flex-1 flex-col" data-tour="kb-ingestion">
             <IngestionPanel
               kb={kb}
               onEdit={mayEdit ? () => setIngestionOpen(true) : undefined}
@@ -329,7 +367,7 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
           </div>
         </TabsContent>
 
-        <TabsContent value="sync">
+        <TabsContent value="sync" className="flex flex-1 flex-col">
           <SyncSourcesSection
             kbId={id}
             syncSources={syncSources}
@@ -337,12 +375,37 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
             syncSourcesFailed={sectionFailures.syncSources}
             connectorsFailed={sectionFailures.connectors}
             mayEdit={mayEdit}
-            onConnect={() => setWizardOpen(true)}
+            onConnect={() => {
+              wizardSession.current += 1;
+              setEditingSource(null);
+              setWizardOpen(true);
+            }}
+            onEdit={(source) => {
+              wizardSession.current += 1;
+              setEditingSource(source);
+              setWizardOpen(true);
+            }}
             onTrigger={(sourceId) => triggerSyncSource(sourceId)}
             onDisconnect={setDisconnectingSource}
             onRetry={() => refresh()}
           />
         </TabsContent>
+
+        {maySeeGaps && (
+          <TabsContent value="gaps" className="flex flex-1 flex-col">
+            <div className="flex flex-1 flex-col" data-tour="kb-gaps">
+              <KnowledgeGapsPanel
+                scope={{ kind: "collection", id }}
+                topicId={topicParam}
+                onTopicChange={(topic) =>
+                  topic === null ? topicView.close() : topicView.open(topic)
+                }
+                status={gapStatus(gapStatusParam)}
+                onStatusChange={(next) => setGapStatusParam(next === "open" ? null : next)}
+              />
+            </div>
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* The count is the collection's, not the table's. Documents page in
@@ -464,6 +527,17 @@ export default function KBDetailPage({ params }: KBDetailPageProps) {
         connectorsFailed={sectionFailures.connectors}
         orgIntegrationsFailed={sectionFailures.orgIntegrations}
         submitting={creatingSource}
+        editing={editingSource}
+        onUpdate={async (sourceId, data) => {
+          const session = wizardSession.current;
+          setCreatingSource(true);
+          try {
+            await updateSyncSource(sourceId, data);
+            if (wizardSession.current === session) setWizardOpen(false);
+          } finally {
+            setCreatingSource(false);
+          }
+        }}
         onSubmit={async (data) => {
           setCreatingSource(true);
           try {

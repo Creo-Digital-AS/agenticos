@@ -1,12 +1,14 @@
 "use client";
 
-import { useTranslations } from "next-intl";
-
-import { Figure } from "@/components/ui";
+import { useLocale, useTranslations } from "next-intl";
 
 import { useSharedWithMeCounts } from "@/hooks";
 import { WidgetFrame } from "../widget-frame";
-import { Share2 } from "lucide-react";
+import { Bot, Share2 } from "lucide-react";
+import {
+  KnowledgeIcon as LibraryBig,
+  SkillIcon as Waypoints,
+} from "@/components/icons/product-icons";
 
 import { WidgetEmptyBody, WidgetErrorBody, WidgetSkeleton } from "../widget-states";
 import type { DashboardWidgetProps } from "./types";
@@ -18,6 +20,7 @@ import type { DashboardWidgetProps } from "./types";
  */
 export function SharedWithYouWidget({ title, hint, seeAll, options }: DashboardWidgetProps) {
   const t = useTranslations("dashboard.widgets.shared-with-you");
+  const locale = useLocale();
   const { counts, isLoading, error, refetch } = useSharedWithMeCounts();
   const empty = counts !== null && counts.agents + counts.collections + counts.skills === 0;
 
@@ -34,17 +37,28 @@ export function SharedWithYouWidget({ title, hint, seeAll, options }: DashboardW
           description={t("empty.description")}
         />
       ) : (
-        <div className="grid flex-1 grid-cols-3 content-center gap-4">
+        <ul className="space-y-2">
           {(
             [
-              ["agents", counts.agents],
-              ["collections", counts.collections],
-              ["skills", counts.skills],
+              ["agents", counts.agents, Bot],
+              ["collections", counts.collections, LibraryBig],
+              ["skills", counts.skills, Waypoints],
             ] as const
-          ).map(([key, value]) => (
-            <Figure key={key} label={t(key)} value={value.toLocaleString()} />
+          ).map(([key, value, Icon]) => (
+            <li key={key} className="flex items-center gap-3 py-1.5">
+              <span
+                className="bg-foreground/[0.04] text-muted-foreground flex size-8 shrink-0 items-center justify-center rounded-lg"
+                aria-hidden
+              >
+                <Icon className="size-4" />
+              </span>
+              <span className="text-foreground min-w-0 flex-1 text-sm font-medium">{t(key)}</span>
+              <span className="text-muted-foreground text-sm tabular-nums">
+                {value.toLocaleString(locale)}
+              </span>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </WidgetFrame>
   );

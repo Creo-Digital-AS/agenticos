@@ -32,7 +32,17 @@ export const SURFACES = [
   "slack",
   "telegram",
   "mattermost",
+  "a2a",
+  "teams",
+  "sms",
+  "email",
+
+  "discord",
   "schedule",
+  "eval",
+  "workflow",
+  "follow_ups",
+  "proactive",
 ] as const;
 
 // The shape and its defaults live in `lib/runs/filter-params.ts`, with the two
@@ -109,6 +119,33 @@ export function RunFilterBar({
               </span>
             </SelectItem>
           ))}
+        </SelectContent>
+      </Select>
+      <Select
+        value={filters.source}
+        onValueChange={(value) => set({ source: value as RunFilters["source"] })}
+      >
+        <SelectTrigger size="sm" className="w-auto" aria-label={t("sourceFilter")}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">{t("anySource")}</SelectItem>
+          <SelectItem value="conversation">{t("sourceConversations")}</SelectItem>
+          <SelectItem value="evaluation">{t("sourceEvaluation")}</SelectItem>
+          <SelectItem value="system">{t("sourceSystem")}</SelectItem>
+        </SelectContent>
+      </Select>
+      <Select
+        value={filters.modality}
+        onValueChange={(value) => set({ modality: value as RunFilters["modality"] })}
+      >
+        <SelectTrigger size="sm" className="w-[140px]" aria-label={t("modalityFilter")}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">{t("anyModality")}</SelectItem>
+          <SelectItem value="text">{t("modalityText")}</SelectItem>
+          <SelectItem value="voice">{t("modalityVoiceCalls")}</SelectItem>
         </SelectContent>
       </Select>
       {/* Both directions, not only down: "what did people like" is how a good

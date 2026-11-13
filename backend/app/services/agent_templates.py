@@ -20,8 +20,6 @@ model's own memory, confidently and from nowhere - so the last step is a person
 reading the instructions and pressing Publish.
 """
 
-from __future__ import annotations
-
 import logging
 from dataclasses import dataclass, field
 from functools import cache
@@ -34,13 +32,18 @@ from app.services.skill_library import split_frontmatter
 logger = logging.getLogger(__name__)
 
 TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "core" / "catalog" / "agent_templates"
+APP_ENVIRONMENT_GUIDANCE = (
+    (TEMPLATES_ROOT / "general/platform-assistant/APPS.md").read_text().strip()
+)
 
 MANIFEST = "AGENT.md"
+AVATAR = "avatar.png"
 
 # The general-purpose agent a fresh organization starts with, beside the
-# Architect - and the capabilities it binds are the ones the Toolbox recommends
-# and a new agent starts with, so "what a good agent has" is written once.
-STARTER_TEMPLATE = "general/claude-code-like"
+# Architect - and what it is, instructions and settings, is what a new agent
+# starts with, so "what a good agent has" is written once (#2301).
+STARTER_TEMPLATE = "general/agenticos"
+AGENTICOS_ONLY = frozenset({"computer_use", "browser_use", "coding_agent"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,12 @@ class AgentTemplate:
     """What a person still has to provide: `collection`, `context`, `sandbox`."""
 
     budget_usd: float | None = None
+
+    starters: tuple[str, ...] = ()
+    """First messages the chat offers, as the spec takes them."""
+
+    avatar: Path | None = None
+    """`avatar.png` beside the manifest, worn by every agent installed from it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +120,10 @@ def catalog() -> tuple[TemplateIndustry, ...]:
     return tuple(industries)
 
 
+ARCHITECT_KEY = "general/platform-assistant"
+"""The template the organization's AI Architect is installed from."""
+
+
 def get(key: str) -> AgentTemplate | None:
     """One template by its `<industry>/<folder>` key."""
     return next(
@@ -119,28 +132,41 @@ def get(key: str) -> AgentTemplate | None:
     )
 
 
-def starter_capabilities() -> dict[str, dict[str, Any]]:
+def starter_capabilities(*, container_workspace: bool | None = None) -> dict[str, dict[str, Any]]:
     """The starter template's capability bindings, keyed by capability id.
 
     Empty where the template is missing from this image, which recommends
-    nothing rather than failing the catalog that asks.
+    nothing rather than failing the catalog that asks. `container_workspace` is
+    whether the organization asking can run one; omitted, use the deployment
+    default - see `for_this_deployment`.
     """
     starter = get(STARTER_TEMPLATE)
     if starter is None:
         return {}
-    return {binding["id"]: binding for binding in for_this_deployment(starter.capabilities)}
+    return {
+        binding["id"]: binding
+        for binding in for_this_deployment(
+            starter.capabilities, container_workspace=container_workspace
+        )
+        if binding["id"] not in AGENTICOS_ONLY
+    }
 
 
 BROWSER = "browser_use"
 SANDBOX = "sandbox"
 
 
-def for_this_deployment(bindings: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    """A template's bindings as this deployment can publish them.
+def for_this_deployment(
+    bindings: tuple[dict[str, Any], ...], *, container_workspace: bool | None = None
+) -> list[dict[str, Any]]:
+    """A template's bindings as this deployment and organization can publish them.
 
-    A container workspace needs the sandbox service a deployment runs beside the
-    API (`SANDBOXD_TOKEN` says it does); without one, the binding falls back to the
-    files-only workspace rather than refusing every new agent at publish.
+    A container workspace needs a sandbox connection - the organization's default,
+    or the one the first publish sets up on the service this deployment runs
+    (`SandboxConnectionService.can_provide` says which). Without one,
+    `container_workspace` is false and the binding falls back to the files-only
+    workspace rather than refusing every new agent at publish; anything that
+    delegates the workspace keeps it, since it is still bound.
 
     The web browser is the one a template cannot finish: its `cdp_url` names the
     browser service this deployment runs, which a folder in the image cannot know
@@ -149,16 +175,19 @@ def for_this_deployment(bindings: tuple[dict[str, Any], ...]) -> list[dict[str, 
     none. A deployment running no browser leaves the capability out rather than
     handing every new agent a switch that refuses at publish.
     """
+    if container_workspace is None:
+        container_workspace = bool(settings.SANDBOXD_TOKEN)
     resolved = []
     for binding in bindings:
-        if binding["id"] == SANDBOX and not settings.SANDBOXD_TOKEN:
-            # A container workspace runs on the sandbox service this deployment
-            # starts beside the API; without one, the files-only workspace that
-            # needs nothing, so a new agent still publishes.
+        if binding["id"] == SANDBOX and not container_workspace:
             config = {**(binding.get("config") or {}), "backend": "state"}
             config.pop("include_execute", None)
             binding = {**binding, "config": config}
-        if binding["id"] == BROWSER and not (binding.get("config") or {}).get("cdp_url"):
+        if (
+            binding["id"] == BROWSER
+            and (binding.get("config") or {}).get("connection") != "local"
+            and not (binding.get("config") or {}).get("cdp_url")
+        ):
             if not settings.BROWSER_SIGN_IN_CDP_URL:
                 continue
             binding = {
@@ -199,6 +228,8 @@ def _read(folder: Path, *, industry: str) -> AgentTemplate:
         mcp_servers=_bindings(metadata.get("mcp_servers")),
         attach=_strings(metadata.get("attach")),
         budget_usd=float(budget) if isinstance(budget, int | float) else None,
+        starters=_strings(metadata.get("starters")),
+        avatar=avatar if (avatar := folder / AVATAR).is_file() else None,
     )
 
 

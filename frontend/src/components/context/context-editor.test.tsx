@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+import { useUnsavedChangesStore } from "@/stores/unsaved-changes-store";
 
 import { ContextEditor } from "./context-editor";
 import type { ContextFile } from "@/types/providers";
@@ -34,8 +36,14 @@ vi.mock("@/components/chat/markdown-content", () => ({
   ),
 }));
 
+vi.mock("@/components/authoring/improve-skill-button", () => ({
+  ImproveContextButton: ({ contextId, unsaved }: { contextId: string; unsaved: boolean }) => (
+    <button disabled={unsaved}>{`improve ${contextId}`}</button>
+  ),
+}));
+
 function mount(props: Partial<React.ComponentProps<typeof ContextEditor>> = {}) {
-  const onSave = vi.fn();
+  const onSave = vi.fn().mockResolvedValue(undefined);
   const onCancel = vi.fn();
   render(
     <ContextEditor
@@ -51,10 +59,33 @@ function mount(props: Partial<React.ComponentProps<typeof ContextEditor>> = {}) 
 }
 
 const save = () => screen.getByRole("button", { name: "Save" });
-const openSource = () => userEvent.click(screen.getByRole("button", { name: "Source" }));
+const openSource = async () => {
+  const source = screen.queryByRole("button", { name: "Source" });
+  if (source) await userEvent.click(source);
+};
 const body = () => screen.getByLabelText("glossary.md source");
 
+beforeEach(() => useUnsavedChangesStore.setState({ sources: {}, prompt: null, saving: false }));
+
 describe("ContextEditor", () => {
+  it("offers the assistant to somebody who may edit the file, once the edits are saved", async () => {
+    mount();
+    expect(screen.getByRole("button", { name: "improve c1" })).toBeEnabled();
+    await openSource();
+    await userEvent.type(body(), " More.");
+    expect(screen.getByRole("button", { name: "improve c1" })).toBeDisabled();
+  });
+
+  it("keeps edited content and prevents leaving after a refused save", async () => {
+    mount({ onSave: vi.fn().mockRejectedValue(new Error("Write rejected")) });
+    await userEvent.type(body(), " Cite policy.");
+    const proceed = vi.fn();
+    act(() => useUnsavedChangesStore.getState().leave(proceed));
+    await act(() => useUnsavedChangesStore.getState().answer("save"));
+    expect(proceed).not.toHaveBeenCalled();
+    expect(body()).toHaveValue("SLA: service level agreement. Cite policy.");
+  });
+
   it("names the file with the format it is stored in, so the body renders as one", () => {
     // The name carries no extension and the format is a separate field, but the
     // renderer is chosen from a filename - so `glossary` alone read as plain
@@ -87,9 +118,6 @@ describe("ContextEditor", () => {
     expect(onSave).toHaveBeenCalledWith({
       description: "terms",
       content: "SLA: service level agreement. extra",
-      format: "md",
-      mode: "inject",
-      enabled: true,
     });
   });
 
@@ -117,51 +145,26 @@ describe("ContextEditor", () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ description: null }));
   });
 
-  it("takes the format from a closed list rather than from typing", async () => {
-    // It was a text input, so `markdown`, `MD` and a typo were all accepted and
-    // only one of them decided how the body renders.
-    const { onSave } = mount();
-
-    await userEvent.click(screen.getByLabelText("Format"));
-    await userEvent.click(await screen.findByRole("option", { name: "txt" }));
-    await userEvent.click(save());
-
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ format: "txt" }));
+  it("keeps usage policy in the agent builder instead of editing it globally", () => {
+    mount();
+    expect(screen.queryByLabelText("Mode")).toBeNull();
+    expect(screen.queryByLabelText("Format")).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByText(/Choose how each agent/)).toBeInTheDocument();
   });
 
-  it("keeps a format the catalog does not list, rather than showing none", async () => {
-    // The column took free text before the select did, so a stored `html` has to
-    // remain both visible and unchanged - deciding it "really means md" would
-    // make opening a file an edit.
-    mount({ file: { ...FILE, format: "html" } });
-
-    expect(screen.getByLabelText("Format")).toHaveTextContent("html");
+  it("preserves a legacy format when opening and editing the content", async () => {
+    const { onSave } = mount({ file: { ...FILE, format: "html" } });
     expect(save()).toBeDisabled();
-  });
-
-  it("switches an injected file to linked through the mode select", async () => {
-    const { onSave } = mount();
-
-    await userEvent.click(screen.getByLabelText("Mode"));
-    await userEvent.click(await screen.findByRole("option", { name: "linked" }));
+    await userEvent.type(screen.getByLabelText("Description"), " updated");
     await userEvent.click(save());
-
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ mode: "link" }));
-  });
-
-  it("toggles the enabled switch", async () => {
-    const { onSave } = mount();
-
-    await userEvent.click(screen.getByRole("switch"));
-    await userEvent.click(save());
-
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+    expect(onSave).toHaveBeenCalledWith({ description: "terms updated", content: FILE.content });
   });
 
   it("starts an editor for a file with no description without crashing", async () => {
     const { onSave } = mount({ file: { ...FILE, description: null } });
 
-    await userEvent.click(screen.getByRole("switch"));
+    await userEvent.type(body(), " extra");
     await userEvent.click(save());
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ description: null }));
@@ -180,8 +183,53 @@ describe("ContextEditor", () => {
     mount({ canEdit: false });
 
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "improve c1" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
     await openSource();
     expect(body()).toHaveAttribute("readonly");
   });
+});
+
+it("offers deletion from the editor's resource menu", async () => {
+  const onDelete = vi.fn();
+  mount({ onDelete });
+  await userEvent.click(screen.getByRole("button", { name: "More actions for glossary" }));
+  expect(onDelete).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete glossary" }));
+  expect(onDelete).toHaveBeenCalledOnce();
+});
+
+it("does not offer the resource menu to a reader", () => {
+  mount({ canEdit: false, onDelete: vi.fn() });
+  expect(screen.queryByRole("button", { name: "More actions for glossary" })).toBeNull();
+});
+
+it("disables destructive actions while a save is pending", () => {
+  mount({ isSaving: true, onDelete: vi.fn() });
+  expect(screen.getByRole("button", { name: "More actions for glossary" })).toBeDisabled();
+});
+
+it("folds context details without losing the description draft", async () => {
+  mount();
+  const toggle = screen.getByRole("button", { name: "Description" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(toggle);
+  await userEvent.type(screen.getByLabelText("Description"), " revised");
+  await userEvent.click(toggle);
+  await userEvent.click(toggle);
+  expect(screen.getByLabelText("Description")).toHaveValue("terms revised");
+});
+
+it("discards both edited fields before allowing navigation", async () => {
+  const { onSave } = mount();
+  await userEvent.clear(screen.getByLabelText("Description"));
+  await userEvent.type(screen.getByLabelText("Description"), "Changed");
+  await userEvent.type(body(), " extra");
+  const proceed = vi.fn();
+  act(() => useUnsavedChangesStore.getState().leave(proceed));
+  await act(() => useUnsavedChangesStore.getState().answer("discard"));
+  expect(proceed).toHaveBeenCalledOnce();
+  expect(body()).toHaveValue(FILE.content);
+  expect(screen.getByLabelText("Description")).toHaveValue(FILE.description);
+  expect(onSave).not.toHaveBeenCalled();
 });

@@ -158,7 +158,7 @@ class TestRagSourceSyncWaitsForItsWork:
                 return SimpleNamespace(id=uuid4())
 
         @asynccontextmanager
-        async def session() -> AsyncGenerator[object, None]:
+        async def session() -> AsyncGenerator[object]:
             yield object()
 
         monkeypatch.setattr(rag_command, "get_db_context", session)
@@ -223,7 +223,7 @@ class TestRagSourceAddRefusesWhatItCannotOwn:
                 return SimpleNamespace(name=data.name, id=uuid4())
 
         @asynccontextmanager
-        async def session() -> AsyncGenerator[object, None]:
+        async def session() -> AsyncGenerator[object]:
             yield object()
 
         monkeypatch.setattr(rag_command, "get_db_context", session)
@@ -418,7 +418,7 @@ class TestSeedSkillsSurvivesARacingListing:
         )
 
         @asynccontextmanager
-        async def session() -> AsyncGenerator[object, None]:
+        async def session() -> AsyncGenerator[object]:
             yield db
 
         monkeypatch.setattr(seed_command, "get_db_context", session)
@@ -467,7 +467,7 @@ class TestSeedSkillsSaysWhatItDoes:
         )
 
         @asynccontextmanager
-        async def session() -> AsyncGenerator[object, None]:
+        async def session() -> AsyncGenerator[object]:
             yield MagicMock()
 
         monkeypatch.setattr(seed_command, "get_db_context", session)
@@ -513,6 +513,29 @@ class TestSeedSkillsSaysWhatItDoes:
         service.refresh_from_library.assert_not_called()
         assert service.plan_library_refresh.await_args.kwargs == {"replace_edited": True}
 
+    def test_skill_narrows_the_run_to_the_named_skills(self, monkeypatch) -> None:
+        """A release adding one bundled skill installs that one, and does not bring
+        back the skills an organization deleted."""
+        from app.services.skills import LibraryRefresh
+
+        result, service = self._run(
+            monkeypatch, ["--skill", "skill-1"], [LibraryRefresh.INSTALL, LibraryRefresh.INSTALL]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "skill-1 - installed" in result.output
+        assert "skill-0" not in result.output.split("bundled skill(s)")[1]
+        assert service.refresh_from_library.await_count == 1
+
+    def test_an_unknown_skill_writes_nothing(self, monkeypatch) -> None:
+        from app.services.skills import LibraryRefresh
+
+        result, service = self._run(monkeypatch, ["--skill", "nope"], [LibraryRefresh.INSTALL])
+
+        assert result.exit_code == 0, result.output
+        assert "No bundled skill named nope." in result.output
+        service.refresh_from_library.assert_not_called()
+
 
 class TestTheConsoleScript:
     """`agenticos` lives in `cli/`, which the unit suite never imported, so its
@@ -528,3 +551,112 @@ class TestTheConsoleScript:
 
         assert result.exit_code == 0, result.output
         assert __version__ in result.output
+
+
+class TestRagDropGoesThroughTheTeardown:
+    """#2560. `rag-drop` called the vector store's `delete_collection` with no
+    reference check, teardown lock or reservation, and left the document rows
+    behind - so a name another base, possibly another organization's, still held
+    lost its table. It now clears through `KnowledgeBaseService`."""
+
+    @staticmethod
+    def _run(monkeypatch, *, holders):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.commands import rag as rag_command
+        from app.repositories import collection_teardown_repo, knowledge_base_repo, sync_source_repo
+        from app.repositories import rag_document as rag_document_repo
+
+        db = MagicMock(execute=AsyncMock())
+
+        @asynccontextmanager
+        async def session() -> AsyncGenerator[object]:
+            yield db
+
+        store = MagicMock(delete_collection=AsyncMock())
+        monkeypatch.setattr(rag_command, "get_db_context", session)
+        monkeypatch.setattr(rag_command, "process_vector_store", MagicMock(return_value=store))
+        monkeypatch.setattr(
+            knowledge_base_repo, "list_by_collection_name", AsyncMock(return_value=holders)
+        )
+        monkeypatch.setattr(knowledge_base_repo, "lock", AsyncMock())
+        monkeypatch.setattr(knowledge_base_repo, "delete", AsyncMock())
+        monkeypatch.setattr(sync_source_repo, "get_all", AsyncMock(return_value=[]))
+        monkeypatch.setattr(collection_teardown_repo, "reserve", AsyncMock())
+        repos = {
+            "by_name": AsyncMock(return_value=[]),
+            "by_base": AsyncMock(return_value=[]),
+        }
+        monkeypatch.setattr(rag_document_repo, "delete_by_collection", repos["by_name"])
+        monkeypatch.setattr(rag_document_repo, "delete_by_knowledge_base", repos["by_base"])
+        monkeypatch.setattr(
+            rag_document_repo,
+            "delete_unfiled_with_vectors",
+            AsyncMock(
+                return_value=rag_document_repo.DeletedDocuments(
+                    storage_paths=[], vector_document_ids=[]
+                )
+            ),
+        )
+        dispatch = AsyncMock()
+        monkeypatch.setattr(
+            "app.worker.tasks.teardown_tasks.queue_external_state_cleanup", dispatch
+        )
+        return store, repos, dispatch
+
+    @staticmethod
+    def _holder(organization_id):
+        from app.db.vector_tables import VectorScope
+
+        kb_id = uuid4()
+        return SimpleNamespace(
+            id=kb_id,
+            collection_name="docs",
+            organization_id=organization_id,
+            is_default=False,
+            vector_scope=VectorScope(
+                tenant=organization_id, knowledge_base_id=kb_id, takes_unfiled=True
+            ),
+        )
+
+    def test_a_name_two_organizations_hold_is_not_destroyed(self, monkeypatch) -> None:
+        from app.commands import rag as rag_command
+
+        ours, theirs = self._holder(uuid4()), self._holder(uuid4())
+        store, repos, dispatch = self._run(monkeypatch, holders=[ours, theirs])
+
+        result = CliRunner().invoke(rag_command.rag_drop, ["docs", "--yes"])
+
+        assert result.exit_code != 0
+        assert str(ours.id) in result.output and str(theirs.id) in result.output
+        store.delete_collection.assert_not_awaited()
+        repos["by_name"].assert_not_awaited()
+        dispatch.assert_not_awaited()
+
+    def test_naming_one_base_clears_it_and_keeps_the_shared_table(self, monkeypatch) -> None:
+        from app.commands import rag as rag_command
+
+        ours, theirs = self._holder(uuid4()), self._holder(uuid4())
+        store, repos, dispatch = self._run(monkeypatch, holders=[ours, theirs])
+
+        result = CliRunner().invoke(
+            rag_command.rag_drop, ["docs", "--knowledge-base", str(ours.id), "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        store.delete_collection.assert_not_awaited()
+        repos["by_name"].assert_not_awaited()
+        repos["by_base"].assert_awaited_once()
+        assert dispatch.await_args.args[2] == [], "the shared table must not be dropped"
+
+    def test_a_name_no_base_holds_is_dropped_by_the_cleanup(self, monkeypatch) -> None:
+        from app.commands import rag as rag_command
+
+        store, repos, dispatch = self._run(monkeypatch, holders=[])
+
+        result = CliRunner().invoke(rag_command.rag_drop, ["cli-docs", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        store.delete_collection.assert_not_awaited()
+        repos["by_name"].assert_awaited_once()
+        assert dispatch.await_args.args[2] == ["cli-docs"]

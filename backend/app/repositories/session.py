@@ -3,7 +3,9 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, func, select, update
+from pydantic import JsonValue
+from sqlalchemy import Select, cast, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.session import Session
@@ -12,6 +14,24 @@ from app.db.models.session import Session
 async def get_by_id(db: AsyncSession, session_id: UUID) -> Session | None:
     """Get session by ID."""
     return await db.get(Session, session_id)
+
+
+async def active_device(
+    db: AsyncSession, *, session_id: UUID, user_id: UUID, now: datetime
+) -> Session | None:
+    """Recheck device revocation at admission/tool time, independently of presence TTL."""
+    result = await db.execute(
+        select(Session)
+        .where(
+            Session.id == session_id,
+            Session.user_id == user_id,
+            Session.is_active.is_(True),
+            Session.expires_at > now,
+            Session.app_platform.in_(("macos", "windows", "linux")),
+        )
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_by_refresh_token_hash(
@@ -154,6 +174,7 @@ async def create(
     user_agent: str | None = None,
     impersonator_user_id: UUID | None = None,
     session_id: UUID | None = None,
+    proved_email: str | None = None,
 ) -> Session:
     """Create a new session.
 
@@ -169,6 +190,7 @@ async def create(
         device_type=device_type,
         ip_address=ip_address,
         user_agent=user_agent,
+        proved_email=proved_email,
         impersonator_user_id=impersonator_user_id,
     )
     if session_id is not None:
@@ -177,6 +199,28 @@ async def create(
     await db.flush()
     await db.refresh(session)
     return session
+
+
+async def set_app(
+    db: AsyncSession, *, session_id: UUID, user_id: UUID, platform: str, version: str
+) -> bool:
+    """Record the app an open session of the user's signs in through.
+
+    Whether a row matched: someone else's session, an ended one or an
+    impersonation is none of this caller's to label.
+    """
+    result = await db.execute(
+        update(Session)
+        .where(
+            Session.id == session_id,
+            Session.user_id == user_id,
+            Session.is_active.is_(True),
+            Session.impersonator_user_id.is_(None),
+        )
+        .values(app_platform=platform, app_version=version)
+    )
+    await db.flush()
+    return bool(getattr(result, "rowcount", 0))
 
 
 async def update_last_used(db: AsyncSession, session_id: UUID) -> None:
@@ -260,3 +304,39 @@ async def deactivate_by_refresh_token_hash(db: AsyncSession, token_hash: str) ->
         db.add(session)
         await db.flush()
     return session
+
+
+async def push_preferences_for(
+    db: AsyncSession, *, user_id: UUID, session_ids: list[UUID]
+) -> dict[UUID, dict[str, JsonValue]]:
+    if not session_ids:
+        return {}
+    result = await db.execute(
+        select(Session.id, Session.push_preferences).where(
+            Session.user_id == user_id, Session.id.in_(session_ids), Session.is_active.is_(True)
+        )
+    )
+    return {session_id: raw for session_id, raw in result.all() if raw is not None}
+
+
+async def update_push_preferences(
+    db: AsyncSession, *, user_id: UUID, session_id: UUID, patch: dict[str, JsonValue]
+) -> bool:
+    # JSONB concatenation merges this patch atomically. A focus heartbeat must
+    # never overwrite a concurrently saved privacy choice (or the reverse).
+    result = await db.execute(
+        update(Session)
+        .where(
+            Session.id == session_id,
+            Session.user_id == user_id,
+            Session.is_active.is_(True),
+            Session.expires_at > datetime.now(UTC),
+        )
+        .values(
+            push_preferences=func.coalesce(Session.push_preferences, cast({}, JSONB)).op("||")(
+                cast(patch, JSONB)
+            )
+        )
+    )
+    await db.flush()
+    return bool(getattr(result, "rowcount", 0))

@@ -5,9 +5,19 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
+import { invalidateSpeechSettings } from "@/lib/dictation-api";
+import { readThrough } from "@/lib/offline/device-cache";
 import { qk } from "@/lib/query-keys";
 import { useOrgStore } from "@/stores";
-import type { Organization, OrganizationList, CreateOrganizationInput } from "@/types";
+import { useUnsavedChangesStore } from "@/stores/unsaved-changes-store";
+import type {
+  Organization,
+  OrganizationList,
+  CreateOrganizationInput,
+  ProactivityChanges,
+  VoiceSettingsUpdate,
+  WelcomeDmChanges,
+} from "@/types";
 
 /**
  * Every organization the caller belongs to.
@@ -24,7 +34,9 @@ import type { Organization, OrganizationList, CreateOrganizationInput } from "@/
 export function useOrganizationList() {
   return useQuery({
     queryKey: qk.organizations.list(),
-    queryFn: async () => (await apiClient.get<OrganizationList>("/orgs")).items,
+    queryFn: async () =>
+      (await readThrough("organizations", () => apiClient.get<OrganizationList>("/orgs"))).items,
+    networkMode: "offlineFirst",
   });
 }
 
@@ -33,19 +45,33 @@ export function useOrganizationList() {
  *
  * Not the same thing as the selection. `activeOrgId` is null until the list
  * loads and the default is picked, and a request sent meanwhile carries no
- * `X-Organization-Id` - which the backend reads as the caller's personal
- * organization, not as no organization at all. Anything comparing "has the
+ * `X-Organization-Id` - which the backend reads as its fallback organization
+ * (`serverFallbackOrg`), not as no organization at all. Anything comparing "has the
  * tenant changed?" has to compare this, or it reads a page finishing its first
  * render as somebody switching organizations.
  *
  * Still null while nothing can answer the question: no selection, and no list
- * to resolve the personal organization from. A caller deciding whether to throw
+ * to resolve the fallback from. A caller deciding whether to throw
  * work away should treat that as "cannot tell yet" and do nothing.
  */
 export function useTenantId(): string | null {
   const activeOrgId = useOrgStore((state) => state.activeOrgId);
   const { data: orgs } = useOrganizationList();
-  return activeOrgId ?? orgs?.find((org) => org.is_personal)?.id ?? null;
+  return activeOrgId ?? (orgs ? serverFallbackOrg(orgs)?.id : null) ?? null;
+}
+
+/**
+ * Where the backend acts for a request that names no organization: the default
+ * organization, then the personal one, then the only one. `null` when that leaves
+ * a choice, which the backend refuses rather than guesses (#2156). Mirrors
+ * `OrganizationService.fallback_for`.
+ */
+export function serverFallbackOrg(orgs: readonly Organization[]): Organization | null {
+  return (
+    orgs.find((o) => o.is_default) ??
+    orgs.find((o) => o.is_personal) ??
+    (orgs.length === 1 ? (orgs[0] ?? null) : null)
+  );
 }
 
 /**
@@ -68,9 +94,10 @@ export function useTenantGuard(): (startedIn: string | null) => boolean {
 }
 
 /**
- * The organization to select out of `orgs`: the caller's personal one, or
- * failing that whichever comes first. `null` when there is nothing to pick,
- * which leaves the header off and lets the server fall back for us.
+ * The organization to select out of `orgs`: the deployment's default one, then
+ * the caller's personal one, or failing that whichever comes first (#2156).
+ * `null` when there is nothing to pick, which leaves the header off and lets the
+ * server fall back for us.
  *
  * `refusedIds` are skipped. Selecting one back would undo a recovery that has
  * just moved off it, and the two would trade the selection indefinitely.
@@ -80,7 +107,7 @@ export function preferredOrg(
   refusedIds: readonly string[] = [],
 ): Organization | null {
   const usable = orgs.filter((o) => !refusedIds.includes(o.id));
-  return usable.find((o) => o.is_personal) ?? usable[0] ?? null;
+  return usable.find((o) => o.is_default) ?? usable.find((o) => o.is_personal) ?? usable[0] ?? null;
 }
 
 export function useOrganizations() {
@@ -135,10 +162,12 @@ export function useOrganizations() {
     async (input: CreateOrganizationInput): Promise<Organization> => {
       const org = await apiClient.post<Organization>("/orgs", input);
       writeCache((prev) => [...prev, org]);
+      // The deployment default-workspace picker may already be open in onboarding.
+      void queryClient.invalidateQueries({ queryKey: qk.admin.organizations({}) });
       toast.success(t("created"));
       return org;
     },
-    [writeCache, t],
+    [writeCache, t, queryClient],
   );
 
   const patchOrg = useCallback(
@@ -182,6 +211,26 @@ export function useOrganizations() {
     [writeCache],
   );
 
+  // The platform's own initiative (#2301): whether, on which model, how much and
+  // when - and, apart, whether new members are greeted in the chat apps.
+  const setProactivity = useCallback(
+    async (id: string, changes: ProactivityChanges): Promise<Organization> => {
+      const updated = await apiClient.patch<Organization>(`/orgs/${id}`, changes);
+      writeCache((prev) => prev.map((o) => (o.id === id ? updated : o)));
+      return updated;
+    },
+    [writeCache],
+  );
+
+  const setWelcomeDm = useCallback(
+    async (id: string, changes: WelcomeDmChanges): Promise<Organization> => {
+      const updated = await apiClient.patch<Organization>(`/orgs/${id}`, changes);
+      writeCache((prev) => prev.map((o) => (o.id === id ? updated : o)));
+      return updated;
+    },
+    [writeCache],
+  );
+
   const setChatApprovalWaiver = useCallback(
     async (id: string, allowed: boolean): Promise<Organization> => {
       const updated = await apiClient.patch<Organization>(`/orgs/${id}`, {
@@ -191,6 +240,49 @@ export function useOrganizations() {
       return updated;
     },
     [writeCache],
+  );
+
+  const setPublicAttribution = useCallback(
+    async (id: string, enabled: boolean): Promise<Organization> => {
+      const updated = await apiClient.patch<Organization>(`/orgs/${id}`, {
+        public_agenticos_attribution: enabled,
+      });
+      writeCache((prev) => prev.map((o) => (o.id === id ? updated : o)));
+      return updated;
+    },
+    [writeCache],
+  );
+
+  const setPublicLiveData = useCallback(
+    async (id: string, allowed: boolean): Promise<Organization> => {
+      const updated = await apiClient.patch<Organization>(`/orgs/${id}`, {
+        public_live_data: allowed,
+      });
+      writeCache((prev) => prev.map((o) => (o.id === id ? updated : o)));
+      return updated;
+    },
+    [writeCache],
+  );
+
+  // Five fields in one request, because the server validates them together: a
+  // provider without its model, or `server` without either, is refused whole.
+  const setVoiceSettings = useCallback(
+    async (id: string, settings: VoiceSettingsUpdate): Promise<Organization> => {
+      const updated = await apiClient.patch<Organization>(`/orgs/${id}`, settings);
+      writeCache((prev) => prev.map((o) => (o.id === id ? updated : o)));
+      // Every agent's dictation readiness inherits from these settings.
+      await invalidateSpeechSettings(queryClient);
+      return updated;
+    },
+    [writeCache, queryClient],
+  );
+
+  const uploadAvatar = useCallback(
+    async (id: string, file: File): Promise<void> => {
+      await apiClient.upload<unknown>(`/orgs/${id}/avatar`, file);
+      await fetchOrgs(true);
+    },
+    [fetchOrgs],
   );
 
   const deleteOrg = useCallback(
@@ -211,9 +303,10 @@ export function useOrganizations() {
     [writeCache, setActiveOrgId, t],
   );
 
+  // A change not yet saved belongs to the organization being left, so it is asked about first.
   const switchOrg = useCallback(
     (id: string) => {
-      setActiveOrgId(id);
+      useUnsavedChangesStore.getState().leave(() => setActiveOrgId(id));
     },
     [setActiveOrgId],
   );
@@ -224,9 +317,15 @@ export function useOrganizations() {
     activeOrg,
     fetchOrgs,
     createOrg,
+    uploadAvatar,
     patchOrg,
     setMonthlyBudget,
+    setProactivity,
+    setWelcomeDm,
     setChatApprovalWaiver,
+    setPublicAttribution,
+    setPublicLiveData,
+    setVoiceSettings,
     deleteOrg,
     switchOrg,
   };

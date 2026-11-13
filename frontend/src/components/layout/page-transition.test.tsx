@@ -1,10 +1,16 @@
-import { render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PageTransition } from "./page-transition";
 import { PAGE_CLEARANCE } from "@/lib/page-clearance";
 
 let pathname = "/";
+const motion = vi.hoisted(() => ({ reduced: false }));
+vi.mock("@/lib/motion", () => ({ prefersReducedMotion: () => motion.reduced }));
+afterEach(() => {
+  motion.reduced = false;
+  vi.restoreAllMocks();
+});
 vi.mock("next/navigation", () => ({
   usePathname: () => pathname,
 }));
@@ -20,12 +26,91 @@ function rootClasses(path: string): string {
 }
 
 describe("the page transition wrapper", () => {
+  it("preserves the shared layout DOM and unsaved input when the path changes", () => {
+    pathname = "/settings/profile";
+    const view = render(
+      <PageTransition>
+        <input aria-label="Draft" defaultValue="Saved" />
+      </PageTransition>,
+    );
+    const frame = view.container.firstElementChild;
+    const input = view.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Still writing" } });
+    pathname = "/settings/account";
+    view.rerender(
+      <PageTransition>
+        <input aria-label="Draft" defaultValue="Saved" />
+      </PageTransition>,
+    );
+    expect(view.container.firstElementChild).toBe(frame);
+    expect(view.getByRole("textbox")).toBe(input);
+    expect(input).toHaveValue("Still writing");
+  });
+
+  it("cancels an in-progress reveal and honors reduced motion", () => {
+    const cancel = vi.fn();
+    const animate = vi.fn(() => ({ cancel }));
+    const previousAnimate = HTMLElement.prototype.animate;
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate });
+    try {
+      pathname = "/agents";
+      const view = render(
+        <PageTransition>
+          <span />
+        </PageTransition>,
+      );
+      expect(animate).not.toHaveBeenCalled();
+      pathname = "/projects";
+      view.rerender(
+        <PageTransition>
+          <span />
+        </PageTransition>,
+      );
+      expect(animate).toHaveBeenCalledWith(
+        [{ opacity: 0.65 }, { opacity: 1 }],
+        expect.objectContaining({ duration: 160 }),
+      );
+      motion.reduced = true;
+      pathname = "/settings/account";
+      view.rerender(
+        <PageTransition>
+          <span />
+        </PageTransition>,
+      );
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(animate).toHaveBeenCalledTimes(1);
+      view.unmount();
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "animate", {
+        configurable: true,
+        value: previousAnimate,
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("constrains its height on the chat route so only the message pane scrolls", () => {
     // A flex item's min-height:0 is a floor, not a ceiling: without min-h-0
     // on THIS box, the transcript's min-content height propagates up and the
     // whole page scrolls instead of the chat window.
     expect(rootClasses("/en/chat")).toContain("min-h-0");
   });
+
+  it("constrains the workflow editor, whose palette and panel scroll in their own panes", () => {
+    expect(rootClasses("/en/workflows/wf-1")).toContain("min-h-0");
+    expect(rootClasses("/en/workflows/wf-1")).not.toContain(PAGE_CLEARANCE);
+    // Its runs are an ordinary page, and so is the list.
+    expect(rootClasses("/en/workflows/wf-1/runs")).not.toContain("min-h-0");
+    expect(rootClasses("/en/workflows")).not.toContain("min-h-0");
+  });
+
+  it.each(["/workflows/runs", "/pl/workflows/wf-1/runs", "/en/workflows/wf-1/runs/run-1"])(
+    "keeps workflow run content clear of floating controls: %s",
+    (path) => {
+      expect(rootClasses(path)).toContain(PAGE_CLEARANCE);
+      expect(rootClasses(path)).not.toContain("min-h-0");
+    },
+  );
 
   it("leaves long pages unconstrained so the room under them lands after the content", () => {
     expect(rootClasses("/en/agents")).not.toContain("min-h-0");
@@ -41,10 +126,8 @@ describe("the page transition wrapper", () => {
   });
 
   it("counts the safe-area inset rather than assuming it away", () => {
-    // The mobile tab bar is `min-h-[56px]` plus `env(safe-area-inset-bottom)`,
-    // and `viewportFit: "cover"` makes that inset 34px on a modern iPhone - so
-    // a flat 80px leaves the last 10px of the page under the bar.
-    expect(PAGE_CLEARANCE).toContain("env(safe-area-inset-bottom)");
+    // Moving the launcher into the header does not remove the home indicator inset.
+    expect(PAGE_CLEARANCE).toContain("var(--safe-bottom)");
   });
 
   it("leaves the chat without it, so the composer sits on the bottom edge", () => {
@@ -74,4 +157,10 @@ describe("the page transition wrapper", () => {
     // And it gets the room, which the prefix match would have taken away.
     expect(rootClasses("/en/runsomething")).toContain(PAGE_CLEARANCE);
   });
+});
+
+it("bounds paged admin lists without constraining organization detail pages", () => {
+  expect(rootClasses("/en/admin/users")).toContain("min-h-0");
+  expect(rootClasses("/pl/admin/organizations")).toContain("min-h-0");
+  expect(rootClasses("/en/admin/organizations/org-id")).not.toContain("min-h-0");
 });

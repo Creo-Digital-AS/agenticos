@@ -1,5 +1,5 @@
 ---
-source_sha: "27fe488f738b"
+source_sha: "1555844ea407"
 ---
 
 # Procesamiento de archivos { #file-processing }
@@ -7,6 +7,12 @@ source_sha: "27fe488f738b"
 Este documento cubre cómo se tratan los archivos en dos contextos: las subidas
 de archivos en el chat, que pertenecen a la persona que las hizo, y la ingesta
 de documentos RAG, que pertenece a una colección y depende de
+Al eliminar una base se desvinculan y desactivan las fuentes de sincronización cuyo destino
+era esa base. Conservan la configuración del conector, pero requieren una reasignación
+explícita antes de sincronizar de nuevo; otra base del mismo nombre no las hereda. Vaciar
+una base predeterminada conserva sus fuentes porque la fila de destino permanece. La
+ingesta por CLI rechaza un nombre reservado para un borrado pendiente hasta que se libere.
+
 [quién puede llegar a ella](#who-may-reach-a-collection).
 
 ## Subidas de archivos en el chat { #chat-file-uploads }
@@ -112,6 +118,7 @@ archivo que puede abrir, y uno sin workspace recibe el texto en su prompt.
 | **Documento (OpenDocument)** | …opendocument.text | .odt | Párrafos con `odfpy`. Se añade al prompt como contexto. |
 | **Correo** | application/vnd.ms-outlook | .msg | Cabeceras y cuerpo leídos de los streams OLE/MAPI con `olefile` (BSD); los adjuntos incrustados se listan por nombre, no se extraen de forma recursiva. Se añade al prompt como contexto. |
 | **Texto** | text/plain, text/markdown, text/csv, text/html, text/xml, application/xml, application/json | .txt, .md, .csv, .html, .xml, .json | Se decodifica directamente como UTF-8 (XML según su BOM/codificación declarada). Se añade al prompt como contexto. |
+| **Archivo comprimido** | application/zip, application/x-zip-compressed, application/gzip, application/x-gzip | .zip, .tar.gz, .tgz | Se lee entero al subirlo y se rechaza si no es seguro (ver [Archivos comprimidos](#archives)). Su texto es la lista de lo que contiene. Se descomprime en el workspace; un agent sin workspace lo rechaza. |
 
 ### Adónde va un adjunto depende del agent { #where-an-attachment-goes-depends-on-the-agent }
 
@@ -130,6 +137,55 @@ recibe el archivo en lugar del texto:
 | pdf, docx, spreadsheet, document, presentation, email | texto parseado pegado en línea | escrito en `uploads/`, con el texto extraído al lado salvo que el runtime pueda leerlo (`email` siempre lo recibe — `lit` no lee `.msg`); referencia y 20 primeras líneas |
 | imagen | `BinaryContent` | `BinaryContent` **y** escrita; la referencia nombra la ruta |
 | tiff | página(s) PNG como `BinaryContent`, con el tope de páginas indicado | `.tiff` original escrito; página(s) PNG mostradas, con el tope de páginas indicado |
+| archivo comprimido (`.zip`, `.tar.gz`) | rechazado: al modelo se le dice que el agent no tiene workspace donde descomprimirlo, y nada de él llega al prompt | descomprimido en `uploads/<id>-<nombre>/`; la referencia nombra la carpeta y el principio del árbol |
+
+### Archivos comprimidos { #archives }
+
+Un `.zip` o un `.tar.gz` es la forma de dar a un agent un repositorio, o cualquier
+carpeta de archivos. La plataforma lo descomprime en el servidor, antes de que el
+agent se ejecute, en lugar de dárselo al agent para que lo descomprima. Un
+workspace almacenado no tiene shell donde ejecutar `unzip`, no es seguro que una
+imagen de sandbox lo tenga, y un archivo comprimido es una forma conocida de
+escribir fuera de una carpeta. Una comprobación en el servidor se puede probar; un
+agent que ejecuta `tar -xf` sobre lo que recibió, no.
+
+El archivo se lee entero al subirlo. La subida se rechaza con un 400, y no se
+guarda nada, cuando:
+
+- la ruta de un miembro sale del archivo (`../`), empieza en la raíz (`/etc/x`) o
+  en una unidad (`C:/`), o contiene una barra invertida o un carácter de control;
+- un miembro es un enlace simbólico, un enlace duro, un archivo de dispositivo o
+  un FIFO;
+- la misma ruta aparece dos veces, o a la vez como archivo y como carpeta;
+- un miembro está cifrado, o el archivo no es el archivo comprimido que dice su
+  nombre;
+- contiene más de `WORKSPACE_ARCHIVE_MAX_ENTRIES` archivos y carpetas (5000), se
+  descomprime en más de `WORKSPACE_ARCHIVE_MAX_BYTES` (200 MiB), o en más de
+  `WORKSPACE_ARCHIVE_MAX_RATIO` veces su propio tamaño (100): una bomba de
+  descompresión. Los tamaños se miden al leer los miembros, no se toman de las
+  cabeceras del archivo, que pueden ser falsas;
+- un archivo dentro se descomprime en más de `WORKSPACE_ARCHIVE_MAX_MEMBER_BYTES`
+  (50 MiB), porque la descompresión mantiene en memoria un archivo cada vez.
+
+El límite de subida, `CHAT_MAX_UPLOAD_SIZE_MB`, se aplica al archivo en sí.
+
+Para un agent con workspace, los miembros se escriben en
+`uploads/<primeros 8 hex del id del archivo>-<nombre del archivo sin .zip>/`,
+conservando sus carpetas: `repo.zip` con `repo/src/app.py` pasa a ser
+`uploads/3f2a1b9c-repo/repo/src/app.py`. La referencia nombra esa carpeta y
+empieza con las primeras líneas de la lista de miembros. Los miembros se escriben
+de uno en uno, así que solo hay uno en memoria a la vez. Si el workspace rechaza
+una escritura a mitad de camino, o el turno se detiene durante la descompresión, la
+carpeta se elimina: al modelo se le dice que el archivo no se pudo escribir, y un
+árbol descomprimido a medias nunca se toma por uno entero.
+
+Un agent sin workspace no tiene dónde descomprimirlo. Al modelo se le dice que no
+puede abrir el archivo y no recibe la lista de miembros, porque una lista de rutas
+le permitiría responder preguntas sobre código que no puede leer.
+
+Para sacar los archivos de nuevo, el panel **Files** del chat ofrece cada carpeta,
+y el workspace entero, como `.zip`: ver
+[Sandbox: descargar una carpeta](sandbox.md#downloading-a-folder-as-a-zip).
 
 **Un turno posterior sigue teniendo el archivo.** Lo que el adjunto añadió al
 prompt - el texto pegado, o la referencia con sus primeras líneas - se guarda junto
@@ -137,6 +193,38 @@ al mensaje y se reproduce con el historial, así que «¿y marzo?» llega a un m
 que todavía sabe que el archivo existe. Una imagen se nombra en ese historial en
 lugar de enviarse de nuevo; un agent que necesita volver a mirarla la pide, o la
 abre desde `uploads/` si tiene workspace.
+
+**El archivo de un turno interrumpido lo repone el siguiente.** Un archivo queda
+ligado al mensaje con el que llegó antes de que empiece el run, así que no se puede
+adjuntar de nuevo. Si el run que respondía a ese mensaje terminó sin completarse
+— con un fallo, cancelado o detenido por un presupuesto o el guardián de bucles —,
+el siguiente turno del mismo agente para esa persona en esa conversación vuelve a
+escribir el archivo en `uploads/` (con su texto extraído, donde el workspace no
+puede leer el original, y solo ese texto si es lo único que falta) antes de usar el
+workspace por primera vez: enseguida en un workspace almacenado, en el primer uso en
+un sandbox. Al run se le indica que liste `uploads/` antes de decir que falta un
+archivo, y que diga que no se pudo reponer si sigue sin estar.
+
+Solo se reponen los archivos de la propia persona, solo de los turnos interrumpidos
+de ese agente, como mucho los 50 más recientes, y solo hasta que ese agente complete
+para la misma persona un turno que empezó después de que terminara el interrumpido y comprobó
+la preparación de los archivos anteriores dentro del workspace. Un turno completado sin workspace o sin usar su sandbox deja abierto este plazo.
+Un turno ejecutado con una clave de API, para un visitante del widget o liberado de
+una aprobación por otra persona no cierra ese plazo. Un archivo eliminado después
+sigue eliminado.
+
+Algunos archivos no se reponen: los de un turno que bloqueó un guardrail, porque el
+guardrail de entrada rechazó lo que llevaba; los de un prompt cuyo run nunca se
+abrió, que no pertenece a ningún agente; los de un turno ejecutado con una clave de
+API o para un visitante del widget.
+
+Cuando el agente tiene un guardrail de entrada, cada archivo se revisa además antes
+de reponerlo, sobre lo que el guardrail leería de él: su nombre, su ruta y sus
+primeras líneas. Un turno puede detenerse antes de que el guardrail lea su entrada,
+por ejemplo por un presupuesto, así que un archivo que el guardrail rechaza no se
+escribe, y el registro solo indica su identificador. Si se rechazan todos los
+archivos, al run no se le dice que alguno pueda estar de vuelta. Sin un guardrail
+de entrada, nada cambia.
 
 **El texto extraído lo acompaña solo cuando nada puede leer el original.** Antes
 se escribía un `.txt` del parseo junto a cada PDF, `.docx` y hoja de cálculo,
@@ -188,6 +276,12 @@ intentándolo — `ls`, luego un `curl` de una URI `data:`, luego tres solucione
 propuestas a la persona, a lo largo de dos turnos. Ahora una sola frase dice que
 el workspace no está disponible y que otro intento fallará igual.
 
+**Un turno que el guardrail de entrada bloquea no escribe nada.** La referencia y
+su cabecera las revisa el borde de entrada del agent antes de escribir el archivo,
+así que un archivo de un turno bloqueado nunca llega a `uploads/` y un turno
+posterior no puede abrirlo. Consulta
+[Reglas de protección](reference/capabilities.md#guardrails).
+
 La referencia es lo que el modelo lee de verdad:
 
 ```
@@ -235,7 +329,9 @@ ejecutado cuando una superficie está montando su prompt.
 
 Los adjuntos del chat se leen con **PyMuPDF**, y eso no es configurable. Un
 adjunto no pertenece a ninguna colección, así que no hay configuración guardada
-de la que leer una elección de parser.
+de la que leer una elección de parser. Los caracteres NUL se eliminan del texto
+extraído antes de guardarlo para que PostgreSQL acepte la subida. Se conservan
+los bytes originales del PDF.
 
 La variable `CHAT_PDF_PARSER` que antes elegía entre tres parsers ya no existe.
 Las dos alternativas estaban envueltas en `except Exception: return
@@ -295,6 +391,13 @@ S3, bajo `FILE_STORAGE_S3_PREFIX`, y pide al almacén que cifre cada una de ella
 — SSE-S3 por defecto, SSE-KMS con una clave que nombra el despliegue. Los ajustes
 están en la [configuración](configuration.md#uploaded-files-at-rest).
 
+Con almacenamiento local, API y worker todavía deben compartir
+`MEDIA_DIR/_rag_tmp` para la ingesta de la base de conocimiento. Con S3, cada
+ejecución del worker descarga su propia copia del objeto y la elimina al terminar,
+fallar el parser o cancelarse. Los pods no comparten un volumen temporal de la
+API; consulta [despliegue Kubernetes](kubernetes.md). Un hijo matado puede dejar
+una copia temporal hasta reemplazar el pod.
+
 !!! info "Qué backend ejecutar, y qué le pide cada uno"
 
     El local es la respuesta honesta para un solo host: cifre el volumen y los
@@ -315,6 +418,24 @@ están en la [configuración](configuration.md#uploaded-files-at-rest).
 
 `agenticos cmd doctor` indica qué backend usa un despliegue en marcha y si el
 cifrado está activo.
+
+### Adjuntos de correo en un workflow { #mail-attachments-in-a-workflow }
+
+Un [workflow](workflows.md#from-an-email) iniciado por un mensaje de Gmail o de
+Outlook guarda sus adjuntos como archivos de ese run, dentro del run y nunca en el
+sondeo que leyó el buzón. Siguen la lista de tipos de archivo permitidos y el límite
+de tamaño de subida del chat: de los adjuntos que lista un buzón solo se consideran
+los 10 primeros por mensaje, y 25 MiB por mensaje. Uno que se deja fuera se lista
+con el motivo, y una ejecución de prueba no descarga nada.
+
+Un `.zip` o `.tar.gz`
+se deja fuera como `type_not_allowed`: un chat comprueba un archivo comprimido
+miembro a miembro antes de descomprimirlo (ver
+[Archivos comprimidos](#archives)), y nada comprueba uno que recibe un workflow.
+
+Un archivo HTML en un workflow, como una página guardada o un adjunto, lo lee
+[`html.parse`](reference/workflow-nodes.md#html-parse), no `text.extract`, que lee
+documentos y devolvería el marcado como texto.
 
 ### El modelo ChatFile { #chatfile-model }
 
@@ -372,6 +493,10 @@ flowchart TD
     se ejecutan en una tarea en segundo plano con una sesión propia - por eso una
     subida responde `202 {"status": "processing"}` en vez de esperar.
 
+Las primeras escrituras simultáneas en una misma colección esperan a que
+su tabla e índices se creen en una sola transacción. Si la creación falla,
+la transacción se revierte y una escritura en espera puede crear la tabla.
+
 Hay dos direcciones a las que puede llegar una subida —
 `POST /rag/collections/{name}/ingest` y `POST /kb/{kb_id}/documents` — y las dos
 responden **202** con el mismo `RAGIngestResponse`, con todos sus campos,
@@ -381,6 +506,23 @@ existe hasta que el worker lo ha indexado.
 Una de las dos omitía la clave en lugar de enviarla nula, así que un cliente que
 normalizara la respuesta recibía una forma distinta de cada una
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
+
+**Espera a `complete`, no a los vectores.** `GET /rag/collections/{name}/info`
+deriva `indexing_status` de los documentos registrados de la colección:
+`indexing` mientras alguno siga en `processing` - en cola o en ingesta - y
+`complete` cuando ya no queda ninguno. `processing_count`, `indexed_count` y
+`failed_count` indican cuántos documentos hay en cada estado. Un documento
+fallido está en un estado final, así que no mantiene la colección en
+`indexing`; aparece en `failed_count`. El campo era antes la constante
+`complete`, y `total_vectors` crece mientras el worker procesa un lote, así que
+un script que esperara cualquiera de los dos consultaba una colección a medio
+construir ([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` responde lo mismo para una base de conocimiento y
+cuenta los documentos que lista su página, no todo lo que hay bajo su nombre de
+colección, que otra base puede compartir; la página de la base de conocimiento
+muestra ese estado junto al número de documentos. Un documento que se queda en
+`processing` mantiene ambas respuestas en `indexing` hasta que se elimine o, si
+es un documento sincronizado, hasta que su fuente vuelva a sincronizarse.
 
 !!! danger "La tarea se inicia después de que la transacción de la petición haga commit"
 
@@ -402,10 +544,10 @@ descarta junto con el trabajo del flow.**
 **Un solo bucle es dueño de los pools del proceso, y todo lo demás construye su
 propio engine.** El lifespan de la API los reclama al arrancar: atiende cada
 petición y los descarta al apagarse, así que es el único bucle cuyas conexiones
-pueden cachear. Fuera de ese bucle `get_db_context` se comporta como
-`get_worker_db_context` — un engine con `NullPool` para la llamada, descartado al
-final — porque se llega a él desde flows de Prefect (el informe, el refresco de
-MCP, las tareas de invitación y de aprobación, los bucles de canal) y desde el
+pueden cachear. El worker los reclama igual para su único bucle, y cada proceso
+hijo de ingesta para el suyo. Fuera del bucle dueño `get_db_context` se comporta
+como `get_worker_db_context` — un engine con `NullPool` para la llamada,
+descartado al final — porque se llega a él desde los bucles de canal y desde el
 resolvedor de embeddings de un agent, cada uno en un bucle propio
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
@@ -571,6 +713,22 @@ organización pasa por ella
 resuelve así la configuración de cada una, cayendo a una colección de ámbito app,
 nunca a la de un tercero.
 
+El recurso es solo una base de ámbito app: una base personal fuera de toda
+organización tampoco tiene organización, pero es de una sola persona
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Una fuente de sincronización registra una organización y un nombre de colección,
+no una base de conocimiento, así que su sincronización escribe en la base que elige
+esa resolución - la base más antigua de la organización con ese nombre - y solo esa
+base la lista y la ejecuta. Cada ruta de la API que dirige una fuente a una
+colección comprueba el permiso de escritura sobre esa base, y añadir una fuente a
+otra base del mismo nombre se rechaza con 400.
+
+Cuando la base personal de un miembro es más antigua que la base de la organización
+del mismo nombre, las sincronizaciones de la organización con ese nombre acaban en
+la base personal, y la base de la organización no admite fuentes: créala con un
+nombre propio.
+
 !!! warning "Un nombre de colección es un espacio de embeddings"
 
     Resolver por organización solo es seguro porque todas las filas con un mismo
@@ -592,6 +750,22 @@ a la dirección de otro. El catálogo es además con lo que responde
 que un provider puede servir de verdad — antes ofrecía todos los modelos de los
 que este build conocía la *anchura*, tres de ellos pesos de sentence-transformers
 que aquí nada puede llamar.
+
+Una colección en OpenRouter puede indicar su propio **endpoint**
+(`embedding_base_url`), como el regional `https://eu.openrouter.ai/api/v1`. Un
+endpoint regional sirve solo una parte del catálogo, y solo él sabe cuál, así que
+`GET /rag/embedding-models/openrouter?base_url=…` se lo pregunta y responde con
+los modelos del catálogo que lista. La anchura sigue saliendo del catálogo,
+porque la lista no la indica. El formulario de creación ofrece esa lista más
+corta, y el servicio rechaza una colección cuyo modelo el endpoint no sirve: en
+`embedding_model` al crearla y en `embedding_base_url` al mover una existente.
+
+Un endpoint al que no se puede preguntar no se toma como un rechazo: el formulario
+muestra todo el catálogo e indica que no está confirmado. Antes se aceptaba un
+modelo que el endpoint no sirve, y luego cada subida fallaba con "No endpoints
+found supporting your data region" de OpenRouter, guardado como una indicación
+genérica de revisar la clave. Ahora un 404 de un endpoint de embeddings se guarda
+como el modelo que no sirve.
 
 La clave se valida al crear. Una clave que tiene otra organización, una de
 propósito equivocado o una que quien elige no puede ver se rechaza ahí, donde la
@@ -620,7 +794,7 @@ deployment a la que caer, así que el rechazo nunca aconseja una variable.
 
 Esa degradación se anuncia en vez de darse por supuesta. La resolución lleva en
 cuál de las cinco fuentes cayó, y la ingesta escribe cada caso degradado en el
-log del run de Prefect, incluida una colección que sencillamente no nombra
+log del worker, incluida una colección que sencillamente no nombra
 ninguna clave. Antes de la incidencia #306 el worker de ingesta era el único
 llamante que nunca preguntaba al resolvedor, así que cada documento subido se
 embebía con el modelo del deployment y una clave de todo el deployment eligiera
@@ -728,6 +902,26 @@ Un nombre que el llamante no aporta se deriva del nombre visible más seis
 caracteres hexadecimales aleatorios, y se reclama por el mismo camino en lugar de
 darlo por bueno por ser aleatorio.
 
+**Tampoco lo está un nombre con contenido que ninguna base posee.** `rag-ingest`
+escribe filas de seguimiento y una tabla `rag_<name>` sin base de conocimiento y sin
+organización. Por eso `claim` rechaza un nombre que ninguna base tiene mientras tenga
+filas sin base que describan chunks de cualquier tenant salvo la organización del
+llamante, o una tabla vectorial con esos chunks. Antes, un miembro con
+`collections:edit` podía crear una base sobre la colección de un operador y borrarla,
+eliminando con ella los chunks del operador
+([#2747](https://github.com/vstorm-co/agenticos/issues/2747)). Un nombre que
+una base tiene no se comprueba: el llamante puede escribir en todas esas bases y
+podría borrarlas o vaciarlas igualmente. Un administrador de la aplicación sí puede
+adoptar ese nombre; una fila fallida sin id de vector no describe ningún chunk y no lo
+retiene. Un `rag-ingest` interrumpido a mitad de un archivo deja una fila `processing`
+que retiene el nombre hasta que un administrador de la aplicación lo adopte o ejecute
+`rag-drop <name>`.
+
+El contenido que llega *después* de que una base reclame el nombre no se puede rechazar
+aquí, así que lo protege el desmontaje: la tabla de la última base se queda mientras
+tenga un fragmento sin asignar que esa base no toma, como se describe más abajo al
+borrar una base.
+
 **Y un nombre a medio desmontar tampoco está libre.** Borrar una colección elimina
 sus filas de base de conocimiento dentro de la petición, pero elimina la tabla
 física de vectores `rag_<name>` solo *después* de que la petición haga commit,
@@ -747,10 +941,11 @@ sincronización, un reintento — también la comprueban, en la barrera `still_w
 justo antes de la escritura de vectores, así que una sincronización hacia un
 predeterminado vaciado (cuya fila el vaciado conserva) se detiene en vez de
 repoblar una tabla que se está borrando (#1382). Las dos son comprobaciones de
-reserva de mejor esfuerzo y no una serialización con bloqueo: sostener el bloqueo
-de desmontaje durante una escritura provocaría un interbloqueo contra la purga de
-una organización, que bloquea antes la fila de `organizations`, así que cerrar la
-última ventana estrecha queda para #1382.
+reserva de mejor esfuerzo y no una serialización con bloqueo. Una escritura
+archivada bajo una base se apoya en ellas y en los bloqueos de su base y su fila, y
+cerrar la última ventana estrecha queda para #1382. Una escritura de chunks sin base
+retiene el bloqueo de desmontaje hasta su commit, como se describe más abajo en el
+desmontaje de la última base.
 
 Una reserva cuyo borrado nunca llegó a ejecutarse — perdida por una caída entre
 el commit y el despacho, o por un borrado que falla definitivamente — bloquearía
@@ -766,7 +961,26 @@ que los documentos borrados con ella dejan de ser buscables en vez de quedarse e
 una tabla que nada lista (#1361). Una búsqueda lee la tabla ausente como vacía y
 la siguiente subida la recrea. La tabla se salva únicamente cuando una base
 hermana sigue teniendo el mismo nombre, ya que el espacio de nombres de vectores
-no es único por tenant y eliminarla se llevaría también sus fragmentos (#913).
+no es único por tenant y eliminarla se llevaría también sus fragmentos (#913). Entonces
+solo se van las filas de documentos y los archivos de la base eliminada, y sus
+fragmentos se quitan de la tabla conservada, como para una base borrada más abajo.
+Las filas de documentos sin asignar de la organización de la base (subidas de antes de
+que los documentos registraran su base) también se van, con sus archivos y fragmentos,
+salvo que otra base de esa organización tenga el nombre y aún las liste. Eliminar una
+colección borraba antes todas las filas de documentos con ese nombre, también las de
+otra organización (#2560).
+
+`rag-drop <name>` pasa por el mismo teardown. Antes borraba la tabla de vectores
+directamente, sin comprobar referencias, sin bloqueo ni reserva, y dejaba las filas de
+documentos, así que podía destruir una tabla que otra base aún usaba. Ahora vacía la
+única base que tiene el nombre, o elimina un nombre que ninguna base tiene (uno que
+llenó `rag-ingest`) con sus filas de documentos. Si varias bases tienen el nombre, lo
+rechaza y lista sus ids; `--knowledge-base <id>` indica la base que vaciar, y la tabla
+se queda para las demás. Un worker borra la tabla y los archivos después del commit
+del comando (#2560).
+
+La tabla de la última base se va contenga lo que contenga: el operador pidió el borrado
+y suyo es el contenido que un borrado desde la consola respetaría (#2747).
 
 `documents` era además la colección **predeterminada**, así que el inicio rápido
 de la CLI apuntaba a la tabla de seguimiento; ahora el predeterminado es
@@ -854,6 +1068,136 @@ de modo que un filtro selectivo no puede sacar una fila de fuera del ámbito. Un
 colección app-scoped, de todo el deployment, se casa por *no llevar tenant sellado* en
 vez de por una igualdad que toda organización incumpliría — y eso es lo que permite
 que todos lean la base compartida sin que nadie lea la de los demás.
+
+**Un filtro tampoco llega a otra base de conocimiento del mismo nombre.** El tenant
+por sí solo no distingue cada par: una base de ámbito app y una base personal fuera de
+toda organización no tienen ninguno, y la base de una organización y la base personal
+de un miembro en ella tienen la misma organización. Por eso cada fragmento registra
+también la base de conocimiento para la que se indexó, y la búsqueda, el recuento de
+vectores, la búsqueda al reemplazar y el borrado leen solo los fragmentos de la propia
+base; borrar un documento también elimina sus propios fragmentos que no registran
+base. Un fragmento escrito antes de que los fragmentos registraran su base, y que la
+actualización no asignó, coincide por su tenant como antes, salvo para una base
+personal fuera de toda organización, cuya búsqueda y recuento no toman ninguno
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Borrar una base de conocimiento cuyo nombre de colección aún tiene otra base conserva
+la tabla compartida, y el trabajo de limpieza encolado con el borrado elimina los
+fragmentos asignados a la base borrada. Borrar una organización y borrar una cuenta
+hacen lo mismo con las bases que eliminan, y también eliminar una colección
+(`DELETE /rag/collections/{name}`), que además borra solo las filas de documentos de
+esa base; en una base predeterminada conservada quita solo los fragmentos de los
+documentos borrados, así que una subida hecha después conserva los suyos, y un
+fragmento sin fila de documento se queda
+([#2560](https://github.com/vstorm-co/agenticos/issues/2560)).
+
+Borrar una base de conocimiento (`DELETE /kb/{id}`) mientras otra base tiene su
+nombre también borra las filas de documentos sin asignar de su organización, con sus
+archivos y fragmentos, salvo que otra base de esa organización tenga el nombre y aún
+las liste: la misma regla que al eliminar una colección ([#2560](https://github.com/vstorm-co/agenticos/issues/2560)). En los demás casos,
+los fragmentos sin asignar se quedan y coinciden por su tenant, y las filas de
+documentos sin asignar siguen listadas en las bases de su tenant ([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Cuando ninguna otra base tiene el nombre, ambas rutas y `rag-drop` borran las mismas
+filas, con sus archivos: las filas de la propia base y las filas sin asignar de su
+tenant. Para una base de organización o una base personal son las de su organización,
+para una base app-scoped las que no tienen organización (las que escribe `rag-ingest`),
+y para una base personal fuera de una organización ninguna.
+
+Después, ambas rutas conservan la tabla si tiene un fragmento sin asignar que la base
+no toma: un `rag-ingest` o una sincronización por CLI del operador en el nombre ya
+tomado, o un fragmento de otro tenant. Un claim no puede rechazar contenido que llega
+después, y quien llama no tiene autoridad sobre él. Solo se purgan los fragmentos que
+la base toma, y las demás filas bajo el nombre se quedan como están.
+
+Salvo en una base por defecto, que sigue en el nombre, este queda como lo deja
+`rag-ingest`: ninguna base lo tiene, `rag-drop <name>` lo elimina y `claim` lo rechaza a
+todos menos a un administrador de la aplicación y a una organización cuyos fragmentos
+son los únicos que quedan ([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
+
+Una escritura de chunks sin base retiene el nombre hasta su commit, así que la tabla
+se consulta solo cuando ha terminado cualquier escritura de ese tipo que ya estuviera en
+curso. Una escritura que llega al nombre mientras está reservado se rechaza, y el
+archivo debe ingerirse de nuevo. El trabajo de limpieza solo elimina un nombre reservado,
+así que repetirlo respeta una escritura hecha después de su primera eliminación.
+
+Un documento grande puede retener el nombre durante varios segundos. Una creación
+sobre el nombre (`POST /kb`, `POST /rag/collections/{name}`) espera un segundo y
+después responde 409 pidiendo que se reintente, porque cada petición en espera ocupa
+una conexión a la base de datos y suficientes de ellas hacen rechazar todas las demás.
+Un borrado espera a que termine la escritura.
+
+Una base personal fuera de una organización no toma ningún fragmento sin asignar,
+aunque los fragmentos identificados por sus propias filas se eliminan con ella.
+Un fragmento antiguo sin base, organización ni fila de seguimiento tiene un origen
+desconocido. Conserva la tabla, pero **una base de ámbito de aplicación no puede
+leerlo**, aunque un administrador adopte el nombre ([#2773](https://github.com/vstorm-co/agenticos/issues/2773)).
+
+Una base de ámbito de aplicación solo adopta fragmentos globales sin asignar y filas
+de seguimiento con `writer_kind: operator`. Las nuevas escrituras de `rag-ingest` y
+sincronizaciones CLI registran ese origen; la ingestión de la plataforma registra
+`document`, que persiste al eliminar un usuario o una base. La migración
+`0300_unfiled_writer_provenance.py` no confía en etiquetas de origen antiguas,
+conserva las atribuciones documentales ciertas y aísla los datos ambiguos como
+`legacy_unknown`. Las lecturas sin asignar de una organización siguen limitadas a su tenant.
+
+**Tras actualizar:** audita una colección conservada desde la shell del servidor.
+El comando solo necesita la base de datos y muestra recuentos agregados, nunca contenido:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name>
+```
+
+Solo después de inspeccionar la fuente y confirmar que los datos globales sin
+asignar de origen desconocido son una importación del operador para todas las
+organizaciones, ejecuta:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name> --confirm-operator
+```
+
+Requiere confirmación interactiva (`--yes` la sustituye para automatizaciones).
+La actualización es atómica y repetible; omite fragmentos y filas con origen
+documental conocido. Mantén aislados los datos dudosos; vuelve a importarlos en su
+base autorizada o elimínalos con el procedimiento del operador `rag-drop <name>`.
+Adoptar el nombre en la consola nunca confirma el origen de los datos.
+
+En otro caso, y siempre con `rag-drop`, el trabajo de limpieza elimina la tabla. Las
+filas sin asignar de otro tenant bajo ese nombre se quedan, con sus archivos, porque
+quien llama no tiene autoridad sobre ellas. Sin la tabla ya no hay nada detrás de
+ellas, así que se marcan como fallidas: la siguiente base de ese tenant con ese nombre
+las lista como fallidas, un documento subido hay que subirlo de nuevo y una
+sincronización vuelve a indexar un documento sincronizado.
+
+Antes, `DELETE /kb/{id}` dejaba las filas sin asignar del tenant detrás de la tabla
+eliminada, todavía listadas como indexadas, y eliminar una colección borraba todas
+las filas bajo el nombre, fuera del tenant que fuera
+([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
+
+Una subida o una sincronización que aún indexa un archivo para la base cuando se
+borra no deja fragmentos. La escritura toma un bloqueo sobre la fila de la base que
+choca con el del borrado, en la transacción que inserta los fragmentos: una escritura que llega segunda no
+encuentra la base, no escribe nada y falla en el paso de indexación, y una escritura
+que llega primera se confirma antes del borrado, cuya limpieza elimina después sus
+fragmentos
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+Tampoco deja fragmentos un documento suelto borrado mientras aún se indexa. Su
+fila no tiene identificador de documento vectorial hasta que la ingesta lo
+registra, así que el borrado puede no tener nada que eliminar; el worker que no
+encuentra la fila al registrar el resultado encola, en la misma transacción, un
+trabajo que elimina los fragmentos que acaba de escribir y se reintenta si la
+eliminación falla. Un borrado que descubre el identificador recién registrado encola la misma
+eliminación duradera con el identificador de la fila borrada
+([#2565](https://github.com/vstorm-co/agenticos/issues/2565)).
+
+Una sincronización local encolada para una base borrada antes de ejecutarse
+termina con un error y no escribe nada
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+Un agente busca en las bases de conocimiento a las que está vinculado con su propio
+ámbito, sin volver a resolver sus nombres. Un agente vinculado a dos bases con el
+mismo nombre busca en su ámbito combinado, excluyendo otras bases del mismo nombre.
 
 **`GET /rag/collections/{name}/filter-values`** responde con los valores de
 `organizational_unit` realmente presentes en la colección, bajo ese mismo ámbito.
@@ -972,7 +1316,7 @@ archivo guardado — para un llamante que no pidió nada de eso. Una dirección 
 no casa con ninguna comparación, que es la respuesta que se quiere y no una que
 haya que esquivar, y es lo que tiene cada fila escrita antes de existir la columna.
 
-Tres cosas deciden qué puede llevarse una retirada, y cada una de ellas se
+Cuatro cosas deciden qué puede llevarse una retirada, y cada una de ellas se
 equivocó primero:
 
 - **Por dirección, nunca por nombre de archivo.** Esa es la colisión que
@@ -980,6 +1324,11 @@ equivocó primero:
   vectores, alcanzada desde el otro extremo: `a/readme.md` y `b/readme.md` en un
   mismo bucket comparten nombre base, así que casar por nombre borra la fila del
   otro archivo.
+- **En el ámbito de la fila nueva, nunca por nombre de colección.** Un nombre no
+  es único, así que dos organizaciones, o dos bases de una, pueden sincronizar la
+  misma ruta en él. Una fila archivada en una base retira solo las filas que esa base
+  lista —las suyas y las sin base de su tenant—, y una fila sin base solo las filas
+  sin base de su propia organización ([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
 - **`ERROR`, no "no tiene id de vector".** Son conjuntos distintos, y tratarlos
   como uno solo es una carrera: una fila `PROCESSING` pertenece a un intento aún
   en curso, y de dos ingestas solapadas de un mismo origen la segunda borraría la
@@ -1008,6 +1357,12 @@ Un documento que no falló, o que no tiene archivo guardado — uno anterior a q
 las subidas guardaran el suyo, o uno que ingirió una sincronización — se rechaza
 con un 400 en vez de pasar a `processing`
 ([#441](https://github.com/vstorm-co/agenticos/issues/441)).
+
+El reintento también rechaza un documento de una organización sin asignar a ninguna
+base de conocimiento: sus fragmentos se escribirían para todo el deployment, donde la
+base de la organización que lo lista no lee, así que hay que subirlo de nuevo. Uno
+sin organización es de una base app-scoped, que lee ahí, y se reintenta
+([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
 
 ### Qué dice una ingesta fallida { #what-a-failed-ingest-says }
 
@@ -1043,12 +1398,15 @@ exhausted: $40.15 spent of $40.00 limit"*.
 
 Lo que **no** se guarda es el texto del cliente que falló. Un SDK de provider,
 `httpx`, `boto3` y el cliente de Google Drive ponen la petición que hacían en su
-mensaje de excepción, a menudo un endpoint, un host interno, un bucket o una URL
-con una clave en su query string — y, a diferencia de un cuerpo de error HTTP,
-una columna la relee semanas después quien abra el documento fallido. No se
-pierde: todas estas llamadas lo registran con `logger.exception`, así que el log
-del worker tiene el mensaje y la traza, y un flow de Prefect que relanza los
-tiene en su run. `app/services/rag/failures.py` es donde se separan ambos.
+mensaje de excepción, a menudo un endpoint, un host interno, un bucket o una URL con
+una clave en su query string — y, a diferencia de un cuerpo de error HTTP, una
+columna la relee semanas después quien abra el documento fallido.
+
+No se pierde: todas estas llamadas lo registran con `logger.exception`, así que el
+log del worker tiene el mensaje y la traza, y un job que relanza tiene su tipo, su
+mensaje y los últimos frames en su fila de `background_jobs`, donde solo los lee el
+propietario del despliegue. `app/services/rag/failures.py` es donde se separan la
+columna y el log.
 
 El log es un público más pequeño que la columna, no uno seguro — trata el log de
 un worker como algo que solo leen los operadores, y consulta [#440] para ver por
@@ -1345,9 +1703,11 @@ consecuencia es la misma (#982).
 
 Clonar también lo dice, y por el motivo de arriba: es la única forma de cambiar la
 audiencia de una fuente desde la propia UI de este producto. Reapuntar una
-existente es un `PATCH` sobre `collection_name`, que hoy no envía ninguna pantalla
-- no hay un editor de fuentes - así que se llega a ello por la API y por la CLI,
-donde la entrada de auditoría de arriba es lo que lo registra.
+existente es un `PATCH` sobre `collection_name` a `/rag/sync/sources/{id}`. El
+editor de fuentes de la pestaña **Sync** de una base de conocimiento no lo envía,
+y el `PATCH /kb/{kb_id}/sync-sources/{source_id}` propio de esa base rechaza un
+`collection_name` que nombre otra base - así que se llega a ello por la API y por
+la CLI, donde la entrada de auditoría de arriba es lo que lo registra.
 
 ### Qué debe traer un conector nuevo { #what-a-new-connector-owes }
 
@@ -1464,13 +1824,19 @@ de ingesta de la base de conocimiento y elige un perfil de modelo con visión. E
 selector es el del builder de agents: un provider, un modelo y su clave se
 definen sin salir del diálogo — un deployment sin perfiles de modelo no es un
 callejón sin salida. Lo que no ofrece es borrar un perfil: eso va donde se
-gestionan los modelos de una organización, porque cada agent apuntado a uno lo
-pierde. Las descripciones generadas se incluyen en el texto del documento, para
-mejor búsqueda semántica.
+gestionan los modelos de una organización, y un perfil que usan agents no se
+puede borrar.
+
+PyMuPDF omite la extracción de imágenes incrustadas cuando su descripción está
+desactivada. Al activarla, cada xref de imagen se extrae una sola vez por
+documento, se agrupan las referencias repetidas en una página y los bytes de
+imagen idénticos se describen una sola vez. Cada página que referencia una imagen
+sigue recibiendo su descripción en el texto para la búsqueda semántica. Los chunks
+contienen ese texto sin copiar las imágenes incrustadas de la página.
 
 ## Desde un canal { #from-a-channel }
 
-Un archivo enviado a un bot de Slack, Telegram o Mattermost entra por aquí, no al
+Un archivo enviado a un bot de Slack, Teams, Telegram o Mattermost entra por aquí, no al
 lado de aquí. El adaptador lo trae con la credencial del propio bot, pasa por la
 misma validación que una subida desde el navegador y se convierte en la misma fila
 `ChatFile` — así que el enrutado de arriba aplica sin cambios y un canal no puede

@@ -1,6 +1,6 @@
 "use client";
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 
 import { Figure } from "@/components/ui";
 
@@ -12,18 +12,19 @@ import type { DashboardWidgetProps } from "./types";
 /** Deployment-wide counts. The one strip an org admin never sees. */
 export function PlatformWidget({ title, hint, seeAll, options }: DashboardWidgetProps) {
   const t = useTranslations("dashboard.widgets.platform");
+  const locale = useLocale();
   const { stats, isLoading, error, refetch } = useAdminStats();
 
   return (
     <WidgetFrame title={title} hint={hint} seeAll={seeAll} options={options}>
       {isLoading ? (
-        <WidgetSkeleton />
+        <WidgetSkeleton variant="metrics" />
       ) : error ? (
         <WidgetErrorBody onRetry={() => refetch()} />
       ) : !stats || !stats.total_organizations ? (
         <WidgetEmptyBody title={t("empty.title")} description={t("empty.description")} />
       ) : (
-        <div className="grid flex-1 grid-cols-2 content-center gap-5 lg:grid-cols-4">
+        <div className="grid flex-1 grid-cols-2 content-center gap-5 @min-[36rem]/widget:grid-cols-4">
           {(
             [
               ["organizations", stats.total_organizations, null],
@@ -44,7 +45,7 @@ export function PlatformWidget({ title, hint, seeAll, options }: DashboardWidget
             <Figure
               key={key}
               label={t(key)}
-              value={(value ?? 0).toLocaleString()}
+              value={(value ?? 0).toLocaleString(locale)}
               caption={sub ?? undefined}
             />
           ))}

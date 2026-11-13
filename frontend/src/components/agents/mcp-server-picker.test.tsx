@@ -3,10 +3,16 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { bindingKey, McpServerPicker } from "./mcp-server-picker";
+import { NEW_PLATFORM_BINDING } from "./platform-server-card";
 import type { McpConnectionRecord } from "@/lib/mcp-connections-api";
 import type { OrgMcpConnectionRecord } from "@/lib/org-mcp-connections-api";
 import type { McpServerRef, OrgMcpServerRef, PersonalMcpServerRef } from "@/types/agents";
 import type { McpCatalogEntry } from "@/types/mcp";
+
+vi.mock("@/hooks", async (original) => ({
+  ...(await original<typeof import("@/hooks")>()),
+  usePlatformMcpTools: () => ({ tools: [], isLoading: false, error: null }),
+}));
 
 function entry(overrides: Partial<McpCatalogEntry> = {}): McpCatalogEntry {
   return { ...GITHUB, ...overrides };
@@ -44,6 +50,7 @@ function connection(overrides: Partial<OrgMcpConnectionRecord> = {}): OrgMcpConn
     visibility: "org",
     catalog_key: null,
     is_default: false,
+    trust_read_only_hints: false,
     label: null,
     last_tools: null,
     granted_scopes: null,
@@ -55,12 +62,17 @@ function connection(overrides: Partial<OrgMcpConnectionRecord> = {}): OrgMcpConn
 
 /** A binding to the organization's connection - what ticking a row writes. */
 function bound(connectionId: string, tools: string[] | null = null): OrgMcpServerRef {
-  return { account: "organization", connection_id: connectionId, allowed_tools: tools };
+  return {
+    account: "organization",
+    connection_id: connectionId,
+    allowed_tools: tools,
+    approval: "none",
+  };
 }
 
 /** A binding to each person's own account on a catalog service. */
 function personal(catalogKey: string, tools: string[] | null = null): PersonalMcpServerRef {
-  return { account: "personal", catalog_key: catalogKey, allowed_tools: tools };
+  return { account: "personal", catalog_key: catalogKey, allowed_tools: tools, approval: "none" };
 }
 
 function picker(props: {
@@ -169,6 +181,36 @@ describe("McpServerPicker", () => {
     expect(onChange).toHaveBeenCalledWith([bound("c1")]);
   });
 
+  it("offers this platform's own server first, and binds it beside the others", async () => {
+    const onChange = vi.fn();
+    const { unmount } = render(
+      picker({ connections: [connection()], value: [bound("c1")], onChange }),
+    );
+    const [first] = screen.getAllByRole("group");
+    expect(within(first as HTMLElement).getByText("Built in")).toBeInTheDocument();
+
+    await userEvent.click(within(first as HTMLElement).getByRole("switch"));
+    expect(onChange).toHaveBeenLastCalledWith([bound("c1"), NEW_PLATFORM_BINDING]);
+    unmount();
+
+    render(
+      picker({ connections: [connection()], value: [NEW_PLATFORM_BINDING, bound("c1")], onChange }),
+    );
+    await userEvent.click(
+      within(screen.getAllByRole("group")[0] as HTMLElement).getByRole("switch"),
+    );
+    expect(onChange).toHaveBeenLastCalledWith([bound("c1")]);
+  });
+
+  it("lets a search rule out the built-in server as it rules out the others", async () => {
+    render(picker({ connections: [connection()], value: [], onChange: vi.fn() }));
+    expect(screen.getByText("Built in")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText("Search servers…"), "github");
+    expect(screen.queryByText("Built in")).toBeNull();
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+  });
+
   it("drops a binding rather than writing it twice", async () => {
     const onChange = vi.fn();
     render(picker({ connections: [connection()], value: [bound("c1")], onChange }));
@@ -229,7 +271,7 @@ describe("McpServerPicker", () => {
 
   it("never counts the platform's own server as unresolved", () => {
     // It is this deployment, so there is nothing that can have gone.
-    render(picker({ value: [{ account: "platform" }] }));
+    render(picker({ value: [{ account: "platform", allowed_tools: null, approval: "writes" }] }));
 
     expect(screen.queryByText(/does not offer/)).toBeNull();
   });
@@ -393,6 +435,23 @@ describe("several connections behind one catalog entry", () => {
     expect(onChange).toHaveBeenCalledWith([bound("c1"), bound("c2")]);
   });
 
+  it("gives a further account the tools and approvals the settings show", async () => {
+    // One list and one approval choose for every account, so an account added
+    // without them would answer unasked where the settings say "Ask first".
+    const onChange = vi.fn();
+    const first: OrgMcpServerRef = {
+      ...bound("c1", ["search"]),
+      approval: "writes",
+      tool_approval: { search: "never" },
+    };
+    render(picker({ connections: THREE, value: [first], onChange }));
+
+    await settings();
+    await userEvent.click(screen.getByRole("button", { name: "Add another account" }));
+
+    expect(onChange).toHaveBeenCalledWith([first, { ...first, connection_id: "c2" }]);
+  });
+
   it("lists every bound account and offers each only the accounts still free", async () => {
     render(picker({ connections: THREE, value: [bound("c1"), bound("c3")] }));
 
@@ -474,6 +533,18 @@ describe("several connections behind one catalog entry", () => {
     await userEvent.click(kind("organization"));
 
     expect(onChange).toHaveBeenCalledWith([bound("c1", ["read"])]);
+  });
+
+  it("keeps each tool's own approval when the binding moves to each person's own", async () => {
+    const onChange = vi.fn();
+    const one = [connection({ id: "c1", name: "gh", catalog_key: "github" })];
+    const own = { tool_approval: { read: "never" as const } };
+    render(picker({ connections: one, value: [{ ...bound("c1"), ...own }], onChange }));
+
+    await settings();
+    await userEvent.click(kind("personal"));
+
+    expect(onChange).toHaveBeenCalledWith([{ ...personal("github"), ...own }]);
   });
 
   it("offers no choice where there is none to make", () => {
@@ -980,6 +1051,45 @@ describe("a server's settings", () => {
     expect(onChange).toHaveBeenCalledWith([{ ...personal("notion"), approval: "writes" }]);
   });
 
+  it.each([
+    ["notion-search", "notion-create-pages"],
+    ["notion-create-pages", "notion-search"],
+  ])("writes the tools' own approvals in name order, %s set first", async (first, second) => {
+    const onChange = vi.fn();
+    mount({ value: [{ ...personal("notion"), tool_approval: { [first]: "required" } }], onChange });
+
+    await settings("Pages.");
+    await userEvent.click(screen.getByRole("button", { name: `Ask first before ${second}` }));
+
+    const [[written]] = onChange.mock.lastCall as [PersonalMcpServerRef[]];
+    expect(Object.keys(written!.tool_approval!)).toEqual(["notion-create-pages", "notion-search"]);
+  });
+
+  it("writes a tool's own approval as the API answers it: sorted, and absent once none is left", async () => {
+    // The Builder compares the draft it holds with the stored one key by key, so
+    // a map in another order, or an empty one the API leaves out, never settles.
+    const onChange = vi.fn();
+    const asked: PersonalMcpServerRef = {
+      ...personal("notion"),
+      tool_approval: { "notion-search": "required" },
+    };
+    mount({ value: [asked], onChange });
+
+    await settings("Pages.");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Ask first before notion-create-pages" }),
+    );
+    const [[written]] = onChange.mock.lastCall as [PersonalMcpServerRef[]];
+    expect(JSON.stringify(written!.tool_approval)).toBe(
+      JSON.stringify({ "notion-create-pages": "required", "notion-search": "required" }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Ask first before notion-search" }));
+    const [[cleared]] = onChange.mock.lastCall as [PersonalMcpServerRef[]];
+    expect(cleared).toEqual(personal("notion"));
+    expect("tool_approval" in cleared!).toBe(false);
+  });
+
   it("keeps the approval when the binding moves to another kind of account", async () => {
     const onChange = vi.fn();
     const gh = connection({ id: "c1", name: "notion-org", catalog_key: "notion" });
@@ -987,7 +1097,7 @@ describe("a server's settings", () => {
       <McpServerPicker
         connections={[gh]}
         catalog={[NOTION]}
-        value={[{ ...personal("notion"), approval: "all" }]}
+        value={[{ ...personal("notion"), approval: "all", tool_approval: { fetch: "never" } }]}
         onChange={onChange}
         onTools={vi.fn()}
         onConnect={vi.fn()}
@@ -997,7 +1107,9 @@ describe("a server's settings", () => {
     await settings("Pages.");
     await userEvent.click(kind("organization"));
 
-    expect(onChange).toHaveBeenCalledWith([{ ...bound("c1"), approval: "all" }]);
+    expect(onChange).toHaveBeenCalledWith([
+      { ...bound("c1"), approval: "all", tool_approval: { fetch: "never" } },
+    ]);
   });
 
   it("connects another of the reader's own accounts, and counts the ones it reaches", async () => {
@@ -1114,8 +1226,12 @@ describe("bindingKey", () => {
   });
 
   it("names the platform's own server once, whatever its settings", () => {
-    expect(bindingKey({ account: "platform" })).toBe("platform");
-    expect(bindingKey({ account: "platform", approval: "all" })).toBe("platform");
+    expect(bindingKey({ account: "platform", allowed_tools: null, approval: "writes" })).toBe(
+      "platform",
+    );
+    expect(bindingKey({ account: "platform", allowed_tools: null, approval: "all" })).toBe(
+      "platform",
+    );
   });
 
   it("is the same for the same binding whatever its tools", () => {

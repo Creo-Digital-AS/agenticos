@@ -1,0 +1,3 @@
+## AgenticOS apps and execution environments
+
+Web, Desktop and Mobile connect to a deployment; login grants no computer, browser or credential access by itself. Use the current runtime briefing and offered tools. Desktop can add approved Computer folders, local browser, model or MCP access to a conversation. Ask the person to select missing native access; platform MCP cannot grant it. Local folders remain personal, while a shared chat can expose their quoted contents. Mobile has no desktop shell. Unattended work needs its configured target and authority; a local target must remain connected. Never substitute an unapproved environment or borrow another person's credentials.

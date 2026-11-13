@@ -1,3 +1,4 @@
+import type { RoutineNotificationChannel } from "@/types/routines";
 /**
  * Types for agent triggers - when an agent runs with nobody at the keyboard.
  *
@@ -8,16 +9,39 @@
  * split the shape CHECK enforces server-side.
  */
 
+import type { LocalTarget } from "@/lib/desktop/commands";
+
 /** Which of the two concepts a trigger is. Mirrors the backend's `TriggerType`. */
 export type TriggerType = "schedule" | "event";
 
 /** How a schedule decides it is due. Mirrors the backend's `ScheduleKind`. */
 export type ScheduleKind = "interval" | "cron";
 
+/**
+ * What a due schedule does while its previous fire still runs. Mirrors the
+ * backend's `TriggerOverlap`: `skip` lets the occurrence pass, `queue` fires once
+ * the run ends, `allow` fires on top of it.
+ */
+export type TriggerOverlap = "skip" | "queue" | "allow";
+
 /** Where an event trigger's fire comes from. Mirrors the backend's `EventSource`. */
-export type EventSource = "github" | "gmail" | "webhook";
+export type EventSource =
+  | "github"
+  | "gmail"
+  | "google_calendar"
+  | "google_drive"
+  | "hubspot"
+  | "microsoft_files"
+  | "outlook"
+  | "outlook_calendar"
+  | "webhook"
+  | "zendesk";
 
 export interface Trigger {
+  consecutive_failures?: number;
+  auto_stopped_at?: string | null;
+  max_failures?: number | null;
+  notification_channels?: RoutineNotificationChannel[] | null;
   id: string;
   agent_id: string;
   /** Set only on the org-wide listing, where a row is shown away from its agent. */
@@ -39,18 +63,42 @@ export interface Trigger {
    * trigger read carries it; the per-row controls gate on it rather than on a
    * role.
    */
+  project_id?: string | null;
   can_manage: boolean;
   /** Which named environment answers here; null = the default. */
   environment_id: string | null;
+  pinned_version_id?: string | null;
+  /** The Teams channel or group chat each fire's answer is also posted to (#1985). */
+  teams_conversation_id?: string | null;
+  /** Where each fire's answer is delivered to its person, beside the run log (#2575). */
+  result_mode?: "report" | "inbox";
+  answer_to?: TriggerAnswerTo;
+  delivery_conversation_id?: string | null;
+  /** When the routine stops by itself; null runs until stopped (#2575). */
+  ends_at?: string | null;
+  /** What this routine's runs may cost a month, or null for no limit of its own (#2575). */
+  monthly_budget_usd?: number | string | null;
+  /** What its runs cost this month; present only with a limit. */
+  spent_this_month?: number | string | null;
+  /** Its month's limit is spent, so fires are skipped until the first. */
+  paused_for_budget?: boolean;
+  waiting_device_count?: number;
+  waiting_device_since?: string | null;
   /**
    * Whether a fire acts as the person who made it - their memory and their own
    * MCP connections (#2027). Only they may turn it on.
    */
   runs_as_creator: boolean;
+  /** A folder on the creator's own computer each fire works in, or null for the sandbox (#2305). */
+  local_target?: LocalTarget | null;
   trigger_type: TriggerType;
   schedule_kind: ScheduleKind;
   interval_seconds: number | null;
   cron_expression: string | null;
+  /** The IANA zone a cron is read in; null reads it in UTC. */
+  time_zone: string | null;
+  /** A schedule's overlap policy; an event trigger carries `skip` and ignores it. */
+  overlap: TriggerOverlap;
   event_source: EventSource | null;
   /** The per-source filter (which actions, which sender); `{}` on a schedule. */
   event_config: Record<string, unknown>;
@@ -58,6 +106,9 @@ export interface Trigger {
   /** Null on an event trigger, which has no scheduled next fire. */
   next_fire_at: string | null;
   last_fired_at: string | null;
+  /** Last console delivery; null until a fire records it. */
+  last_delivery_status?:
+    "delivered" | "unavailable" | "run_log" | "no_answer" | "not_completed" | null;
   last_run_id: string | null;
   /** The one run-log conversation every fire appends to, opened eagerly on create. */
   conversation_id: string | null;
@@ -74,7 +125,7 @@ export interface Trigger {
    * so a partial fixture need not carry them - the live `TriggerRead` always does.
    */
   portal_key?: string | null;
-  delivery_mode?: "auto_webhook" | "manual" | "polling" | null;
+  delivery_mode?: "auto_webhook" | "app_webhook" | "manual" | "polling" | null;
   connection_id?: string | null;
   /**
    * Where a preset points - a repository, a channel - carried on `TriggerRead` so
@@ -97,16 +148,34 @@ export interface TriggerList {
  * `event_config` and `event_secret`. The secret is sent once, on create, and never
  * returned - the server seals it and only its ciphertext is stored.
  */
+/** Where a fire's answer is delivered to its person: their own chat with the agent, one chosen chat, or only the log. */
+export type TriggerAnswerTo = "run_log" | "primary" | "conversation";
+
 export interface TriggerCreate {
+  max_failures?: number | null;
+  is_active?: boolean;
+  notification_channels?: RoutineNotificationChannel[] | null;
   prompt: string;
   /** An optional title; omit to list the trigger by its agent's name. */
   name?: string | null;
   trigger_type: TriggerType;
   environment_id?: string | null;
+  pinned_version_id?: string | null;
+  teams_conversation_id?: string | null;
+  result_mode?: "report" | "inbox";
+  answer_to?: TriggerAnswerTo;
+  delivery_conversation_id?: string | null;
+  ends_at?: string | null;
+  monthly_budget_usd?: number | null;
   runs_as_creator?: boolean;
+  local_target?: LocalTarget | null;
   schedule_kind?: ScheduleKind;
   interval_seconds?: number | null;
   cron_expression?: string | null;
+  /** A cron's IANA zone; omitted, the server takes the caller's own. */
+  time_zone?: string | null;
+  /** Schedules only; the server stores `skip` when omitted. */
+  overlap?: TriggerOverlap;
   event_source?: EventSource | null;
   event_config?: Record<string, unknown> | null;
   event_secret?: string | null;
@@ -147,13 +216,44 @@ export interface TriggerCreated extends Trigger {
  * is remade by deleting and recreating, the secret by rotating.
  */
 export interface TriggerUpdate {
+  max_failures?: number | null;
+  notification_channels?: RoutineNotificationChannel[] | null;
   prompt?: string;
   name?: string | null;
   schedule_kind?: ScheduleKind;
   interval_seconds?: number | null;
   cron_expression?: string | null;
+  time_zone?: string | null;
+  overlap?: TriggerOverlap;
   is_active?: boolean;
   environment_id?: string | null;
+  pinned_version_id?: string | null;
+  teams_conversation_id?: string | null;
+  result_mode?: "report" | "inbox";
+  answer_to?: TriggerAnswerTo;
+  delivery_conversation_id?: string | null;
+  ends_at?: string | null;
+  monthly_budget_usd?: number | null;
   runs_as_creator?: boolean;
+  local_target?: LocalTarget | null;
   event_config?: Record<string, unknown>;
+}
+
+/** An activation that stopped before creating an agent run; no model cost. */
+export interface TriggerAttempt {
+  id: string;
+  activation_id: string;
+  status: "blocked" | "failed";
+  stage: "source_review" | "preparation";
+  reason:
+    | "platform_identity_required"
+    | "source_review_required"
+    | "agent_unavailable"
+    | "preparation_failed";
+  occurred_at: string;
+}
+
+export interface TriggerAttemptList {
+  items: TriggerAttempt[];
+  total: number;
 }

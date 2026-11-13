@@ -104,6 +104,19 @@ describe("ContextGallery", () => {
     expect(screen.getByRole("checkbox", { name: "glossary" })).not.toBeChecked();
   });
 
+  it("shows the attached files first", () => {
+    render(
+      <ContextGallery
+        files={[file(), file({ id: "c2", name: "escalation" })]}
+        total={2}
+        selectedIds={["c2"]}
+        onToggle={vi.fn()}
+      />,
+    );
+    const shown = screen.getAllByRole("checkbox").map((box) => box.getAttribute("aria-label"));
+    expect(shown).toEqual(["escalation", "glossary"]);
+  });
+
   it("attaches the file that was pressed", async () => {
     const onToggle = vi.fn();
     render(<ContextGallery files={[file()]} total={1} selectedIds={[]} onToggle={onToggle} />);
@@ -165,4 +178,27 @@ describe("ContextGallery", () => {
     render(<ContextGallery files={[file()]} total={1} selectedIds={[]} onToggle={vi.fn()} />);
     expect(screen.queryByLabelText("Search context files…")).toBeNull();
   });
+});
+
+it("edits mode and availability per agent without changing the shared file", async () => {
+  const onSettingsChange = vi.fn();
+  const source = file();
+  render(
+    <ContextGallery
+      files={[source]}
+      total={1}
+      selectedIds={[source.id]}
+      onToggle={vi.fn()}
+      settings={{}}
+      onSettingsChange={onSettingsChange}
+    />,
+  );
+  await userEvent.click(screen.getByRole("combobox", { name: `How ${source.name} is used` }));
+  await userEvent.click(screen.getByRole("option", { name: "linked" }));
+  expect(onSettingsChange).toHaveBeenCalledWith({ [source.id]: { mode: "link", enabled: true } });
+  await userEvent.click(screen.getByRole("switch", { name: "Use in this agent" }));
+  expect(onSettingsChange).toHaveBeenLastCalledWith({
+    [source.id]: { mode: "inject", enabled: false },
+  });
+  expect(source.mode).toBe("inject");
 });

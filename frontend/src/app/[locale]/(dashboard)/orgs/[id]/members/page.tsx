@@ -1,11 +1,12 @@
 "use client";
 
-import { use, useEffect, useMemo, useRef, useState } from "react";
+import { use, useEffect, useId, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  Camera,
+  Building2,
+  Sparkles,
+  Radar,
   Link2,
-  Loader2,
   MailPlus,
   Network,
   Archive,
@@ -14,27 +15,40 @@ import {
   UserPlus,
   Users,
 } from "lucide-react";
-import { toast } from "sonner";
 
-import { ApiError, getErrorMessage, parseErrorMessage } from "@/lib/api-error";
+import { getErrorMessage } from "@/lib/api-error";
 import { ErrorState } from "@/components/states";
 import {
   InviteLinkDialog,
   InviteMemberDialog,
   OrgApprovalWaiver,
   OrgAssistant,
+  OrgPublicAttribution,
+  OrgPublicLiveData,
+  OrgProactivity,
+  OrgSystemAgents,
   OrgSpendingLimit,
+  OrgVoiceSettings,
 } from "@/components/teams";
+import { SetupIndicator } from "@/components/settings/setup-indicator";
+import { useSystemAgents } from "@/hooks/use-system-agents";
+import {
+  voiceSetupHints,
+  proactivitySetupHints,
+  systemAgentSetupHints,
+  architectSetupHints,
+  type SetupHint,
+} from "@/lib/setup-hints";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ForgetMemberMemory } from "@/components/memory/forget-member-memory";
 import { DirectoryBadge } from "@/components/orgs/directory-badge";
+import { DiscordBadge } from "@/components/orgs/discord-badge";
 import {
   Badge,
   Button,
   DataTable,
-  AvatarColorPicker,
+  ConfirmDialog,
   EntityAvatar,
-  Input,
   ListCard,
   ListCardEmpty,
   Select,
@@ -42,9 +56,14 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   type Column,
 } from "@/components/ui";
 import {
+  useUrlState,
   useAssignableRoles,
   useAuth,
   useInvitations,
@@ -55,10 +74,12 @@ import {
 } from "@/hooks";
 import { Perm } from "@/types/permissions";
 import type { OrganizationMember, OrgRole } from "@/types";
-import { avatarInitials, avatarPalette } from "@/lib/avatar-color";
-import { cn, formatDate, MAX_AVATAR_SIZE_BYTES } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import { ROUTES } from "@/lib/constants";
-import { useChanged } from "@/hooks/use-changed";
+import { useOrgStore } from "@/stores";
+import { useAssistant } from "@/hooks/use-assistant";
+import { OrganizationProfileSettings } from "@/components/teams/organization-profile-settings";
+import { useTenantId } from "@/hooks/use-organizations";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -78,16 +99,21 @@ export default function OrgMembersPage({ params }: PageProps) {
   const tErrors = useTranslations("errors");
   const t = useTranslations("pages.orgs");
   const tc = useTranslations("common");
+  const tSetup = useTranslations("setupHints");
+  const setupId = useId();
   const tGroups = useTranslations("groups");
   const tDirectory = useTranslations("directory");
+  const tDiscord = useTranslations("discordRoles");
   const locale = useLocale();
   const { id } = use(params);
   const { user } = useAuth();
   const { members, total, isLoading, error, fetchMembers, changeRole, removeMember } =
     useMembers(id);
   const { invitations, fetchInvitations, revokeInvitation } = useInvitations(id);
-  const { orgs, fetchOrgs, patchOrg } = useOrganizations();
+  const { orgs, fetchOrgs } = useOrganizations();
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [removing, setRemoving] = useState<OrganizationMember | null>(null);
+  const [removingBusy, setRemovingBusy] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
 
   useEffect(() => {
@@ -107,67 +133,56 @@ export default function OrgMembersPage({ params }: PageProps) {
   // so adding a role that may manage members needs no change here.
   const canManage = can(Perm.membersManage);
   const canSettings = can(Perm.orgSettings);
+  const { assistant } = useAssistant();
+  const activeOrgId = useOrgStore((state) => state.activeOrgId);
+  const tenantId = useTenantId();
+  const [tabParam, setTabParam] = useUrlState("tab");
+  const canConfigureAssistant =
+    activeOrgId === id && !!assistant?.can_configure && !!assistant.agent_id;
+  const canSystemServices = can(Perm.budgetsManage) && tenantId === id;
+  const { roles: systemRoles, error: systemRolesError } = useSystemAgents(canSystemServices);
+  const hints: Record<string, SetupHint[]> = {
+    profile: org && canSettings ? voiceSetupHints(org) : [],
+    proactivity: org && can(Perm.budgetsManage) ? proactivitySetupHints(org) : [],
+    assistant: [
+      ...(canConfigureAssistant && assistant ? architectSetupHints(assistant) : []),
+      ...(canSystemServices && !systemRolesError
+        ? (systemRoles ?? []).flatMap(systemAgentSetupHints)
+        : []),
+    ],
+  };
+  const sections = [
+    { id: "members", label: "members", icon: Users, visible: true },
+    { id: "profile", label: "tabProfile", icon: Building2, visible: true },
+    {
+      id: "governance",
+      label: "tabGovernance",
+      icon: ShieldCheck,
+      visible: can(Perm.budgetsManage) || can(Perm.approvalsDecide) || canSettings,
+    },
+    {
+      id: "proactivity",
+      label: "tabProactivity",
+      icon: Radar,
+      visible: tenantId !== id || can(Perm.budgetsManage) || canSettings,
+    },
+    {
+      id: "assistant",
+      label: "tabAssistant",
+      icon: Sparkles,
+      visible: canConfigureAssistant || canSystemServices,
+    },
+  ].filter((section) => section.visible);
+  // Existing bookmarks and settings links keep opening the moved voice controls.
+  const requestedTab = tabParam === "voice" && canSettings ? "profile" : tabParam;
+  const tab = sections.find((section) => section.id === requestedTab)?.id ?? "members";
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
-
-  // Workspace profile state - name edits stay local until "Save" lands the
-  // PATCH; avatar uploads are immediate (a separate POST endpoint).
-  const [name, setName] = useState("");
-  const [savingName, setSavingName] = useState(false);
-  const [avatarUploading, setAvatarUploading] = useState(false);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
-
-  // Re-seeded when the stored name moves - a save coming back, or another tab.
-  // During render, so the old name is never shown in the field.
-  if (useChanged(`${org?.id}|${org?.name}`) && org) setName(org.name);
-
-  const handleSaveName = async () => {
-    if (!org) return;
-    const trimmed = name.trim();
-    if (!trimmed || trimmed === org.name) return;
-    setSavingName(true);
-    try {
-      await patchOrg(org.id, { name: trimmed });
-    } finally {
-      setSavingName(false);
-    }
-  };
-
-  const handleColorChange = async (slot: number | null) => {
-    if (!org || slot === (org.avatar_color ?? null)) return;
-    await patchOrg(org.id, { avatar_color: slot });
-  };
-
-  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = "";
-    if (file.size > MAX_AVATAR_SIZE_BYTES) {
-      toast.error(t("avatarTooLargeMaximum"));
-      return;
-    }
-    setAvatarUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`/api/orgs/${id}/avatar`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const body: unknown = await res.json().catch(() => null);
-        throw new ApiError(res.status, parseErrorMessage(body, t("uploadFailed2")), body);
-      }
-      toast.success(t("workspaceAvatarUpdated"));
-      await fetchOrgs(true);
-    } catch (err) {
-      toast.error(getErrorMessage(err, tErrors, t("failedUploadAvatar")));
-    } finally {
-      setAvatarUploading(false);
-    }
-  };
 
   const columns = useMemo<Column<OrganizationMember>[]>(() => {
     const cols: Column<OrganizationMember>[] = [
       {
         key: "member",
-        className: "pl-5",
+        className: "pl-5 @max-md/table:w-full @max-md/table:pb-1",
         header: t("member"),
         cell: (m) => {
           const isSelf = m.user_id === user?.id;
@@ -182,12 +197,14 @@ export default function OrgMembersPage({ params }: PageProps) {
                 className="h-8 w-8 shrink-0 text-[11px]"
                 ariaHidden
               />
-              <div className="min-w-0">
+              <div className="max-w-28 min-w-0 sm:max-w-xs @max-md/table:max-w-none">
                 <p className="text-foreground truncate text-sm font-medium">
                   {m.full_name || m.email.split("@")[0]}
                   {isSelf && <span className="text-muted-foreground font-normal"> {t("you")}</span>}
                 </p>
-                <p className="text-muted-foreground truncate text-xs">{m.email}</p>
+                <p className="text-muted-foreground truncate text-xs" title={m.email}>
+                  {m.email}
+                </p>
               </div>
             </div>
           );
@@ -196,6 +213,7 @@ export default function OrgMembersPage({ params }: PageProps) {
       {
         key: "role",
         header: t("role2"),
+        className: "@max-md/table:flex-1 @max-md/table:pl-5 @max-md/table:pt-1",
         cell: (m) => {
           const isSelf = m.user_id === user?.id;
           const isOwner = m.role === "owner";
@@ -206,11 +224,13 @@ export default function OrgMembersPage({ params }: PageProps) {
           // the role the member holds now, which is what stops a peer Admin getting a
           // selector whose only result is a 403 toast (#700).
           //
-          // A membership the directory sync made says so beside the role, since
-          // changing that role here is also what takes the row off the sync.
+          // A membership the directory or Discord sync made says so beside the
+          // role, since changing that role here is also what takes the row off the sync.
           const synced =
             m.source === "directory" ? (
               <DirectoryBadge explanation={tDirectory("memberHint")} />
+            ) : m.source === "discord" ? (
+              <DiscordBadge explanation={tDiscord("memberHint")} />
             ) : null;
           if (canManage && !isOwner && !isSelf && m.can_change_role && assignable.length > 0) {
             return (
@@ -259,6 +279,8 @@ export default function OrgMembersPage({ params }: PageProps) {
       {
         key: "joined",
         header: t("joined"),
+        hideBelow: "md",
+        className: "@max-md/table:hidden",
         cell: (m) => (
           <span className="text-muted-foreground text-sm">{formatDate(m.joined_at, locale)}</span>
         ),
@@ -270,7 +292,7 @@ export default function OrgMembersPage({ params }: PageProps) {
         key: "actions",
         header: "",
         align: "right",
-        className: "w-0 pr-5",
+        className: "w-0 pr-5 @max-md/table:w-auto @max-md/table:pt-1",
         cell: (m) => {
           const isSelf = m.user_id === user?.id;
           const isOwner = m.role === "owner";
@@ -285,7 +307,7 @@ export default function OrgMembersPage({ params }: PageProps) {
                   variant="ghost"
                   size="sm"
                   className="text-muted-foreground hover:text-destructive"
-                  onClick={() => removeMember(m.user_id)}
+                  onClick={() => setRemoving(m)}
                   aria-label={tc("removeNamed", { name: m.full_name || m.email })}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -301,7 +323,7 @@ export default function OrgMembersPage({ params }: PageProps) {
   }, [canManage, user?.id, assignable, changeRole, removeMember, tDirectory]);
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-1 flex-col space-y-4">
       <PageHeader
         title={org?.name ?? t("members")}
         description={t("membersDescription", { count: total })}
@@ -309,7 +331,7 @@ export default function OrgMembersPage({ params }: PageProps) {
           { label: t("organizations"), href: ROUTES.ORGS },
           { label: org?.name ?? t("members2") },
         ]}
-        actions={
+        secondaryActions={
           // Wrapping, because four links are wider than a phone (#2075).
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" asChild>
@@ -357,232 +379,245 @@ export default function OrgMembersPage({ params }: PageProps) {
                   <Link2 className="h-4 w-4" />
                   {t("inviteLink")}
                 </Button>
-                <Button onClick={() => setInviteOpen(true)}>
-                  <UserPlus className="h-4 w-4" />
-                  {t("inviteTeammate")}
-                </Button>
               </>
             ) : null}
           </div>
         }
+        actions={
+          canManage && (
+            <Button onClick={() => setInviteOpen(true)}>
+              <UserPlus className="h-4 w-4" />
+              {t("inviteTeammate")}
+            </Button>
+          )
+        }
       />
 
-      {org && (
-        <section
-          data-tour="org-profile"
-          className="border-border bg-card flex flex-wrap items-start gap-5 rounded-xl border p-5 sm:p-6"
-        >
-          <button
-            type="button"
-            onClick={() => avatarInputRef.current?.click()}
-            disabled={!canManage || avatarUploading}
-            className={cn(
-              "group relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl disabled:cursor-default",
-              org.avatar_url
-                ? "bg-muted text-foreground"
-                : avatarPalette(org.id, org.avatar_color).bg,
-            )}
-            title={canManage ? t("changeWorkspaceAvatar") : t("onlyOwnersAdminsCan")}
-          >
-            {org.avatar_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={`/api/orgs/${org.id}/avatar?v=${org.updated_at ?? ""}`}
-                alt=""
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <span
-                className={cn(
-                  avatarPalette(org.id, org.avatar_color).fg,
-                  "text-base font-semibold",
-                )}
+      <Tabs
+        className="flex flex-1 flex-col"
+        value={tab}
+        onValueChange={(next) => {
+          setTabParam(next === "members" ? null : next);
+          // A legacy card anchor must not point into the panel we just hid.
+          if (window.location.hash) {
+            const url = new URL(window.location.href);
+            url.hash = "";
+            window.history.replaceState({}, "", url.toString());
+          }
+        }}
+      >
+        <TabsList data-tour="org-tabs">
+          {sections.map((section) => (
+            <div key={section.id} className="relative pt-2">
+              <TabsTrigger
+                value={section.id}
+                data-tour={`org-tab-${section.id}`}
+                aria-describedby={
+                  hints[section.id]?.length ? `${setupId}-${section.id}` : undefined
+                }
               >
-                {avatarInitials(org.name)}
+                <section.icon className="mr-1.5 size-4 shrink-0" aria-hidden />
+                {t(section.label)}
+              </TabsTrigger>
+              <span id={`${setupId}-${section.id}`} className="sr-only">
+                {(hints[section.id] ?? []).map((hint) => tSetup(hint)).join(" ")}
               </span>
-            )}
-            {canManage && (
-              <span className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
-                {avatarUploading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-white" />
-                ) : (
-                  <Camera className="h-5 w-5 text-white" />
-                )}
-              </span>
-            )}
-          </button>
-          <input
-            ref={avatarInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif"
-            className="hidden"
-            onChange={handleAvatarUpload}
-          />
-
-          <div className="min-w-0 flex-1 space-y-3">
-            <div>
-              <p className="text-muted-foreground font-mono text-xs tracking-wider uppercase">
-                {t("workspaceProfile")}
-              </p>
-              <p className="text-muted-foreground mt-0.5 text-xs">{t("nameAvatarShownAcross")}</p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={!canManage || savingName}
-                className="min-w-0 flex-1"
-                placeholder={t("workspaceName")}
-                maxLength={255}
+              <SetupIndicator
+                hints={hints[section.id] ?? []}
+                className="absolute top-0 right-0"
+                focusable={false}
               />
-              {canManage && name.trim() !== org.name && name.trim() !== "" && (
-                <Button onClick={handleSaveName} disabled={savingName}>
-                  {savingName ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-                </Button>
-              )}
             </div>
-            {!canManage && (
-              <p className="text-muted-foreground text-xs">{t("onlyOwnersAdminsCan")}</p>
-            )}
-            {canManage && (
-              <div>
-                <p className="text-muted-foreground mb-2 text-xs">{t("avatarColour")}</p>
-                <AvatarColorPicker value={org.avatar_color} onChange={handleColorChange} />
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* The workspace's own spending ceiling sits with its other settings. It
-          hides itself from anyone who may not change them. */}
-      {org && <OrgSpendingLimit org={org} />}
-
-      {/* And whether a chat session here may waive them. Governance, like the
-          ceiling above it, and hidden from anybody who may not decide an
-          approval in the first place. */}
-      {org && <OrgApprovalWaiver org={org} />}
-
-      {/* Whether the organization has its AI Architect, and how it greets people.
-          The agent itself is edited in the Builder, which the card links to. */}
-      <OrgAssistant orgId={id} />
-
-      {/* The table draws its own skeleton from the same column definitions, so
+          ))}
+        </TabsList>
+        {/* Keep drafts mounted while another section is open. Hidden panels take
+            no layout space and cannot receive keyboard focus. */}
+        <TabsContent
+          value="members"
+          hidden={tab !== "members"}
+          forceMount
+          className="flex-1 flex-col space-y-6 data-[state=active]:flex"
+        >
+          {/* The table draws its own skeleton from the same column definitions, so
           the header and every column width are already right while it loads -
           a stand-in list could only approximate them. The shared list card
           keeps the page's shape whether it is empty, loading or full. */}
-      <ListCard
-        data-tour="org-members"
-        title={t("membersCard")}
-        counted={
-          isLoading || permissionsLoading || error
-            ? null
-            : t("memberCount", { count: members.length })
-        }
-        contentClassName="p-0"
-      >
-        {rolesError && !error && (
-          <p className="text-destructive px-5 pt-4 text-sm">{t("rolesUnavailable")}</p>
-        )}
-        {error ? (
-          // Every organization has at least its owner, so "no members yet"
-          // over a failed read is a sentence that cannot be true (#32).
-          <ErrorState description={getErrorMessage(error, tErrors)} className="m-5" />
-        ) : !isLoading && !permissionsLoading && members.length === 0 ? (
-          <ListCardEmpty
-            icon={Users}
-            title={t("noMembersYet")}
-            description={t("inviteTeammatesByEmail")}
-            cta={
-              canManage
-                ? { label: t("inviteTeammate"), onClick: () => setInviteOpen(true) }
-                : undefined
+          <ListCard
+            fill
+            data-tour="org-members"
+            title={t("membersCard")}
+            counted={
+              isLoading || permissionsLoading || error
+                ? null
+                : t("memberCount", { count: members.length })
             }
-          />
-        ) : (
-          <DataTable<OrganizationMember>
-            columns={columns}
-            rows={members}
-            // Wait on the permission answer too, or the row-action column - built
-            // from `canManage` - draws without its actions and then flickers them
-            // in a beat later once `can()` resolves (safe direction, but a glitch).
-            loading={isLoading || permissionsLoading}
-            skeletonRows={4}
-            getRowKey={(m) => m.id}
-            empty={t("noMembersYet")}
-            className="rounded-none border-0 bg-transparent"
-          />
-        )}
-      </ListCard>
+            contentClassName="p-0"
+          >
+            {rolesError && !error && (
+              <p className="text-destructive px-5 pt-4 text-sm">{t("rolesUnavailable")}</p>
+            )}
+            {error ? (
+              // Every organization has at least its owner, so "no members yet"
+              // over a failed read is a sentence that cannot be true (#32).
+              <ErrorState description={getErrorMessage(error, tErrors)} className="m-5" />
+            ) : !isLoading && !permissionsLoading && members.length === 0 ? (
+              <ListCardEmpty
+                icon={Users}
+                title={t("noMembersYet")}
+                description={t("inviteTeammatesByEmail")}
+                cta={
+                  canManage
+                    ? { label: t("inviteTeammate"), onClick: () => setInviteOpen(true) }
+                    : undefined
+                }
+              />
+            ) : (
+              <DataTable<OrganizationMember>
+                stackOnNarrow
+                columns={columns}
+                rows={members}
+                // Wait on the permission answer too, or the row-action column - built
+                // from `canManage` - draws without its actions and then flickers them
+                // in a beat later once `can()` resolves (safe direction, but a glitch).
+                loading={isLoading || permissionsLoading}
+                skeletonRows={4}
+                getRowKey={(m) => m.id}
+                empty={t("noMembersYet")}
+                className="rounded-none border-0 bg-transparent"
+              />
+            )}
+          </ListCard>
 
-      {pendingInvitations.length > 0 && (
-        <section className="space-y-3">
-          <div>
-            <p className="text-muted-foreground font-mono text-xs tracking-wider uppercase">
-              {t("pendingInvitations")}
-            </p>
-            <h2 className="text-foreground text-sm font-semibold">
-              {t("waitingOnResponse", { count: pendingInvitations.length })}
-            </h2>
-          </div>
-          <ul className="border-border bg-card divide-border divide-y overflow-hidden rounded-xl border">
-            {pendingInvitations.map((inv) => (
-              <li key={inv.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
-                <span className="bg-muted text-muted-foreground inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
-                  <MailPlus className="h-4 w-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-foreground truncate text-sm font-medium">
-                    {inv.email ?? t("shareableLink")}
-                  </p>
-                  <p className="text-muted-foreground mt-0.5 truncate text-xs">
-                    {/* A link is not waiting on one person, so "invited" is the
+          {pendingInvitations.length > 0 && (
+            <section className="space-y-3">
+              <div>
+                <p className="text-muted-foreground font-mono text-xs tracking-wider uppercase">
+                  {t("pendingInvitations")}
+                </p>
+                <h2 className="text-foreground text-sm font-semibold">
+                  {t("waitingOnResponse", { count: pendingInvitations.length })}
+                </h2>
+              </div>
+              <ul className="border-border bg-card divide-border divide-y overflow-hidden rounded-xl border">
+                {pendingInvitations.map((inv) => (
+                  <li key={inv.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
+                    <span className="bg-muted text-muted-foreground inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
+                      <MailPlus className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-foreground truncate text-sm font-medium">
+                        {inv.email ?? t("shareableLink")}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 truncate text-xs">
+                        {/* A link is not waiting on one person, so "invited" is the
                         wrong word for it and its limits are what matter. */}
-                    {inv.email === null ? (
-                      <>
-                        {/* The sum, because that is what the ceiling compares:
+                        {inv.email === null ? (
+                          <>
+                            {/* The sum, because that is what the ceiling compares:
                             registering through a link spends a use, since joining
                             needs a session and happens later. */}
-                        {t("usedOfMax", {
-                          used: (inv.used_count ?? 0) + (inv.reserved_count ?? 0),
-                          max: inv.max_uses ?? "∞",
-                        })}
-                        {inv.reserved_count ? (
-                          <> · {t("awaitingSignup", { count: inv.reserved_count })}</>
-                        ) : null}
-                        {inv.email_domain && (
-                          <> · {t("domainOnly", { domain: inv.email_domain })}</>
+                            {t("usedOfMax", {
+                              used: (inv.used_count ?? 0) + (inv.reserved_count ?? 0),
+                              max: inv.max_uses ?? "∞",
+                            })}
+                            {inv.reserved_count ? (
+                              <> · {t("awaitingSignup", { count: inv.reserved_count })}</>
+                            ) : null}
+                            {inv.email_domain && (
+                              <> · {t("domainOnly", { domain: inv.email_domain })}</>
+                            )}
+                          </>
+                        ) : (
+                          <>{t("invitedOn", { date: formatDate(inv.created_at, locale) })}</>
                         )}
-                      </>
-                    ) : (
-                      <>{t("invitedOn", { date: formatDate(inv.created_at, locale) })}</>
+                        {inv.expires_at && (
+                          <> · {t("expiresOn", { date: formatDate(inv.expires_at, locale) })}</>
+                        )}
+                      </p>
+                    </div>
+                    <Badge variant={ROLE_VARIANT[inv.role]} className="capitalize">
+                      {inv.role}
+                    </Badge>
+                    {canManage && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => revokeInvitation(inv.id)}
+                      >
+                        {t("revoke")}
+                      </Button>
                     )}
-                    {inv.expires_at && (
-                      <> · {t("expiresOn", { date: formatDate(inv.expires_at, locale) })}</>
-                    )}
-                  </p>
-                </div>
-                <Badge variant={ROLE_VARIANT[inv.role]} className="capitalize">
-                  {inv.role}
-                </Badge>
-                {canManage && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => revokeInvitation(inv.id)}
-                  >
-                    {t("revoke")}
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </TabsContent>
+        <TabsContent
+          value="profile"
+          hidden={tab !== "profile"}
+          forceMount
+          className="space-y-6 data-[state=inactive]:hidden"
+        >
+          <p className="text-muted-foreground max-w-3xl text-sm leading-6">
+            {t("workspaceSettingsHint")}
+          </p>
+          {org && <OrganizationProfileSettings org={org} />}
+          {org && canSettings && <OrgVoiceSettings org={org} />}
+        </TabsContent>
+        <TabsContent
+          value="governance"
+          data-tour="org-governance"
+          hidden={tab !== "governance"}
+          forceMount
+          className="space-y-6 data-[state=inactive]:hidden"
+        >
+          {org && <OrgSpendingLimit org={org} />}
+          {org && <OrgApprovalWaiver org={org} />}
+          {org && <OrgPublicAttribution org={org} />}
+          {org && <OrgPublicLiveData org={org} />}
+        </TabsContent>
+        <TabsContent
+          value="proactivity"
+          data-tour="org-proactivity"
+          hidden={tab !== "proactivity"}
+          forceMount
+          className="space-y-6 data-[state=inactive]:hidden"
+        >
+          {org && <OrgProactivity org={org} />}
+        </TabsContent>
+        <TabsContent
+          value="assistant"
+          hidden={tab !== "assistant"}
+          forceMount
+          className="space-y-6 data-[state=inactive]:hidden"
+        >
+          <p className="text-muted-foreground max-w-3xl text-sm leading-6">{t("aiServicesHint")}</p>
+          {canConfigureAssistant && <OrgAssistant orgId={id} />}
+          {org && canSystemServices && <OrgSystemAgents org={org} />}
+        </TabsContent>
+      </Tabs>
 
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => {
+          if (!open && !removingBusy) setRemoving(null);
+        }}
+        title={tc("removeNamedConfirm", { name: removing?.full_name || removing?.email || "" })}
+        confirmLabel={tc("removeNamed", { name: removing?.full_name || removing?.email || "" })}
+        loading={removingBusy}
+        destructive
+        onConfirm={async () => {
+          if (!removing || removingBusy) return;
+          setRemovingBusy(true);
+          try {
+            if (await removeMember(removing.user_id)) setRemoving(null);
+          } finally {
+            setRemovingBusy(false);
+          }
+        }}
+      />
       <InviteMemberDialog open={inviteOpen} onOpenChange={setInviteOpen} orgId={id} />
       <InviteLinkDialog open={linkOpen} onOpenChange={setLinkOpen} orgId={id} />
     </div>

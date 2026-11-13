@@ -20,8 +20,6 @@ deliberately absent: an entry naming a deleted actor is worse than one naming
 nobody, so those are retained rather than exported or removed.
 """
 
-from __future__ import annotations
-
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -35,7 +33,26 @@ from app.core.exceptions import BadRequestError
 from app.core.memory_keys import person_owner_key
 from app.db.locks import LockScope, hold_subject
 from app.repositories import personal_data_repo, user_repo
-from app.schemas.personal_data import PersonalDataExport, PersonalDataPurge
+from app.schemas.personal_data import (
+    CodingTaskChangeExport,
+    ConnectedAccountExport,
+    OutcomeExport,
+    PersonalDataExport,
+    PersonalDataPurge,
+    PhoneCallExport,
+    PhoneCaseAttemptExport,
+    PhoneContactExport,
+    PrivateTaskBoardExport,
+    PrivateTaskHistoryExport,
+    PrivateTaskRecordExport,
+    PrivateTaskSchemaExport,
+    ProjectTrackingExport,
+    RoutineAnswerExport,
+    RoutineDeviceWaitExport,
+    RoutineHealthExport,
+    RoutineSourceExport,
+)
+from app.services.dataset import redact_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +60,30 @@ _CONVERSATION_FIELDS = ("id", "title", "created_at", "updated_at", "is_archived"
 _MESSAGE_FIELDS = ("id", "conversation_id", "role", "content", "ordinal", "created_at")
 _TOOL_CALL_FIELDS = ("id", "message_id", "tool_name", "args", "result", "status", "started_at")
 _RATING_FIELDS = ("id", "message_id", "rating", "comment", "created_at")
+_VERDICT_FIELDS = ("id", "dataset_id", "case_id", "human_passed", "human_note", "reviewed_at")
+_SCORED_ANSWER_FIELDS = ("id", "dataset_id", "case_id", "run_id", "answer", "created_at")
 _SESSION_FIELDS = ("id", "device_name", "device_type", "ip_address", "created_at", "last_used_at")
 _RUN_FIELDS = ("id", "agent_id", "status", "surface", "cost_usd", "created_at")
+_KNOWLEDGE_SEARCH_FIELDS = ("id", "run_id", "agent_id", "query", "result_count", "created_at")
 _MEMORY_FIELDS = ("id", "agent_id", "name", "content", "updated_at")
+_CLAIM_FIELDS = (
+    "id",
+    "organization_id",
+    "agent_id",
+    "subject",
+    "statement",
+    "kind",
+    "origin",
+    "status",
+    "source_conversation_id",
+    "source_run_id",
+    "observed_at",
+    "effective_from",
+    "effective_to",
+    "supersedes_id",
+    "derived_from",
+    "episode",
+)
 _IDENTITY_FIELDS = ("id", "platform", "platform_user_id", "platform_username")
 _COMMAND_FIELDS = ("id", "name", "prompt", "created_at")
 _LAYOUT_FIELDS = ("id", "organization_id", "entries", "updated_at")
@@ -78,7 +116,52 @@ _NOTIFICATION_FIELDS = (
     "read_at",
     "created_at",
 )
+ANONYMISED_CASE_INPUT = "[Removed: the person this case was taken from was erased]"
 _NOTIFICATION_PREFERENCE_FIELDS = ("event_type", "channel", "enabled", "updated_at")
+# Every field a draft can carry a person's words in, and every link back to them.
+_CASE_PROPOSAL_FIELDS = (
+    "id",
+    "dataset_id",
+    "origin",
+    "input",
+    "history",
+    "reference_answer",
+    "counter_example",
+    "note",
+    "tags",
+    "source_run_id",
+    "source_conversation_id",
+    "source_message_id",
+    "created_at",
+)
+_SUGGESTION_FIELDS = (
+    "id",
+    "organization_id",
+    "kind",
+    "title",
+    "detail",
+    "payload",
+    "status",
+    "watch_id",
+    "urgent",
+    "created_at",
+    "decided_at",
+)
+
+_WATCH_FIELDS = (
+    "id",
+    "organization_id",
+    "connection_id",
+    "preset_key",
+    "title",
+    "instructions",
+    "exclusions",
+    "urgent",
+    "interval_minutes",
+    "is_active",
+    "last_run_at",
+    "created_at",
+)
 
 #: The account's own values, as an export hands them over.
 #:
@@ -103,6 +186,14 @@ _PROFILE_FIELDS = (
     "notify_budget_alerts",
     "notify_approval_requests",
     "notify_usage_reports",
+    # What every agent is told about them, and how the console speaks to them
+    # (#2301): their own words and choices, so theirs to take away.
+    "locale",
+    "time_zone",
+    "job_title",
+    "about",
+    "working_hours",
+    "proactive_opt_out",
 )
 
 
@@ -136,11 +227,71 @@ class PersonalDataService:
 
         conversations = await personal_data_repo.conversations_of(self.db, user_id)
         conversation_ids = [conversation.id for conversation in conversations]
-        await self._refuse_if_too_large(conversation_ids)
-        messages = await personal_data_repo.messages_in(self.db, conversation_ids)
+        await self._refuse_if_too_large(conversation_ids, user_id=user_id)
+        messages = await personal_data_repo.messages_in(self.db, conversation_ids, user_id=user_id)
         profile = personal_data_repo.as_rows([user], _PROFILE_FIELDS)[0]
         profile["id"] = str(user.id)
         export = PersonalDataExport(
+            private_task_history=[
+                PrivateTaskHistoryExport.model_validate(row)
+                for row in await personal_data_repo.private_task_history_of(self.db, user_id)
+            ],
+            private_task_schemas=[
+                PrivateTaskSchemaExport.model_validate(row)
+                for row in await personal_data_repo.private_task_schemas_of(self.db, user_id)
+            ],
+            private_task_boards=[
+                PrivateTaskBoardExport.model_validate(row)
+                for row in await personal_data_repo.private_task_boards_of(self.db, user_id)
+            ],
+            private_task_records=[
+                PrivateTaskRecordExport.model_validate(row)
+                for row in await personal_data_repo.private_task_records_of(self.db, user_id)
+            ],
+            connected_accounts=[
+                ConnectedAccountExport.model_validate(row)
+                for row in await personal_data_repo.connected_accounts_of(self.db, user_id)
+            ],
+            coding_task_changes=[
+                CodingTaskChangeExport.model_validate(row)
+                for row in await personal_data_repo.coding_changes_in(self.db, conversation_ids)
+            ],
+            outcomes=[
+                OutcomeExport.model_validate(row)
+                for row in await personal_data_repo.outcomes_of(self.db, user_id)
+            ],
+            phone_case_attempts=[
+                PhoneCaseAttemptExport.model_validate(row)
+                for row in await personal_data_repo.phone_case_attempts_of(self.db, user_id)
+            ],
+            phone_contacts=[
+                PhoneContactExport.model_validate(row)
+                for row in await personal_data_repo.phone_contacts_of(self.db, user_id)
+            ],
+            phone_calls=[
+                PhoneCallExport.model_validate(row)
+                for row in await personal_data_repo.phone_calls_of(self.db, user_id)
+            ],
+            project_trackers=[
+                ProjectTrackingExport.model_validate(row)
+                for row in await personal_data_repo.project_trackers_of(self.db, user_id)
+            ],
+            routine_sources=[
+                RoutineSourceExport.model_validate(row)
+                for row in await personal_data_repo.routine_sources_of(self.db, user_id)
+            ],
+            routine_health=[
+                RoutineHealthExport.model_validate(row)
+                for row in await personal_data_repo.routine_health_of(self.db, user_id)
+            ],
+            routine_device_waits=[
+                RoutineDeviceWaitExport.model_validate(wait)
+                for wait in await personal_data_repo.routine_device_waits_of(self.db, user_id)
+            ],
+            routine_deliveries=[
+                RoutineAnswerExport.model_validate(receipt)
+                for receipt in await personal_data_repo.routine_deliveries_of(self.db, user_id)
+            ],
             exported_at=datetime.now(UTC),
             profile=profile,
             conversations=personal_data_repo.as_rows(conversations, _CONVERSATION_FIELDS),
@@ -155,15 +306,30 @@ class PersonalDataService:
             ratings=personal_data_repo.as_rows(
                 await personal_data_repo.ratings_of(self.db, user_id), _RATING_FIELDS
             ),
+            case_verdicts=personal_data_repo.as_rows(
+                await personal_data_repo.verdicts_of(self.db, user_id), _VERDICT_FIELDS
+            ),
+            scored_answers=personal_data_repo.as_rows(
+                await personal_data_repo.scored_answers_of(self.db, user_id),
+                _SCORED_ANSWER_FIELDS,
+            ),
             sessions=personal_data_repo.as_rows(
                 await personal_data_repo.sessions_of(self.db, user_id), _SESSION_FIELDS
             ),
             runs=personal_data_repo.as_rows(
                 await personal_data_repo.runs_started_by(self.db, user_id), _RUN_FIELDS
             ),
+            knowledge_searches=personal_data_repo.as_rows(
+                await personal_data_repo.knowledge_searches_of(self.db, user_id),
+                _KNOWLEDGE_SEARCH_FIELDS,
+            ),
             memory=personal_data_repo.as_rows(
                 await personal_data_repo.memory_about(self.db, person_owner_key(user_id)),
                 _MEMORY_FIELDS,
+            ),
+            memory_claims=personal_data_repo.as_rows(
+                await personal_data_repo.claims_about(self.db, person_owner_key(user_id)),
+                _CLAIM_FIELDS,
             ),
             channel_identities=personal_data_repo.as_rows(
                 await personal_data_repo.identities_of(self.db, user_id), _IDENTITY_FIELDS
@@ -181,6 +347,22 @@ class PersonalDataService:
                 await personal_data_repo.notification_preferences_of(self.db, user_id),
                 _NOTIFICATION_PREFERENCE_FIELDS,
             ),
+            notification_routes=personal_data_repo.as_rows(
+                await personal_data_repo.notification_routes_of(self.db, user_id),
+                ("id", "organization_id", "channel", "session_id", "created_at"),
+            ),
+            coding_accounts=personal_data_repo.as_rows(
+                await personal_data_repo.coding_accounts_of(self.db, user_id),
+                (
+                    "id",
+                    "organization_id",
+                    "harness",
+                    "label",
+                    "secret_kind",
+                    "enabled",
+                    "created_at",
+                ),
+            ),
             browser_sign_ins=personal_data_repo.as_rows(
                 await personal_data_repo.browser_sign_ins_of(self.db, user_id), _SIGN_IN_FIELDS
             ),
@@ -189,6 +371,16 @@ class PersonalDataService:
             ),
             oauth_grants=personal_data_repo.as_rows(
                 await personal_data_repo.oauth_grants_of(self.db, user_id), _OAUTH_GRANT_FIELDS
+            ),
+            case_proposals=personal_data_repo.as_rows(
+                await personal_data_repo.case_proposals_from(self.db, user_id),
+                _CASE_PROPOSAL_FIELDS,
+            ),
+            suggestions=personal_data_repo.as_rows(
+                await personal_data_repo.suggestions_for(self.db, user_id), _SUGGESTION_FIELDS
+            ),
+            watches=personal_data_repo.as_rows(
+                await personal_data_repo.watches_of(self.db, user_id), _WATCH_FIELDS
             ),
         )
 
@@ -209,7 +401,7 @@ class PersonalDataService:
         )
         return export
 
-    async def _refuse_if_too_large(self, conversation_ids: list[UUID]) -> None:
+    async def _refuse_if_too_large(self, conversation_ids: list[UUID], *, user_id: UUID) -> None:
         """Refuse an export this process would have to hold in memory whole.
 
         The document is assembled and serialized in one response and
@@ -230,6 +422,16 @@ class PersonalDataService:
                 operator can act on it.
         """
         size = await personal_data_repo.export_size(self.db, conversation_ids)
+        size += await personal_data_repo.coding_change_export_size(self.db, conversation_ids)
+        size += await personal_data_repo.routine_answer_export_size(self.db, user_id)
+        size += await personal_data_repo.routine_device_wait_export_size(self.db, user_id)
+        size += await personal_data_repo.routine_health_export_size(self.db, user_id)
+        size += await personal_data_repo.routine_source_export_size(self.db, user_id)
+        size += await personal_data_repo.project_tracking_export_size(self.db, user_id)
+        size += await personal_data_repo.decision_episode_export_size(self.db, user_id)
+        size += await personal_data_repo.phone_export_size(self.db, user_id)
+        size += await personal_data_repo.outcome_export_size(self.db, user_id)
+        size += await personal_data_repo.private_task_export_size(self.db, user_id)
         ceiling = settings.PERSONAL_DATA_EXPORT_MAX_CHARS
         if size > ceiling:
             raise BadRequestError(
@@ -243,9 +445,11 @@ class PersonalDataService:
     async def purge(self, user_id: UUID) -> PersonalDataPurge:
         """Remove what no cascade reaches, before the user row goes.
 
-        Three tables hold data *about* a person with no foreign key that would
-        take it with them:
+        These resources hold data *about* a person without a user foreign key
+        that would remove their contents:
 
+        - private task boards, keyed by a scope UUID; their managed tables and
+          queued lifecycle work are removed before deleting the account;
         - `agent_memory_files`, keyed by the string `person:<user_id>` - notes
           every agent wrote about them, in every organization, which a deleted
           account left behind entirely;
@@ -256,6 +460,17 @@ class PersonalDataService:
           for the same reason `owner_key` is - a workspace can belong to a
           conversation, an agent or a person - so no cascade follows it, and a
           state-backed one holds the person's files themselves.
+        - `knowledge_searches` of the runs they started, whose
+          `agent_runs.user_id` is `SET NULL` and whose project chat outlives
+          them, so the query an agent phrased from their question would too.
+        - text copied out of their conversations: dataset cases taken from
+          them, in every revision, are anonymised, and what eval runs recorded
+          while answering those cases goes; a case that kept their comment on
+          somebody else's answer loses only the comment. The authoring
+          assistant's quotes of them go from its proposals and reports, and a
+          knowledge-gap topic holding one of their searches loses its draft.
+          Draft overlays an eval arm will keep once knowledge drafts can be
+          tested (#2391) belong to this list too.
 
         Called from `UserService.delete`, inside the same transaction, so a
         deletion that fails afterwards takes this with it.
@@ -271,21 +486,64 @@ class PersonalDataService:
         # commit. A memory write for the same person takes it too, so the two
         # cannot interleave into a note that survives the account it is about.
         await hold_subject(self.db, LockScope.PERSONAL_DATA_PER_USER, user_id)
+        comments = _as_stored(await personal_data_repo.comments_of(self.db, user_id))
+        # Before the unlink below, which clears the links these are found by.
+        anonymised = await personal_data_repo.anonymise_dataset_cases_of(
+            self.db, user_id, placeholder=ANONYMISED_CASE_INPUT, at=datetime.now(UTC)
+        )
+        scrubbed = await personal_data_repo.scrub_history_turns_of(
+            self.db, user_id, placeholder=ANONYMISED_CASE_INPUT
+        )
+        case_copies = await personal_data_repo.purge_case_copies(self.db, [*anonymised, *scrubbed])
+        case_notes = await personal_data_repo.clear_case_notes_of(
+            self.db, user_id, comments=comments
+        )
+        dataset_cases = await personal_data_repo.unlink_dataset_cases_of(self.db, user_id)
+        evidence_quotes = await personal_data_repo.purge_evidence_of(
+            self.db, user_id, comments=comments
+        )
+        # Before the searches go, since a topic is found through its members.
+        gap_drafts = await personal_data_repo.clear_gap_drafts_of(self.db, user_id)
+        from app.services.tasks import TaskService
+
+        await TaskService(self.db).purge_scope("private", user_id)
+        await personal_data_repo.purge_routine_authority(self.db, user_id)
         notes = await personal_data_repo.purge_memory_about(self.db, person_owner_key(user_id))
-        identities = await personal_data_repo.purge_identities_of(self.db, user_id)
         workspaces = await personal_data_repo.purge_workspaces_of(
             self.db, person_owner_key(user_id)
         )
-        if notes or identities or workspaces:
-            logger.info(
-                "personal_data_purged",
-                extra={
-                    "user_id": str(user_id),
-                    "notes": notes,
-                    "identities": identities,
-                    "workspaces": workspaces,
-                },
-            )
-        return PersonalDataPurge(
-            memory_notes=notes, channel_identities=identities, workspaces=workspaces
+        searches = await personal_data_repo.purge_knowledge_searches_of(self.db, user_id)
+        gap_reasons = await personal_data_repo.clear_gap_reasons_of(self.db, user_id)
+        scored_answers = await personal_data_repo.purge_scored_answers_of(self.db, user_id)
+        case_proposals = await personal_data_repo.delete_case_proposals_of(self.db, user_id)
+        # Last: which runs answered them through a chat account is read through the link.
+        identities = await personal_data_repo.purge_identities_of(self.db, user_id)
+        purged = PersonalDataPurge(
+            memory_notes=notes,
+            channel_identities=identities,
+            workspaces=workspaces,
+            dataset_cases=dataset_cases,
+            anonymised_cases=len(anonymised),
+            case_copies=case_copies,
+            history_turns=len(scrubbed),
+            case_notes=case_notes,
+            evidence_quotes=evidence_quotes,
+            gap_drafts=gap_drafts,
+            knowledge_searches=searches,
+            knowledge_gap_reasons=gap_reasons,
+            scored_answers=scored_answers,
+            case_proposals=case_proposals,
         )
+        if any(purged.model_dump().values()):
+            logger.info(
+                "personal_data_purged", extra={"user_id": str(user_id), **purged.model_dump()}
+            )
+        return purged
+
+
+def _as_stored(comments: dict[UUID, list[str]]) -> dict[UUID, list[str]]:
+    """Each comment as written and as a case stored it, credentials redacted."""
+    return {
+        run_id: [*said, *(redact_credentials(comment)[0] or comment for comment in said)]
+        for run_id, said in comments.items()
+    }

@@ -37,8 +37,6 @@ read as a widget, so an arrangement saved before dividers existed still
 validates on the next write rather than 422-ing on a shape it predates.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Annotated, Any, Literal, get_args
 from uuid import UUID
@@ -118,6 +116,8 @@ WIDGET_IDS: frozenset[str] = frozenset(
         "model-mix",
         "version-compare",
         "approvals",
+        "approval-outcomes",
+        "workflow-logs",
         "recent-failures",
         "budget-headroom",
         "department-spend",
@@ -133,6 +133,8 @@ WIDGET_IDS: frozenset[str] = frozenset(
         "my-top-agents",
         "my-quality",
         "shared-with-you",
+        "background-jobs",
+        "background-tasks",
         "sandbox-capacity",
         "sandbox-sessions",
         "sandbox-policy",
@@ -141,7 +143,22 @@ WIDGET_IDS: frozenset[str] = frozenset(
         "activity-rhythm",
         "routines",
         "notifications",
+        "tables",
+        "workflows",
         "artifacts",
+        "datasets",
+        "knowledge-gaps",
+        "needs-attention",
+        "improvements-waiting",
+        "review-queue",
+        "eval-runs",
+        "eval-suites",
+        "authoring-suggestions",
+        "voice-minutes",
+        "phone-calls",
+        "projects",
+        "recent-visuals",
+        "suggestions",
     }
 )
 

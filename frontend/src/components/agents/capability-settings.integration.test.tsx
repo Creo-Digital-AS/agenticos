@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CapabilitySettings } from "./capability-settings";
@@ -11,6 +11,7 @@ import { Perm } from "@/types/permissions";
 import type { Permission } from "@/types/permissions";
 import type { Secret } from "@/types/secrets";
 import { providerMarkIn } from "@/test-utils/brand-marks";
+import en from "../../../messages/en.json";
 
 vi.mock("@/lib/api-client", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api-client")>("@/lib/api-client");
@@ -20,6 +21,15 @@ vi.mock("@/lib/api-client", async () => {
   };
 });
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// The real one signs in with ChatGPT through a device code. What this form needs
+// from it is the callback, under the label the real one shows.
+vi.mock("@/components/vault/chatgpt-sign-in", () => ({
+  InlineChatGPTSignIn: ({ onCreated }: { onCreated: (id: string) => void }) => (
+    <button type="button" onClick={() => onCreated("sec-chatgpt")}>
+      Sign in with ChatGPT
+    </button>
+  ),
+}));
 
 /**
  * The capability the secret picker exists for: one that cannot work without a
@@ -36,6 +46,7 @@ const WEATHER: CapabilityCatalogEntry = {
   category: "utility",
   description: "Read the forecast for a place.",
   side_effecting: false,
+  voice: "live",
   scopes: [],
   tools: [{ id: "forecast", name: "forecast", description: "Read the forecast for a place." }],
   config_schema: null,
@@ -63,6 +74,7 @@ const SEARCH: CapabilityCatalogEntry = {
     kind: "api_key",
     description: "The API key for the chosen search service",
     required_when: { field: "method", equals: ["tavily", "brave", "exa"] },
+    optional_when: { field: "method", equals: ["keenable"] },
     purpose: null,
   },
 };
@@ -192,7 +204,7 @@ describe("CapabilitySettings secret picker", () => {
     // Waited for the vault to have arrived, so this is the state with a key
     // available and nobody having picked it - not the one before the list landed.
     expect(await screen.findByText("Choose a secret")).toBeInTheDocument();
-    expect(screen.getByText(/cannot be published until it has one/)).toBeInTheDocument();
+    expect(screen.getByText(/cannot be published until something is/)).toBeInTheDocument();
     expect(picker()).toBeInvalid();
   });
 
@@ -390,7 +402,7 @@ describe("CapabilitySettings secret picker", () => {
     expect(
       await screen.findByText(/says nothing about what your organization has stored/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/cannot be published until it has one/)).toBeInTheDocument();
+    expect(screen.getByText(/cannot be published until something is/)).toBeInTheDocument();
   });
 
   it("names a stored secret of the wrong kind rather than silently dropping it", async () => {
@@ -474,24 +486,24 @@ describe("SecretField · narrowing by what a key is for", () => {
     // "any key of this kind" and offered every API key in the vault (#1470).
     const UNCONDITIONAL = {
       ...WEATHER,
-      id: "memory_mem0",
+      id: "llamaparse_like",
       requires_secret: {
         kind: "api_key" as const,
-        description: "The mem0 API key",
+        description: "The LlamaParse API key",
         required_when: null,
-        purpose: "mem0",
+        purpose: "llamaparse",
       },
     };
     serve([
-      { ...API_KEY_SECRET, id: "sec-mem0", name: "mem0 key", purpose: "mem0" },
-      { ...API_KEY_SECRET, id: "sec-llama", name: "LlamaParse", purpose: "llamaparse" },
+      { ...API_KEY_SECRET, id: "sec-mem0", name: "Parse key", purpose: "llamaparse" },
+      { ...API_KEY_SECRET, id: "sec-tavily", name: "Tavily", purpose: "tavily" },
     ]);
-    mount(binding({ id: "memory_mem0" }), { definition: UNCONDITIONAL });
+    mount(binding({ id: "llamaparse_like" }), { definition: UNCONDITIONAL });
 
     await userEvent.click(await screen.findByLabelText("Secret"));
 
-    expect(screen.getByRole("option", { name: /mem0 key/ })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /LlamaParse/ })).toBeNull();
+    expect(screen.getByRole("option", { name: /Parse key/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Tavily/ })).toBeNull();
   });
 
   it("keeps offering the keys that never said what they were for", async () => {
@@ -639,5 +651,409 @@ describe("a capability configuration refused at publish", () => {
       "aria-invalid",
       "true",
     );
+  });
+});
+
+/** The coding agent takes a key or a subscription, and says which of each its harness takes. */
+describe("CapabilitySettings coding agent sign-in", () => {
+  const CODER: CapabilityCatalogEntry = {
+    ...WEATHER,
+    id: "coding_agent",
+    name: "Coding agent",
+    requires_secret: {
+      kind: "api_key",
+      also_accepts: ["openai_codex"],
+      description:
+        "Claude Code: an Anthropic key or token. Codex: an OpenAI key or a ChatGPT sign-in.",
+      required_when: null,
+      purpose: null,
+      purposes_by: {
+        field: "harness",
+        purposes: { claude_code: ["anthropic"], codex: ["openai", "openai_codex"] },
+        open_when_set: { claude_code: "base_url" },
+      },
+    },
+    // The harness's default is what a binding only switched on runs, stored or not.
+    config_schema: {
+      type: "object",
+      properties: {
+        harness: {
+          type: "string",
+          title: "Harness",
+          enum: ["claude_code", "codex"],
+          default: "claude_code",
+        },
+      },
+    },
+  };
+  const SIGN_IN: Secret = {
+    id: "sec-3",
+    name: "My ChatGPT",
+    description: null,
+    kind: "openai_codex",
+    hint: "acc1",
+  };
+
+  it("offers a ChatGPT sign-in to Codex, and one already made among the keys", async () => {
+    serve([API_KEY_SECRET, SIGN_IN, AWS_SECRET]);
+    mount(binding({ id: "coding_agent", config: { harness: "codex" } }), { definition: CODER });
+
+    expect(await screen.findByRole("button", { name: "Sign in with ChatGPT" })).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("Key or sign-in"));
+    expect(await screen.findByRole("option", { name: /My ChatGPT/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Weather API key/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Ingest role/ })).toBeNull();
+  });
+
+  it("binds the sign-in it makes", async () => {
+    serve([API_KEY_SECRET]);
+    const onChange = vi.fn();
+    mount(binding({ id: "coding_agent", config: { harness: "codex" } }), {
+      definition: CODER,
+      onChange,
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in with ChatGPT" }));
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ secret_id: "sec-chatgpt" }));
+  });
+
+  /**
+   * Every API key in the vault was offered whichever harness was chosen, and
+   * Claude Code with an OpenAI key published and failed at run time (#2485).
+   */
+  const VAULT: Secret[] = [
+    { ...API_KEY_SECRET, id: "sec-anthropic", name: "Anthropic", purpose: "anthropic" },
+    { ...API_KEY_SECRET, id: "sec-openai", name: "OpenAI", purpose: "openai" },
+    { ...API_KEY_SECRET, id: "sec-tavily", name: "Tavily", purpose: "tavily" },
+    { ...API_KEY_SECRET, id: "sec-mine", name: "Gateway", purpose: "custom" },
+    { ...SIGN_IN, purpose: "openai_codex" },
+  ];
+
+  it("offers Claude Code its Anthropic keys and custom ones, not OpenAI's", async () => {
+    serve(VAULT);
+    mount(binding({ id: "coding_agent", config: { harness: "claude_code" } }), {
+      definition: CODER,
+    });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+
+    expect(await screen.findByRole("option", { name: /Anthropic/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Gateway/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OpenAI/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Tavily/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /My ChatGPT/ })).toBeNull();
+  });
+
+  it("offers Codex its OpenAI keys and ChatGPT sign-ins, not Anthropic's", async () => {
+    serve(VAULT);
+    mount(binding({ id: "coding_agent", config: { harness: "codex" } }), { definition: CODER });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+
+    expect(await screen.findByRole("option", { name: /OpenAI/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /My ChatGPT/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Gateway/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Anthropic/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Tavily/ })).toBeNull();
+  });
+
+  it("keeps the bound key offered after the harness changes", async () => {
+    serve(VAULT);
+    mount(
+      binding({ id: "coding_agent", config: { harness: "codex" }, secret_id: "sec-anthropic" }),
+      { definition: CODER },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Key or sign-in")).toHaveTextContent("Anthropic"),
+    );
+    expect(screen.getByLabelText("Key or sign-in")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Key or sign-in")).toHaveAccessibleDescription(
+      expect.stringContaining("Choose a key for this configuration"),
+    );
+  });
+
+  it("opens gateway purposes from the endpoint's schema default", async () => {
+    serve(VAULT);
+    mount(binding({ id: "coding_agent", config: {} }), {
+      definition: {
+        ...CODER,
+        config_schema: {
+          ...CODER.config_schema,
+          properties: {
+            ...CODER.config_schema?.properties,
+            base_url: { type: "string", default: "https://gateway.example/api" },
+          },
+        },
+      },
+    });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+    expect(await screen.findByRole("option", { name: /OpenAI/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /My ChatGPT/ })).toBeNull();
+  });
+
+  it("does not reopen gateway purposes when an explicit null overrides its default", async () => {
+    serve(VAULT);
+    mount(binding({ id: "coding_agent", config: { base_url: null } }), {
+      definition: {
+        ...CODER,
+        config_schema: {
+          ...CODER.config_schema,
+          properties: {
+            ...CODER.config_schema?.properties,
+            base_url: { type: "string", default: "https://gateway.example/api" },
+          },
+        },
+      },
+    });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+    expect(await screen.findByRole("option", { name: /Anthropic/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OpenAI/ })).toBeNull();
+  });
+
+  it("keeps sign-ins selectable for other capabilities that accept their kind", async () => {
+    serve(VAULT);
+    mount(binding(), {
+      definition: { ...WEATHER, requires_secret: CODER.requires_secret },
+    });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+    expect(await screen.findByRole("option", { name: /My ChatGPT/ })).toBeInTheDocument();
+  });
+
+  it("marks a retained ChatGPT sign-in invalid for Claude Code behind a gateway", async () => {
+    serve(VAULT);
+    mount(
+      binding({
+        id: "coding_agent",
+        config: { harness: "claude_code", base_url: "https://gateway.example/api" },
+        secret_id: SIGN_IN.id,
+      }),
+      { definition: CODER },
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Key or sign-in")).toHaveAttribute("aria-invalid", "true"),
+    );
+    expect(screen.getByLabelText("Key or sign-in")).toHaveAccessibleDescription(
+      expect.stringContaining("Choose a key for this configuration"),
+    );
+  });
+
+  it("narrows a binding that stores no harness to Claude Code's keys", async () => {
+    serve(VAULT);
+    mount(binding({ id: "coding_agent", config: {} }), { definition: CODER });
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+
+    expect(await screen.findByRole("option", { name: /Anthropic/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OpenAI/ })).toBeNull();
+  });
+
+  it("offers every key behind a gateway, whose key the platform cannot name", async () => {
+    serve(VAULT);
+    mount(
+      binding({
+        id: "coding_agent",
+        config: { harness: "claude_code", base_url: "https://openrouter.ai/api" },
+      }),
+      { definition: CODER },
+    );
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+
+    expect(await screen.findByRole("option", { name: /Tavily/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /OpenAI/ })).toBeInTheDocument();
+    // Publish refuses a ChatGPT sign-in for Claude Code, gateway or not.
+    expect(screen.queryByRole("option", { name: /My ChatGPT/ })).toBeNull();
+  });
+
+  it("keeps Codex narrowed though a Claude Code gateway was left in its config", async () => {
+    serve(VAULT);
+    mount(
+      binding({
+        id: "coding_agent",
+        config: { harness: "codex", base_url: "https://openrouter.ai/api" },
+      }),
+      { definition: CODER },
+    );
+
+    await userEvent.click(await screen.findByLabelText("Key or sign-in"));
+
+    expect(await screen.findByRole("option", { name: /OpenAI/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Anthropic/ })).toBeNull();
+  });
+
+  it("tells Claude Code where its subscription token comes from", async () => {
+    serve([API_KEY_SECRET]);
+    mount(binding({ id: "coding_agent", config: { harness: "claude_code" } }), {
+      definition: CODER,
+    });
+
+    expect(await screen.findByText("claude setup-token")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with ChatGPT" })).toBeNull();
+    expect(await screen.findByRole("button", { name: /Claude Code key/ })).toBeInTheDocument();
+  });
+
+  /** Adds a key through the inline form and answers with the purpose it was stored under. */
+  async function addInline(config: Record<string, unknown>, name: RegExp): Promise<unknown> {
+    serve([]);
+    vi.mocked(apiClient.post).mockResolvedValue({ id: "sec-new", name: "Key", kind: "api_key" });
+    mount(binding({ id: "coding_agent", config }), { definition: CODER });
+
+    await userEvent.click(await screen.findByRole("button", { name }));
+    await userEvent.type(screen.getByLabelText("Key"), "sk-inline-abcdef");
+    await userEvent.click(screen.getByRole("button", { name: "Save key" }));
+
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
+    const body = vi.mocked(apiClient.post).mock.calls[0]?.[1];
+    return (body as { purpose?: unknown } | undefined)?.purpose;
+  }
+
+  /**
+   * Stored as `custom`, a Codex key fitted Claude Code after a harness switch,
+   * and published there only to fail at run time (#2485).
+   */
+  it("stores a key added for Codex as an OpenAI key", async () => {
+    expect(await addInline({ harness: "codex" }, /OpenAI key for Codex/)).toBe("openai");
+  });
+
+  it("stores a key added for Claude Code as custom, since it may be a subscription token", async () => {
+    expect(await addInline({ harness: "claude_code" }, /Claude Code key/)).toBe("custom");
+  });
+
+  it("stores a key added behind a gateway as custom, since nothing names its service", async () => {
+    expect(
+      await addInline(
+        { harness: "claude_code", base_url: "https://openrouter.ai/api" },
+        /Claude Code key/,
+      ),
+    ).toBe("custom");
+  });
+});
+
+it("offers an optional Keenable key without making keyless search look invalid", async () => {
+  serve([{ ...API_KEY_SECRET, name: "Keenable API key" }]);
+  const onChange = vi.fn();
+  mount(binding({ config: { method: "keenable" } }), { definition: SEARCH, onChange });
+  await waitFor(() => expect(picker()).toHaveTextContent("No secret"));
+  expect(screen.queryByText(/No secret selected/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByLabelText("Secret"));
+  await userEvent.click(screen.getByRole("option", { name: /Keenable API key/ }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ secret_id: "sec-1" }));
+});
+
+describe("Tool search settings", () => {
+  // The backend's schema drives these controls; its registry tests keep field
+  // copy synchronized with the catalog. No dedicated form may drop an option.
+  const TOOL_SEARCH: CapabilityCatalogEntry = {
+    ...WEATHER,
+    id: "tool_search",
+    name: "Tool search",
+    tools: [],
+    requires_secret: null,
+    config_schema: {
+      type: "object",
+      properties: {
+        defer_capabilities: { type: "boolean", default: false },
+        defer_mcp_servers: { type: "boolean", default: true },
+        exclude_capabilities: { type: "array", items: { type: "string" }, default: [] },
+        exclude_mcp_servers: { type: "array", items: { type: "string" }, default: [] },
+        exclude_tools: { type: "array", items: { type: "string" }, default: [] },
+      },
+    },
+  };
+  const copy = en.capabilityConfig.tool_search;
+
+  it("preserves MCP-only defaults without writing configuration on mount", () => {
+    const onChange = vi.fn();
+    mount(binding({ id: "tool_search" }), { definition: TOOL_SEARCH, onChange });
+
+    expect(screen.getByRole("switch", { name: copy.defer_capabilities.title })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: copy.defer_mcp_servers.title })).toBeChecked();
+    expect(screen.getByLabelText(copy.exclude_capabilities.title)).toHaveValue("");
+    expect(screen.getByLabelText(copy.exclude_mcp_servers.title)).toHaveValue("");
+    expect(screen.getByLabelText(copy.exclude_tools.title)).toHaveValue("");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("saves independent source switches and exclusions in the capability binding", async () => {
+    const saved = vi.fn();
+    function Editor() {
+      const [value, setValue] = useState(binding({ id: "tool_search" }));
+      return (
+        <CapabilitySettings
+          catalog={[TOOL_SEARCH]}
+          selected={[value]}
+          onChange={(next) => {
+            saved(next);
+            setValue(next);
+          }}
+        />
+      );
+    }
+    render(<Editor />, { wrapper });
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("switch", { name: copy.defer_capabilities.title }));
+    await user.click(screen.getByRole("switch", { name: copy.defer_mcp_servers.title }));
+    await user.type(screen.getByLabelText(copy.exclude_capabilities.title), "knowledge, visuals");
+    await user.type(
+      screen.getByLabelText(copy.exclude_mcp_servers.title),
+      "github_work, agenticos",
+    );
+    await user.type(
+      screen.getByLabelText(copy.exclude_tools.title),
+      "renamed_search, github_work_list",
+    );
+
+    expect(saved).toHaveBeenLastCalledWith(
+      binding({
+        id: "tool_search",
+        config: {
+          defer_capabilities: true,
+          defer_mcp_servers: false,
+          exclude_capabilities: ["knowledge", "visuals"],
+          exclude_mcp_servers: ["github_work", "agenticos"],
+          exclude_tools: ["renamed_search", "github_work_list"],
+        },
+      }),
+    );
+    await user.clear(screen.getByLabelText(copy.exclude_tools.title));
+    expect(saved).toHaveBeenLastCalledWith(
+      expect.objectContaining({ config: expect.objectContaining({ exclude_tools: undefined }) }),
+    );
+  });
+
+  it("shows stored exclusions and keeps every setting disabled in a read-only spec", () => {
+    const onChange = vi.fn();
+    mount(
+      binding({
+        id: "tool_search",
+        config: {
+          defer_capabilities: true,
+          defer_mcp_servers: false,
+          exclude_capabilities: ["knowledge"],
+          exclude_mcp_servers: ["github_work"],
+          exclude_tools: ["renamed_search", "github_work_list"],
+        },
+      }),
+      { definition: TOOL_SEARCH, onChange, disabled: true },
+    );
+
+    expect(screen.getByRole("switch", { name: copy.defer_capabilities.title })).toBeChecked();
+    expect(screen.getByRole("switch", { name: copy.defer_mcp_servers.title })).not.toBeChecked();
+    expect(screen.getByLabelText(copy.exclude_capabilities.title)).toHaveValue("knowledge");
+    expect(screen.getByLabelText(copy.exclude_mcp_servers.title)).toHaveValue("github_work");
+    expect(screen.getByLabelText(copy.exclude_tools.title)).toHaveValue(
+      "renamed_search, github_work_list",
+    );
+    for (const field of Object.values(copy)) {
+      if (field === copy.strategy || field === copy.max_results) continue;
+      expect(screen.getByLabelText(field.title)).toBeDisabled();
+    }
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

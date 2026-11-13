@@ -38,6 +38,8 @@ function environment(overrides: Partial<AgentEnvironment> = {}): AgentEnvironmen
     behind_by: 0,
     logfire_token_secret_id: null,
     service_name: null,
+    connections: [],
+    guard_suite_ids: [],
     created_at: "2026-07-01T00:00:00Z",
     ...overrides,
   };
@@ -117,4 +119,21 @@ describe("the environments panel against the real hooks", () => {
     expect(screen.queryByLabelText("New environment")).toBeNull();
     await waitFor(() => expect(apiClient.patch).not.toHaveBeenCalled());
   });
+});
+
+it("recovers a failed environment query through the visible retry action", async () => {
+  let failed = true;
+  vi.mocked(apiClient.get).mockImplementation(async (path) => {
+    if (path === `/agents/${AGENT_ID}/environments`) {
+      if (failed) throw new Error("unavailable");
+      return { items: [environment()] };
+    }
+    return { items: [], total: 0 };
+  });
+  render(<EnvironmentsPanel agentId={AGENT_ID} canManage />, { wrapper });
+  const retry = await screen.findByRole("button", { name: "Retry" });
+  failed = false;
+  await userEvent.click(retry);
+  expect(await screen.findByText("dev")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });

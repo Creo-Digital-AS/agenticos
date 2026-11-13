@@ -6,7 +6,9 @@ retry not a crash, and a binding with nothing usable contributes nothing at all
 (the issue's own done-when).
 """
 
+import uuid
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from pydantic_ai import ModelRetry, RunContext
@@ -15,7 +17,14 @@ from pydantic_ai.usage import RunUsage
 
 from app.agents.capabilities import build
 from app.agents.capabilities._registry import CapabilityBinding, CapabilityBuildContext
-from app.agents.capabilities.context import CONTEXT_FILES_RESOURCE, Context, ContextConfig, _build
+from app.agents.capabilities.context import (
+    CONTEXT_BODIES_RESOURCE,
+    CONTEXT_FILES_RESOURCE,
+    Context,
+    ContextBody,
+    ContextConfig,
+    _build,
+)
 from app.agents.capabilities.context._capability import _PREAMBLE, _ZWSP, _fence
 from app.agents.capabilities.context._toolset import ContextItem, ContextToolset
 
@@ -25,7 +34,9 @@ def _item(name="glossary", *, mode="inject", content="SLA: service level agreeme
 
 
 def _file(name="glossary", *, mode="inject", content="body", desc="terms"):
-    return SimpleNamespace(name=name, description=desc, content=content, mode=mode, format="md")
+    return SimpleNamespace(
+        id=uuid4(), name=name, description=desc, content=content, mode=mode, format="md"
+    )
 
 
 def _tool_ctx(*, retry: int = 0, max_retries: int = 1) -> RunContext[None]:
@@ -41,6 +52,34 @@ def _ctx(files, *, expose_read_tool=True):
         config=ContextConfig(expose_read_tool=expose_read_tool),
         resources={CONTEXT_FILES_RESOURCE: files},
     )
+
+
+class TestProposedBodies:
+    def test_a_proposed_body_is_read_in_place_of_the_stored_one(self):
+        """An eval checking a context change serves the proposal; nothing is written."""
+        stored = _file(content="Returns take 90 days.")
+        stored.id = uuid.uuid4()
+        other = _file(name="tone", content="Be warm.")
+        other.id = uuid.uuid4()
+        context = CapabilityBuildContext(
+            binding=CapabilityBinding(capability_id="context"),
+            config=ContextConfig(),
+            resources={
+                CONTEXT_FILES_RESOURCE: [stored, other],
+                CONTEXT_BODIES_RESOURCE: {
+                    stored.id: ContextBody(description="Returns", content="Returns take 30 days.")
+                },
+            },
+        )
+
+        capability = _build(context)
+
+        assert capability is not None
+        instructions = capability.get_instructions()
+        assert instructions is not None
+        assert "Returns take 30 days." in instructions and "Be warm." in instructions
+        assert "90 days" not in instructions
+        assert stored.content == "Returns take 90 days."
 
 
 class TestInstructions:
@@ -192,3 +231,37 @@ class TestBuilder:
             resources={CONTEXT_FILES_RESOURCE: [_file(mode="link")]},
         )
         assert capability.id == "context"
+
+
+class TestPerAgentContextSettings:
+    def test_one_shared_file_can_be_injected_linked_or_disabled_independently(self):
+        from app.agents.capabilities.context import ContextFileSettings
+
+        file = _file(mode="inject")
+        injected = _build(_ctx([file]))
+        linked_ctx = _ctx([file])
+        linked_ctx.config.file_settings[file.id] = ContextFileSettings(mode="link")
+        linked = _build(linked_ctx)
+        off_ctx = _ctx([file])
+        off_ctx.config.file_settings[file.id] = ContextFileSettings(enabled=False)
+        assert injected is not None and injected.get_instructions() is not None
+        assert linked is not None and linked.get_instructions() is None
+        assert linked.get_toolset() is not None
+        assert _build(off_ctx) is None
+        assert file.mode == "inject"
+
+    def test_old_spec_keeps_the_file_defaults_without_rewriting_the_document(self):
+        from app.agents.capabilities.context import context_config
+        from app.agents.spec import AgentSpec
+
+        spec = AgentSpec.model_validate(
+            {
+                "name": "Legacy",
+                "spec_version": 9,
+                "context_ids": [],
+                "capabilities": [{"id": "context", "config": {"expose_read_tool": False}}],
+            }
+        )
+        assert context_config(spec.capabilities).file_settings == {}
+        assert not context_config(spec.capabilities).expose_read_tool
+        assert context_config([]).file_settings == {}

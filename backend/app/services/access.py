@@ -10,8 +10,6 @@ so sharing a single agent with a Viewer works without promoting them, and a
 Builder's org-wide view is not taken away by the absence of a grant.
 """
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
@@ -21,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import AuthContext, OrgRoleName, Perm, Scope
 from app.db.models.resource_grant import GRANT_ORDER, GrantLevel, Visibility
-from app.repositories import member_repo, resource_grant_repo
+from app.repositories import member_repo, resource_grant_repo, user_repo
 
 
 class OwnedResource(Protocol):
@@ -64,12 +62,16 @@ COLLECTION = ResourceType(key="collection", view=Perm.COLLECTIONS_VIEW, edit=Per
 AGENT = ResourceType(key="agent", view=Perm.AGENTS_VIEW, edit=Perm.AGENTS_EDIT)
 SKILL = ResourceType(key="skill", view=Perm.SKILLS_VIEW, edit=Perm.SKILLS_EDIT)
 CONTEXT = ResourceType(key="context", view=Perm.CONTEXT_VIEW, edit=Perm.CONTEXT_EDIT)
+TABLE = ResourceType(key="table", view=Perm.TABLES_VIEW, edit=Perm.TABLES_EDIT)
+WORKFLOW = ResourceType(key="workflow", view=Perm.WORKFLOWS_VIEW, edit=Perm.WORKFLOWS_EDIT)
 # A stored key. The same rules as everything else here on purpose: a personal
 # key is private to its owner, a team key reaches whoever holds a grant, and an
 # organization key is everybody's - decided per row rather than by one
 # permission that gated the entire vault.
 SECRET = ResourceType(key="secret", view=Perm.SECRETS_VIEW, edit=Perm.SECRETS_EDIT)
 ARTIFACT = ResourceType(key="artifact", view=Perm.ARTIFACTS_VIEW, edit=Perm.ARTIFACTS_EDIT)
+DATASET = ResourceType(key="dataset", view=Perm.DATASETS_VIEW, edit=Perm.DATASETS_EDIT)
+PROJECT = ResourceType(key="project", view=Perm.PROJECTS_VIEW, edit=Perm.PROJECTS_EDIT)
 # An organization's MCP server. One permission both sees and manages it, as it
 # always has; what changed is that a server can be narrowed to groups (#2072).
 MCP_CONNECTION = ResourceType(key="mcp_connection", view=Perm.MCP_MANAGE, edit=Perm.MCP_MANAGE)
@@ -87,10 +89,29 @@ _PERM_MIN_GRANT: dict[Perm, GrantLevel] = {
     Perm.SKILLS_EDIT: GrantLevel.EDIT,
     Perm.CONTEXT_VIEW: GrantLevel.READ,
     Perm.CONTEXT_EDIT: GrantLevel.EDIT,
+    Perm.TABLES_VIEW: GrantLevel.READ,
+    Perm.TABLES_EDIT: GrantLevel.EDIT,
+    Perm.WORKFLOWS_VIEW: GrantLevel.READ,
+    Perm.WORKFLOWS_EDIT: GrantLevel.EDIT,
+    # Same shape as `AGENTS_RUN`: "may invoke" is a `USE` grant, distinct from
+    # "may edit", which needs `EDIT`. Without this entry a caller relying on a
+    # resource grant rather than role scope would always be refused, since
+    # `_PERM_MIN_GRANT.get(perm)` decides what grant level satisfies a
+    # resource-scoped permission and an absent entry means none does.
+    Perm.WORKFLOWS_RUN: GrantLevel.USE,
     Perm.SECRETS_VIEW: GrantLevel.READ,
     Perm.SECRETS_EDIT: GrantLevel.EDIT,
     Perm.ARTIFACTS_VIEW: GrantLevel.READ,
     Perm.ARTIFACTS_EDIT: GrantLevel.EDIT,
+    Perm.DATASETS_VIEW: GrantLevel.READ,
+    Perm.DATASETS_RUN: GrantLevel.USE,
+    Perm.DATASETS_EDIT: GrantLevel.EDIT,
+    Perm.PROJECTS_VIEW: GrantLevel.READ,
+    # Working in a project - a chat, a file added - is `use`, the level a
+    # project shared with a group grants, so a group can work in it without
+    # being able to rename or delete it.
+    Perm.PROJECTS_USE: GrantLevel.USE,
+    Perm.PROJECTS_EDIT: GrantLevel.EDIT,
     # A group's server is its members' to bind, and so to manage: `use`, the level
     # an audience chosen at creation grants.
     Perm.MCP_MANAGE: GrantLevel.USE,
@@ -142,6 +163,13 @@ async def resolve_access(
 
     if resource.organization_id != ctx.organization_id:
         return False
+
+    if resource_type is TABLE:
+        from app.services.task_access import table_access
+
+        managed = await table_access(db, ctx, resource.id, perm)
+        if managed is not None:
+            return managed
 
     if _scope_allows(ctx.scope_for(perm), resource, subject):
         return True
@@ -201,12 +229,23 @@ async def accessible_ids(
     scope = ctx.scope_for(perm)
     shared = await visible_resource_ids(db, ctx, resource_type=resource_type, perm=perm)
     granted = set(shared) if shared is not None else set()
-    return {
+    allowed = {
         resource.id
         for resource in resources
         if resource.organization_id == ctx.organization_id
         and (_scope_allows(scope, resource, subject) or resource.id in granted)
     }
+    if resource_type is TABLE:
+        from app.services.task_access import table_access
+
+        for resource in resources:
+            if resource.organization_id == ctx.organization_id:
+                managed = await table_access(db, ctx, resource.id, perm)
+                if managed is True:
+                    allowed.add(resource.id)
+                elif managed is False:
+                    allowed.discard(resource.id)
+    return allowed
 
 
 async def visible_resource_ids(
@@ -241,6 +280,76 @@ async def visible_resource_ids(
         resource_type=resource_type.key,
         minimum_level=required,
     )
+
+
+async def member_context(
+    db: AsyncSession, *, organization_id: UUID, user_id: UUID
+) -> AuthContext | None:
+    """`user_id` as the member they are now, or `None` when they are not an active one.
+
+    For a run acting for a member: what it does in the organization is done with the
+    role they hold at the moment of the call, not the one they held when the run
+    began, so someone removed or deactivated mid-conversation stops acting through it
+    at once. Read through `member_repo.get_active` for the reason `publisher_context`
+    gives. Unlike that function this never stands anyone in: no member, no context.
+    """
+    member = await member_repo.get_active(db, organization_id=organization_id, user_id=user_id)
+    user = await user_repo.get_by_id(db, user_id) if member is not None else None
+    if member is None or user is None:
+        return None
+    return AuthContext(
+        user_id=user_id,
+        organization_id=organization_id,
+        role=member.role,
+        is_app_admin=user.is_app_admin,
+    )
+
+
+async def decider_context(
+    db: AsyncSession, *, organization_id: UUID, user_id: UUID
+) -> AuthContext | None:
+    """`user_id` as their own request was, for work done on their behalf afterwards.
+
+    Rebuilt the way `get_auth_context` builds a console request's context: the
+    user must exist and be active, the membership is read with `member_repo.get`
+    (not `get_active`, which the request does not use), and an app admin who is no
+    member is still accepted, with no role - they hold every permission anyway.
+    `None` when none of that holds. A continuation a person's decision started
+    runs as exactly who made it, no more and no less.
+    """
+    user = await user_repo.get_by_id(db, user_id)
+    if user is None or not user.is_active:
+        return None
+    membership = await member_repo.get(db, organization_id=organization_id, user_id=user_id)
+    if membership is None and not user.is_app_admin:
+        return None
+    return AuthContext(
+        user_id=user_id,
+        organization_id=organization_id,
+        role=membership.role if membership else "",
+        is_app_admin=user.is_app_admin,
+    )
+
+
+async def acting_member(
+    db: AsyncSession, organization_id: UUID | None, user_id: str | None
+) -> AuthContext | None:
+    """The member a run acts for, with the role they hold now - or `None` when the run
+    acts for no member, or they are no longer an active one.
+
+    :func:`member_context` for a run's own identifiers, which arrive as text, or not at
+    all: a capability that acts in the organization on a member's behalf - a table
+    write, a workflow started, a page bound to data - acts as who they are at the
+    moment of the call, so someone removed mid-conversation stops acting through it at
+    once.
+    """
+    if organization_id is None or user_id is None:
+        return None
+    try:
+        member_id = UUID(user_id)
+    except ValueError:
+        return None
+    return await member_context(db, organization_id=organization_id, user_id=member_id)
 
 
 async def publisher_context(

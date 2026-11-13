@@ -6,8 +6,6 @@ full page from the last one, and revoking the final row on page three leaves it
 sitting on a page that no longer exists.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +25,8 @@ def _session_row(device: str) -> MagicMock:
     row.device_name = device
     row.device_type = "desktop"
     row.ip_address = "203.0.113.4"
+    row.app_platform = None
+    row.app_version = None
     row.created_at = datetime.now(UTC)
     row.last_used_at = datetime.now(UTC)
     return row
@@ -49,6 +49,10 @@ async def test_a_page_reports_the_total_not_its_own_length(service: SessionServi
 
     with (
         patch(
+            "app.repositories.push_subscription.sessions_with_push",
+            new=AsyncMock(return_value={page[0].id}),
+        ),
+        patch(
             "app.repositories.session.get_user_sessions", new=AsyncMock(return_value=page)
         ) as fetch,
         patch(
@@ -59,6 +63,7 @@ async def test_a_page_reports_the_total_not_its_own_length(service: SessionServi
 
     assert len(result.items) == 2
     assert result.total == 17
+    assert [item.push for item in result.items] == [True, False]
     kwargs = fetch.await_args.kwargs
     assert (kwargs["open_only"], kwargs["skip"], kwargs["limit"]) == (True, 10, 2)
     # The same cutoff in both statements. A session lapsing between them would

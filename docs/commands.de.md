@@ -1,5 +1,5 @@
 ---
-source_sha: "5e7cbb840c77"
+source_sha: "810bed82ae73"
 ---
 
 # Befehle { #commands }
@@ -38,6 +38,7 @@ Führen Sie diese aus dem Wurzelverzeichnis des Projekts aus.
 | `make desktop-check` | `bun test` über das Pet, dann rustfmt, clippy mit Warnungen als Fehler und die Rust-Tests der Hülle. Nicht in `lint` oder `check`, denn CI hat noch keine Rust-Toolchain |
 | `make audit` | Den gesperrten Abhängigkeitssatz auf bekannte Schwachstellen prüfen. Braucht das Netzwerk — ein Request pro gesperrter Distribution — seine letzte Zeile sagt deshalb, in welchem von vier Zuständen er geendet hat, statt einen roten Lauf mehrdeutig zu lassen. Siehe unten |
 | `make sandbox-token` | Den eigenen `SANDBOXD_TOKEN` des Sandbox-Services einmalig in `backend/.env` erzeugen. `make dev` führt es für Sie aus; es erzeugt nie neu, denn ein neuer Token verwaist jeden Workspace, den der Service hält. Das Connection-Formular bietet an, denselben Wert im Vault abzulegen, er muss also nirgendwohin eingefügt werden |
+| `make seed-skills-lab` | Die Organisation Skills lab auf einem laufenden Stack aufbauen, zum Durchklicken der Skill-Verbesserung: ein Skill, `returns-policy`, den mehrere Agents teilen, dazu ihre Testfragen und bewertete Chats. Spricht über HTTP mit dem Stack, legt also nur an, was fehlt, und ein zweiter Lauf behält, was Menschen geändert haben. Login des Owners und Provider-Schlüssel kommen aus `SKILLS_LAB_EMAIL`, `SKILLS_LAB_PASSWORD` und `SKILLS_LAB_OPENROUTER_KEY`; `SKILLS_LAB_URL` nennt den Stack. `PROBE=v1`, `broad`, `narrow` oder `gift` misst eine Formulierung des Skills in einer eigenen Organisation, und `DROP_PROBES=1` löscht diese Organisationen |
 | `make clean` | Cache-Dateien entfernen (__pycache__, .pytest_cache usw.) |
 
 ### Vor einem Pull Request { #before-a-pull-request }
@@ -155,17 +156,19 @@ die Meldungen holt.
 | `make user-create` | Neuen Nutzer anlegen (interaktiv) |
 | `make user-list` | Alle Nutzer auflisten |
 
-### Prefect { #prefect }
+### Hintergrund-Jobs { #background-jobs }
 
-Prefect läuft im Dev-Stack als zwei Container — sie starten automatisch mit `make dev`:
+Der Worker läuft im Dev-Stack als ein Container und startet mit `make dev`:
 
-- **`prefect-server`** — Orchestrierungs-API + Web-UI unter <http://localhost:4200>
-- **`prefect-runner`** — registriert die geplanten Deployments und fragt nach Arbeit
+- **`worker`** — `python -m app.worker`, aus dem Backend-Image. Er holt Jobs aus
+  der Tabelle `background_jobs` ab, führt den Ingest-Pool in Kindprozessen aus
+  und löst die Zeitpläne des Deployments aus.
 
-Der Runner ist `python -m app.worker.prefect_app`; Flows liegen in `app/worker/tasks/`.
-Öffnen Sie die UI, um Flow-Läufe zu beobachten, Logs zu prüfen und Deployments von
-Hand auszulösen.
-Standardmäßig selbst gehostet — setzen Sie `PREFECT_API_KEY` (und eine Cloud-`PREFECT_API_URL`), um stattdessen Prefect Cloud zu nutzen.
+Job-Arten sind in `app/worker/jobs.py` deklariert, ihre Handler liegen in
+`app/worker/tasks/` und werden in `app/worker/handlers.py` gebunden, die
+Zeitpläne stehen in `app/worker/schedules.py`. Beobachten, wiederholen,
+abbrechen und fortsetzen Sie auf der Konsolenseite **Admin → Background jobs**,
+als Eigentümer des Deployments.
 
 ### Docker (Entwicklung) { #docker-development }
 
@@ -325,6 +328,10 @@ uv run agenticos cmd <command-name> [options]
 
 ```bash
 # An organization, an owner, a model profile and a published agent. Idempotent.
+# --org names the organization bootstrap sets up. An account that already
+# exists gets one by that name, even if it runs another; its personal
+# organization is left alone. Without --org, it is the one the owner lands in.
+# A deployment's default organization still opens first at sign-in.
 uv run agenticos cmd bootstrap \
     --email owner@example.com --password secret \
     --org "Acme" --provider anthropic --api-key sk-ant-...
@@ -335,9 +342,9 @@ uv run agenticos cmd bootstrap --org "Acme"
 # Can this deployment actually run an agent? Database, vault, a usable model,
 # and every registered sandbox connection - probed one by one, credential
 # included, because `/healthz` is unauthenticated and answers for a service
-# holding the wrong token. Then whether scheduled jobs run: a trigger heartbeat
-# that has not completed for five intervals fails it, whatever Prefect's own
-# health endpoint says.
+# holding the wrong token. Then whether background work runs: no worker heard
+# from in two minutes, a minute schedule that has not fired for five intervals,
+# or a kind of job paused by its circuit breaker fails it.
 uv run agenticos cmd doctor
 
 # Dasselbe plus ein zweites Blatt: eine Zeile je Kontrolle eines
@@ -582,7 +589,17 @@ uv run agenticos cmd rag-drop my_collection
 
 # Drop without confirmation
 uv run agenticos cmd rag-drop my_collection --yes
+
+# Clear one of several knowledge bases that share the name
+uv run agenticos cmd rag-drop docs --knowledge-base <knowledge-base-id> --yes
 ```
+
+`rag-drop` leert die Wissensbasis, die den Namen hält, wie das Löschen in der Konsole,
+und ein Worker entfernt die Vektortabelle und die gespeicherten Dateien, nachdem der
+Befehl committet hat. Ein Name, den mehrere Wissensbasen halten - auch in verschiedenen
+Organisationen -, wird mit ihren IDs abgelehnt, bis `--knowledge-base` eine nennt; die
+Tabelle bleibt dann für die anderen. Anders als das Löschen in der Konsole entfernt es
+auch die Tabelle der letzten Basis, wenn sie Chunks hält, die keiner Basis gehören.
 
 #### Google-Drive-Sync { #google-drive-sync }
 
@@ -668,3 +685,21 @@ uv run agenticos cmd my-command --name test
 ```
 
 Weitere Einzelheiten finden Sie in `docs/adding_features.md`.
+
+## Architect aktualisieren {#refreshing-the-architect}
+
+Prüfe nach einem Upgrade die installierten Architect-Anweisungen und den AgenticOS-Leitfaden. Aktualisiere anschließend unveränderte Kopien:
+
+```bash
+uv run agenticos cmd refresh-assistant --dry-run
+uv run agenticos cmd refresh-assistant --org <org-id>
+uv run agenticos cmd refresh-assistant --org <org-id> --replace-edited
+```
+
+Ohne `--org` werden alle Organisationen verarbeitet. Der Bericht unterscheidet `current` (aktuell), `update` (veraltet), `edited` (bearbeitet) und `untracked` (Herkunft unbekannt); `--dry-run` schreibt nichts. `edited` und `untracked` bleiben unverändert, bis `--replace-edited` ausdrücklich die Änderungen der Organisation ersetzt.
+
+Geänderte Anweisungen werden als neue Agentenversion veröffentlicht. Veröffentlichungsverlauf, Modell, Budget, Fähigkeiten, Skills und Assistenteneinstellungen bleiben erhalten. Weichen andere Entwurfsfelder von der veröffentlichten Version ab, ist die gesamte Aktualisierung bis zur Veröffentlichung oder Verwerfung dieser Änderungen blockiert; auch die Ersetzungsoption umgeht diese Prüfung nicht. Ein noch nie veröffentlichter Assistent erhält aktualisierte Entwurfsanweisungen und benötigt weiterhin ein Modell und eine Veröffentlichung im Builder. Fehlende und archivierte Assistenten werden übersprungen. Ein fehlender oder abgetrennter Leitfaden wird gemeldet, ohne Skill-Bindungen zu ändern.
+
+Der Leitfaden ist ein geteilter Skill: Aktualisierte Inhalte und Ressourcen erhöhen seine Version und erreichen alle Agenten, die diese Kopie verwenden. Eigene Änderungen sind wie Anweisungen geschützt. Kopien unbekannter Herkunft bleiben `untracked`; das Upgrade erkennt nur exakt zuvor von AgenticOS ausgelieferte Anweisungen. Ein Deployment-Upgrade überschreibt den installierten Architect nicht automatisch: Übernimm die neue Vorlage mit diesem Befehl.
+
+Ein Sammellauf meldet Organisationen ohne Eigentümer als übersprungen und verarbeitet die übrigen weiter. Ein gezielter Lauf mit `--org` schlägt ausdrücklich fehl, wenn diese Organisation keinen Eigentümer hat.

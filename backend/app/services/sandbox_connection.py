@@ -12,14 +12,15 @@ check on that; the shape here is what keeps it true: read the sealed row, unseal
 at the moment of use, hand the plaintext to the client and nothing else.
 """
 
-from __future__ import annotations
-
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import anyio
 from pydantic import SecretStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit
@@ -35,10 +36,12 @@ from app.repositories import (
     agent_workspace_repo,
     member_repo,
     organization_secret_repo,
+    project_repo,
     sandbox_connection_repo,
     sandbox_operation_repo,
 )
 from app.repositories import conversation as conversation_repo
+from app.repositories import pending_sandbox_destroy as pending_destroy_repo
 from app.schemas.sandbox_connection import (
     SandboxConnectionCreate,
     SandboxConnectionRead,
@@ -61,7 +64,7 @@ from app.services.sandbox_runtimes import CATALOG
 
 logger = logging.getLogger(__name__)
 
-CONNECTION_KINDS = ("docker", "daytona")
+CONNECTION_KINDS = ("docker", "daytona", "e2b", "opensandbox")
 
 LOCAL_SERVICE_URLS = ("http://sandboxd:8080", "http://localhost:8080")
 """Where this project's own compose file puts a sandbox service.
@@ -86,6 +89,13 @@ two answers to "which key opens this host" and only one of them stays right.
 
 LOCAL_CONNECTION_NAME = "This deployment's sandbox"
 """What the connection set up on its own is called (#2070)."""
+
+# The Builder asks `can_provide` each time it lists capabilities. A no is kept
+# briefly, because it may be a sandbox service still starting.
+_PROVIDES_SECONDS = 60.0
+_REFUSES_SECONDS = 10.0
+_PROBE_SECONDS = 2.0
+_provides: dict[UUID, tuple[float, bool]] = {}
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,7 @@ def to_read(row: SandboxConnection) -> SandboxConnectionRead:
         base_url=row.base_url,
         secret_id=row.secret_id,
         default_runtime=row.default_runtime,
+        secure_access=row.secure_access,
         is_default=row.is_default,
         is_active=row.is_active,
         created_at=row.created_at,
@@ -142,9 +153,11 @@ class SandboxConnectionService:
         )
         return [to_read(row) for row in rows]
 
-    async def get(self, ctx: AuthContext, connection_id: UUID) -> SandboxConnection:
+    async def get(
+        self, ctx: AuthContext, connection_id: UUID, *, for_update: bool = False
+    ) -> SandboxConnection:
         row = await sandbox_connection_repo.get(
-            self.db, connection_id, organization_id=ctx.organization_id
+            self.db, connection_id, organization_id=ctx.organization_id, for_update=for_update
         )
         if row is None:
             raise NotFoundError(
@@ -166,7 +179,13 @@ class SandboxConnectionService:
                 filling in this form.
         """
         await self._refuse_duplicate_name(ctx, data.name)
-        self._check_shape(kind=data.kind, base_url=data.base_url)
+        _provides.pop(ctx.organization_id, None)
+        self._check_shape(
+            kind=data.kind,
+            base_url=data.base_url,
+            default_runtime=data.default_runtime,
+            secure_access=data.secure_access,
+        )
 
         first = not await sandbox_connection_repo.list_for_organization(
             self.db, organization_id=ctx.organization_id
@@ -179,6 +198,7 @@ class SandboxConnectionService:
             base_url=data.base_url,
             secret_id=data.secret_id,
             default_runtime=data.default_runtime,
+            secure_access=data.secure_access,
             # The first connection an organization registers is its default,
             # because the alternative is a form that succeeds and an agent that
             # then cannot find a workspace.
@@ -209,7 +229,14 @@ class SandboxConnectionService:
     async def update(
         self, ctx: AuthContext, connection_id: UUID, data: SandboxConnectionUpdate
     ) -> SandboxConnectionRead:
-        row = await self.get(ctx, connection_id)
+        row = await self.get(ctx, connection_id, for_update=True)
+        if await project_repo.active_moves_for_connection(
+            self.db, connection_id=connection_id, organization_id=ctx.organization_id
+        ):
+            raise BadRequestError(
+                message="This sandbox is involved in a project transfer. Wait for it to finish.",
+                details={"connection_id": str(connection_id)},
+            )
         changes = writable(data, over=SandboxConnection)
 
         if "name" in changes and changes["name"] != row.name:
@@ -217,28 +244,79 @@ class SandboxConnectionService:
         self._check_shape(
             kind=changes.get("kind", row.kind),
             base_url=changes.get("base_url", row.base_url),
+            default_runtime=changes.get("default_runtime", row.default_runtime),
+            secure_access=changes.get("secure_access", row.secure_access),
         )
 
         promoting = changes.get("is_default") is True
         row = await sandbox_connection_repo.update_connection(
             self.db, connection=row, update_data=changes
         )
+        _provides.pop(ctx.organization_id, None)
         if promoting:
             await sandbox_connection_repo.clear_default(
                 self.db, organization_id=ctx.organization_id, except_id=row.id
             )
         return to_read(row)
 
-    async def delete(self, ctx: AuthContext, connection_id: UUID) -> None:
+    async def delete(
+        self, ctx: AuthContext, connection_id: UUID, *, forget_pending_destroys: bool = False
+    ) -> None:
         """Remove a connection.
 
         The workspaces keyed to it are left alone: their rows record what an
         agent did and where, and deleting a host is not a statement about that
         history. A published agent naming it starts failing with a message that
         says the connection is gone, which is the truth.
+
+        Refused while a project is pinned to it. A project's files live in its
+        container on this host, and a pin cleared to "the organization's
+        default" would open an empty workspace elsewhere and strand them.
+
+        Refused too while sandboxes on it are still to be destroyed, unless
+        `forget_pending_destroys` says somebody removed them on the provider by
+        hand (#2250). A credential deleted or revoked leaves those tombstones
+        nothing to retry with, and before this nothing could ever clear them, so
+        the connection could never be deleted. How many were forgotten goes in
+        the audit entry.
         """
-        row = await self.get(ctx, connection_id)
-        await sandbox_connection_repo.delete(self.db, connection=row)
+        row = await self.get(ctx, connection_id, for_update=True)
+        if await project_repo.active_moves_for_connection(
+            self.db, connection_id=connection_id, organization_id=ctx.organization_id
+        ):
+            raise BadRequestError(
+                message="This sandbox is involved in a project transfer. Wait for it to finish.",
+                details={"connection_id": str(connection_id)},
+            )
+        projects = await project_repo.names_on_connection(
+            self.db, organization_id=ctx.organization_id, connection_id=row.id
+        )
+        if projects:
+            raise BadRequestError(
+                message=(
+                    "Projects keep their files on this connection. Delete those "
+                    "projects first, or keep the connection."
+                ),
+                details={"projects": projects},
+            )
+        forgotten = 0
+        if forget_pending_destroys:
+            forgotten = await pending_destroy_repo.remove_on_connection(
+                self.db, connection_id=row.id
+            )
+        pending = await pending_destroy_repo.count_on_connection(self.db, connection_id=row.id)
+        if pending:
+            raise self._sandboxes_pending(pending)
+        try:
+            async with self.db.begin_nested():
+                await sandbox_connection_repo.delete(self.db, connection=row)
+            _provides.pop(ctx.organization_id, None)
+        except IntegrityError:
+            # A conversation deleted meanwhile wrote a tombstone the count above
+            # could not see; the foreign key refuses to take it with the
+            # connection, as it is the only record of that sandbox.
+            count = await pending_destroy_repo.count_on_connection(self.db, connection_id=row.id)
+            raise self._sandboxes_pending(count) from None
         notifications = NotificationService(self.db)
         # Before the audit entry, never after it: `record_audit` holds the
         # chain lock to the end of the transaction, and the notification
@@ -252,9 +330,23 @@ class SandboxConnectionService:
             action="sandbox_connection.deleted",
             target_type="sandbox_connection",
             target_id=str(connection_id),
-            details={"name": row.name},
+            details={"name": row.name, "forgotten_pending_destroys": forgotten},
         )
         await notifications.security_event(entry, recipients=audience)
+
+    @staticmethod
+    def _sandboxes_pending(pending: int) -> BadRequestError:
+        # The tombstones are the only record of sandboxes still standing on the
+        # provider - a Daytona one billed until somebody deletes it (#2209).
+        return BadRequestError(
+            message=(
+                f"{pending} sandboxes on this connection are still waiting to be "
+                "removed from the provider. Switch the connection off and keep it "
+                "until they are gone, or delete them on the provider and confirm "
+                "that you did."
+            ),
+            details={"pending_destroys": pending},
+        )
 
     @staticmethod
     def runtime_catalog() -> list[SandboxRuntimeOption]:
@@ -285,6 +377,45 @@ class SandboxConnectionService:
             )
             for runtime in CATALOG
         ]
+
+    async def can_provide(self, organization_id: UUID) -> bool:
+        """Whether a container workspace would publish in this organization.
+
+        It would when the organization has a default sandbox connection, or when
+        this deployment runs a sandbox service that the first publish sets one up
+        on (`ensure_local_connection`). Nothing is set up here - a listing must
+        not register a connection. The answer is kept per organization, a yes
+        for a minute and a no for ten seconds, and forgotten when a connection
+        is registered, edited or removed. A service that should answer and does
+        not within two seconds is logged as a warning, and answered no.
+        """
+        now = time.monotonic()
+        kept = _provides.get(organization_id)
+        if kept is not None and now < kept[0]:
+            return kept[1]
+        answer = await self._provides(organization_id)
+        _provides[organization_id] = (
+            now + (_PROVIDES_SECONDS if answer else _REFUSES_SECONDS),
+            answer,
+        )
+        return answer
+
+    async def _provides(self, organization_id: UUID) -> bool:
+        if await sandbox_connection_repo.get_default(self.db, organization_id=organization_id):
+            return True
+        if not settings.SANDBOXD_TOKEN:
+            return False
+        if await member_repo.first_owner_id(self.db, organization_id=organization_id) is None:
+            return False
+        answering = None
+        with anyio.move_on_after(_PROBE_SECONDS):
+            answering = await self._first_answering()
+        if answering is None:
+            logger.warning(
+                "sandbox_service_not_answering", extra={"organization_id": str(organization_id)}
+            )
+            return False
+        return True
 
     async def ensure_local_connection(self, organization_id: UUID) -> SandboxConnection | None:
         """The organization's default sandbox, set up on its own when this deployment runs one.
@@ -441,7 +572,30 @@ class SandboxConnectionService:
             BadRequestError: If the address does not answer, the credential is
                 missing, is not an API key, or is refused.
         """
+        self._check_shape(
+            kind=data.kind,
+            base_url=data.base_url,
+            default_runtime=data.default_runtime,
+            secure_access=data.secure_access,
+        )
         token = await self._probe_token(ctx, data)
+        if data.kind == "opensandbox":
+            from pydantic_ai.workspaces import WorkspaceError
+
+            from app.agents.capabilities.sandbox._opensandbox import OpenSandboxWorkspace
+
+            assert data.default_runtime is not None
+            workspace = OpenSandboxWorkspace(
+                server_url=data.base_url,
+                api_key=SecretStr(token),
+                image=data.default_runtime,
+                secure_access=data.secure_access,
+            )
+            try:
+                await workspace.probe()
+            except WorkspaceError as exc:
+                raise refused_field("base_url", str(exc)) from None
+            return SandboxPolicyRead(kind="opensandbox", default_runtime=data.default_runtime)
         payload = await self._get_json(
             base_url=data.base_url,
             token=token,
@@ -474,7 +628,7 @@ class SandboxConnectionService:
         """
         if data.secret_id is None:
             local = data.base_url.rstrip("/") in LOCAL_SERVICE_URLS
-            if local and settings.SANDBOXD_TOKEN:
+            if data.kind == "docker" and local and settings.SANDBOXD_TOKEN:
                 return settings.SANDBOXD_TOKEN
             raise refused_field(
                 "secret_id", "Pick the key this service was started with before testing it"
@@ -499,7 +653,13 @@ class SandboxConnectionService:
             )
 
     @staticmethod
-    def _check_shape(*, kind: str, base_url: str | None) -> None:
+    def _check_shape(
+        *,
+        kind: str,
+        base_url: str | None,
+        default_runtime: str | None = None,
+        secure_access: bool = False,
+    ) -> None:
         """Refuse a connection whose shape cannot work, while a form is open.
 
         Both of these otherwise surface on an agent's first tool call, where the
@@ -511,10 +671,31 @@ class SandboxConnectionService:
                 message=f"Unknown sandbox kind: {kind}",
                 details={"kind": kind, "expected": list(CONNECTION_KINDS)},
             )
-        if kind == "docker" and not base_url:
+        if kind in {"docker", "opensandbox"} and not base_url:
             raise refused_field(
                 "base_url",
                 "A container connection needs the address its sandbox service answers on",
+            )
+
+        if secure_access and kind != "opensandbox":
+            raise refused_field(
+                "secure_access", "Secure Access is supported only by OpenSandbox connections"
+            )
+        if kind == "opensandbox":
+            if (
+                not default_runtime
+                or not default_runtime.strip()
+                or any(character.isspace() for character in default_runtime)
+                or "://" in default_runtime
+            ):
+                raise refused_field(
+                    "default_runtime",
+                    "An OpenSandbox connection needs a container image reference without spaces or a URL scheme",
+                )
+        elif default_runtime is not None and len(default_runtime) > 64:
+            raise refused_field(
+                "default_runtime",
+                "This provider's runtime or template name is limited to 64 characters",
             )
 
     async def resolve(self, ctx: AuthContext, connection_id: UUID | None) -> ResolvedConnection:
@@ -540,6 +721,26 @@ class SandboxConnectionService:
                 ),
                 details={"connection_id": str(row.id)},
             )
+        return await self._unsealed(ctx, row)
+
+    async def resolve_for_teardown(
+        self, ctx: AuthContext, connection_id: UUID
+    ) -> ResolvedConnection:
+        """A connection to destroy a sandbox on, whether or not it is switched off.
+
+        Switching a connection off stops new work reaching it. It does not make
+        the sandboxes already there stop existing - a Daytona one is still billed
+        - so removing them must not be refused for the reason `resolve` refuses a
+        run (#2209).
+
+        Raises:
+            BadRequestError: If the connection is gone, or its credential is gone
+                or is not an API key.
+        """
+        return await self._unsealed(ctx, await self._named(ctx, connection_id))
+
+    async def _unsealed(self, ctx: AuthContext, row: SandboxConnection) -> ResolvedConnection:
+        """The connection with its credential out of the vault."""
         if row.secret_id is None:
             raise BadRequestError(
                 message=(

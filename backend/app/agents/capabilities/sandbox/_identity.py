@@ -7,14 +7,12 @@ stops two surfaces computing it differently and one of them handing a Slack
 channel somebody else's workspace.
 """
 
-from __future__ import annotations
-
 import hashlib
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-SessionScope = Literal["run", "conversation", "channel", "user", "agent"]
+SessionScope = Literal["run", "conversation", "channel", "user", "agent", "project"]
 """Who shares a workspace.
 
 `conversation` and `channel` are both here because a chat platform makes them
@@ -46,6 +44,7 @@ _SCOPE_LETTER: dict[str, str] = {
     "channel": "h",
     "user": "u",
     "agent": "a",
+    "project": "p",
 }
 """One letter per scope, written out rather than taken from the name.
 
@@ -84,8 +83,9 @@ class WorkspaceIdentity:
     """
 
     organization_id: UUID
-    agent_id: UUID
-    run_id: UUID
+    agent_id: UUID | None
+    """`None` only where a project's files are opened outside any run."""
+    run_id: UUID | None
     conversation_id: UUID | None = None
     user_id: str | None = None
     channel_key: str | None = None
@@ -96,6 +96,10 @@ class WorkspaceIdentity:
     of ours because it has to be stable across the threads inside it, and a
     `ChannelSession` is created per thread.
     """
+    project_workspace_id: UUID | None = None
+    project_id: UUID | None = None
+    """The project the conversation belongs to, which a `project` scope keys on.
+    Every agent answering in the project shares it, so it carries no agent."""
 
 
 def scope_key(
@@ -103,6 +107,7 @@ def scope_key(
     scope: SessionScope,
     backend: BackendKind,
     connection_id: UUID | None = None,
+    runtime: str | None = None,
 ) -> str:
     """The workspace this run attaches to.
 
@@ -133,10 +138,21 @@ def scope_key(
 
     `None` for a `state` workspace, which runs on no host at all.
 
+    **And which runtime**, because a session's image is chosen when it is
+    created and never again: a later run attaches to the container it finds. An
+    agent moved from `workbench` to `desktop` kept attaching to its workbench
+    container, which has no display, and every screenshot failed. The default
+    runtime adds nothing to the key, so every workspace opened before this was
+    folded in keeps the key it had; any other runtime adds a short digest of
+    its alias, which fits where a whole alias (up to 64 characters) would not.
+
     Args:
         connection_id: The connection this run resolved to - the resolved one,
             not what the spec named, so a spec that defers to the organization's
             default keys on the default it actually got.
+        runtime: The runtime this run resolved to, the same way - or `None` for
+            the host's own default, which the caller decides
+            (`SandboxWorkspaceService._open_config`).
 
     Raises:
         WorkspaceScopeUnavailable: If the scope needs an id this run does not
@@ -145,21 +161,33 @@ def scope_key(
     """
     subject = _subject(identity, scope)
     host = "" if connection_id is None else f"-{connection_id.hex[:8]}"
+    image = "" if runtime is None else f"-{hashlib.sha256(runtime.encode()).hexdigest()[:6]}"
     key = (
         f"{_BACKEND_LETTER[backend]}{_SCOPE_LETTER[scope]}"
-        f"-{identity.organization_id.hex[:8]}{host}-{subject}"
+        f"-{identity.organization_id.hex[:8]}{host}{image}-{subject}"
     )
-    # 44 for a stored workspace and 53 with a host folded in, both inside the 64
-    # the service allows; a channel identity string can be longer, so the bound is
-    # enforced rather than reasoned about.
+    # 44 for a stored workspace, 53 with a host folded in and 60 with a runtime
+    # too, all inside the 64 the service allows; a channel identity string can be
+    # longer, so the bound is enforced rather than reasoned about.
     return key[:MAX_SESSION_ID]
 
 
 def _subject(identity: WorkspaceIdentity, scope: SessionScope) -> str:
+    if scope == "project":
+        if identity.project_id is None:
+            raise WorkspaceScopeUnavailable(
+                "This run is not in a project, so a project workspace has nothing to attach to."
+            )
+        return (identity.project_workspace_id or identity.project_id).hex
+    agent_id = identity.agent_id
+    if agent_id is None or identity.run_id is None:
+        raise WorkspaceScopeUnavailable(
+            "Only a project's workspace can be opened without an agent's run."
+        )
     if scope == "run":
         return identity.run_id.hex
     if scope == "agent":
-        return identity.agent_id.hex
+        return agent_id.hex
     if scope == "conversation":
         if identity.conversation_id is None:
             raise WorkspaceScopeUnavailable(
@@ -176,7 +204,7 @@ def _subject(identity: WorkspaceIdentity, scope: SessionScope) -> str:
         # Per agent as well as per channel: two agents in one Slack channel are
         # two different jobs, and one reading the other's files is not something
         # anybody asked for by putting both in the same room.
-        return f"{identity.agent_id.hex[:8]}{_digest(identity.channel_key)}"
+        return f"{agent_id.hex[:8]}{_digest(identity.channel_key)}"
     if identity.user_id is None:
         raise WorkspaceScopeUnavailable(
             "This run has no signed-in user, so a user-scoped workspace has nothing to attach to."
@@ -184,7 +212,7 @@ def _subject(identity: WorkspaceIdentity, scope: SessionScope) -> str:
     # Per user *per agent*: one person's workspace in the support agent is not
     # their workspace in the finance agent, and merging them would let an agent
     # read files gathered for another one.
-    return f"{identity.agent_id.hex[:8]}{_digest(identity.user_id)}"
+    return f"{agent_id.hex[:8]}{_digest(identity.user_id)}"
 
 
 def _digest(user_id: str) -> str:

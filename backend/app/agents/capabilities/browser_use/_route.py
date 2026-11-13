@@ -15,8 +15,6 @@ checked at publish and again when a browse starts - the second check is what
 stops a name that has been pointed somewhere private since.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, replace
 from typing import Literal
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -28,7 +26,7 @@ from pydantic import SecretStr
 from app.core.config import settings
 from app.core.sanitize import PinnedAddress, UrlRefusedError, resolve_pinned_url
 
-Connection = Literal["built_in", "proxy", "hosted"]
+Connection = Literal["built_in", "proxy", "hosted", "local"]
 
 PROXY_SCHEMES = frozenset({"http", "https", "socks5"})
 HOSTED_SCHEMES = frozenset({"wss"})

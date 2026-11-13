@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { createContext, memo, useContext } from "react";
 
 export interface MarkdownContentProps {
   content: string;
@@ -23,6 +24,8 @@ export interface MarkdownContentProps {
    * run was read. Chat does not pass it - there the reader wrote the thread.
    */
   inertImages?: boolean;
+  /** Document media: render direct video links with playback controls. */
+  documentMedia?: boolean;
   /**
    * The text is still arriving: each word is wrapped so it fades in as it
    * lands. Off once the turn ends, so a finished answer is plain markup.
@@ -42,30 +45,40 @@ export interface MarkdownContentProps {
  * content immediately while the renderer chunk loads, then swaps to the rich
  * markdown output once ready.
  */
+// next/dynamic does not pass the renderer's props to its loading component.
+const PendingMarkdown = createContext("");
+
+function MarkdownFallback() {
+  const content = useContext(PendingMarkdown);
+  return <p className="leading-relaxed break-words whitespace-pre-wrap">{content}</p>;
+}
+
 const MarkdownContentImpl = dynamic(
   () => import("./markdown-content.impl").then((m) => m.MarkdownContent),
   {
     ssr: false,
-    loading: () => (
-      <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">&nbsp;</p>
-    ),
+    loading: MarkdownFallback,
   },
 );
 
-export function MarkdownContent({
+export const MarkdownContent = memo(function MarkdownContent({
   content,
   onCiteClick,
   bareCode,
   inertImages,
+  documentMedia,
   streaming,
 }: MarkdownContentProps) {
   return (
-    <MarkdownContentImpl
-      content={content}
-      onCiteClick={onCiteClick}
-      bareCode={bareCode}
-      inertImages={inertImages}
-      streaming={streaming}
-    />
+    <PendingMarkdown.Provider value={content}>
+      <MarkdownContentImpl
+        content={content}
+        onCiteClick={onCiteClick}
+        bareCode={bareCode}
+        inertImages={inertImages}
+        documentMedia={documentMedia}
+        streaming={streaming}
+      />
+    </PendingMarkdown.Provider>
   );
-}
+});

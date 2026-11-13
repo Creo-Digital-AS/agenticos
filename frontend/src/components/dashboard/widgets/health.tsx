@@ -1,7 +1,7 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { Activity, Boxes, CalendarClock, Cpu, Database, Zap } from "lucide-react";
+import { Activity, Boxes, CalendarClock, Cpu, Database, MapPinned, Zap } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
@@ -15,7 +15,7 @@ import { WidgetEmptyBody, WidgetErrorBody, WidgetSkeleton } from "../widget-stat
 import type { DashboardWidgetProps } from "./types";
 
 /**
- * The five probes the backend runs, each with the icon that says which
+ * The known probes the backend runs, each with the icon that says which
  * subsystem it is (`app/services/health.py`). A key this table does not know is
  * a probe added since - it takes the generic mark and its own name, rather than
  * being dropped from a card whose whole job is to be complete.
@@ -26,13 +26,14 @@ const ICON: Record<string, LucideIcon> = {
   vector_store: Boxes,
   model_access: Cpu,
   scheduler: CalendarClock,
+  map_tiles: MapPinned,
 };
 
-/** The same five, as copy. Anything else prints its key, humanised. */
+/** The same probes, as copy. Anything else prints its key, humanised. */
 const NAMED = new Set(Object.keys(ICON));
 
 const TILE: Record<CheckStatus, string> = {
-  healthy: "bg-success/12 text-success",
+  healthy: "bg-foreground/[0.04] text-muted-foreground",
   unhealthy: "bg-destructive/12 text-destructive",
   unconfigured: "bg-muted text-muted-foreground",
   not_checked: "bg-muted text-muted-foreground",
@@ -67,21 +68,25 @@ export function HealthWidget({ title, hint, seeAll, options }: DashboardWidgetPr
   const t = useTranslations("dashboard.widgets.health");
   const { health, isLoading, error, refetch } = useSystemHealth();
   const style = resolveStyle("health", options?.style);
+  const checks =
+    health?.checks.filter(
+      (check) => check.key !== "map_tiles" || check.status !== "unconfigured",
+    ) ?? [];
 
   return (
     <WidgetFrame title={title} hint={hint} seeAll={seeAll} options={options}>
       {isLoading ? (
-        <WidgetSkeleton />
+        <WidgetSkeleton variant={style === "list" ? "list" : "services"} />
       ) : error ? (
         <WidgetErrorBody onRetry={() => refetch()} />
-      ) : !health || health.checks.length === 0 ? (
+      ) : !health || checks.length === 0 ? (
         <WidgetEmptyBody title={t("empty.title")} description={t("empty.description")} />
       ) : style === "list" ? (
         // The rows this card used to be, kept as a choice rather than deleted:
         // a deployment that grows a dozen probes wants names down a column, and
         // a failing probe's detail reads better on its own line than on a hover.
         <StatusList
-          rows={health.checks.map((check) => ({
+          rows={checks.map((check) => ({
             label: NAMED.has(check.key) ? t(`services.${check.key}`) : check.key.replace(/_/g, " "),
             sub: check.status === "healthy" ? undefined : check.detail,
             pill: t(`status.${check.status}`),
@@ -90,7 +95,7 @@ export function HealthWidget({ title, hint, seeAll, options }: DashboardWidgetPr
         />
       ) : (
         <ul className="grid flex-1 auto-rows-min grid-cols-[repeat(auto-fit,minmax(4.25rem,1fr))] content-center gap-x-2 gap-y-4">
-          {health.checks.map((check) => (
+          {checks.map((check) => (
             <ServiceTile key={check.key} check={check} />
           ))}
         </ul>

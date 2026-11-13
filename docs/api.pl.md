@@ -1,5 +1,5 @@
 ---
-source_sha: "8122fd41c206"
+source_sha: "d8ab63f0a753"
 ---
 
 # API HTTP { #the-http-api }
@@ -16,11 +16,16 @@ produkcyjny deployment nie publikuje własnej listy tras.
 
 Trzy drogi wejścia, dla trzech różnych wywołujących.
 
-| | Nagłówek | Dla |
-|---|---|---|
+|  | Nagłówek | Dla |
+| --- | --- | --- |
 | **Klucz API organizacji** | `Authorization: Bearer aos_…` | Skryptu, klienta HTTP takiego jak Postman albo klienta MCP. Działa jako członek, który go wydał, zawężony do uprawnień, z którymi został wydany |
 | **JWT** | `Authorization: Bearer <access token>` | Osoby albo czegoś, co działa w jej imieniu. Krótko żyjący, odświeżany refresh tokenem |
 | **Ciasteczko sesji** | ustawiane przez konsolę | Wyłącznie przeglądarki — token jest HttpOnly i nigdy nie trafia do JavaScriptu |
+
+Klucze organizacji wysyłaj przez `Authorization: Bearer aos_…`. `X-API-Key` służy osobnemu
+poświadczeniu usług wdrożenia; klucz `aos_…` w tym nagłówku nie uwierzytelnia żądania organizacji.
+Trasy sejfu, np. `GET /api/v1/secrets`, oraz trasa wiadomości konsoli wymagają zalogowanej sesji.
+Klient API czyta rozmowę przez `GET /api/v1/conversations/{id}/transcript`.
 
 ### Klucze API organizacji { #organization-api-keys }
 
@@ -28,15 +33,15 @@ Klucz wydaje członek, w jednej organizacji, w **Ustawienia → API** (albo
 przez `POST /api/v1/api-keys` z zalogowanej sesji). Niesie uprawnienia tego
 członka, zawężone dwukrotnie:
 
-- **Do uprawnień, z którymi został wydany.** Wybierz preset — *Tylko odczyt*,
-  *Zasilanie bazy wiedzy*, *Pełny dostęp* — albo zaznacz uprawnienia z
+- **Do uprawnień, z którymi został wydany.** Wybierz preset — _Tylko odczyt_,
+  _Zasilanie bazy wiedzy_, _Pełny dostęp_ — albo zaznacz uprawnienia z
   [katalogu](permissions.md). Możesz nadać tylko to, co sam masz.
 - **Do tego, co wydający może zrobić teraz.** Każde żądanie odczytuje członkostwo
   wydającego na nowo, więc jego degradacja od razu zawęża każdy z jego kluczy.
   Usunięcie go z organizacji albo jego odejście unieważnia wszystkie wydane przez
   niego klucze i podłączone aplikacje - na stałe, więc ponowne zaproszenie żadnego
   z nich nie przywraca. Grant
-  na zasobie poszerza to, co może zrobić z jednym wierszem *osoba*; nigdy nie
+  na zasobie poszerza to, co może zrobić z jednym wierszem _osoba_; nigdy nie
   poszerza klucza ponad jego uprawnienia.
 
 Klucz jest pokazywany **raz**, w odpowiedzi, która go tworzy. Przechowywany jest
@@ -47,6 +52,17 @@ uwierzytelnionego kluczem niesie w szczegółach `via_api_key`. Klucz może mie�
 wygaśnięcia, a jego unieważnienie (`DELETE /api/v1/api-keys/{id}`) działa od
 następnego żądania.
 
+W konsoli klucze są przed instrukcją połączenia, a aktywne pojawiają się pierwsze.
+Szukaj po nazwie, prefiksie lub autorze; na telefonie karty pokazują wygaśnięcie
+oraz ostatnie użycie. W **Utwórz klucz** rozwiń szczegóły uprawnień presetu albo
+wybierz **Własne**, żeby wyszukać pojedyncze uprawnienia. Wyszukiwanie nie usuwa zaznaczeń.
+Enter w polu nazwy tworzy klucz; Enter w wyszukiwarce uprawnień nie wysyła formularza.
+
+Podczas tworzenia klucza pola i zamknięcie okna są zablokowane. Odmowa zachowuje
+formularz do ponowienia. Po utworzeniu skopiuj klucz przed zamknięciem; odmowa
+schowka zostawia wartość dostępną do kolejnej próby. Zamknięcie czyści stan
+tworzenia. Odmowa unieważnienia zostawia otwarte potwierdzenie do ponowienia.
+
 **Klucz nie jest osobą, która go wystawiła.** Run, który uruchamia, należy do
 wystawcy, jest liczony w jego budżecie i audycie, ale nie sięga do niczego
 osobistego: ani do
@@ -55,6 +71,30 @@ wyszukiwania jego dawnych rozmów, ani do stron, na których przeglądarka trzym
 jego logowania, ani do przestrzeni roboczej sandboxa przypisanej do użytkownika.
 Ten, kto trzyma klucz, jest skryptem, nie tą osobą, więc run odpowiada tak jak
 na publicznym widgecie.
+
+Zatwierdzanie osobistych routines i watchy wymaga jawnego scope’u `personal:consent`, wybranego w **Custom** przy wystawianiu klucza lub autoryzacji klienta MCP. Nie zawiera go żaden preset, także **Full access**. Potwierdzenie pozwala credentialowi zatwierdzać trwałe routines i watche korzystające z twoich osobistych połączeń i danych; zwykłe scope’y `agents:run` i `runs:view` tego nie umożliwiają. Istniejące klucze i autoryzacje MCP nie zyskują osobistej zgody automatycznie.
+
+**Pracę, która działa jako ty, ustawiasz też kluczem, który sam wydałeś.** Klucz,
+który utworzyłeś, albo token klienta MCP, który autoryzowałeś, może tworzyć i
+zmieniać twoje [routines](triggers.md) działające jako ty (`runs_as_creator`) i
+twoje [watche](console.md), przeglądać źródła routine oraz publikować agenta bez
+cofania zgody routines, które działają jako ty. Przebieg takiej routine nadal
+podlega jej przejrzanym źródłom i budżetowi. Nie może tego zrobić credential
+uruchomionego agenta poza twoim prywatnym czatem ani administrator, który się pod
+ciebie podszywa.
+
+Rozmowy też są publiczne: `GET /api/v1/conversations` wypisuje czaty wydawcy
+klucza (`runs:view`), a `POST /api/v1/conversations` z `title` i
+`PATCH /api/v1/conversations/{id}` otwierają i zmieniają nazwę czatu
+(`agents:run`) - na przykład wątku tematycznego, do którego pisze routine.
+`POST /api/v1/me/mcp-connections/{id}/test` sprawdza twoje połączenie i odświeża
+jego narzędzia (`agents:run`).
+
+Odczyt połączeń jest też publiczny: `GET /sandbox-connections`,
+`GET /sandbox-connections/runtimes` i `GET /sandbox-connections/{id}/policy`
+wymagają `connections:view`; `GET /mcp-connections` wymaga `mcp:manage`.
+Nadal obowiązują organizacja i zakresy klucza. Zapisy połączeń oraz operacje
+na poświadczeniach pozostają dostępne tylko w sesji.
 
 ```bash
 curl "$BASE/api/v1/me/permissions" \
@@ -65,7 +105,7 @@ Warto znać dwie odmowy:
 
 - **`403` "API keys are not accepted on this endpoint"** — klucze są przyjmowane
   wyłącznie w publicznym API: agenci, runy i zatwierdzenia, bazy wiedzy i RAG,
-  skille, pliki kontekstu, aplikacje, usługi ML, `/me/permissions` oraz
+  skille, pliki kontekstu, projekty, aplikacje, usługi ML, `/me/permissions` oraz
   członkowie, zaproszenia, grupy i ustawienia organizacji. Własne trasy konsoli,
   twoje konto, opuszczenie lub przekazanie organizacji i samo zarządzanie kluczami
   pozostają tylko dla sesji, więc wyciekły klucz nie wybije swojego następcy.
@@ -116,7 +156,6 @@ ustawione jest `AGENT_ID`, a na koniec unieważnia klucz.
 BASE=http://localhost:8000 EMAIL=you@example.com PASSWORD=... bash docs/examples/public-api.sh
 ```
 
-
 ### Sesje i unieważnianie { #sessions-and-revocation }
 
 Access token JWT jest związany z sesją, którą otworzyło logowanie — identyfikator
@@ -130,6 +169,20 @@ Odświeżenie nie zaczyna nowej sesji — refresh token rotuje w miejscu, a acce
 token dalej nazywa tę samą sesję — więc długo żyjące połączenie nie zostaje
 przerwane przez rutynowe odświeżenie.
 
+### Praca, która działa po żądaniu { #work-that-runs-after-the-request }
+
+[Eval run](evals.md) ani żądanie do [asystenta tworzenia](authoring.md) nie mogą zostać
+rozpoczęte kluczem organizacji: te trasy są dla osób zalogowanych, a klucz dostaje na
+nich `403`. Praca, która wykonuje się później, w tle, podlega uprawnieniom osoby, która
+ją rozpoczęła, w ich stanie z chwili, gdy praca się zaczyna - rola utracona w
+międzyczasie ją zatrzymuje. Gdyby klucz kiedyś mógł rozpocząć taką pracę, to samo
+dotyczyłoby klucza: liczyłyby się jego uprawnienia w ówczesnym stanie, a klucz
+unieważniony albo usunięty w międzyczasie zatrzymywałby pracę, z powodem zapisanym na
+runie albo żądaniu.
+
+Wygaśnięcie ogranicza tylko to, co klucz może rozpocząć: praca rozpoczęta, gdy był
+ważny, trwa dalej po jego wygaśnięciu.
+
 ## Nagłówek organizacji { #the-organization-header }
 
 **Klucz API działa we własnej organizacji** i nie potrzebuje nagłówka. Wysłanie
@@ -140,9 +193,13 @@ organizację; wskazanie innej kończy się `400` z
 **Token sesji bierze najemcę z `X-Organization-Id`.** Wywołujący, który należy do
 trzech organizacji, jest w każdej z nich innym podmiotem, z inną rolą i innymi
 grantami, więc wysyłaj nagłówek przy każdym żądaniu. Gdy go brakuje, żądanie
-wraca do **osobistej organizacji** wywołującego — skrypt, który o nim zapomni,
-działa tam, z agentami, grantami i budżetem tej organizacji, i nie dostaje żadnego
-błędu. Wyślij zły, a dostaniesz odmowę, która wygląda dokładnie jak nieistniejący
+wraca do **domyślnej organizacji** wdrożenia, jeśli wywołujący do niej należy,
+potem do jego **osobistej organizacji**, potem do jedynej, do której należy —
+skrypt, który zapomni nagłówka, działa tam, z agentami, grantami i budżetem tej
+organizacji, i nie dostaje żadnego błędu. Wywołujący, który należy do kilku i nie
+ma żadnej z nich, dostaje `400` z `details.header = "X-Organization-Id"` zamiast
+zgadywania ([gdzie zaczyna nowe konto](deployment.md#where-a-new-account-starts)).
+Wyślij zły, a dostaniesz odmowę, która wygląda dokładnie jak nieistniejący
 zasób — celowo, żeby identyfikatorów nie dało się sondować.
 
 ## Uruchamianie agenta { #running-an-agent }
@@ -156,6 +213,39 @@ curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
 
 Odpowiedź niesie identyfikator runa, wynik, status, tokeny i koszt.
 `environment_id` w ciele wybiera, [które środowisko](environments.md) odpowiada.
+Agent z [formatem odpowiedzi](concepts.md#spec) odpowiada obiektem: jest on w `structured`,
+już sprawdzony względem `output_schema` agenta, a `output` pokazuje ten sam obiekt
+jako blok JSON.
+`"draft": true` uruchamia zamiast tego nieopublikowany draft, jak panel testowy
+Buildera: run testowy, dla klucza, którego wystawca może edytować agenta,
+odrzucany z podaniem powodu, gdy draft by się nie opublikował, i nigdy z
+`Prefer: respond-async`.
+
+Uruchomienia synchroniczne, także testy draftów, zwracają `status: awaiting_answer` i `questions`,
+gdy agent pyta użytkownika. Odpowiedz przez `POST /api/v1/runs/{run_id}/answers`, podając
+`{"responses":{"<tool_call_id>":[{"selected":["Wybór"]}]}}`; `answer` przyjmuje własny tekst, a
+`skipped: true` oznacza świadome pominięcie. Brak odpowiedzi nie jest automatyczną odmową.
+Platformowy MCP udostępnia ten przepływ przez `test_agent_draft` i `answer_agent_questions`.
+
+Historia rozmowy zachowuje odpowiedzi z kart pytań i udane załadowania odroczonych capabilities.
+Aktualnie przypięte skille wczytują bieżące instrukcje w następnej turze; odpięte skille nie
+odzyskują dostępu. Historyczne wyniki tabel nie zastępują aktualnych danych. Pole `starters` agenta
+opisuje wersję opublikowaną, a startery draftu są w `draft_spec.starters`.
+
+Klucz sięga też do rutyn agenta - `GET /api/v1/triggers` oraz `GET`, `POST`,
+`PATCH` i `DELETE` pod `/api/v1/agents/{agent_id}/triggers`, a także
+`POST .../{trigger_id}/run`, żeby uruchomić jedną od razu - i do modeli organizacji
+pod `GET /api/v1/providers/model-profiles`. Trzy ścieżki działają na samym
+wystawcy: `GET /api/v1/me/mcp-connections` wymienia usługi, które połączył własnym
+kontem, `PUT /api/v1/users/me/locale` ustawia mu język konsoli na każdym
+urządzeniu, a `PATCH /api/v1/users/me/agent-context` zapisuje jego rolę
+(`job_title`) i to, czym się zajmuje (`about`), co słyszy każdy agent. Każda
+wymaga klucza wydanego na `agents:run`.
+
+`POST /api/v1/agents` tworzy agenta ze speca w treści i zostawia puste pole
+puste. Z `"from_starter": true` uzupełnia to, czego spec nie podaje -
+instrukcje, skille, własne narzędzia platformy i budżet - z agenta startowego
+AgenticOS, tak jak robi to **New agent** w konsoli.
 
 **Run kontynuuje rozmowę.** Wywołanie bez `conversation_id` otwiera nową rozmowę
 dla wystawcy klucza i zwraca jej identyfikator jako `conversation_id`; wyślij go
@@ -169,6 +259,18 @@ rozpoczęty kluczem, a ten rozpoczęty przez osobę dostaje `403`, bo kontynuacj
 działa w jej imieniu. Rozmowa trafia na listę czatów wystawcy z etykietą **API**
 i pozostaje ukryta, dopóki nie włączy tam takich rozmów przełącznikiem.
 
+Przebieg zadany na czacie jest wyjątkiem od samodzielnego wznawiania. Gdy osoba
+rozstrzygnie jego ostatnie oczekujące zatwierdzenie albo odpowie na jego pytania,
+serwer kontynuuje run jako ona i wysyła odpowiedź na czat. Decyzja klucza nie
+kontynuuje niczego: osoba musi wznowić ten run z konsoli w ciągu około godziny od
+ostatniej decyzji, inaczej zostanie zakończony.
+
+Mówi o tym `continues_in_chat`: jest na `ApprovalRead`, na `AgentRunRead` (pojedynczy odczyt)
+i w wyniku wznowienia oraz odpowiedzi. Na `POST /agents/{id}/run` zawsze jest false,
+podobnie dla klucza API. Gdy jest true, nie wołaj `/resume`. `/resume`, które
+przyjdzie jako drugie, dostaje istniejące `400` ze `status` runa. Zob.
+[Rozstrzygnięte poza czatem](channels.md#decided-outside-the-chat).
+
 `GET /api/v1/conversations/{id}/transcript` czyta jedną z rozmów wystawcy tura po
 turze, z narzędziami wywołanymi w każdej turze i kosztem, dla klucza z
 `runs:view`.
@@ -181,6 +283,39 @@ turze, z narzędziami wywołanymi w każdej turze i kosztem, dla klucza z
 
     Na tym polega jeden runner i dlatego nie ma "szybkiej ścieżki", która by go
     omijała.
+
+### Bez trzymania połączenia { #without-holding-the-connection }
+
+Run trwający minuty - przeglądanie stron, długi łańcuch narzędzi - trzyma
+żądanie otwarte przez cały czas, a limit czasu odczytu na proxy może je uciąć,
+gdy run trwa dalej. Wyślij `Prefer: respond-async`, a wywołanie od razu
+odpowie `202` z żądaniem runu do odpytywania:
+
+```bash
+curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: respond-async" \
+  -H "Idempotency-Key: ticket-4711" \
+  -d '{"prompt": "Summarise this quarter for the board"}'
+# 202, Location: /api/v1/run-requests/{id}, Preference-Applied: respond-async
+
+curl "$BASE/api/v1/run-requests/$REQUEST_ID" -H "Authorization: Bearer $AGENTICOS_KEY"
+```
+
+Żądanie ma stan `queued`, `running`, a potem `completed` z `result` - tym samym
+ciałem, którym odpowiada wywołanie synchroniczne - albo `failed` z `error`. Jego
+`conversation_id` jest znane od pierwszej odpowiedzi, więc kolejną wiadomość
+można wysłać, zanim run się skończy. Wykonuje je worker, przez ten sam runner,
+budżet i zatwierdzenia co na każdej innej powierzchni.
+
+To, co da się sprawdzić od razu, jest sprawdzane od razu: nieznana rozmowa albo
+załącznik to `404` na `POST`, a nie błąd, na który trzeba czekać. Uprawnienia
+klucza są sprawdzane ponownie, gdy run startuje, więc klucz odwołany w czasie,
+gdy run czekał, go nie uruchomi; klucz, który w tym czasie tylko wygasł, uruchomi. Żądanie runu może odczytać tylko osoba, która
+o nie poprosiła, albo jej klucz; cudze odpowiada `404`. Asynchroniczny run ma
+jedną próbę - run, który się nie powiódł, jest zapisany z tym, co wydał, i nie
+jest ponawiany, żeby nie wydać tego drugi raz.
 
 Ta trasa niesie **limit tempa, a nie bramkę uprawnień**. Uprawnienie jest
 rozstrzygane wewnątrz serwisu, wobec grantów tego konkretnego agenta — bramka
@@ -204,6 +339,268 @@ to, co i tak już widzisz — nigdy nie przekracza granicy najemcy ani grantu.
 Odpowiedź niesie też `categories` i `tags`: każdą odrębną etykietę na agentach,
 które możesz wylistować, niezależnie od filtra i strony — wybory, które podaje menu
 filtra. Prywatny agent, którego nie widzisz, nie dodaje żadnej.
+
+## Uruchamianie workflowu { #running-a-workflow }
+
+Klucze API organizacji mogą uruchamiać runy i odczytywać ich stan, graf, kroki, pliki
+oraz zdarzenia przez `/api/v1/workflow-runs`. Start wymaga `workflows:run`, odczyt także
+`workflows:view`, a test draftu `workflows:edit`. Worker zachowuje zakres klucza z
+chwili przyjęcia runu i sprawdza klucz oraz wystawcę przed każdym krokiem, także po
+zatwierdzeniu lub oczekiwaniu. Unieważnienie albo usunięcie klucza zatrzymuje nową pracę
+z `PRINCIPAL_REVOKED`; wznowienie nigdy nie dostaje pełnej roli wystawcy.
+
+Wygaśnięcie tego nie robi: wygasły klucz niczego nie rozpocznie, ale run, który
+rozpoczął, gdy był ważny, trwa dalej, więc godzina ważności tokenu OAuth nie przerywa
+długiego oczekiwania. Run uruchomiony kluczem nie ma dostępu do osobistego stanu
+wystawcy. Edycja workflow nadal wymaga sesji.
+
+Klucze API mogą wyświetlać przebiegi pochodzenia publicznego, w tym uruchomione
+kluczem. Osobiste przebiegi uruchomione przez użytkownika zwracają `404`, również dla
+grafu, kroków, zdarzeń, plików, ponowienia i anulowania. Klucz nie może importować
+plików z tych przebiegów.
+
+```bash
+curl -X POST "$BASE/api/v1/workflow-runs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "'"$WORKFLOW_ID"'", "input": {"question": "How long do refunds take?"}, "deadline_seconds": 3600}'
+```
+
+To uruchamia run opublikowanej wersji workflowu i od razu odpowiada `201`;
+węzły działają w tle. `input` to to, co przekazuje dalej wyzwalacz [`core.input`](reference/workflow-nodes.md#core-input) grafu, najwyżej `WORKFLOW_RUN_MAX_INPUT_BYTES` jako JSON (powyżej `413`). Tutaj uruchamia się tylko wersja, która startuje od tego wyzwalacza albo bez żadnego: każda inna odpowiada `409
+WORKFLOW_TRIGGER_MISMATCH`, bo uruchamia ją webhook, harmonogram, wiadomość na czacie albo rekord tabeli. `"mode": "test"` uruchamia zamiast tego bieżący draft, od dowolnego wyzwalacza, i
+wymaga `workflows:edit`.
+
+Przed wywołaniem odczytaj `GET /api/v1/workflows/{id}/input-schema` z
+`workflows:view`. Odpowiedź zawiera opublikowane `version_id` i listę `entries` z
+`entry_node_id`, `trigger` i efektywnym `input_schema` dla każdego wejścia Manual,
+API, Called by a workflow lub Form. Przekaż `version_id`, aby sprawdzić konkretną
+opublikowaną wersję. Kontrakty JSON Schema są zwracane bez zmian; proste pola są
+przedstawiane jako JSON Schema, a nietypowane wejścia zwracają `{"type": "object"}`.
+Użyj kontraktu wybranego wejścia i przekaż jego `entry_node_id` przy uruchamianiu.
+
+Dotychczasowe proste pola `integer` wymagają dodatkowo tokenów całkowitych JSON:
+`1` jest przyjmowane, a `1.0` i `1e0` są odrzucane. Odkrywanie oznacza te pola
+przez `x-agenticos-strict-integer: true`, także wewnątrz opcjonalnych pól
+dopuszczających null. Zwykły JSON Schema nie potrafi wymusić tej różnicy zapisu,
+więc sama walidacja schematu nie wystarcza dla tych pól; rozstrzyga walidacja
+serwera. Surowe kontrakty JSON Schema stosują standardową semantykę integer.
+
+Opcjonalny [kontrakt wejścia JSON Schema](reference/workflow-nodes.md#json-schema-input-contracts)
+jest sprawdzany przed przyjęciem runu. Niezgodność zwraca
+`422 WORKFLOW_RUN_INPUT_INVALID` ze ścieżkami pól i komunikatami w `error.details.fields`;
+run nie powstaje. Każdy wpis ma `field` i `message`; zagnieżdżone ścieżki żądania
+zawierają indeksy tablic, na przykład `input.items.0.sku`. Dla dotychczasowych
+wywołujących `error.details.problems` zachowuje też `field`, `message` i `type`
+ze ścieżkami względem obiektu wejścia. Kontrakt pochodzi z bieżącej opublikowanej
+wersji albo ze szkicu dla `"mode": "test"`. Obowiązuje tak samo przez WebSocket
+i MCP oraz gdy wywołuje inny workflow.
+
+`deadline_seconds` (do trzydziestu dni) ustawia termin
+sprawdzany za każdym razem, gdy węzeł ma zostać wysłany: pierwszy węzeł gotowy
+po jego upływie kończy run błędem `DEADLINE_EXCEEDED`, a węzeł, który już działa,
+albo run czekający na zatwierdzenie nie są przez niego przerywane. Trasa ma limit żądań na wywołującego, tak jak trasa runów agenta, i
+po przekroczeniu limitu odpowiada `429` z `Retry-After`.
+
+`GET /api/v1/workflow-runs/{id}` zwraca status runa, `spent_cost`, `error` oraz, gdy jego węzeł [`core.output`](reference/workflow-nodes.md#core-output) już się wykonał, `output`, a
+`POST /api/v1/workflow-runs/{id}/cancel` go zatrzymuje. `GET
+/api/v1/workflow-runs/{id}/events?after=<cursor>` zwraca strumień zdarzeń runa
+od najstarszego, z `next_cursor` do odesłania jako `after`: pozostaje taki sam,
+dopóki nie ma nic nowszego, więc odpytywanie z nim śledzi trwający run. Kto może
+robić każdą z tych rzeczy, opisuje strona [Uprawnienia](permissions.md#workflow-runs).
+
+`GET /api/v1/workflow-runs/{id}/nodes` wymienia każdy krok, który wykonał run,
+łącznie z iteracjami pętli, każdy z jego `scope_path`, statusem, próbami, kosztem i
+typowanym błędem, którym ostatnio się zakończył, a `GET
+/api/v1/workflow-runs/{id}/graph` zwraca graf, który run wykonuje: graf jego wersji
+albo snapshot draftu runa testowego.
+
+### Odczyt logu workflow { #reading-a-workflows-log }
+
+Linie, które zapisały [Quick Logi](workflows.md#the-logs-page) workflow, można czytać
+spoza konsoli - skryptem, arkuszem albo narzędziem do dashboardów, takim jak Grafana czy
+Metabase - kluczem API organizacji z uprawnieniem `workflows:view`.
+
+Klucz czyta linie runów o publicznym pochodzeniu, w tym runów uruchomionych przez
+klucze: uruchomionych przez dowolny klucz organizacji, z zewnątrz (webhook, formularz,
+wiadomość z kanału, Gmail, Outlook, GitHub) i każdy run w łańcuchu, który taki run
+zaczął. Linii runów uruchomionych przez członka, harmonogram, rekord tabeli, czat,
+agenta lub aplikację nie ma, więc log workflow z harmonogramem jest przez klucz pusty, a
+jego liczby różnią się od konsoli. Workflow innej organizacji albo taki, którego członek
+klucza nie może oglądać, odpowiada `404`; klucz bez `workflows:view` jest odrzucany.
+
+```bash
+# Najnowsze linie, po 100 (tyle mieści strona); runy testowe są pominięte
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs?outcome=error&from=2026-10-01T00:00:00Z&limit=100" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+
+# Ile linii zostawił każdy dzień, według wyniku, z ostatnich 30 dni warszawskich
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&tz=Europe/Warsaw" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflows/{id}/logs` zwraca linie od najnowszej - według `created_at`,
+potem `seq`, czyli miejsca, które linia zajęła w logu przy zapisie. Zawężają je
+`node_instance_id` (jeden krok), `outcome` (port albo `error`; powtórz go, by dopasować dowolny z kilku, a wiersz, który
+wyszedł kilkoma portami, pasuje do każdego z nich), `run` (id runa albo jego
+pierwsze 4 lub więcej znaków), `q` (tekst w wiadomości) oraz okno czasu `from` (włącznie)
+i `to` (wyłącznie); `include_test=true` dodaje linie zapisane przez runy testowe. `skip`
+i `limit` przeglądają wynik - `limit` to najwyżej 100 - a `total` liczy wszystkie
+pasujące linie, więc klient pobiera strony, aż `skip` go osiągnie.
+
+`GET /api/v1/workflows/{id}/logs/summary` to dane dla wykresu: za ostatnie `days` dni
+(7, 30 lub 90, z dzisiejszym) zwraca po jednym wpisie na dzień, od najstarszego, z liczbą
+linii każdego wyniku; dzień bez linii też jest obecny. `tz`, nazwa IANA, wskazuje, których
+dni się liczy, domyślnie UTC; pozostałe filtry są jak w liście. Aby wciągnąć to do
+narzędzia do dashboardów, wskaż trasę jako źródło danych JSON, podaj klucz w nagłówku
+bearer i czytaj `by_day`.
+
+```bash
+# Błędy i timeouty na dzień przez miesiąc: jedno źródło JSON dla panelu dashboardu
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&outcome=error&outcome=timeout" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflow-runs/{id}/logs` zwraca linie jednego runa od najstarszej według
+`seq` (`limit` do 500), a `GET /api/v1/workflow-logs` najnowsze linie ze wszystkich
+workflow, które klucz może oglądać, każdą z nazwą jej workflow, oraz ile linii zostawił
+każdy wynik w ostatnich 24 godzinach. Reguły alertów na logu nie należą do publicznego
+API.
+
+### Eksport i import workflow { #exporting-and-importing-a-workflow }
+
+`GET /api/v1/workflows/{id}/export` (`workflows:view`) zwraca szkic jako przenośny
+plik: `name`, `description`, `tags`, `settings`, `graph` i `unresolved`, czyli krok
+i pole każdego pominiętego przypięcia zasobu. Nie zawiera identyfikatorów tego
+wdrożenia ani wartości sekretów. `POST /api/v1/workflows/import`
+(`workflows:create`) przyjmuje taki plik i odpowiada `201` z nowym szkicem
+`workflow` i jego przypięciami `unresolved`; graf, który się nie parsuje albo
+zawiera krok, którego to wdrożenie nie ma, to `400` i nic nie powstaje.
+
+### Śledzenie runa przez WebSocket { #following-a-run-over-a-websocket }
+
+`/api/v1/ws/workflow-runs?organization_id=<org>` uwierzytelnia się tak jak gniazdo
+czatu, z tokenem dostępu jako subprotokołem `access_token.<token>`. Wyślij
+`{"type": "start", "workflow_id": ..., "input": {...}}`, żeby uruchomić run, albo
+`{"type": "attach", "run_id": ..., "after": <cursor>}`, żeby śledzić istniejący.
+Serwer wysyła `{"type": "run", "run": {...}}`, gdy zaczyna śledzić, i ponownie, gdy
+run się kończy, oraz `{"type": "event", "event": {...}, "cursor": ...}` dla każdego
+zdarzenia pomiędzy. Odrzucona ramka dostaje `{"type": "error", "code": ...,
+"message": ...}`, a unieważniona sesja zamyka gniazdo kodem `4001`. Jedno gniazdo
+śledzi jeden run; nowa ramka zastępuje run, który śledziło. Ramka `start` zużywa ten
+sam limit na minutę co `POST /workflow-runs`, a po jego przekroczeniu dostaje
+`RATE_LIMIT_EXCEEDED`.
+
+### Webhooki i harmonogramy { #workflow-webhooks-and-schedules }
+
+Identyfikatory dostaw webhooka i GitHub przeżywają retencję treści runa jako minimalne tombstone należące do ekspozycji i organizacji. Duplikat nadal zwraca pierwotny UUID runa po usunięciu treści; status i dawna odpowiedź webhooka mogą być już niedostępne. Usunięcie ekspozycji lub organizacji kończy ten okres deduplikacji. Migracja `0230_webhook_delivery_tombstones.py` nie odtworzy wcześniej usuniętych claims; downgrade usuwa osierocone tombstone przed przywróceniem dawnego klucza z kaskadą.
+
+Publikacja triggerów automatycznych i zmiany uprawnień ich wykonania wymagają sesji członka (`403` dla klucza API organizacji). Klucze mogą publikować ręczne workflow, rozpoczynać przebiegi w granicach scope i wstrzymywać ekspozycje, ale nie mogą ich włączać, rotować sekretów/linków formularzy, zmieniać harmonogramów ani wybierać nowej tożsamości workflow obsługi błędów. Te operacje zachowują uprawnienia użytkownika dla przyszłych zdarzeń.
+
+Publiczne formularze workflow egzekwują limit bajtów wejścia podczas czytania strumienia żądania, przed parsowaniem JSON i sprawdzeniem tokenu. Nadmierne body z zadeklarowanym rozmiarem lub chunked zwraca `413`; niepoprawny JSON i pola zgłoszenia zwracają `422`. Każdy wpis `details.problems` w `422` ma postać `{field, message, type}`, gdzie `type` to własny typ błędu walidatora (`missing`, `int_type`, `extra_forbidden`, ...), dzięki czemu formularz może powiedzieć przy każdej odpowiedzi, czego potrzebował.
+
+Workflow, którego węzłem wyzwalacza jest webhook albo harmonogram, dostaje swoją
+ekspozycję przy publikacji tej wersji, a odpowiedź na publikację niesie ją jako
+`exposure`. Sekret do podpisu webhooka jest w `webhook_secret` publikacji, która
+pierwszy raz go włącza, i nigdzie indziej. `GET /api/v1/workflows/{id}/exposure`
+odczytuje ją z powrotem albo zwraca `null` dla workflow, który startuje inaczej.
+`PATCH .../exposures/{exposure_id}` z `{"is_active": false}` ją wstrzymuje, a `POST
+.../exposures/{exposure_id}/rotate-secret` wymienia sekret webhooka i raz zwraca
+nowy. Oba wymagają `workflows:edit` i `workflows:run` na workflow. `webhook_url`
+webhooka to adres, na który dostarcza nadawca:
+
+```bash
+BODY='{"lead": 42}'
+SIGNATURE="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)"
+curl -X POST "$WEBHOOK_URL" \
+  -H "X-Signature-256: $SIGNATURE" \
+  -H "X-Delivery-Id: lead-42" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
+```
+
+Odpowiada `202` z `{"run_id": ..., "duplicate": false}`, gdy tylko run zostanie
+przyjęty, nigdy nie czekając na sam run. Id dostarczenia, które już przyjęto,
+odpowiada `"duplicate": true` z id pierwszego runa, tak samo jak to samo podpisane
+żądanie pod innym id w ciągu 24 godzin. Podpis, który się nie weryfikuje,
+to `403`, dostarczenie bez id albo z treścią, która nie jest obiektem JSON, to `400`,
+a wstrzymany albo nieznany webhook to `404`.
+
+Graf z krokiem [Respond to webhook](reference/workflow-nodes.md#webhook-respond)
+odpowiada zamiast tego statusem, nagłówkami i treścią JSON tego kroku, a
+ponowienie dostarczenia dostaje tę samą odpowiedź. Żądanie czeka na nią najwyżej
+`WORKFLOW_WEBHOOK_RESPONSE_TIMEOUT_SECONDS`, potem odpowiada `202` jak wyżej; run,
+który przed odpowiedzią się nie powiedzie, zostanie anulowany albo wyczerpie
+budżet, to `500` `WORKFLOW_WEBHOOK_UNANSWERED` z nazwą runa.
+
+Przed publikacją `POST /api/v1/workflows/{id}/webhook-test` (`workflows:edit`)
+otwiera testowy URL dla szkicu, zwracany jako `url` z `test_token` w środku i otwarty na
+jedno wywołanie przez dwie minuty. Wywołanie nie potrzebuje podpisu, dostaje
+odpowiedź `{"captured": true}` i nie uruchamia runa. `GET .../webhook-test/{token}`
+odczytuje `state` (`listening`, `caught` albo `expired`) i odebrane `delivery`.
+
+Wiersze wygasłych kluczy wewnętrznych i OAuth pozostają, dopóki potrzebuje ich workflow, ewaluacja, ulepszanie, edycja z pomocą AI, test umiejętności, generowanie przypadków lub zadanie w kolejce albo w trakcie wykonania. Po zakończeniu pracy standardowe sprzątanie może je usunąć.
+
+## Praca z tabelami { #working-with-tables }
+
+`values` rekordu są kluczowane id kolumn; `GET /api/v1/tables/{id}` wymienia kolumny.
+Każdy zapis przyjmuje `Idempotency-Key`: ponowienie z tym samym kluczem i treścią
+odpowiada wynikiem pierwszego zapisu i `Idempotent-Replayed: true` zamiast zapisywać
+znowu, a ten sam klucz z inną treścią to `422`.
+
+```bash
+curl -X POST "$BASE/api/v1/tables/$TABLE_ID/records" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Idempotency-Key: lead-ada-2026-09-29" \
+  -H "Content-Type: application/json" \
+  -d '{"external_id": "ada@example.com", "values": {"'"$EMAIL_COLUMN"'": "ada@example.com"}}'
+```
+
+`PATCH .../records/{record_id}` zmienia część komórek i wymaga `expected_revision`,
+którą ostatnio odczytałeś; nieaktualna to `409 REVISION_CONFLICT`. `PUT
+.../records/by-external-id/{external_id}` tworzy rekord albo go aktualizuje, a gdy już
+istnieje, wymaga `expected_revision`. `POST .../records/query` filtruje, przeszukuje
+i sortuje po jednej stronie naraz, a `POST .../records/count` mówi, ile rekordów
+pasuje do tych samych filtrów i wyszukiwania, najwyżej 100 000.
+
+Workflow, którego węzłem wyzwalacza jest **Table record**, po publikacji
+uruchamia się dla rekordów jego tabeli dodanych, zmienionych lub usuniętych - zależnie
+od tego, co wymienia jego wyzwalacz. `GET .../triggers`
+wymienia workflow, które startują od tabeli, `PATCH .../triggers/{trigger_id}` z
+`{"is_active": false}` wstrzymuje jeden, a `GET .../triggers/{trigger_id}/admissions`
+wymienia, co zdecydował o każdym rekordzie. Zobacz [Wyzwalacze](virtual-tables.md#triggers).
+
+## Agenci przez A2A { #agents-over-a2a }
+
+Agent, którego organizacja udostępnia przez A2A, odpowiada na JSON-RPC pod
+`POST /api/v1/a2a/{agent_id}`, z tymi samymi kluczami co `/run`; jego agent card jest
+pod `GET /api/v1/a2a/{agent_id}/.well-known/agent-card.json` i nie wymaga żadnego.
+`PUT /api/v1/agents/{id}/a2a` z `{"enabled": true}` włącza to wywołującemu, który ma
+`agents:publish` na tym agencie.
+
+```bash
+curl -X POST "$BASE/api/v1/a2a/$AGENT_ID" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "message/send",
+       "params": {"message": {"role": "user", "messageId": "m1",
+                              "parts": [{"kind": "text", "text": "Review clause 7"}]}}}'
+```
+
+Odpowiedzią jest `Task`, którego id to id runa, a `contextId` kontynuuje rozmowę.
+`tasks/get` odczytuje go ponownie. Resztę opisują [Kanały](channels.md#a2a).
+
+Zdalnych agentów, do których deleguje ta organizacja, rejestruje się pod
+`/api/v1/external-agents`: `GET` je listuje (`agents:view`); `POST` z `card_url`,
+opcjonalnym `slug` i opcjonalnym `secret_id` klucza API odczytuje kartę i rejestruje
+agenta, a `POST /{id}/refresh` odczytuje ją ponownie; `DELETE /{id}` usuwa
+rejestrację (`agents:edit` dla wszystkich trzech).
+
 ## Usługi ML { #the-ml-services }
 
 Cztery usługi platformy odpowiadają samodzielnie, bez rozmowy i bez agenta za
@@ -225,9 +622,10 @@ Utwórz klucz w **Ustawienia → API** z uprawnieniami, które przykład
 wymienia; konsola pokaże klucz raz.
 
 **Wgraj dokument do bazy wiedzy i przeszukaj ją** — klucz z `collections:view` i
-`collections:edit` (preset *Zasilanie bazy wiedzy*). Ingest działa w tle, więc
+`collections:edit` (preset _Zasilanie bazy wiedzy_). Ingest działa w tle, więc
 wyszukiwanie zaraz po wgraniu może jeszcze nie znaleźć dokumentu; jego status
-pokazuje `GET /api/v1/kb/$KB_ID/documents`.
+pokazuje `GET /api/v1/kb/$KB_ID/documents`, a `GET /api/v1/kb/$KB_ID/ingestion`
+odpowiada `complete`, gdy żaden nie jest już przetwarzany.
 
 ```bash
 # Find the knowledge base, upload a file into it, and search it.
@@ -319,7 +717,114 @@ uwierzytelniony tak samo, z organizacją w `?organization_id=`, wysyła jedną r
 JSON na każdy udany zapis przez publiczne API w tej organizacji — `resource`,
 `id`, `action` (`created`, `updated` albo `deleted`), `surface` (`console`,
 `api_key`, `mcp` albo `assistant`) i kto go wykonał — i tylko o wierszach, które
-wywołujący może odczytać.
+wywołujący może odczytać. Tak samo przychodzą zmiany, których nikt nie zapisał:
+`run` dla runa przechodzącego przez kolejne stany i `system` dla pracy, którą
+platforma wykonuje sama według harmonogramu, takiej jak przejście grupujące luki
+w wiedzy.
+
+## Rozmowy głosowe { #voice-calls }
+
+[Rozmowa głosowa](voice.md) ma własny socket, bo rozmowa nie jest pętlą tur:
+**`/api/v1/ws/voice`** dla członka i
+**`/api/v1/embed/{public_key}/voice/ws`** dla odwiedzającego w widgecie albo na
+hostowanej stronie ([wpuszczanie](channels.md#the-call-socket)). Oba mówią tymi
+samymi ramkami, zdefiniowanymi w `backend/app/schemas/voice.py`.
+
+Socket konsoli uwierzytelnia się tak jak `/ws/agent`: token jako wpis
+`Sec-WebSocket-Protocol` `access_token.<JWT>` (albo ciasteczko z tego samego
+originu), nigdy w query stringu, a organizację jako `?organization_id=`.
+Zamyka się z kodem `4001` bez ważnej sesji i z `4003`, gdy wywołujący nie jest
+członkiem albo uwierzytelnił się kluczem API organizacji: rozmowa to człowiek
+przy mikrofonie, tak jak tura czatu to człowiek przy klawiaturze.
+
+Socket embeda zamyka się z `4029` po przekroczeniu rate limitu
+i z `4003` przy każdej odmowie dotyczącej embeda. Każdy heartbeat sprawdza
+sesję ponownie, więc rozmowa nie przetrwa wylogowania.
+
+**Klient wysyła** ramki JSON, a przez relay także binarne audio:
+
+| Ramka | Pola | Kiedy |
+| --- | --- | --- |
+| `start` | `agent_id`, `conversation_id`, `sdp_offer` (WebRTC), `resume_of` i `resume_token` (ponowne połączenie), `context` (zmienne embeda) | Najpierw, w ciągu 10 sekund |
+| `approval` | `id`, `decision` (`approve` albo `deny`) | Rozstrzygnięcie zatwierdzenia, na które czeka rozmowa |
+| `mute` | `muted` | Relay: mikrofon wyciszony |
+| `played` | `bytes` | Relay: ile audio agenta zostało odtworzone |
+| `end` | --- | Rozłączenie się |
+| _binarna_ | 16-bitowy PCM z częstotliwością wejściową modelu | Relay: audio dzwoniącego |
+
+**Serwer wysyła:**
+
+| Ramka | Pola | Znaczy |
+| --- | --- | --- |
+| `answer` | `sdp` | WebRTC: odpowiedź providera dla połączenia peer przeglądarki |
+| `ready` | `call_id`, `run_id`, `conversation_id`, `transport`, `input_sample_rate`, `output_sample_rate`, `cap_seconds`, `resume_token` | Rozmowa jest zestawiona. `resume_token` jest wysyłany tylko tutaj i tylko temu dzwoniącemu; ponowne połączenie odsyła go z powrotem |
+| `state` | `state`: `connecting`, `listening`, `user_speaking`, `thinking`, `agent_speaking`, `interrupted`, `tool_running`, `awaiting_approval` | Kto mówi albo co robi agent |
+| `caption` | `role`, `turn_id`, `part` oraz jedno z: `delta` (dopisz), `text` (zastąp dotychczasowym sprawdzonym tekstem) albo `final` | Napis na żywo |
+| `turn_saved` | `message` | Zakończona tura, jako wiadomość, w której została zapisana; zastępuje napisy niosące jej `turn_id` |
+| `tool` | `name`, `status` (`running` albo `done`) | Narzędzie, które agent uruchamia |
+| `approval_required` | `id`, `tool`, `args`, `said`, `timeout_seconds` | Zatwierdzenie dla osoby w rozmowie: dokładne argumenty i to, co według transkrypcji powiedziała |
+| `approval_unavailable` | `tool`, `args` | Wywołanie narzędzia, którego ten dzwoniący nie może zatwierdzić głosem |
+| `approval_settled` | `id`, `outcome` (`approved`, `denied` albo `expired`) | Jak zakończyło się zatwierdzenie |
+| `notice` | `kind`, `message` (opcjonalne) | Coś do powiedzenia słowami: trafienie guardraila, osiągany limit |
+| `limit` | `seconds_left` | Czas rozmowy prawie się skończył |
+| `clear_playback` | --- | Relay: odrzuć zakolejkowane audio agenta |
+| `ended` | `reason`, `message` | Rozmowa się skończyła |
+| _binarna_ | 16-bitowy PCM z częstotliwością wyjściową modelu | Relay: audio agenta |
+
+**Odwiedzający widget lub hostowaną stronę dowiaduje się mniej.** Jego `ready`
+nie zawiera `run_id`; `cap_seconds` to limit rozmowy - najdłuższa rozmowa
+agenta albo to, co zostało ze wznawianej rozmowy. Ramki narzędzi podlegają
+przełącznikom embeda `show_tool_steps` i `show_tool_results`, tak jak
+odpowiedź pisana. Bez kroków narzędzi nie jest wysyłana żadna ramka `tool`, a
+`tool_running` przychodzi jako `thinking`. Bez wyników narzędzi
+`approval_unavailable` przychodzi z pustym `args`. Niezależnie od przełączników
+`turn_saved` odwiedzającego zawiera tylko `id`, `role`, `content`,
+`interrupted` i `turn_id` wiadomości: nigdy identyfikatorów runa, agenta ani
+wersji, kosztu ani wywołań narzędzi.
+
+**Ponowne połączenie musi udowodnić, że rozmowa należy do niego.** `start` z
+`resume_of` musi zawierać także `resume_token` z ramki `ready` tamtego
+połączenia. Bez niego albo z błędnym ponowne połączenie jest odrzucane jako
+`resume_refused`, a wskazana rozmowa pozostaje nietknięta. Serwer przechowuje
+tylko skrót tokena. Rozmowa złożona już z 20 połączeń nie jest wznawiana
+ponownie: jej kolejne ponowne połączenie też jest odrzucane jako
+`resume_refused`.
+
+Socket, który w ciągu 10 sekund nie wyśle `start`, dostaje `ended` z `no_start`.
+Rozmowa, która się nie rozpocznie, odpowiada `ended` ze stałym `reason`:
+`no_agent`, `forbidden`, `not_configured`, `bad_offer`, `data_channel`,
+`resume_refused`, `call_limit`, `not_priced`, `budget`, `busy` albo
+`line_busy`, z `message`, który można bezpiecznie pokazać. `busy` pada dopiero
+wtedy, gdy rozmowa, którą ta sama osoba rozłączyła przed chwilą, miała do
+czterech sekund na zakończenie. Start, który nie powiedzie się z jakiegokolwiek innego
+powodu, odpowiada `ended` z `error`.
+
+Odwiedzający odrzucony jako
+`not_configured`, `not_priced` albo `budget`, oraz rozmowa odwiedzającego
+zakończona jako `budget`, dostaje zamiast
+tego `unavailable` z komunikatem "Calls are not available right now.": kod i
+pełny komunikat są do wiadomości operatora agenta. Rozmowa w zarchiwizowanej
+konwersacji jest odrzucana jako `forbidden`, tak jak wiadomość pisana do niej.
+
+Rozmowa, która trwała, kończy się z `user`, `time_limit`, `budget`,
+`disconnected`, `revoked`, `guardrail`, `shutdown` albo `error`; z `time_limit`,
+gdy osiągnęła najdłuższą rozmowę agenta. Rozmowa odwiedzającego kończy się z `revoked`, gdy jej
+embed zostanie wstrzymany, będzie miał wyłączone rozmowy albo zostanie
+skierowany na innego agenta. Żadna ramka nigdy nie niesie poświadczeń
+providera.
+
+Idzie z tym pięć route'ów HTTP:
+
+| Route | Bramka | Odpowiada |
+| --- | --- | --- |
+| `GET /api/v1/agents/{agent_id}/voice` | `agents:run` na tym agencie, łącznie z grantem; w przeciwnym razie `404` | Czy rozmowa by się rozpoczęła, dlaczego nie (`no_voice`, `not_offered` albo `no_key`), transport i najdłuższa rozmowa |
+| `POST /api/v1/agents/{agent_id}/voice/preview` | `agents:edit` na tym agencie, łącznie z grantem; w przeciwnym razie `404` | Głos z wersji roboczej sekcji Voice mówiący jedno stałe zdanie, jako `audio/wav`. W cache per głos i język; `RATE_LIMIT_VOICE_PREVIEW_PER_MINUTE` na osobę |
+| `GET /api/v1/providers/realtime-models` | `agents:view` | Katalog realtime, z którego wybiera sekcja głosu |
+| `GET /api/v1/voice/usage?start=…&end=…` | `runs:view` | Sekundy rozmów i liczba rozmów dla rozmów rozpoczętych w chwili `start` lub później i przed `end`, według agenta (rozmowy usuniętego agenta jako jeden wiersz bez id i nazwy). `end`, który nie jest późniejszy niż `start`, jest odrzucany z `422` |
+| `GET /api/v1/runs?modality=voice` | `runs:view` | Tylko rozmowy (`text` tylko dla wpisanych runów); rozmowa, która połączyła się ponownie, to jeden wiersz z `voice_chain`, ze wszystkimi połączeniami zsumowanymi |
+
+Zatwierdzenie należące do trwającej rozmowy jest rozstrzygane w rozmowie:
+`POST /api/v1/approvals/{id}` odrzuca je z `400`.
 
 ## Błędy { #errors }
 
@@ -356,8 +861,9 @@ ponowne wysłanie żądania zaczyna nowy run.
 
 ## Ponawianie, idempotencja i rewizje { #retries-idempotency-and-revisions }
 
-v1 nie ma nagłówka `Idempotency-Key` ani warunków na rewizję: żadnego `ETag`,
-żadnego `If-Match`. Zapis jest stosowany, kiedy przychodzi, i wygrywa ostatni.
+v1 nie ma warunków na rewizję: żadnego `ETag`, żadnego `If-Match`. Zapis jest
+stosowany, kiedy przychodzi, i wygrywa ostatni. `Idempotency-Key` jest
+honorowany na jednej trasie - asynchronicznym runie.
 
 - **`GET`, `PUT` i `DELETE` można bezpiecznie powtórzyć.** Dwa odczyty czytają
   dwa razy; usunięcie czegoś, czego już nie ma, dostaje `404`, które ponowienie
@@ -369,13 +875,19 @@ v1 nie ma nagłówka `Idempotency-Key` ani warunków na rewizję: żadnego `ETag
   albo zerwanym połączeniu sprawdź, zanim ponowisz:
   `GET /api/v1/runs?agent_id=…&surface=api` listuje runy od najnowszych, a
   odczyt listy znajdzie wiersz, który pierwsza próba jednak utworzyła.
+- **Asynchroniczny run tak, z `Idempotency-Key`.** Wyślij `Prefer: respond-async`
+  i wybrany przez siebie klucz, najwyżej 255 znaków, a ponowienie z tym samym
+  kluczem i tym samym ciałem odpowie tym samym żądaniem runu, w jakimkolwiek jest
+  stanie. Ten sam klucz z innym ciałem to `409`, nigdy drugi run. Klucze są per
+  organizacja. Wywołanie synchroniczne z tym nagłówkiem jest odrzucane z `400`,
+  zamiast pozwalać wierzyć, że ponowienie jest bezpieczne.
 - **`429` to jedyna odmowa do ponowienia**, po `Retry-After`, który niesie. Każde
   inne `4xx` jest ostateczne dla tego żądania.
 
 ## Konwencje { #conventions }
 
-| | |
-|---|---|
+|  |  |
+| --- | --- |
 | Prefiks | `/api/v1` |
 | Tworzenie | `POST`, `201` |
 | Częściowa aktualizacja | `PATCH` |
@@ -425,12 +937,17 @@ tylko do przodu.
 - Klucz niesie uprawnienia wydającego **zawężone do swoich uprawnień i do jego
   obecnej roli**, jest pokazywany raz i działa wyłącznie w publicznym API.
 - **Klucz działa we własnej organizacji; sesja czyta `X-Organization-Id`** i bez
-  niego wraca do organizacji osobistej. Zły nagłówek wygląda jak brakujący zasób.
+  niego wraca do organizacji domyślnej, osobistej albo jedynej. Zły nagłówek
+  wygląda jak brakujący zasób.
 - Uruchomienie agenta przez HTTP to **ten sam runner** — budżet, zatwierdzenie i
   audyt obowiązują tak samo.
 - Skrypt zdobywa własny klucz **bez przeglądarki** — logowanie, wydanie,
   unieważnienie — a `examples/public-api.sh` przechodzi całą tę drogę.
 - **Warto ponawiać tylko `429`**; `POST` nie jest idempotentny, więc sprawdź,
-  zanim go powtórzysz.
+  zanim go powtórzysz - poza asynchronicznym runem wysłanym z `Idempotency-Key`.
+- **`Prefer: respond-async`** zamienia run w `202` i żądanie runu do
+  odpytywania, więc długi run nie trzyma otwartego połączenia.
 - **Publiczne API jest w `/api/v1/public/openapi.json`** i w ramach v1 zmienia
   się tylko addytywnie, z 90 dniami deprecjacji; SDK jeszcze nie ma.
+
+Skille, których załadowanie wymaga akceptacji, wymagają jej ponownie w każdej turze; historia nie omija tej bramki.

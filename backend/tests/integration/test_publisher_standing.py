@@ -11,8 +11,6 @@ Three rows, three answers, and the middle one is the defect: still a member, sti
 recorded, and no longer able to sign in.
 """
 
-from __future__ import annotations
-
 import re
 import uuid
 from pathlib import Path
@@ -139,12 +137,15 @@ def test_only_publisher_context_sets_the_fallback_flag() -> None:
     `AuthContext.anonymous` the sole subject-less constructor - so a new one has to
     be argued for in a diff rather than added quietly.
 
-    Two sites are legitimate: `services/access.py` mints the publisher-standing
-    context for a hosted/widget run, and `services/agent_trigger.py` mints the
+    Four sites are legitimate: `services/access.py` mints the publisher-standing
+    context for a hosted/widget run, `services/agent_trigger.py` mints the
     fired-run context whose `user_id` is the trigger *creator* (the authority an
     unattended run executes under), which must not become a memory end-user (#788)
     - unless the creator let that trigger act as them, which is why the trigger
     site sets it from the row rather than to a constant (#2027).
+    `services/eval_suite.py` mints a suite owner's context for scheduled or
+    triggered checks, and `services/api_key.py` centralizes the queued requester context used by eval
+    and authoring workers, retaining the original API key restrictions.
     """
     app_root = Path(__file__).resolve().parents[2] / "app"
     setters = {
@@ -157,4 +158,6 @@ def test_only_publisher_context_sets_the_fallback_flag() -> None:
     assert setters == {
         "services/access.py": ["True"],
         "services/agent_trigger.py": ["not trigger.runs_as_creator"],
+        "services/api_key.py": ["True"],
+        "services/eval_suite.py": ["True"],
     }, setters

@@ -3,15 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { AnswerStyleFields, DEFAULT_ANSWER_STYLE } from "./answer-style-fields";
+import { AnswerStyleFields, DEFAULT_ANSWER_STYLE, defaultAnswerStyle } from "./answer-style-fields";
 import { EditChannelDialog } from "./edit-channel-dialog";
 import { SlackTransport } from "./slack-transport";
 import type { AnswerStyle, ChannelBot, ChannelPlatform } from "@/types/channels";
 
 vi.mock("@/hooks/use-channel-bots", () => ({
   useCopySlackManifest: () => ({ mutate: vi.fn(), isPending: false }),
+  // What "inherit" resolves to is the transcription fields' concern, mocked below.
+  useChannelBot: () => null,
 }));
-vi.mock("@/components/channels/transcription-fields", () => ({
+vi.mock("@/components/channels/transcription-fields", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/channels/transcription-fields")>()),
   TranscriptionFields: () => null,
 }));
 
@@ -39,9 +42,29 @@ function Harness({
 }
 
 describe("how a bot answers (#2084)", () => {
+  it.each([
+    ["mattermost", "eyes"],
+    ["slack", "eyes"],
+    ["telegram", "eyes"],
+    ["imessage", "emphasize"],
+    ["discord", null],
+    ["teams", null],
+    ["email", null],
+  ] as const)(
+    "defaults %s to a supported acknowledgement without ratings",
+    (platform, reaction) => {
+      expect(defaultAnswerStyle(platform)).toEqual({
+        ack_reaction: reaction,
+        stream_answers: true,
+        step_display: "timeline",
+        rate_answers: false,
+      });
+    },
+  );
+
   it("takes a reaction from the list and turns the thumbs and the stream off", async () => {
     const onChange = vi.fn();
-    render(<Harness platform="slack" onChange={onChange} />);
+    render(<Harness platform="slack" onChange={onChange} initial={{ rate_answers: true }} />);
 
     await userEvent.click(screen.getByRole("combobox", { name: "React to a question with" }));
     await userEvent.click(await screen.findByRole("option", { name: /eyes/ }));
@@ -91,6 +114,14 @@ function bot(overrides: Partial<ChannelBot>): ChannelBot {
     webhook_mode: false,
     webhook_url: null,
     api_base_url: "https://mm.acme.com",
+    access_policy: {
+      mode: "open",
+      whitelist: [],
+      allowed_groups: [],
+      require_link: false,
+      rate_limit_rpm: 10,
+      denied_message: "Denied",
+    },
     has_webhook_secret: false,
     has_slack_signing_secret: false,
     has_slack_app_token: false,
@@ -101,8 +132,10 @@ function bot(overrides: Partial<ChannelBot>): ChannelBot {
     step_display: "timeline",
     rate_answers: true,
     connection: null,
+    transcribe_voice_notes: true,
     speech_to_text_provider: null,
     speech_to_text_model: null,
+    speech_to_text_secret_id: null,
     agents: [],
     created_at: "2026-10-10T09:00:00Z",
     ...overrides,
@@ -152,6 +185,12 @@ describe("editing a bot", () => {
     expect(onSubmit).toHaveBeenCalledWith("b1", { webhook_mode: true });
   });
 
+  it.each(["discord", "teams"] as const)("offers %s no reaction it would not draw", (platform) => {
+    render(<Harness platform={platform} onChange={vi.fn()} />);
+    expect(screen.queryByLabelText("React to a question with")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Thumbs under answers")).toBeInTheDocument();
+  });
+
   it("offers no reaction, and keeps one stored before the list existed", async () => {
     const onChange = vi.fn();
     render(<Harness platform="slack" onChange={onChange} initial={{ ack_reaction: "rocket" }} />);
@@ -163,4 +202,41 @@ describe("editing a bot", () => {
 
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ack_reaction: null }));
   });
+});
+
+it("loads saved server approvals and can revoke them through the edit form", async () => {
+  const current = bot({ platform: "discord", command_url: null });
+  current.access_policy = { ...current.access_policy, discord_guild_ids: ["100"] };
+  const onSubmit = vi.fn().mockResolvedValue(undefined);
+  render(
+    <EditChannelDialog
+      bot={current}
+      onOpenChange={vi.fn()}
+      onSubmit={onSubmit}
+      isPending={false}
+    />,
+  );
+  const input = screen.getByRole("textbox", { name: "Approved Discord server IDs" });
+  expect(input).toHaveValue("100");
+  await userEvent.clear(input);
+  await userEvent.type(input, "invalid");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  await userEvent.clear(input);
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(onSubmit).toHaveBeenCalledWith(current.id, {
+    access_policy: { ...current.access_policy, discord_guild_ids: [] },
+  });
+});
+
+it("shows an existing Discord policy without approvals as an unchanged DM-only form", () => {
+  render(
+    <EditChannelDialog
+      bot={bot({ platform: "discord" })}
+      onOpenChange={vi.fn()}
+      onSubmit={vi.fn()}
+      isPending={false}
+    />,
+  );
+  expect(screen.getByRole("textbox", { name: "Approved Discord server IDs" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 });

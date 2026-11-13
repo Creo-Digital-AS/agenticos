@@ -1,5 +1,5 @@
 ---
-source_sha: "d6244bf5e175"
+source_sha: "0a32b884bf8a"
 ---
 
 # Architektura { #architecture }
@@ -41,54 +41,55 @@ importowany jako typ, a nie jako dostęp do danych.
 
 ## Struktura katalogów (`backend/app/`) { #directory-structure-backendapp }
 
-| Katalog / plik | Do czego służy |
-|-----------|---------|
-| `api/routes/v1/` | Endpointy HTTP, walidacja żądań, uwierzytelnianie |
-| `api/deps.py` | Wstrzykiwanie zależności (sesja bazy, bieżący użytkownik) |
-| **`services/`** | **Logika biznesowa, orkiestracja** |
-| ↳ `user.py` | CRUD użytkownika, aktualizacje profilu |
-| ↳ `conversation.py` | Zarządzanie rozmowami i wiadomościami |
-| ↳ `message_rating.py` | CRUD ocen wiadomości, statystyki, eksport |
-| ↳ `file_upload.py` | Obsługa wgrywania plików w czacie |
-| ↳ `file_storage.py` | Abstrakcja przechowywania plików (lokalnie / S3) |
-| ↳ `rag_document.py` | Cykl życia dokumentu RAG |
-| ↳ `rag_sync.py` | Orkiestracja synchronizacji ze zdalnym źródłem |
-| ↳ `sync_source.py` | CRUD źródeł synchronizacji i historia przebiegów jednego źródła |
-| ↳ `audit.py` | Odczyt śladu audytowego własnej organizacji wywołującego |
-| **`repositories/`** | **Warstwa dostępu do danych, zapytania do bazy** |
-| ↳ `user.py` | Zapytania o użytkowników |
-| ↳ `conversation.py` | Zapytania o rozmowy |
-| ↳ `chat_file.py` | Zapytania o pliki czatu |
-| ↳ `message_rating.py` | Zapytania o oceny wiadomości |
-| ↳ `rag_document.py` | Zapytania o dokumenty RAG |
-| ↳ `sync_log.py` | Zapytania o logi synchronizacji |
-| ↳ `sync_source.py` | Zapytania o źródła synchronizacji |
-| **`schemas/`** | **Modele żądań/odpowiedzi Pydantic** |
-| ↳ `user.py` | Schematy użytkownika |
-| ↳ `conversation.py` | Schematy rozmów i wiadomości |
-| ↳ `file.py` | Schematy wgrywania plików |
-| ↳ `message_rating.py` | Schematy ocen wiadomości |
-| ↳ `rag.py` | Schematy zapytań/odpowiedzi RAG |
-| ↳ `sync_source.py` | Schematy źródeł synchronizacji |
-| **`db/models/`** | **Modele SQLAlchemy 2.1** |
-| ↳ `user.py` | Model użytkownika |
-| ↳ `conversation.py` | Modele rozmów i wiadomości |
-| ↳ `chat_file.py` | Model pliku czatu |
-| ↳ `message_rating.py` | Model oceny wiadomości |
-| ↳ `webhook.py` | Model webhooka |
-| ↳ `rag_document.py` | Model dokumentu RAG |
-| ↳ `sync_log.py` | Model logu synchronizacji |
-| ↳ `sync_source.py` | Model źródła synchronizacji |
-| `core/config.py` | Ustawienia przez pydantic-settings |
-| `core/security.py` | Narzędzia do JWT / kluczy API |
-| `agents/` | Agenci AI i narzędzia |
-| `rag/` | Moduł RAG (embeddingi, magazyn wektorów, retrieval) |
-| `rag/connectors/` | Konektory synchronizacji (Google Drive, S3, strony internetowe) |
-| `commands/` | Komendy CLI w stylu Django |
+| Katalog / plik        | Do czego służy                                                  |
+| --------------------- | --------------------------------------------------------------- |
+| `api/routes/v1/`      | Endpointy HTTP, walidacja żądań, uwierzytelnianie               |
+| `api/deps.py`         | Wstrzykiwanie zależności (sesja bazy, bieżący użytkownik)       |
+| **`services/`**       | **Logika biznesowa, orkiestracja**                              |
+| ↳ `user.py`           | CRUD użytkownika, aktualizacje profilu                          |
+| ↳ `conversation.py`   | Zarządzanie rozmowami i wiadomościami                           |
+| ↳ `message_rating.py` | CRUD ocen wiadomości, statystyki, eksport                       |
+| ↳ `file_upload.py`    | Obsługa wgrywania plików w czacie                               |
+| ↳ `file_storage.py`   | Abstrakcja przechowywania plików (lokalnie / S3)                |
+| ↳ `rag_document.py`   | Cykl życia dokumentu RAG                                        |
+| ↳ `rag_sync.py`       | Orkiestracja synchronizacji ze zdalnym źródłem                  |
+| ↳ `sync_source.py`    | CRUD źródeł synchronizacji i historia przebiegów jednego źródła |
+| ↳ `audit.py`          | Odczyt śladu audytowego własnej organizacji wywołującego        |
+| **`repositories/`**   | **Warstwa dostępu do danych, zapytania do bazy**                |
+| ↳ `user.py`           | Zapytania o użytkowników                                        |
+| ↳ `conversation.py`   | Zapytania o rozmowy                                             |
+| ↳ `chat_file.py`      | Zapytania o pliki czatu                                         |
+| ↳ `message_rating.py` | Zapytania o oceny wiadomości                                    |
+| ↳ `rag_document.py`   | Zapytania o dokumenty RAG                                       |
+| ↳ `sync_log.py`       | Zapytania o logi synchronizacji                                 |
+| ↳ `sync_source.py`    | Zapytania o źródła synchronizacji                               |
+| **`schemas/`**        | **Modele żądań/odpowiedzi Pydantic**                            |
+| ↳ `user.py`           | Schematy użytkownika                                            |
+| ↳ `conversation.py`   | Schematy rozmów i wiadomości                                    |
+| ↳ `file.py`           | Schematy wgrywania plików                                       |
+| ↳ `message_rating.py` | Schematy ocen wiadomości                                        |
+| ↳ `rag.py`            | Schematy zapytań/odpowiedzi RAG                                 |
+| ↳ `sync_source.py`    | Schematy źródeł synchronizacji                                  |
+| **`db/models/`**      | **Modele SQLAlchemy 2.1**                                       |
+| ↳ `user.py`           | Model użytkownika                                               |
+| ↳ `conversation.py`   | Modele rozmów i wiadomości                                      |
+| ↳ `chat_file.py`      | Model pliku czatu                                               |
+| ↳ `message_rating.py` | Model oceny wiadomości                                          |
+| ↳ `webhook.py`        | Model webhooka                                                  |
+| ↳ `rag_document.py`   | Model dokumentu RAG                                             |
+| ↳ `sync_log.py`       | Model logu synchronizacji                                       |
+| ↳ `sync_source.py`    | Model źródła synchronizacji                                     |
+| `core/config.py`      | Ustawienia przez pydantic-settings                              |
+| `core/security.py`    | Narzędzia do JWT / kluczy API                                   |
+| `agents/`             | Agenci AI i narzędzia                                           |
+| `rag/`                | Moduł RAG (embeddingi, magazyn wektorów, retrieval)             |
+| `rag/connectors/`     | Konektory synchronizacji (Google Drive, S3, strony internetowe) |
+| `commands/`           | Komendy CLI w stylu Django                                      |
 
 ## Odpowiedzialności warstw { #layer-responsibilities }
 
 ### Route'y API (`api/routes/v1/`) { #api-routes-apiroutesv1 }
+
 - Obsługa żądania i odpowiedzi HTTP
 - Walidacja wejścia przez schematy Pydantic
 - Sprawdzenia uwierzytelnienia i autoryzacji
@@ -103,12 +104,14 @@ importowany jako typ, a nie jako dostęp do danych.
   co ten przysłał.
 
 ### Serwisy (`services/`) { #services-services }
+
 - Logika biznesowa i walidacja
 - Orkiestrują jedno lub więcej wywołań repozytorium
 - Podnoszą wyjątki domenowe (`NotFoundError`, `AlreadyExistsError` itd.)
 - Zarządzają granicami transakcji
 
 ### Repozytoria (`repositories/`) { #repositories-repositories }
+
 - Wyłącznie operacje na bazie danych
 - Żadnej logiki biznesowej
 - Używają `db.flush()`, a nie `commit()` — transakcja należy do sesji żądania,
@@ -116,14 +119,17 @@ importowany jako typ, a nie jako dostęp do danych.
 - Zwracają modele domenowe
 
 ### Schematy (`schemas/`) { #schemas-schemas }
+
 - Osobne modele `Create`, `Update` i `Response` na encję
 - Schematy `Response` używają `model_config = ConfigDict(from_attributes=True)` do konwersji z ORM
 
 ### Modele (`db/models/`) { #models-dbmodels }
+
 - Definicje modeli SQLAlchemy 2.1
 - Tu mieszkają relacje, indeksy i domyślne wartości kolumn
 
 ### Konektory RAG (`rag/connectors/`) { #rag-connectors-ragconnectors }
+
 - Wymienne adaptery synchronizacji implementujące `BaseSyncConnector`
 - Każdy konektor dostarcza `list_files()` i `download_file()`
 - Rejestrowane w `CONNECTOR_REGISTRY`, żeby dało się je znaleźć w czasie działania
@@ -137,7 +143,8 @@ Route prosi o `DBSession` (`app/api/deps.py`), co rozwiązuje się do
 `get_db_session` (`app/db/session.py`). Wszystko poniżej route'a dzieli tę jedną
 sesję: serwisy przyjmują ją w konstruktorze, repozytoria jako pierwszy argument,
 i ani jedne, ani drugie nigdy nie wołają `commit()` — z jednym celowym wyjątkiem,
-ścieżką runu agenta, opisaną [niżej](#the-run-paths-two-commits). `flush()`
+ścieżką runu agenta i rozmową głosową, która też jest runem, opisanymi
+[niżej](#the-run-paths-two-commits). `flush()`
 wysyła instrukcje, żeby wiersz miał id, a ograniczenia zostały sprawdzone; commit
 następuje raz, po drodze na zewnątrz.
 
@@ -213,7 +220,7 @@ swoją odroczoną pracę — co nie ma nic wspólnego z odpowiedzią.
 Jedna ścieżka celowo commituje wcześniej niż „po drodze na zewnątrz”:
 **run agenta.**
 
-Runner commituje raz *przed wywołaniem modelu* i jeszcze raz w końcowym
+Runner commituje raz _przed wywołaniem modelu_ i jeszcze raz w końcowym
 `finally` — `AgentRunnerService._run` oraz `ChatAgentRunner.run` dla
 strumieniowanego czatu.
 
@@ -235,23 +242,59 @@ odpowiada.
 Obie granice są dowodzone na prawdziwej bazie danych w
 `tests/integration/test_run_commit_boundary.py`.
 
-### Jedyny inny wczesny commit { #the-one-other-early-commit }
+**Rozmowa głosowa jest runem i zachowuje te same dwa commity** ([#54][54]).
+Rozmowa trzyma swój socket do pięćdziesięciu minut, więc commituje tam, gdzie
+ścieżka runu, a wszystko pomiędzy zapisuje przez własne sesje:
+
+- `VoiceCallStarter.start` commituje raz, gdy wszystkie odmowy zostały już
+  sprawdzone, z zapisanym wierszem `voice_calls` i jego runem, zanim provider
+  zostanie wywołany. Wiersze zatwierdzeń, heartbeat i sprzątanie rozmów
+  głosowych potrzebują tych wierszy czytelnych z innych sesji; odmowa przed tym
+  punktem wycofuje wszystko, więc odrzucona rozmowa nie zostawia niczego
+  w **Aktywności** (Activity).
+- Każda zapisana tura, każdy 15-sekundowy heartbeat i każdy zapis zatwierdzenia
+  otwiera własną sesję `get_db_context()` i tam commituje, nigdy na wspólnej
+  sesji runu — tura jest trwała w chwili, gdy zostanie wypowiedziana, a awaria
+  traci co najwyżej turę w toku.
+- Sprzątanie `VoiceCallSession`, osłonięte `finally`, zapisuje koniec w
+  wierszu rozmowy, potem rozłącza wywołanie providera, kończy run i commituje
+  ponownie — końcowy commit, na każdej drodze wyjścia. Koniec idzie pierwszy,
+  żeby ponowne połączenie, które na niego czeka, nie czekało też na
+  rozłączenie.
+
+`tests/test_voice_starter.py::test_a_started_call_is_committed_with_its_row_and_a_voice_run`
+i `tests/test_voice_session.py::test_every_exit_path_hangs_up_the_provider_call`
+pilnują obu końców.
+
+### Drugi wczesny commit { #the-one-other-early-commit }
 
 `SessionService.detect_refresh_reuse` jest drugim, i to z odwrotnego powodu: nie
 dlatego, że transakcja byłaby trzymana zbyt długo, ale dlatego, że zaraz zostanie
 wyrzucona. Refresh token, który nie pasował do żadnej żywej sesji, może być
 odtworzeniem tego, który sesja właśnie zrotowała — odpowiedzią jest zakończenie
 tego łańcucha i zapisanie tego, a potem odmowa wywołującemu, która podnosi
-`AuthenticationError` przez gałąź *wyjątku* kontekstu sesji i wycofuje żądanie.
+`AuthenticationError` przez gałąź _wyjątku_ kontekstu sesji i wycofuje żądanie.
 
 Bez commitu jest to 401, wciąż żywy skompromitowany łańcuch i żaden ślad, że
 cokolwiek się wydarzyło. `test_the_response_survives_the_refusal_that_follows_it`
 wycofuje transakcję po wywołaniu i sprawdza, co zostało
 ([#1519](https://github.com/vstorm-co/agenticos/issues/1519)).
 
+### Webhook, który czeka na swoją odpowiedź { #a-webhook-that-waits-for-its-answer }
+
+`WorkflowExposureService._answer` jest trzeci. Webhook, którego graf zawiera krok
+Respond to webhook, odpowiada nadawcy tym, co ten krok zapisze, więc żądanie musi
+czekać na run, który jeszcze nie wystartował - a nie wystartuje, dopóki przyjęcie
+nie będzie widoczne dla workera. Serwis zatwierdza run i rekord dostarczenia - pierwszy job dispatchu runu jest
+zatwierdzany razem z nimi, a `NOTIFY` budzący workera odpala się przy tym commicie
+
+- a potem odpytuje odpowiedź runa. Po commicie nic nie jest zapisywane, więc
+  zamykający commit nie ma już nic do zrobienia. `TestAnsweringTheSender` prowadzi
+  run przez prawdziwy claim joba.
+
 Widoczność tnie w obie strony. Cokolwiek rozumowało wcześniej „wiersza
 wykonującego się runa nie da się zobaczyć”, rozumuje teraz o wierszu, który
-*jest* widziany, a scheduler triggerów agenta to jedyne miejsce, które tak
+_jest_ widziany, a scheduler triggerów agenta to jedyne miejsce, które tak
 rozumowało.
 
 Jego strażnik braku nakładania blokuje na każdym nieterminalnym runie w rozmowie
@@ -259,9 +302,10 @@ triggera — co teraz obejmuje też żywy run równoległego `run_now` albo odpa
 zdarzeniem, czyli ochronę, której dawna niewidoczność nie mogła dać.
 
 Tymczasem worker, który umiera w trakcie runu, zostawia wiersz `running`, którego
-nic w procesie już nie dokończy. Ten wiersz ogranicza cogodzinne zamiatanie
-przeterminowanych runów, które kończy go jako `failed` po przekroczeniu
-`STALE_RUN_REAPED_AFTER_HOURS`. Własnym sygnałem życia zaplanowanego odpalenia
+nic w procesie już nie dokończy. Proces wykonujący run oznacza go jako żywy co
+`RUN_HEARTBEAT_SECONDS`, a wiersz, który przestał dawać znak życia, ogranicza
+zamiatanie przeterminowanych runów co minutę, które kończy go jako `failed` po
+przekroczeniu `STALE_RUN_REAPED_AFTER_SECONDS`. Własnym sygnałem życia zaplanowanego odpalenia
 pozostaje odnawiana dzierżawa (`app/repositories/agent_trigger.py::claim_due`).
 
 [Governance](governance.md#a-run-whose-process-died) mówi, co to zamiatanie
@@ -269,83 +313,100 @@ rozstrzyga, a czego celowo nie rusza.
 
 ### Zlecanie pracy w tle z żądania { #dispatching-background-work-from-a-request }
 
-**Praca, która będzie czytać wiersz zapisany przez to żądanie, jest przekazywana
-przez `spawn_after_commit`, nigdy przez `spawn`** (oba w
-`app/core/background.py`):
+**Praca, która musi się wydarzyć, jest zadaniem kolejkowanym we własnej
+transakcji żądania.** `app.services.background_jobs.enqueue` zapisuje wiersz
+zadania w sesji żądania, więc zostaje zatwierdzony razem z wierszami, które
+wskazuje, albo wcale:
 
 ```python
-from app.core.background import spawn_after_commit
+from app.services.background_jobs import enqueue
+from app.worker.jobs import FIRE_TRIGGER, FireTrigger
 
-spawn_after_commit(self.db, ingest_document_flow(rag_document_id=str(doc.id)), name=...)
+await enqueue(self.db, FIRE_TRIGGER, FireTrigger(trigger_id=trigger.id), organization_id=org_id)
 ```
 
-`spawn` tworzy zadanie natychmiast, a pętla startuje je w najbliższym punkcie
-zawieszenia — czyli w kroku 1 albo 2 powyżej, przed commitem. Flow otwiera własną
-sesję, i słusznie, więc pod `READ COMMITTED` nie widzi wiersza, którego to
-żądanie nie zacommitowało: szuka dokumentu, którego id dostał, nic nie znajduje
-i kończy. To jest [#417][417], a jego widoczna postać to wgranie pliku, na które
-odpowiedziano `{"status": "processing"}` i tak już zostaje na zawsze.
+Wycofane żądanie niczego nie kolejkuje, a zatwierdzone budzi workery puli przez
+`NOTIFY`, które PostgreSQL dostarcza dopiero przy commicie - więc żaden worker
+nie pobierze zadania, zanim istnieje wiersz, który ono czyta. To zamyka
+[#417][417] przez samą konstrukcję: wgranie odpowiadające
+`{"status": "processing"}`, które już takie zostawało, bo praca ruszała przed
+commitem i jej własna sesja nie widziała dokumentu. Wgranie, synchronizacja
+uruchomiona przez kogoś, każde odpalenie triggera - z harmonogramu, z
+dostarczenia albo „run now” - asynchroniczny run przez API i sprzątanie tego, co
+leży poza bazą, po usunięciu, są przekazywane właśnie tak.
 
-`spawn_after_commit` zamiast tego kolejkuje korutynę na sesji. Nic jej nie
-startuje aż do kroku 3, dwie instrukcje po tym, jak `commit()` wróci, więc flow
-zlecony w ten sposób czyta wiersz, na który baza danych już się zgodziła. Tak
-przekazywane są: wgranie dokumentu, synchronizacja, którą ktoś uruchomił,
-strumień połączenia kanału i ręczne „run now” triggera. Ta kolejność jest
-dowodzona na prawdziwej bazie danych w
-`tests/integration/test_flow_starts_after_commit.py`.
+Ręczne odpalenie triggera jest tu z drugiego powodu, który warto nazwać: `POST
+/agents/{id}/triggers/{id}/run` kiedyś _czekał_ na run, który uruchomił, więc
+agent wolniejszy niż limit czasu odczytu proxy odpowiadał 504, podczas gdy run
+trwał dalej i się zatwierdzał - błąd zgłoszony dla czegoś, co działało, i
+zaproszenie, żeby nacisnąć przycisk jeszcze raz ([#658][658]). Trasa odpowiada
+`202`, gdy zadanie jest już w kolejce.
 
-Na drugim końcu życia procesu pętlę domyka lifespan aplikacji: po zatrzymaniu
-przyjmowania żądań i opróżnieniu obsługi robi `await` na `background.drain()` dla
-wszystkiego, co `spawn` przekazał, a co wciąż jest w locie — **zanim** zwolni
-magazyn wektorów, Redis i sesję, z których te zadania czytają. Bez tego
-wyłączenie w trakcie ingestii anulowało flow i zostawiało dokument
-w `processing` — ten sam zablokowany wiersz co w [#417][417], osiągnięty
-z drugiej strony.
+**Usunięcie, którego dane wejściowe niszczy jego własny commit, kolejkuje
+sprzątanie w tym commicie.** Usunięcie organizacji przekazuje dalej ścieżki w
+magazynie i nazwy kolekcji, których ostatni zapis usuwa jego transakcja, więc
+`queue_external_state_cleanup` wpisuje je do zadań sprzątających w tej samej
+sesji: awaria między commitem a sprzątaniem niczego nie gubi, a zadanie jest
+ponawiane, dopóki pliki i kolekcje wektorowe nie znikną.
 
-Ręczne odpalenie triggera jest na tej liście z drugiego powodu, który warto
-nazwać, bo to druga połowa odpowiedzi na pytanie, po co żądanie w ogóle
-przekazuje pracę dalej: `POST /agents/{id}/triggers/{id}/run` kiedyś *czekał* na
-run, który uruchomił, więc agent wolniejszy niż read timeout proxy odpowiadał
-504, podczas gdy run szedł dalej i commitował — awaria zgłoszona dla czegoś, co
-działało, i zaproszenie do naciśnięcia przycisku jeszcze raz i odpalenia
-harmonogramu dwa razy ([#658][658]). Route odpowiada `202`, a odpalenie startuje
-po commicie.
+**Praca, którą można stracić, idzie przez `spawn_after_commit`**
+(`app/core/background.py`): krótka praca bez gwarancji w pętli samego API, jak
+zapisanie osiągalności serwera MCP albo usunięcie plików, do których artefakt już
+się nie odwołuje. Kolejkuje korutynę na sesji i uruchamia ją dwie instrukcje po
+`commit()`; kolejność jest udowodniona na prawdziwej bazie w
+`tests/integration/test_flow_starts_after_commit.py`. Przy zamknięciu lifespan
+czeka na `background.drain()`, zanim zlikwiduje to, co te taski czytają.
 
-!!! warning "To nie jest kolejka, która przeżywa proces"
+Z tego, gdzie leży ta kolejka, wynikają dwie rzeczy:
 
-    `spawn_after_commit` wykona pracę tylko wtedy, gdy proces pożyje dość długo,
-    by ją zacząć. To w porządku dla pracy, którą późniejsze żądanie może
-    odtworzyć, i nie w porządku dla pracy, której *wejście* właśnie zniszczył
-    commit — czyszczenie organizacji przekazuje dalej ścieżki i nazwy kolekcji,
-    po których jego własny commit usunął ostatni ślad, więc awaria między jednym
-    a drugim gubi je na dobre.
+- **Należy do sesji, nie do żądania.** Serwis, który przekazuje pracę, nie musi
+  wiedzieć, czy wywołano go z trasy, handlera WebSocketu, CLI czy workera - i
+  dlatego to nie są `BackgroundTasks` z FastAPI, których gwarancja dotyczy
+  odpowiedzi, a tamte trzy miejsca jej nie mają.
+- **Wycofana transakcja niczego nie zleca.** Zakolejkowane korutyny są
+  zamykane, bo wykonanie pracy, której wiersz wyrzucono, tylko przenosi błąd w
+  miejsce trudniejsze do wyjaśnienia.
 
-    Tam, gdzie to obowiązuje, zamiar jest zapisywany jako wiersz w tej samej
-    transakcji, a przekazanie staje się optymalizacją: `teardown_intents` nazywa
-    to, co zostało do zwolnienia, flow kasuje wiersz, gdy to zrobi, a zamiatanie
-    zleca ponownie to, czego nic nie dokończyło. Brak wiersza jest ukończeniem,
-    więc pusta tabela znaczy, że nic nie zostało do zrobienia.
-
-Z tego, gdzie mieszka ta kolejka, wynikają dwie rzeczy:
-
-- **Należy do sesji, a nie do żądania.** Serwis zlecający flow nie musi wiedzieć,
-  czy wywołano go z route'a, z handlera WebSocketu, z CLI czy z workera — i
-  dlatego nie są to `BackgroundTasks` z FastAPI, których gwarancja dotyczy
-  odpowiedzi i których te trzy pozostałe wywołania nie mają.
-- **Wycofana transakcja nie zleca niczego.** Krok 3 zostaje pominięty,
-  a zakolejkowane korutyny zamknięte, bo uruchomienie pracy, której wiersz
-  wyrzucono, tylko przenosi awarię w miejsce trudniejsze do wytłumaczenia.
-
-`spawn` pozostaje właściwy dla pracy, która ma wszystko, czego potrzebuje — maile
-z powiadomieniami w `app/services/notifications.py` niosą własny kontekst i nie
-dotykają żadnego wiersza. Żadne z nich nie jest kolejką zadań: wszystko, co musi
-przetrwać restart, jest deploymentem Prefecta.
+`spawn` zostaje właściwy dla pracy, która ma wszystko, czego potrzebuje, i nie
+dotyka żadnego wiersza - webhooki kanałów przekazują mu każde dostarczenie, żeby
+provider dostał odpowiedź od razu. Żadne z nich nie przetrwa restartu; zadanie
+tak. Zob. [Dodaj zadanie w tle](howto/add-background-task.md).
 
 [3]: https://github.com/vstorm-co/agenticos/issues/3
 [12]: https://github.com/vstorm-co/agenticos/issues/12
+[54]: https://github.com/vstorm-co/agenticos/issues/54
 [353]: https://github.com/vstorm-co/agenticos/issues/353
 [417]: https://github.com/vstorm-co/agenticos/issues/417
 [658]: https://github.com/vstorm-co/agenticos/issues/658
+
+## Runy workflowów: outbox i krótkie transakcje { #workflow-runs-an-outbox-and-short-transactions }
+
+Run workflowu może trwać dni - węzeł może czekać na zatwierdzenie - więc żaden
+proces nie trzyma jego pozycji. Trzyma ją Postgres: `dispatch_outbox` wskazuje
+każdy gotowy węzeł, a każdy job `workflow-dispatch-node` przejmuje jeden wiersz, wykonuje
+jedną próbę i ją rozlicza. Kod jest w `app/services/workflow_execution/dispatcher.py`.
+
+Każda próba to trzy krótkie transakcje wokół wywołania, które nie trzyma
+żadnej. Claim commituje lease na wierszu; wiersz próby jest commitowany jako
+`in_flight`, zanim handler zostanie wywołany, więc worker, który umrze w trakcie,
+zostawia coś, co reconciler może znaleźć; a rozliczenie commituje wynik, koszt i
+wiersz outboxa następnego węzła razem, więc wynik nigdy nie jest trwały bez
+kolejnego kroku.
+
+Job, który budzi workera dla tego następnego węzła, jest
+kolejkowany z jego wierszem w tej samej transakcji, a węzeł gotowy później
+(timer, opóźnienie ponowienia) ma `run_after` ustawione na ten czas; sweepy poll i
+reconcile są tylko zabezpieczeniem na wypadek joba, który został anulowany albo
+padł. Dopóki handler działa, worker odnawia lease we własnych transakcjach, a
+odnowienie, które nie znajduje już claimu, informuje o tym handler.
+
+Każda zmiana statusu po claimie jest chroniona tokenem claimu i tym, że wiersz
+nadal jest przejęty, pod blokadą braną w jednej kolejności - run, run węzła,
+outbox - przez dispatcher i reconciler tak samo. Jedynym zapisem, który nie jest
+chroniony, jest koszt: to, co wywołanie wydało, jest księgowane nawet wtedy, gdy
+jego wynik przychodzi za późno, by zostać przyjęty. Przerwana próba nigdy nie jest uznawana za
+udaną ani nieudaną: staje się `uncertain`, a automatycznie ponawiany jest tylko
+węzeł zadeklarowany jako idempotentny.
 
 ## Runy agenta: capability nigdy nie pobiera { #agent-runs-a-capability-never-fetches }
 
@@ -353,16 +414,16 @@ Powyższy podział na warstwy ma wewnątrz runu agenta jeszcze jedną zasadę i 
 przez nią runner jest tak duży, jak jest. **Capability nie dotyka bazy danych.**
 Wszystko, czego z niej potrzebuje — nazwy kolekcji, które wiąże jej spec, skille,
 które może wczytać, workspace, do którego pisze, delegaci, których może wywołać —
-jest rozwiązywane przez serwis *przed* startem runu i przekazywane jako
+jest rozwiązywane przez serwis _przed_ startem runu i przekazywane jako
 `resources`, słownik, który capability może czytać i do którego nie może nic
-dodać. Model pyta o to, *czego* szukać; nigdy nie dowiaduje się, *gdzie*.
+dodać. Model pyta o to, _czego_ szukać; nigdy nie dowiaduje się, _gdzie_.
 
 Dwa wpisy w tym słowniku są szwami do innych podsystemów, a nie zwykłymi danymi:
 
-| Zasób | Zostawiony przez runner | Czytany przez |
-|---|---|---|
-| `WORKSPACE_RESOURCE` | otwarty workspace, który run dostaje też jako `ctx.workspace` | `tool_output_limits` oraz delegat, który współdzieli `sandbox` |
-| `SUBAGENT_RUNTIME_RESOURCE` | rozwiązane drzewo delegacji | capability `subagents` |
+| Zasób                       | Zostawiony przez runner                                       | Czytany przez                                                  |
+| --------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
+| `WORKSPACE_RESOURCE`        | otwarty workspace, który run dostaje też jako `ctx.workspace` | `tool_output_limits` oraz delegat, który współdzieli `sandbox` |
+| `SUBAGENT_RUNTIME_RESOURCE` | rozwiązane drzewo delegacji                                   | capability `subagents`                                         |
 
 Delegacja jest najostrzejszym przypadkiem tej zasady. Delegat jest wierszem; tak
 samo jego przypięta wersja, jego kolekcje, jego skille i jego sekrety, a każde
@@ -394,7 +455,7 @@ oddelegował ten, i to on pilnuje uczciwości miesięcznej sumy organizacji — 
 
 Jest `ON DELETE SET NULL` z tej samej arytmetyki: usunięcie rodzica kasuje
 wiersz, który zawierał ten koszt, więc wiersz delegacji, który staje się wierszem
-najwyższego poziomu, *powinien* zacząć się liczyć. Kaskada skasowałaby zapis
+najwyższego poziomu, _powinien_ zacząć się liczyć. Kaskada skasowałaby zapis
 wydanych pieniędzy.
 
 **`subagent_task_id`** to własne id zadania z biblioteki delegacji, które łączy
@@ -423,7 +484,7 @@ są godzone w serwisie, zanim wiersz zniknie, wewnątrz własnej transakcji żą
   jest legalny, a klucz pozostaje osiągalny dla organizacji, zamiast zostać
   osierocony.
 - **Organizacje twórcy.** `organizations.created_by_user_id` jest `RESTRICT`,
-  a każda rejestracja tworzy organizację osobistą, więc gołe `DELETE users` nigdy
+  a rejestracja domyślnie tworzy organizację osobistą, więc gołe `DELETE users` nigdy
   nie zadziałało dla prawdziwego konta. Organizacja osobista jest usuwana razem
   z właścicielem; współdzielona jest przekazywana innemu właścicielowi, a gdy nie
   ma komu jej przekazać, usunięcie zostaje odrzucone.
@@ -471,8 +532,7 @@ wgrał.**
 `GET /files/{id}` jest ograniczone do `ChatFile.user_id`, co jest właściwym
 zasięgiem dla okna pisania wiadomości i niewłaściwym dla przeglądu runu. Odczyt
 runu jest prawem organizacji, a nie tego, kto go uruchomił, więc karty
-załączników w transkrypcie kolegi renderowały się, a każdy podgląd odpowiadał
-404.
+załączników w transkrypcie kolegi renderowały się, a każdy podgląd odpowiadał 404.
 
 `GET /runs/{run_id}/files/{file_id}` autoryzuje tak jak transkrypt —
 organizacja, potem `runs:view` — a następnie dopuszcza plik tylko tam, gdzie jego
@@ -480,9 +540,9 @@ organizacja, potem `runs:view` — a następnie dopuszcza plik tylko tam, gdzie 
 zasięgu, ile daje już transkrypt, i ani trochę więcej.
 
 Oba route'y podają bajty przez `_chat_file_bytes.py`, więc to, co przeglądarka
-może *wyświetlić*, nie zależy od tego, który z nich autoryzował odczyt.
+może _wyświetlić_, nie zależy od tego, który z nich autoryzował odczyt.
 
-**Zapis jest osłonięty *i* zagnieżdżony.** Dochodzi się do niego z bloku
+**Zapis jest osłonięty _i_ zagnieżdżony.** Dochodzi się do niego z bloku
 `finally`, więc wyjątek podniesiony podczas zapisywania nieudanego runu
 zastąpiłby tę awarię sobą. Samo połknięcie go nie wystarczy: nieudany flush
 zostawia sesję nie do użytku, więc własny końcowy zapis runu przepadłby na rzecz
@@ -493,11 +553,20 @@ zapis może się nieszkodliwie nie powieść” jest prawdą, a nie pobożnym ż
 ## Odmowa, która nazywa pole { #a-refusal-that-names-a-field }
 
 Każda odmowa wychodzi w jednej kopercie,
-`{"error": {"code", "message", "details"}}`, a odmowa dotycząca *pola* nazywa je
+`{"error": {"code", "message", "details"}}`, a odmowa dotycząca _pola_ nazywa je
 w jednym kształcie:
 
 ```json
-{"details": {"fields": [{"field": "spec.name", "message": "String should have at most 128 characters"}]}}
+{
+  "details": {
+    "fields": [
+      {
+        "field": "spec.name",
+        "message": "String should have at most 128 characters"
+      }
+    ]
+  }
+}
 ```
 
 `fieldProblems` w `frontend/src/lib/api-error.ts` czyta właśnie to i nic więcej,
@@ -507,11 +576,11 @@ którego czytelnik musi szukać, przeglądając stronę od nowa.
 punkty wejścia. Dwa z nich czytają Pydantica, a **to, którym wywołującym jesteś,
 decyduje, co znaczy pierwszy element `loc`**:
 
-| | Dla | `loc` zaczyna się od |
-|---|---|---|
-| `request_field_problems` | `validation_exception_handler`, każdy `RequestValidationError` | miejsca, z którego przyszła wartość (`body`, `query`, …) — i to jest odrzucane |
-| `field_problems(…, root=…)` | serwis walidujący dokument, którego nie potrafi schemat route'a — nadpisanie ustawień ingestii dla jednego wgrania, ręcznie edytowany YAML speca, blob konfiguracji capability | pola tego dokumentu, raportowanego pod `root` |
-| `refused_field(field, message, **context)` | zasada, którą serwis wyraża prozą, a nie modelem — endpoint niosący hasło, bot Mattermosta tracący swój serwer, dokument YAML, który nigdy się nie sparsował | — zwraca `BadRequestError`, który wywołujący ma podnieść |
+|                                            | Dla                                                                                                                                                                            | `loc` zaczyna się od                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `request_field_problems`                   | `validation_exception_handler`, każdy `RequestValidationError`                                                                                                                 | miejsca, z którego przyszła wartość (`body`, `query`, …) — i to jest odrzucane |
+| `field_problems(…, root=…)`                | serwis walidujący dokument, którego nie potrafi schemat route'a — nadpisanie ustawień ingestii dla jednego wgrania, ręcznie edytowany YAML speca, blob konfiguracji capability | pola tego dokumentu, raportowanego pod `root`                                  |
+| `refused_field(field, message, **context)` | zasada, którą serwis wyraża prozą, a nie modelem — endpoint niosący hasło, bot Mattermosta tracący swój serwer, dokument YAML, który nigdy się nie sparsował                   | — zwraca `BadRequestError`, który wywołujący ma podnieść                       |
 
 `refused_field` nazywa zdanie raz, bo `message` koperty i zdanie pola to jedno
 i to samo zdanie; podnoszący, który potrzebuje innego statusu, buduje te same
@@ -549,6 +618,13 @@ niosącym `input`, `ctx` i `url`, którego nic na frontendzie nie czytało.
 zepsute odwołania, przy których nie ma czego oznaczyć. Odpowiada więc
 `details.problems` — po wierszu na każdy, które Builder wypisuje — oraz
 `details.fields` dla tego podzbioru, który pole nazywa.
+
+Gdy część z nich da się usunąć jednym kliknięciem, odpowiada też `details.fixes`,
+listą kodów: `use_state_workspace` przenosi workspace na przechowywany backend
+`state`, który nie potrzebuje połączenia z sandboxem, a `stop_sharing_unbound`
+usuwa z `share_with_delegates` to, czego agent nie może udostępnić. Builder
+pokazuje przycisk dla każdego znanego kodu i pomija resztę. Poprawka zapisuje
+wersję roboczą i waliduje ją ponownie; nigdy nie publikuje.
 
 Konfiguracja capability to jedyna część speca renderowana jako generowany
 formularz, więc jej odmowy nazywają pole:
@@ -616,13 +692,13 @@ rozjazd zdarzył się naprawdę dwa razy: na osi ról, gdzie lądowanie rozwidla
 według roli, i na osi providerów, gdzie podróż w obie strony przez OAuth gubiła
 `?returnTo=`.
 
-Między drzwiami różni się tylko to, jak ścieżka *podróżuje*:
+Między drzwiami różni się tylko to, jak ścieżka _podróżuje_:
 
-| Drzwi | Jak ścieżka dociera do lądowania |
-|---|---|
-| Formularz z hasłem | nigdy nie opuściła karty — czytana wprost z `?returnTo=` |
-| Callback OAuth | `sessionStorage`, co jest dozwolone, bo podróż w obie strony zaczyna się i kończy w tej samej karcie w tym samym origin |
-| Magic link | podpisane oświadczenie w tokenie, bo w link klika się z maila — w innej karcie, często w innej aplikacji, gdzie `sessionStorage` jest pusty z definicji |
+| Drzwi              | Jak ścieżka dociera do lądowania                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Formularz z hasłem | nigdy nie opuściła karty — czytana wprost z `?returnTo=`                                                                                                |
+| Callback OAuth     | `sessionStorage`, co jest dozwolone, bo podróż w obie strony zaczyna się i kończy w tej samej karcie w tym samym origin                                 |
+| Magic link         | podpisane oświadczenie w tokenie, bo w link klika się z maila — w innej karcie, często w innej aplikacji, gdzie `sessionStorage` jest pusty z definicji |
 
 Ścieżka magic linku zostaje odrzucona już przy **żądaniu**, a nie odfiltrowana
 przy lądowaniu: `MagicLinkRequest.return_to` przyjmuje ścieżkę na tym
@@ -648,9 +724,9 @@ per wiersz — zobacz [Uprawnienia](permissions.md), żeby poznać cały model.
 
 Dwie zależności, i tylko dwie:
 
-| Alias | Znaczy |
-|---|---|
-| `CurrentUser` | każdy uwierzytelniony użytkownik |
+| Alias             | Znaczy                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `CurrentUser`     | każdy uwierzytelniony użytkownik                                                           |
 | `CurrentAppAdmin` | superadmin deploymentu (`users.is_app_admin`), dla `/admin/*` i zbiorczych route'ów `/rag` |
 
 Wszystko inne idzie przez jedno z:
@@ -729,12 +805,12 @@ zawęża go dalej.**
 - **Udostępnienie niesie zapis dopiero na poziomie `edit`.** Odczyt i zapis to dwa
   pytania — `_may_read` i `_may_write` — a udostępnienie odpowiadało kiedyś na
   oba, niezależnie od poziomu, który niosło, więc dwa poziomy oferowane w oknie
-  udostępniania znaczyły to samo: rozmowę udostępnioną do *podglądu* można było
+  udostępniania znaczyły to samo: rozmowę udostępnioną do _podglądu_ można było
   przemianować, zarchiwizować, usunąć albo dopisać do niej turę
   `role: "assistant"`, którą wszyscy czytają w `/chat`, a model dostaje z powrotem
   jako własne słowa. Poziom jest komunikowany temu, kto go nadaje, więc
   egzekwowany jest właśnie ten poziom (#931).
-- W `transcript` ten jeden argument robi dwie rzeczy — autoryzuje *i* wzbogaca
+- W `transcript` ten jeden argument robi dwie rzeczy — autoryzuje _i_ wzbogaca
   każdą wiadomość o własną ocenę wywołującego. To przeciążenie jest powodem, dla
   którego jego autoryzująca połowa tak długo była nieobecna: route go
   przekazywał, argument był w przeglądzie kodu wyraźnie widoczny, a robił tę
@@ -760,7 +836,7 @@ decydować o tym, gdzie wątek siedzi u wszystkich, którzy go widzą.
 
 Cztery konsekwencje, które warto znać:
 
-- **`POST`/`DELETE /conversations/{id}/favourite` są autoryzowane jak *odczyt*.**
+- **`POST`/`DELETE /conversations/{id}/favourite` są autoryzowane jak _odczyt_.**
   Gwiazdka mówi, gdzie wątek siedzi we własnym panelu bocznym osoby, która ją
   postawiła, i nie zmienia w wątku nic, więc ktoś, komu rozmowę udostępniono, może
   ją oznaczyć dokładnie tak jak jej właściciel. `for_write` odmówiłoby tu właśnie
@@ -776,13 +852,13 @@ Cztery konsekwencje, które warto znać:
   PATCH mówił komuś, kto oznaczył wątek gwiazdką, że tego nie zrobił (#1254).
   Odczyt bez czytelnika — listowanie dla admina, ścieżka runu rozwiązująca wątek —
   nie pyta o niczyje gwiazdki i nie płaci za to zapytaniem, a odczyt, który
-  wyłącznie *autoryzuje*, wyłącza to jawnie przez `include_favourite=False`. To są
+  wyłącznie _autoryzuje_, wyłącza to jawnie przez `include_favourite=False`. To są
   te odczyty, których wynik zostaje odrzucony albo nie jest rozmową:
   `GET /conversations/{id}/messages`, który rozwiązuje wątek raz, przez
   `transcript`, dla strony i jej kosztu; trzy route'y workspace'u; każda tura
   istniejącego czatu, przez `agent._resolve_in_org`; oraz zapisy — `add_message`,
   `delete_conversation` i `set_favourite`, który sam nadpisuje tę flagę. Domyślne
-  włączenie jest tym, co powstrzymuje route, który *faktycznie* serializuje
+  włączenie jest tym, co powstrzymuje route, który _faktycznie_ serializuje
   rozmowę, przed zapomnieniem; wyłączenie jest świadomym aktem w miejscu
   wywołania.
 - **Oznaczanie gwiazdką jest idempotentne przy rywalizacji**, bo wstawienie jest
@@ -802,7 +878,7 @@ Cztery konsekwencje, które warto znać:
 **Nie ma już sposobu, by przeczytać rozmowę w poprzek tenantów.** Wartownik, który
 kiedyś to zapisywał (`UNSCOPED`), miał dokładnie jednego wywołującego,
 `/admin/conversations/{id}`, i oba odeszły razem z przeglądarką rozmów
-obejmującą cały deployment — Activity odpowiada na „co się stało” kosztem,
+obejmującą cały deployment — Aktywność odpowiada na „co się stało” kosztem,
 modelem, trace'em i tym, co obok podano modelowi, a to jest pytanie, do którego
 tamten ekran był używany. To, co z niego zostało, to
 `GET /admin/conversations?user_id=`: wątki jednego wskazanego konta, wypisywane
@@ -843,14 +919,15 @@ Upload (POST /files/upload)
 
 ### Wspierane typy plików { #supported-file-types }
 
-| Kategoria | Rozszerzenia | Przetwarzanie |
-|----------|-----------|------------|
-| Obrazy | JPEG, PNG, WebP, GIF | Zapisywane bez zmian, wysyłane do LLM jako dane binarne do analizy obrazu |
-| PDF | .pdf | Tekst wyciągany skonfigurowanym parserem |
-| Dokumenty | .docx | Tekst wyciągany przez python-docx |
-| Tekst | .txt, .md | Dekodowane wprost jako UTF-8 |
+| Kategoria | Rozszerzenia         | Przetwarzanie                                                             |
+| --------- | -------------------- | ------------------------------------------------------------------------- |
+| Obrazy    | JPEG, PNG, WebP, GIF | Zapisywane bez zmian, wysyłane do LLM jako dane binarne do analizy obrazu |
+| PDF       | .pdf                 | Tekst wyciągany skonfigurowanym parserem                                  |
+| Dokumenty | .docx                | Tekst wyciągany przez python-docx                                         |
+| Tekst     | .txt, .md            | Dekodowane wprost jako UTF-8                                              |
 
 ### Wybór parsera { #parser-selection }
+
 Załączniki czatu są czytane przez PyMuPDF i nie da się tego skonfigurować:
 załącznik nie należy do żadnej kolekcji, więc nie ma zapisanej konfiguracji,
 z której można by odczytać wybór parsera. Wybór parsera dotyczy kolekcji wiedzy,
@@ -898,14 +975,14 @@ dokumentów per użytkownik. Oznacza to, że:
 
 ### Komponenty { #components }
 
-| Komponent | Plik | Do czego służy |
-|-----------|------|---------|
-| `DocumentProcessor` | `rag/documents.py` | Parsuje pliki do tekstu (PDF, DOCX, TXT, obrazy) |
-| `IngestionService` | `rag/ingestion.py` | Orkiestruje parse -> chunk -> embed -> store |
-| `RetrievalService` | `rag/retrieval.py` | Obsługuje zapytania wyszukiwania z filtrowaniem i punktacją |
-| `EmbeddingService` | `rag/embeddings.py` | Generuje embeddingi przez skonfigurowanego providera |
-| `BaseVectorStore` | `rag/vectorstore.py` | Abstrakcyjny interfejs operacji na bazie wektorowej |
-| `PgVectorStore` | `rag/vectorstore.py` | Implementacja na pgvector (PostgreSQL) |
+| Komponent           | Plik                 | Do czego służy                                              |
+| ------------------- | -------------------- | ----------------------------------------------------------- |
+| `DocumentProcessor` | `rag/documents.py`   | Parsuje pliki do tekstu (PDF, DOCX, TXT, obrazy)            |
+| `IngestionService`  | `rag/ingestion.py`   | Orkiestruje parse -> chunk -> embed -> store                |
+| `RetrievalService`  | `rag/retrieval.py`   | Obsługuje zapytania wyszukiwania z filtrowaniem i punktacją |
+| `EmbeddingService`  | `rag/embeddings.py`  | Generuje embeddingi przez skonfigurowanego providera        |
+| `BaseVectorStore`   | `rag/vectorstore.py` | Abstrakcyjny interfejs operacji na bazie wektorowej         |
+| `PgVectorStore`     | `rag/vectorstore.py` | Implementacja na pgvector (PostgreSQL)                      |
 
 ### Pipeline ingestii { #ingestion-pipeline }
 
@@ -918,6 +995,7 @@ Dokumenty można wciągnąć przez:
    usuwają to, czego ich źródło już nie zawiera.
 
 Każdy wciągnięty dokument:
+
 - Jest parsowany do tekstu (parser wybierany per kolekcja, do nadpisania per wgranie)
 - Jest dzielony na fragmenty (`chunk_size` / `chunk_overlap`, też per kolekcja)
 - Jest embedowany przez skonfigurowanego providera embeddingów
@@ -926,11 +1004,11 @@ Każdy wciągnięty dokument:
 
 ### Tryby synchronizacji { #sync-modes }
 
-| Tryb | Zachowanie |
-|------|----------|
-| `full` | Zastępuje wszystkie dokumenty (wciąga wszystko od nowa) |
-| `new_only` | Dodaje nowe pliki, wciąga od nowa pliki, których hasz treści się zmienił, pomija niezmienione |
-| `update_only` | Wciąga od nowa wyłącznie zmienione pliki, nowe pomija całkowicie |
+| Tryb          | Zachowanie                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `full`        | Zastępuje wszystkie dokumenty (wciąga wszystko od nowa)                                       |
+| `new_only`    | Dodaje nowe pliki, wciąga od nowa pliki, których hasz treści się zmienił, pomija niezmienione |
+| `update_only` | Wciąga od nowa wyłącznie zmienione pliki, nowe pomija całkowicie                              |
 
 ### Konektory synchronizacji { #sync-connectors }
 
@@ -951,14 +1029,24 @@ opracowany przykład.
   Sesja żądania commituje raz, zanim odpowiedź zostanie zapisana.
 - Ścieżka runu agenta to główny usankcjonowany wyjątek: commituje przed
   wywołaniem modelu i jeszcze raz w końcowym `finally`. `MLService._record_failure`
-  to ten drugi, z lustrzanego powodu — wiersz zużycia opisujący *odmowę* musi
+  to ten drugi, z lustrzanego powodu — wiersz zużycia opisujący _odmowę_ musi
   przetrwać wycofanie, które ta odmowa powoduje.
 - Dwa usankcjonowane wyjątki. Ścieżka runu agenta commituje przed wywołaniem
   modelu i jeszcze raz w końcowym `finally`;
   `SessionService.detect_refresh_reuse` commituje sesję, którą właśnie unieważnił,
   i wpis mówiący dlaczego — bo jego wywołujący natychmiast podnosi 401, a wycofanie
   cofnęłoby oba.
-- Praca w tle, która czyta wiersz zapisany przez to żądanie, jest przekazywana
-  przez **`spawn_after_commit`**, nigdy przez `spawn`.
+- Webhook, którego graf odpowiada na dostarczenia, zatwierdza przyjęcie w
+  `WorkflowExposureService._answer`, żeby run mógł wystartować, gdy żądanie czeka
+  na krok Respond to webhook.
+- Praca w tle, która musi się wydarzyć, jest **zadaniem kolejkowanym w
+  transakcji żądania** (`enqueue`); praca bez gwarancji, która czyta wiersz
+  zapisany przez to żądanie, jest przekazywana przez **`spawn_after_commit`**,
+  nigdy przez `spawn`.
 - Cienka domena to moduł; gruba to podpakiet z fasadą, a nic spoza niego nie
   importuje jego podmodułów.
+
+Operacje telefoniczne również wymagają trwałej granicy: `telephony.runtime.dial`, przyjęcie połączenia, przekierowanie i zakończenie zatwierdzają zamiar przed wywołaniem operatora. Niepewny wynik zachowuje zamiar dla podpisanych callbacków i sprzątania, bez ponownego wybierania numeru. Przyjęcie strumienia zatwierdza jednorazową rezerwację przed otwarciem sesji modelu.
+
+
+Przyjęcie wiadomości z kanału także zatwierdza transakcję przed przygotowaniem runu: `ChannelMessageRouter._route_inner` zapisuje identity, sesję i rozmowę po sprawdzeniu dostępu oraz limitu. Klucz platformowego MCP powstaje w osobnej transakcji i wskazuje tę rozmowę; sam flush nie zapewnia jej widoczności. Nieudany commit zatrzymuje przygotowanie.

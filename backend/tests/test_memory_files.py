@@ -14,8 +14,6 @@ instructions are what it obeys, so an index is injected only where its content
 could have steered nobody but its reader.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -48,6 +46,13 @@ AGENT = uuid4()
 PERSON = uuid4()
 PERSON_KEY = person_owner_key(PERSON)
 ROOM_KEY = room_owner_key("slack", "C1")
+
+
+@pytest.fixture(autouse=True)
+def _no_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about notes; the standing profile is read from the ledger and has
+    its own tests in `test_memory_claims_tools.py`."""
+    monkeypatch.setattr(memory_store.runtime, "profile_block", AsyncMock(return_value=""))
 
 
 def _deps(*, person: object = PERSON, room: str | None = None) -> AgentDeps:
@@ -99,6 +104,17 @@ class TestWhichStoreARunTouches:
 
     def test_the_personal_lever_off_drops_the_person_store_entirely(self):
         assert memory_owner_key(RunAudience(user_id=PERSON), allow_personal=False) is None
+
+    def test_a_chat_others_read_has_no_personal_store(self):
+        audience = RunAudience(user_id=PERSON, shared_transcript=True)
+
+        assert memory_owner_key(audience, allow_personal=True) is None
+        assert not may_inject_memory(audience, allow_personal=True)
+
+    def test_a_group_chat_shared_for_editing_keeps_its_own_store(self):
+        audience = RunAudience(user_id=PERSON, room_key=ROOM_KEY, shared_transcript=True)
+
+        assert memory_owner_key(audience, allow_personal=True) == ROOM_KEY
 
     def test_the_personal_lever_off_leaves_group_chats_alone(self):
         """A compliance switch about private notes is not a switch about a channel
@@ -432,7 +448,7 @@ class TestTheCapability:
 
         assert capability.get_toolset() is capability.get_toolset()
 
-    def test_it_carries_the_five_note_tools_and_nothing_else(self):
+    def test_it_carries_the_five_note_tools_and_the_four_claim_tools(self):
         toolset = MemoryFiles().get_toolset()
 
         assert set(toolset.tools) == {
@@ -441,6 +457,10 @@ class TestTheCapability:
             "write_memory",
             "edit_memory",
             "delete_memory",
+            "remember",
+            "recall",
+            "correct_memory",
+            "share_memory",
         }
 
     async def test_the_instructions_are_a_per_request_callable(self):

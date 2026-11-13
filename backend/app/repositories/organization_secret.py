@@ -28,6 +28,21 @@ async def get(
     return result.scalar_one_or_none()
 
 
+async def get_locked(
+    db: AsyncSession, secret_id: UUID, *, organization_id: UUID
+) -> OrganizationSecret | None:
+    """The secret, its row locked to the end of the transaction - for a compare-and-swap."""
+    result = await db.execute(
+        select(OrganizationSecret)
+        .where(
+            OrganizationSecret.id == secret_id,
+            OrganizationSecret.organization_id == organization_id,
+        )
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_by_name(
     db: AsyncSession, name: str, *, organization_id: UUID
 ) -> OrganizationSecret | None:
@@ -245,3 +260,15 @@ async def agents_using_for_secrets(
     for agent_id, name, secret_id in result.all():
         usage[UUID(secret_id)].append((agent_id, name))
     return usage
+
+
+async def authorization_generation(
+    db: AsyncSession, secret_id: UUID, *, organization_id: UUID
+) -> UUID | None:
+    """Read credential identity afresh without unsealing it or using an ORM cache."""
+    return await db.scalar(
+        select(OrganizationSecret.authorization_generation).where(
+            OrganizationSecret.id == secret_id,
+            OrganizationSecret.organization_id == organization_id,
+        )
+    )

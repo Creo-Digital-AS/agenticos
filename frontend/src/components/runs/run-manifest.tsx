@@ -5,7 +5,8 @@ import { FileWarning, Wrench } from "lucide-react";
 
 import { CopyButton } from "@/components/chat/copy-button";
 import { RunWaterfall } from "@/components/runs/run-waterfall";
-import { EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState, ErrorState } from "@/components/states";
 import { Badge } from "@/components/ui";
 import { useRunManifest } from "@/hooks";
 import { ApiError } from "@/lib/api-client";
@@ -32,9 +33,20 @@ import type { ManifestTool } from "@/types/runs";
  */
 export function RunManifest({ runId }: { runId: string }) {
   const t = useTranslations("pages.runs");
+  const ts = useTranslations("states");
   const { manifest, isLoading, error } = useRunManifest(runId);
 
-  if (isLoading) return <LoadingState variant="skeleton-panel" rows={3} />;
+  if (isLoading)
+    return (
+      <div className="space-y-5" role="status" aria-label={ts("loading")}>
+        {[0, 1, 2].map((section) => (
+          <section key={section} className="space-y-1.5" aria-hidden>
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-32 w-full" />
+          </section>
+        ))}
+      </div>
+    );
   if (manifest === undefined) {
     return error instanceof ApiError && error.status === 404 ? (
       <EmptyState
@@ -57,7 +69,9 @@ export function RunManifest({ runId }: { runId: string }) {
 
       <Section title={t("systemPrompt")} copyText={manifest.instructions ?? undefined}>
         {manifest.instructions === null ? (
-          <p className="text-muted-foreground text-sm">{t("noInstructionsSent")}</p>
+          manifest.system_prompts.length === 0 && (
+            <p className="text-muted-foreground text-sm">{t("noInstructionsSent")}</p>
+          )
         ) : (
           <pre className="bg-muted/40 max-h-80 overflow-auto rounded p-3 text-xs whitespace-pre-wrap">
             {manifest.instructions}
@@ -103,6 +117,69 @@ export function RunManifest({ runId }: { runId: string }) {
       <Section title={t("requests", { count: manifest.requests.length })}>
         <RunWaterfall requests={manifest.requests} />
       </Section>
+
+      {/* What steered the run, and who: a correction the run's model received
+          mid-run reads as the agent changing its mind otherwise (#2106). */}
+      {!!manifest.reviews?.length && (
+        <Section title={t("reviewerCorrections", { count: manifest.reviews.length })}>
+          <ul className="space-y-1.5">
+            {manifest.reviews.map((review) => (
+              <li key={`${review.reviewer}-${review.after_request}`} className="text-sm">
+                <span className="text-muted-foreground text-xs">
+                  {t("reviewerCorrectionBy", {
+                    reviewer: review.reviewer,
+                    request: review.after_request,
+                  })}
+                </span>
+                <p>{review.steer}</p>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {/* One `run_code` step hides every call its script made; this is them (#2107). */}
+      {!!manifest.code_runs?.length && (
+        <Section title={t("codeRuns", { count: manifest.code_runs.length })}>
+          <ul className="space-y-3">
+            {manifest.code_runs.map((run) => (
+              <li key={run.tool_call_id} className="space-y-1.5">
+                <pre className="bg-muted/50 max-h-64 overflow-auto rounded-md p-3 text-xs">
+                  {run.code}
+                </pre>
+                <p className="text-muted-foreground text-xs">
+                  {t("codeRunCalls", { count: run.calls.length + (run.omitted_calls ?? 0) })}
+                </p>
+                <ol className="space-y-0.5">
+                  {run.calls.map((call, index) => (
+                    <li
+                      key={call.tool_call_id ?? index}
+                      className="flex min-w-0 items-center gap-2 font-mono text-xs"
+                    >
+                      <span className={call.status === "failed" ? "text-destructive" : ""}>
+                        {call.tool}
+                      </span>
+                      <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                        {call.args}
+                      </span>
+                      {call.status === "awaiting_approval" && (
+                        <Badge variant="outline" className="shrink-0 font-sans">
+                          {t("toolState", { status: "awaiting_approval" })}
+                        </Badge>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+                {!!run.omitted_calls && (
+                  <p className="text-muted-foreground text-xs">
+                    {t("codeRunOmittedCalls", { count: run.omitted_calls })}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       {manifest.messages.length > 0 && (
         <Section

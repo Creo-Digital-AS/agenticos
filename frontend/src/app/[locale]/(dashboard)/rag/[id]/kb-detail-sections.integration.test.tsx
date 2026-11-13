@@ -103,15 +103,19 @@ const DOC: KBDocument = {
  */
 function mockApi({
   failing,
+  canEdit = false,
   documents = [],
   syncSources = [],
+  connectors = [],
 }: {
+  canEdit?: boolean;
   failing?: "sync-sources" | "connectors" | "documents";
   documents?: KBDocument[];
-  syncSources?: { id: string; name: string }[];
+  syncSources?: ({ id: string; name: string } & Record<string, unknown>)[];
+  connectors?: Record<string, unknown>[];
 } = {}) {
   vi.mocked(apiClient.get).mockImplementation((endpoint: string) => {
-    if (endpoint === `/kb/${KB_ID}`) return Promise.resolve(KB);
+    if (endpoint === `/kb/${KB_ID}`) return Promise.resolve({ ...KB, can_edit: canEdit });
     if (endpoint.startsWith(`/kb/${KB_ID}/documents`)) {
       return failing === "documents"
         ? Promise.reject(new Error("Bad gateway"))
@@ -120,7 +124,7 @@ function mockApi({
     if (endpoint === `/kb/${KB_ID}/sync-sources/connectors`) {
       return failing === "connectors"
         ? Promise.reject(new Error("Bad gateway"))
-        : Promise.resolve({ items: [] });
+        : Promise.resolve({ items: connectors });
     }
     if (endpoint === `/kb/${KB_ID}/sync-sources/org-integrations`) {
       return Promise.resolve({ items: [], total: 0 });
@@ -129,6 +133,14 @@ function mockApi({
       return failing === "sync-sources"
         ? Promise.reject(new Error("Bad gateway"))
         : Promise.resolve({ items: syncSources, total: syncSources.length });
+    }
+    if (endpoint === `/kb/${KB_ID}/ingestion`) {
+      return Promise.resolve({
+        indexing_status: "complete",
+        processing_count: 0,
+        indexed_count: documents.length,
+        failed_count: 0,
+      });
     }
     return Promise.resolve({ items: [], total: 0 });
   });
@@ -179,6 +191,8 @@ beforeEach(() => {
   // next one mounting on that tab. A browser gets a fresh URL per navigation.
   window.history.replaceState({}, "", "/");
   vi.clearAllMocks();
+  perms.clear();
+  perms.add("collections:view");
   useOrgStore.setState({ activeOrgId: ORG_ID });
 });
 
@@ -316,4 +330,155 @@ describe("the three sections are tabs (#939)", () => {
   // `next/navigation` mock in `vitest.setup.ts` answers an empty one and wins:
   // a test written that way passed while the page was showing its default,
   // which is worse than not having it.
+});
+
+describe("editing a sync source", () => {
+  it.each([false, true])("offers a manual sync only when is_active=%s", async (isActive) => {
+    mockApi({
+      canEdit: true,
+      syncSources: [{ id: "src-1", name: "Drive folder", is_active: isActive }],
+    });
+    vi.mocked(apiClient.post).mockResolvedValue({});
+
+    await renderPage();
+    await openTab("pages.kb.syncSources");
+    const trigger = await screen.findByRole("button", { name: "pages.kb.triggerSyncNow2" });
+
+    if (isActive) {
+      expect(trigger).toBeEnabled();
+    } else {
+      expect(trigger).toBeDisabled();
+      expect(trigger).toHaveAttribute("title", "pages.kb.sourcePaused");
+    }
+    await userEvent.click(trigger);
+    expect(apiClient.post).toHaveBeenCalledTimes(isActive ? 1 : 0);
+    if (isActive) {
+      expect(apiClient.post).toHaveBeenCalledWith(`/kb/${KB_ID}/sync-sources/src-1/trigger`);
+    }
+  });
+
+  it("is not offered to a reader who cannot change the collection", async () => {
+    mockApi({ syncSources: [{ id: "src-1", name: "Drive folder" }] });
+
+    await renderPage();
+    await openTab("pages.kb.syncSources");
+
+    await screen.findByText("Drive folder");
+    expect(screen.queryByRole("button", { name: "pages.kb.editSource" })).toBeNull();
+  });
+
+  it("opens the wizard filled in from the source for an editor", async () => {
+    perms.add("collections:edit");
+    try {
+      mockApi({
+        canEdit: true,
+        syncSources: [
+          {
+            id: "src-1",
+            name: "Drive folder",
+            connector_type: "gdrive",
+            config: { folder_id: "1AbC" },
+          },
+        ],
+      });
+
+      await renderPage();
+      await openTab("pages.kb.syncSources");
+      await userEvent.click(await screen.findByRole("button", { name: "pages.kb.editSource" }));
+
+      expect(await screen.findByText("rag.editSyncSource")).toBeVisible();
+      expect(screen.getByLabelText("rag.sourceName")).toHaveValue("Drive folder");
+    } finally {
+      perms.delete("collections:edit");
+    }
+  });
+
+  it("a save finishing after the wizard was reopened leaves the new one open", async () => {
+    perms.add("collections:edit");
+    try {
+      const source = { connector_type: "gdrive", config: {}, collection_name: "handbook" };
+      mockApi({
+        canEdit: true,
+        syncSources: [
+          { id: "src-1", name: "Drive folder", ...source },
+          { id: "src-2", name: "Wiki folder", ...source },
+        ],
+        connectors: [
+          {
+            type: "gdrive",
+            name: "Google Drive",
+            enabled: true,
+            config_schema: {},
+            secret_kind: "none",
+          },
+        ],
+      });
+      let finishSave: (value: unknown) => void = () => {};
+      vi.mocked(apiClient.patch).mockReturnValue(
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+      );
+
+      await renderPage();
+      await openTab("pages.kb.syncSources");
+      const pencils = await screen.findAllByRole("button", { name: "pages.kb.editSource" });
+      await userEvent.click(pencils[0]!);
+      await userEvent.type(screen.getByLabelText("rag.sourceName"), " renamed");
+      for (let step = 0; step < 3; step++) {
+        await userEvent.click(screen.getByRole("button", { name: "rag.continue" }));
+      }
+      await userEvent.click(screen.getByRole("button", { name: "rag.saveChanges" }));
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByText("rag.editSyncSource")).toBeNull());
+
+      await userEvent.click(screen.getAllByRole("button", { name: "pages.kb.editSource" })[1]!);
+      await act(async () => finishSave({ id: "src-1", name: "Drive folder renamed", ...source }));
+
+      expect(screen.getByLabelText("rag.sourceName")).toHaveValue("Wiki folder");
+    } finally {
+      perms.delete("collections:edit");
+    }
+  });
+});
+
+describe("write controls follow access to this base", () => {
+  it.each([false, true])("uses can_edit=%s even when the role disagrees", async (canEdit) => {
+    perms.clear();
+    perms.add("collections:view");
+    if (!canEdit) perms.add("collections:edit");
+    mockApi({
+      canEdit,
+      syncSources: [{ id: "src-1", name: "Drive folder" }],
+      connectors: [
+        {
+          type: "gdrive",
+          name: "Google Drive",
+          enabled: true,
+          config_schema: {},
+          secret_kind: "none",
+        },
+      ],
+    });
+    await renderPage();
+    await screen.findByRole("button", { name: "pages.kb.refresh" });
+    if (canEdit) {
+      expect(screen.getByRole("button", { name: "pages.kb.parseOptions" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "pages.kb.moreActions" })).toBeInTheDocument();
+    } else {
+      expect(
+        screen.queryByRole("button", { name: "pages.kb.parseOptions" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "pages.kb.moreActions" }),
+      ).not.toBeInTheDocument();
+    }
+    await openTab("pages.kb.syncSources");
+    await screen.findByText("Drive folder");
+    for (const name of ["connect", "editSource", "triggerSyncNow2", "removeSource2"]) {
+      const button = screen.queryByRole("button", { name: `pages.kb.${name}` });
+      if (canEdit) expect(button).toBeInTheDocument();
+      else expect(button).not.toBeInTheDocument();
+    }
+  });
 });

@@ -23,8 +23,6 @@ publish that fails is logged and dropped, and a disconnected tab behaves as the
 console always did.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import logging
@@ -43,8 +41,9 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.clients.redis import RedisClient
+from app.core.background import spawn_after_commit
 from app.core.config import settings
-from app.core.exceptions import AuthenticationError
+from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError
 from app.core.permissions import AuthContext, Perm
 from app.core.permissions import Scope as PermScope
 from app.db.models.agent_run import AgentRun
@@ -52,20 +51,26 @@ from app.db.session import get_db_context
 from app.repositories import agent as agent_repo
 from app.repositories import artifact as artifact_repo
 from app.repositories import context as context_repo
+from app.repositories import dataset as dataset_repo
 from app.repositories import knowledge_base as knowledge_base_repo
 from app.repositories import mcp_connection as mcp_connection_repo
 from app.repositories import member as member_repo
 from app.repositories import organization_secret as secret_repo
 from app.repositories import skill as skill_repo
+from app.repositories import virtual_table as virtual_table_repo
+from app.repositories import workflow as workflow_repo
 from app.schemas.change_event import ChangeAction, ChangeEvent, ChangeResource, ChangeSurface
 from app.services.access import (
     AGENT,
     ARTIFACT,
     COLLECTION,
     CONTEXT,
+    DATASET,
     MCP_CONNECTION,
     SECRET,
     SKILL,
+    TABLE,
+    WORKFLOW,
     OwnedResource,
     ResourceType,
     resolve_access,
@@ -132,12 +137,23 @@ def _shared(prefix: str, resource: ChangeResource) -> _Feed:
 # First match wins, so a route that is not a change - or is a change to something
 # else - sits above the prefix that would otherwise claim it.
 _FEEDS = (
+    _Feed("/runs/{run_id}/cancel", "run", "run_id"),
     _Feed("/agents/{agent_id}/run", None),
     _Feed("/agents/{agent_id}/validate", None),
     _Feed("/agents/{agent_id}/clone", "agent"),
     # Firing a routine by hand is a run, which publishes its own events.
     _Feed("/agents/{agent_id}/triggers/{trigger_id}/run", None),
     _Feed("/agents/{agent_id}/triggers", "trigger", "agent_id"),
+    # An estimate writes nothing.
+    _Feed("/agents/{agent_id}/improvements/estimate", None),
+    _Feed("/agents/{agent_id}/improvements/{run_id}/knowledge/estimate", None),
+    _Feed("/agents/{agent_id}/improvements/{run_id}/continue/estimate", None),
+    _Feed("/agents/{agent_id}/improvements/{run_id}/rounds/{number}/selection/estimate", None),
+    _Feed("/agents/{agent_id}/improvements/{run_id}/rounds/{number}/attribution/estimate", None),
+    _Feed("/agents/{agent_id}/eval-runs/estimate", None),
+    _Feed("/agents/{agent_id}/eval-runs", "eval_run", "agent_id"),
+    _Feed("/agents/{agent_id}/eval-suites/estimate", None),
+    _Feed("/agents/{agent_id}/eval-suites", "eval_suite", "agent_id"),
     # An embed is its own row with its own page, not a change to an agent.
     _Feed("/agents/embeds", None),
     _shared("/agents", "agent"),
@@ -149,12 +165,29 @@ _FEEDS = (
     _Feed("/artifacts/{artifact_id}/follow", None),
     _shared("/artifacts", "artifact"),
     _Feed("/artifacts", "artifact", "artifact_id"),
+    # Reading records, counting or exporting them, testing a webhook or running a
+    # step's evals are POSTs that change no row.
+    _Feed("/tables/{table_id}/records/query", None),
+    _Feed("/tables/{table_id}/records/count", None),
+    _Feed("/tables/{table_id}/records/export", None),
+    _shared("/tables", "table"),
+    _Feed("/tables", "table", "table_id"),
+    _Feed("/workflows/{workflow_id}/webhook-test", None),
+    _Feed("/workflows/{workflow_id}/steps/{node_id}/eval-runs", None),
+    _shared("/workflows", "workflow"),
+    _Feed("/workflows", "workflow", "workflow_id"),
     _shared("/context", "context"),
     _Feed("/context", "context", "context_id"),
     _shared("/kb", "knowledge_base"),
     _Feed("/kb", "knowledge_base", "kb_id"),
     _shared("/skills", "skill"),
     _Feed("/skills", "skill", "skill_id"),
+    # Estimating a generation spends and writes nothing, and finding a case's
+    # twins is a read that posts its question in the body.
+    _Feed("/datasets/{dataset_id}/generations/estimate", None),
+    _Feed("/datasets/{dataset_id}/cases/twins", None),
+    _shared("/datasets", "dataset"),
+    _Feed("/datasets", "dataset", "dataset_id"),
     _shared("/secrets", "secret"),
     _Feed("/secrets", "secret", "secret_id"),
     # Starting an OAuth dance or probing a server changes no row.
@@ -163,6 +196,11 @@ _FEEDS = (
     _shared("/mcp-connections", "mcp_connection"),
     _Feed("/mcp-connections", "mcp_connection", "connection_id"),
     _Feed("/channels/bots", "channel", "bot_id"),
+    # Grouping now and a check of answers are started here and land later; the
+    # work announces what it placed.
+    _Feed("/knowledge-gaps/collections/{knowledge_base_id}/regroup", None),
+    _Feed("/knowledge-gaps/collections/{knowledge_base_id}/classify", None),
+    _Feed("/knowledge-gaps", "knowledge_gap", "topic_id", creates=False),
     _Feed("/notifications", "notification", "notification_id", creates=False),
     _Feed("/orgs/{org_id}/members", "member", "target_user_id"),
     _Feed("/orgs/{org_id}/invitations", "invitation", "invitation_id"),
@@ -175,12 +213,18 @@ _FEEDS = (
 _OWNED: dict[ChangeResource, ResourceType] = {
     "agent": AGENT,
     "trigger": AGENT,
+    "eval_suite": AGENT,
+    "eval_run": AGENT,
+    "improvement": AGENT,
     "skill": SKILL,
     "context": CONTEXT,
     "knowledge_base": COLLECTION,
     "artifact": ARTIFACT,
+    "table": TABLE,
+    "workflow": WORKFLOW,
     "secret": SECRET,
     "mcp_connection": MCP_CONNECTION,
+    "dataset": DATASET,
 }
 
 _redis: RedisClient | None = None
@@ -189,10 +233,11 @@ _redis: RedisClient | None = None
 async def connect_in_worker() -> None:
     """Give a worker process a Redis to publish on, once.
 
-    A routine's run executes in a Prefect flow, in a process that ran none of the
-    API's startup, so the lifespan's `configure` never reached it and every event
-    it published went nowhere - the run an open Activity page most wants to see
-    arrive. The client lives for the process; a flow-run subprocess exits with it.
+    A routine's run executes in the worker, a process that ran none of the API's
+    startup, so the lifespan's `configure` never reaches it and every event it
+    published went nowhere - the run an open Activity page most wants to see
+    arrive. `python -m app.worker` calls this on start; the client lives for the
+    process.
     """
     global _redis
     if _redis is not None:
@@ -316,6 +361,39 @@ def run_event(run: AgentRun, action: ChangeAction) -> ChangeEvent:
     )
 
 
+def conversation_event(
+    *, organization_id: UUID, conversation_id: UUID, actor_user_id: UUID | None
+) -> ChangeEvent:
+    return ChangeEvent(
+        organization_id=organization_id,
+        resource="conversation",
+        id=conversation_id,
+        action="updated",
+        surface="run",
+        actor_user_id=actor_user_id,
+        actor_name=None,
+    )
+
+
+def announce_conversation(
+    db: AsyncSession, *, organization_id: UUID, conversation_id: UUID, actor_user_id: UUID | None
+) -> None:
+    """Announce a transcript write only after its owning transaction commits."""
+    if _redis is None:
+        return
+    spawn_after_commit(
+        db,
+        publish(
+            conversation_event(
+                organization_id=organization_id,
+                conversation_id=conversation_id,
+                actor_user_id=actor_user_id,
+            )
+        ),
+        name="conversation-change",
+    )
+
+
 async def publish_run(run: AgentRun, action: ChangeAction) -> None:
     """Tell open consoles a run started, parked or finished. Called after the
     commit that made the state readable, so a page that refetches sees it.
@@ -325,6 +403,48 @@ async def publish_run(run: AgentRun, action: ChangeAction) -> None:
     if _redis is None:
         return
     await publish(run_event(run, action))
+    if run.conversation_id is not None:
+        await publish(
+            conversation_event(
+                organization_id=run.organization_id,
+                conversation_id=run.conversation_id,
+                actor_user_id=run.user_id,
+            )
+        )
+
+
+async def publish_dataset(
+    *, organization_id: UUID, dataset_id: UUID, actor_user_id: UUID | None
+) -> None:
+    """Tell open consoles a dataset changed with no request to say so - a
+    generation finishing in the background. Called after its commit."""
+    await publish(
+        ChangeEvent(
+            organization_id=organization_id,
+            resource="dataset",
+            id=dataset_id,
+            action="updated",
+            surface="run",
+            actor_user_id=actor_user_id,
+            actor_name=None,
+        )
+    )
+
+
+async def publish_knowledge_gaps_grouped(organization_id: UUID) -> None:
+    """Tell open consoles a grouping pass placed new questions in the organization's
+    topics. Called after the pass committed, from the worker that ran it."""
+    await publish(
+        ChangeEvent(
+            organization_id=organization_id,
+            resource="knowledge_gap",
+            id=None,
+            action="updated",
+            surface="system",
+            actor_user_id=None,
+            actor_name=None,
+        )
+    )
 
 
 async def publish(event: ChangeEvent) -> None:
@@ -388,7 +508,7 @@ class ChangeFeedMiddleware:
 
 async def _row(db: AsyncSession, event: ChangeEvent, row_id: UUID) -> OwnedResource | None:
     organization_id = event.organization_id
-    if event.resource in ("agent", "trigger"):
+    if event.resource in ("agent", "trigger", "eval_suite", "eval_run", "improvement"):
         return await agent_repo.get(db, row_id, organization_id=organization_id)
     if event.resource == "secret":
         return await secret_repo.get(db, row_id, organization_id=organization_id)
@@ -402,6 +522,12 @@ async def _row(db: AsyncSession, event: ChangeEvent, row_id: UUID) -> OwnedResou
         return await context_repo.get(db, row_id, organization_id=organization_id)
     if event.resource == "artifact":
         return await artifact_repo.get(db, row_id, organization_id=organization_id)
+    if event.resource == "dataset":
+        return await dataset_repo.get(db, row_id, organization_id=organization_id)
+    if event.resource == "table":
+        return await virtual_table_repo.get_table(db, row_id, organization_id=organization_id)
+    if event.resource == "workflow":
+        return await workflow_repo.get(db, row_id, organization_id=organization_id)
     return await knowledge_base_repo.get_by_id(db, row_id)
 
 
@@ -427,6 +553,27 @@ async def visible(db: AsyncSession, ctx: AuthContext, event: ChangeEvent) -> boo
     """
     if event.organization_id != ctx.organization_id:
         return False
+    if event.resource == "conversation":
+        if (
+            event.id is None
+            or ctx.user_id is None
+            or ctx.api_key_id is not None
+            or ctx.key_scopes is not None
+        ):
+            return False
+        from app.services.conversation import ConversationService
+
+        try:
+            await ConversationService(db).get_conversation(
+                event.id,
+                organization_id=ctx.organization_id,
+                user_id=ctx.user_id,
+                ctx=ctx,
+                include_favourite=False,
+            )
+        except NotFoundError, AuthorizationError:
+            return False
+        return True
     if event.resource == "invitation":
         return ctx.has(Perm.MEMBERS_MANAGE)
     if event.resource in ("member", "group"):
@@ -439,6 +586,9 @@ async def visible(db: AsyncSession, ctx: AuthContext, event: ChangeEvent) -> boo
     if event.resource == "run":
         # The approvals inbox lists parked runs to whoever decides them.
         return ctx.has(Perm.RUNS_VIEW) or ctx.has(Perm.APPROVALS_DECIDE)
+    if event.resource == "knowledge_gap":
+        # Gaps are people's questions, read with the whole run history or not at all.
+        return ctx.scope_for(Perm.RUNS_VIEW) is PermScope.ALL
     resource_type = _OWNED.get(event.resource)
     if resource_type is None:
         return True
@@ -501,7 +651,13 @@ async def _until_disconnect(websocket: WebSocket, cancel: anyio.CancelScope) -> 
     cancel.cancel()
 
 
-async def stream_changes(websocket: WebSocket, *, organization_id: UUID, auth_token: str) -> None:
+async def stream_changes(
+    websocket: WebSocket,
+    *,
+    organization_id: UUID,
+    auth_token: str,
+    conversation_events: bool = False,
+) -> None:
     """Forward the organization's changes to an accepted socket until it closes.
 
     Closes with 4403 the first time the holder's access is found gone - a revoked
@@ -518,14 +674,29 @@ async def stream_changes(websocket: WebSocket, *, organization_id: UUID, auth_to
     ):
         tasks.start_soon(_until_disconnect, websocket, tasks.cancel_scope)
         async for event in events:
-            async with get_db_context() as db:
-                ctx = await _subscriber(db, auth_token, organization_id)
-                if ctx is None:
-                    await websocket.close(code=_REVOKED_CLOSE_CODE, reason="Access revoked")
-                    tasks.cancel_scope.cancel()
-                    return
-                if await visible(db, ctx, event):
-                    await websocket.send_text(as_heard(ctx, event).model_dump_json())
+            if event.resource == "conversation" and not conversation_events:
+                continue
+            # Shielded from the disconnect (#2241): cancelled mid-query, asyncpg's
+            # connection was cancelled while it closed too, and the pool handed
+            # the dead connection to the next request on this worker, a 500. The
+            # session finishes and goes back whole; the socket is written only
+            # outside the shield, and only while the client is still there.
+            with anyio.CancelScope(shield=True):
+                async with get_db_context() as db:
+                    ctx = await _subscriber(db, auth_token, organization_id)
+                    heard = (
+                        as_heard(ctx, event).model_dump_json()
+                        if ctx is not None and await visible(db, ctx, event)
+                        else None
+                    )
+            if tasks.cancel_scope.cancel_called:
+                return
+            if ctx is None:
+                await websocket.close(code=_REVOKED_CLOSE_CODE, reason="Access revoked")
+                tasks.cancel_scope.cancel()
+                return
+            if heard is not None:
+                await websocket.send_text(heard)
         # Redis ended the subscription. 1011 is one the console retries, and a
         # reconnect subscribes again.
         await websocket.close(code=1011, reason="Live updates were interrupted")

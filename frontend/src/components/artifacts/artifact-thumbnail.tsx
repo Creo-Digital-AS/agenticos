@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useDataBridge } from "@/components/artifacts/artifact-frame";
 import { useArtifactView } from "@/hooks/use-artifacts";
 import { cn } from "@/lib/utils";
+import type { AnyBindingData } from "@/types/artifact";
 
 /**
  * Script, and nothing else: no dialogs, no forms, no popups, no same origin.
@@ -12,9 +14,11 @@ import { cn } from "@/lib/utils";
  * a library draws, and with none they were an empty canvas on their card (#1968).
  * No `allow-modals`, so an `alert()` on load is a no-op rather than a dialog over
  * the listing. What script still costs - a page that loops or spawns workers - is
- * bounded by where it runs: a thumbnail is mounted only while its card is near
- * the viewport and unmounted when it leaves (`useNearViewport`), so a listing of
- * fifty runs the few a reader can see.
+ * bounded by how many are loaded: a thumbnail loads when its card first nears the
+ * viewport (`useSeen`), and a listing is paged. A frame scrolled out of view
+ * stays mounted, because the browser already throttles an off-screen cross-origin
+ * frame, and unmounting it meant a fresh address and a fresh page load every time
+ * the reader scrolled back.
  */
 const THUMBNAIL_SANDBOX = "allow-scripts";
 
@@ -23,28 +27,36 @@ const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 960;
 
 /**
- * Whether the element is within a screen of the viewport, now - not once.
- * Scrolling away unmounts the frame, which is what stops a scripted page in a
- * card nobody is looking at. False where the browser has no observer (a test
- * environment): nothing loads.
+ * Whether the element has come within a screen of the viewport, ever.
+ *
+ * Once, not now: the answer never goes back to false, so a card scrolled past
+ * keeps the page it loaded rather than asking for it again. False where the
+ * browser has no observer (a test environment): nothing loads.
  */
-function useNearViewport(ref: React.RefObject<HTMLElement | null>): boolean {
-  const [near, setNear] = useState(false);
+function useSeen(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [seen, setSeen] = useState(false);
   useEffect(() => {
     const element = ref.current;
-    if (element === null || typeof IntersectionObserver === "undefined") return;
+    if (seen || element === null || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) setNear(entry.isIntersecting);
+        if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
       },
       { rootMargin: "240px" },
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ref]);
-  return near;
+  }, [ref, seen]);
+  return seen;
 }
+
+/**
+ * What a thumbnail answers a live page with: no bindings, so the page fills in
+ * every name it declares as unavailable at once. A listing reads no records -
+ * one read per card - and a page waiting on data it will never get would
+ * otherwise sit out its own deadline first.
+ */
+const NO_DATA: Record<string, AnyBindingData> = {};
 
 /** How far a `VIEWPORT_WIDTH` page must shrink to fit the element's width. */
 function useFitScale(ref: React.RefObject<HTMLElement | null>): number {
@@ -66,9 +78,9 @@ function useFitScale(ref: React.RefObject<HTMLElement | null>): number {
  *
  * The real page rather than a screenshot, because none is kept: an artifact is
  * the HTML an agent published, and this is the one place in a listing that can
- * show what a report looks like before it is opened. It is loaded only while the
- * card is near the viewport - the signed address is a request per card - and in
- * a sandbox that allows script and nothing more, see `THUMBNAIL_SANDBOX`.
+ * show what a report looks like before it is opened. It is loaded once, when the
+ * card first nears the viewport - the signed address is a request per card - and
+ * in a sandbox that allows script and nothing more, see `THUMBNAIL_SANDBOX`.
  *
  * Inert: no pointer events, out of the tab order and hidden from assistive
  * technology, because the card around it is the link and carries the title.
@@ -87,16 +99,26 @@ export function ArtifactThumbnail({
   versionId?: string | null;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  const near = useNearViewport(box);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const seen = useSeen(box);
   const scale = useFitScale(box);
-  const view = useArtifactView(artifactId, versionId, near);
+  // The first address is kept, and the query stops once there is one: a refetch
+  // - on reconnect, say - mints a new address, and a new `src` reloads the page.
+  // Its nonce is kept with it, because the data bridge answers only the frame
+  // whose address that nonce was minted for.
+  const [shown, setShown] = useState<{ url: string; nonce: string } | null>(null);
+  const src = shown?.url ?? null;
+  const view = useArtifactView(artifactId, versionId, seen && shown === null);
+  const bridge = useDataBridge(frame, shown?.nonce ?? "", NO_DATA, 0);
   const [loaded, setLoaded] = useState(false);
-  // A frame unmounted off screen paints again when it comes back, so the lines
-  // return with it rather than a blank card waiting for the load.
-  const [wasNear, setWasNear] = useState(near);
-  if (wasNear !== near) {
-    setWasNear(near);
-    if (!near) setLoaded(false);
+  const page = `${artifactId}:${versionId ?? ""}`;
+  const [shownPage, setShownPage] = useState(page);
+  if (shownPage !== page) {
+    setShownPage(page);
+    setShown(null);
+    setLoaded(false);
+  } else if (shown === null && view.data !== undefined) {
+    setShown({ url: view.data.url, nonce: view.data.nonce });
   }
   const line = cn("bg-muted rounded", !view.isError && "animate-pulse");
 
@@ -114,16 +136,20 @@ export function ArtifactThumbnail({
           </div>
         </div>
       )}
-      {near && view.data !== undefined && (
+      {src !== null && (
         <iframe
-          src={view.data.url}
+          ref={frame}
+          src={src}
           title={title}
           sandbox={THUMBNAIL_SANDBOX}
           referrerPolicy="no-referrer"
           loading="lazy"
           tabIndex={-1}
           aria-hidden
-          onLoad={() => setLoaded(true)}
+          onLoad={() => {
+            setLoaded(true);
+            bridge.onLoad();
+          }}
           data-loaded={loaded}
           className="peek-frame pointer-events-none absolute top-0 left-0 origin-top-left border-0 bg-white"
           style={{

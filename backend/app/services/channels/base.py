@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from app.agents.capabilities.channel_tools import (
@@ -27,9 +28,32 @@ logger = logging.getLogger(__name__)
 # `agent_registry.slugify` reads the same set and cannot import that module.
 ROOM_HANDLES = frozenset({"channel", "all", "here", "everyone"})
 
+
+_BROADCAST_TEXT = re.compile(r"(?<![\w@])@(?:channel|all|here|everyone)(?![\w.-])", re.I)
+_CODE = re.compile(r"```[\s\S]*?```|`[^`]*`")
+_SLACK_BROADCAST = re.compile(r"<!(?:channel|group|here|everyone)(?:\|[^>]+)?>")
+
+
+def mentionable_text(text: str) -> str:
+    """Text outside code spans, with Mattermost's full-width mention prefix normalized."""
+    return _CODE.sub("", text).replace("\uff20", "@")
+
+
+def broadcast_mentioned(platform: str, text: str) -> bool:
+    """Recognize room mentions outside code; Telegram uses explicit text aliases."""
+    plain = mentionable_text(text)
+    if platform == "slack":
+        return _SLACK_BROADCAST.search(plain) is not None
+    if platform in ("mattermost", "telegram"):
+        return _BROADCAST_TEXT.search(plain) is not None
+    return False
+
+
 # Surface a conversation is happening on. "web" is the chat UI / API; the
 # others are messaging platforms. Extend this when adding new channels.
-ChannelType = Literal["web", "slack", "telegram", "mattermost"]
+ChannelType = Literal[
+    "web", "slack", "telegram", "mattermost", "teams", "sms", "email", "discord", "imessage"
+]
 
 # Default access policy applied to new channel bots.  Imported by models and
 # repositories so the literal is defined in exactly one place.
@@ -38,6 +62,7 @@ DEFAULT_ACCESS_POLICY: dict[str, Any] = {
     "whitelist": [],
     "allowed_groups": [],
     "require_link": False,
+    "respond_to_broadcasts": False,
     "rate_limit_rpm": 10,
     "denied_message": "You are not authorised to use this bot.",
 }
@@ -57,13 +82,6 @@ DEFAULT_USAGE_REPORTING: dict[str, Any] = {
     "near_limit_percent": 80,
     "every_n": 10,
 }
-
-# JSON-serialised form used by SQLite model defaults (stored as TEXT).
-DEFAULT_ACCESS_POLICY_JSON: str = (
-    '{"mode":"open","whitelist":[],"allowed_groups":[],'
-    '"require_link":false,"rate_limit_rpm":10,'
-    '"denied_message":"You are not authorised to use this bot."}'
-)
 
 
 def channel_key(platform_chat_id: str) -> str:
@@ -183,6 +201,22 @@ class IncomingAttachment:
     handle: str
     """Opaque to everything but the adapter that made it."""
 
+    duration_seconds: float | None = None
+    """How long a recording is, where the platform says (Slack's `duration_ms`,
+    Telegram's `duration`; Mattermost states none).
+
+    Metadata, not a measurement, and absent on most files. Read so that a
+    voice note's length can be recorded with its transcription without
+    decoding the audio, which nothing in the image can do."""
+
+    author_id: str | None = None
+    """Who posted it, as the access policy names them, for a file read out of a
+    thread the bot was brought into.
+
+    What lets the router hold a file to the same admission as a message: a
+    participant the bot's policy excludes must not get a file into the prompt
+    that their words could not reach. `None` where the adapter does not say."""
+
 
 @dataclass(frozen=True)
 class OutgoingAttachment:
@@ -207,6 +241,10 @@ class IncomingMessage:
     platform_username: str | None = None
     platform_display_name: str | None = None
     message_id: str | None = None
+    dedupe_claimed: bool = False
+    """Request-only evidence that shared Redis admitted this delivery, not a fail-open path."""
+
+    broadcast_mention: bool = False
     addressed: bool | None = None
     """Whether this message named the bot, where the platform says.
 
@@ -239,6 +277,9 @@ class IncomingMessage:
     meant a file sent to a bot was silently dropped and the agent answered about
     a document it never received.
     """
+
+    discord_roles_checked_for: tuple[str, str, str] | None = None
+    """Trusted preflight metadata: bot, linked user and identity; never read from raw payloads."""
 
 
 @dataclass
@@ -453,21 +494,39 @@ class ChannelAdapter(ABC):
     platform: str  # class-level constant e.g. "telegram"
 
     def prepare_connection(  # noqa: B027
-        self, bot_id: str, *, api_base_url: str | None, app_token: str | None
+        self,
+        bot_id: str,
+        *,
+        api_base_url: str | None,
+        app_token: str | None,
+        approved_guild_ids: tuple[str, ...] = (),
     ) -> None:
         """Register what this bot's connection needs before the stream opens.
 
         The adapter is one object serving every bot, so a per-bot fact - a
-        self-hosted server's address, a Slack app's `xapp-` token - is keyed on
+        self-hosted server's address, a Slack app's `xapp-` token or Discord's
+        approved server IDs - is keyed on
         the bot id here, and a stream opened before this ran would have nowhere
         to connect. A platform that needs neither leaves it alone; the supervisor
         calls it on every adapter the same way, which is what replaced reaching
         for two differently named methods by `getattr`.
         """
 
+    async def resolve_addressing(self, bot_token: str, incoming: IncomingMessage) -> bool | None:
+        """Whether this message directly names this bot, resolving identity where needed."""
+        return incoming.addressed
+
     @abstractmethod
     async def send_message(self, bot_token: str, msg: OutgoingMessage) -> None:
         """Send a reply back to the platform."""
+
+    async def send_notification(
+        self, bot_token: str, msg: OutgoingMessage, *, context_url: str | None
+    ) -> None:
+        """Deliver one notice; rich platforms may render its canonical case link."""
+        if context_url:
+            msg = replace(msg, text=f"{msg.text}\n\n{context_url}")
+        await self.send_message(bot_token, msg)
 
     async def begin_reply(self, bot_token: str, msg: OutgoingMessage) -> str | None:
         """Post a message that will be rewritten as the answer arrives.
@@ -544,6 +603,34 @@ class ChannelAdapter(ABC):
         the same stub for a feature only some platforms have.
         """
 
+    async def vouched_email(self, bot_token: str, incoming: IncomingMessage) -> str | None:
+        """The sender's address, where this deployment signs people in through the same directory.
+
+        `None` by default, which leaves linking to the link flow. A platform whose
+        roster comes from the identity provider the deployment's own sign-in uses -
+        Teams in the deployment's Entra tenant - can answer, and an unlinked sender
+        is then linked to the member who signed in with that address (#1985).
+        """
+        return None
+
+    async def welcome(
+        self,
+        bot_token: str,
+        email: str,
+        text: str,
+        *,
+        api_base_url: str | None,
+        places: Sequence[str] = (),
+    ) -> bool:
+        """Greet one person directly, found by their address (#2301).
+
+        `False` by default, and wherever they are not in this workspace or the
+        platform cannot start a chat with them. `places` are conversations this
+        bot is in, for a platform with no directory to search: Teams finds people
+        in their rosters.
+        """
+        return False
+
     async def download_attachment(self, bot_token: str, attachment: IncomingAttachment) -> bytes:
         """Fetch what somebody sent, using this platform's own second request.
 
@@ -557,6 +644,20 @@ class ChannelAdapter(ABC):
                 an attachment looks like a bot that read it.
         """
         raise NotImplementedError(f"{self.platform} attachments cannot be downloaded yet")
+
+    async def describe_attachments(
+        self, bot_token: str, attachments: list[IncomingAttachment]
+    ) -> list[IncomingAttachment]:
+        """The attachments with what the parser could not know filled in.
+
+        Called by the router before it decides which attachments are voice
+        notes, since that decision reads the type. Most platforms put the name,
+        size and type on the event, so the default returns the list unchanged.
+        An adapter whose payload can carry a bare id - a Mattermost outgoing
+        webhook - looks the rest up here, where an HTTP call is allowed and a
+        synchronous parser's is not.
+        """
+        return attachments
 
     #
     # The implementation half of `app.agents.capabilities.channel_tools`: the
@@ -590,6 +691,16 @@ class ChannelAdapter(ABC):
             ChannelDirectoryUnsupported: If this platform does not tell a bot.
         """
         raise ChannelDirectoryUnsupported(f"{self.platform} cannot list a channel's members.")
+
+    async def channel_server(self, bot_token: str, channel_id: str) -> str | None:
+        """The server a channel belongs to, for a platform that approves access by server.
+
+        `None` by default, and for a channel with no server (a direct message) or
+        one the bot can no longer see. Only a platform whose access policy names
+        servers answers; a sender rebuilt from a stored run has no server id, and
+        this is how admission asks the platform for the current one.
+        """
+        return None
 
     async def is_channel_member(
         self, bot_token: str, channel_id: str, platform_user_id: str, *, api_base_url: str | None

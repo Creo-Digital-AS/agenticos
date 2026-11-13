@@ -9,16 +9,13 @@ import {
   Gauge,
   GitBranch,
   Library,
-  Maximize,
-  MessageSquare,
   Network,
   Plug,
   Radio,
   UserCog,
   Wallet,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
+import { ChatIcon as MessageSquare } from "@/components/icons/product-icons";
 import type { LucideIcon } from "lucide-react";
 
 import {
@@ -29,10 +26,10 @@ import {
   type MapNode,
 } from "./agent-map-nodes";
 import { MapDetail } from "./agent-map-detail";
+import { MapZoomControls } from "./map-zoom-controls";
 import { useMapView, type EdgeInput } from "./agent-map-view";
 import { useFocusedNode } from "./use-focused-node";
 import { surfaceIconComponent } from "@/components/runs/surface-icon";
-import { Button } from "@/components/ui";
 import { STEP_ICONS } from "@/lib/step-icons";
 import { toolEntry } from "@/lib/tool-catalog";
 import { cn } from "@/lib/utils";
@@ -138,36 +135,12 @@ export function AgentMap({
   const focusedDelegate = flatDelegates.find((delegate) => delegate.key === focused);
 
   return (
-    <div className="relative">
-      <div className="absolute top-2 right-2 z-10 flex gap-1">
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label={t("zoom")}
-          onClick={() => zoomFromCentre(1.25)}
-        >
-          <ZoomIn className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label={t("zoomOut")}
-          onClick={() => zoomFromCentre(1 / 1.25)}
-        >
-          <ZoomOut className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label={t("resetView")}
-          onClick={resetView}
-        >
-          <Maximize className="h-4 w-4" />
-        </Button>
-      </div>
+    <div className="relative min-w-0">
+      <MapZoomControls
+        onZoomIn={() => zoomFromCentre(1.25)}
+        onZoomOut={() => zoomFromCentre(1 / 1.25)}
+        onReset={resetView}
+      />
 
       {/* The pan/zoom canvas. A click that lands here rather than on a node is
           how a person says "never mind", so it clears the focus - nodes stop
@@ -184,7 +157,7 @@ export function AgentMap({
       >
         <div
           ref={container}
-          className="relative origin-top-left p-8"
+          className="relative w-[1040px] origin-top-left p-8"
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         >
           <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
@@ -212,13 +185,13 @@ export function AgentMap({
               run: at 24px a dashed line crossed a box before it reached one, and
               the picture read as boxes with lines behind them rather than as
               boxes joined by lines. */}
-          <div className="relative grid items-center gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,1fr)]">
+          <div className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,1fr)] items-center gap-10">
             {/* Row above the hub: what the agent runs as. The flanking cells
                 keep the grid's auto-placement honest on large screens. */}
             {tops.length > 0 && (
               <>
-                <div className="hidden lg:block" />
-                <div className="grid gap-5 sm:grid-cols-2">
+                <div aria-hidden="true" />
+                <div className="grid grid-cols-2 gap-5">
                   {tops.map((node) => (
                     <CapabilityNode
                       key={node.key}
@@ -230,7 +203,7 @@ export function AgentMap({
                     />
                   ))}
                 </div>
-                <div className="hidden lg:block" />
+                <div aria-hidden="true" />
               </>
             )}
 
@@ -294,7 +267,7 @@ export function AgentMap({
                 agent that never delegates would be noise, not a finding. */}
             {(bottoms.length > 0 || delegates.length > 0) && (
               <>
-                <div className="hidden lg:block" />
+                <div aria-hidden="true" />
                 <div className="space-y-5">
                   {bottoms.map((node) => (
                     <CapabilityNode
@@ -311,7 +284,7 @@ export function AgentMap({
                       {delegationNotice && (
                         <p className="text-muted-foreground text-xs">{delegationNotice}</p>
                       )}
-                      <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="grid grid-cols-2 gap-2">
                         {delegates.map((delegate) => (
                           <div key={delegate.key} className="min-w-0">
                             <DelegateNode
@@ -336,7 +309,7 @@ export function AgentMap({
                     </section>
                   )}
                 </div>
-                <div className="hidden lg:block" />
+                <div aria-hidden="true" />
               </>
             )}
           </div>

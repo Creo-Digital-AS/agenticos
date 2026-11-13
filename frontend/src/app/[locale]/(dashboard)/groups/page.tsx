@@ -28,36 +28,39 @@ export default function GroupsPage() {
   const orgId = useOrgStore((state) => state.activeOrgId) ?? "";
   const { can } = usePermissions();
   const canManage = can(Perm.membersManage);
-  const { groups, isLoading, error, remove } = useGroups(orgId);
+  const { groups, isLoading, error, remove, refetch } = useGroups(orgId);
   const [editing, setEditing] = useState<Group | "new" | null>(null);
   const [deleting, setDeleting] = useState<Group | null>(null);
   const [viewing, setViewing] = useState<Group | null>(null);
   const [templates, setTemplates] = useState(false);
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-1 flex-col space-y-4">
       <PageHeader
         title={t("departmentsTitle")}
         description={t("departmentsDescription")}
+        secondaryActions={
+          canManage ? (
+            <Button variant="outline" onClick={() => setTemplates(true)}>
+              <Sparkles className="h-4 w-4" />
+              {t("addDepartments")}
+            </Button>
+          ) : null
+        }
         actions={
           canManage ? (
-            <>
-              <Button variant="outline" onClick={() => setTemplates(true)}>
-                <Sparkles className="h-4 w-4" />
-                {t("addDepartments")}
-              </Button>
-              <Button onClick={() => setEditing("new")} data-tour="groups-new">
-                <Plus className="h-4 w-4" />
-                {t("newGroup")}
-              </Button>
-            </>
+            <Button onClick={() => setEditing("new")} data-tour="groups-new">
+              <Plus className="h-4 w-4" />
+              {t("newGroup")}
+            </Button>
           ) : null
         }
       />
 
-      <div data-tour="groups-list">
+      <div data-tour="groups-list" className="flex flex-1 flex-col">
         <GroupList
           groups={groups}
+          onRetry={() => void refetch()}
           isLoading={isLoading}
           error={error}
           canManage={canManage}
@@ -95,10 +98,7 @@ export default function GroupsPage() {
           confirmLabel={t("delete")}
           destructive
           loading={remove.isPending}
-          onConfirm={async () => {
-            await remove.mutateAsync(deleting.id).catch(() => undefined);
-            setDeleting(null);
-          }}
+          onConfirm={() => remove.mutate(deleting.id, { onSuccess: () => setDeleting(null) })}
         />
       )}
     </div>

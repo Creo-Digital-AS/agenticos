@@ -14,8 +14,6 @@ exists to send one agent's traces to a client's own project, and a URL built fro
 the deployment's slugs would point at a project that does not contain the run.
 """
 
-from __future__ import annotations
-
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
@@ -29,7 +27,7 @@ from app.agents.observability import current_trace_id
 from app.agents.spec import AgentSpec, ObservabilitySpec
 from app.core.permissions import AuthContext, OrgRoleName
 from app.db.models.agent_run import RunStatus
-from app.services.agent_runner import AgentRunnerService
+from app.services.agent_runner import AdmittedAs, AgentRunnerService
 
 pytestmark = pytest.mark.anyio
 
@@ -63,7 +61,7 @@ class TestReadingTheTraceIdOffTheCurrentSpan:
 class TestTheIdIsWrittenHoweverTheRunEnded:
     @staticmethod
     def _prepared() -> MagicMock:
-        prepared = MagicMock()
+        prepared = MagicMock(earlier_attachments_checked=False, admitted_as=AdmittedAs())
         prepared.run = MagicMock(id=uuid.uuid4(), conversation_id=None)
         prepared.built.ledger = MagicMock(
             input_tokens=10,

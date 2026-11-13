@@ -7,37 +7,62 @@ happily - the token itself is what talks to Slack or Telegram as that
 organization, so that was a tenant boundary with nothing behind it.
 """
 
-from __future__ import annotations
-
+import hashlib
 import logging
 import secrets
 from typing import Any
-from uuid import UUID
+from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
+from pydantic import JsonValue, SecretStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.background import spawn_after_commit
-from app.core.exceptions import BadRequestError, NotFoundError
+from app.core.exceptions import AuthorizationError, BadRequestError, ConflictError, NotFoundError
 from app.core.field_errors import refused_field
+from app.core.permissions import AuthContext, Perm, assignable_roles
 from app.core.vault import SealedSecret, VaultScope, seal, unseal
 from app.db.models.channel_bot import ChannelBot
-from app.db.updates import writable
-from app.repositories import agent_exposure_repo, channel_bot_repo, channel_session_repo
+from app.db.models.teams_conversation import TeamsConversation
+from app.db.updates import cleared, writable
+from app.repositories import (
+    agent_exposure_repo,
+    channel_bot_repo,
+    channel_session_repo,
+    discord_role_mapping_repo,
+    teams_conversation_repo,
+)
 from app.schemas.channel_bot import (
+    AccessPolicy,
     BotAgent,
     ChannelBotCreate,
     ChannelBotRead,
     ChannelBotUpdate,
+    InheritedSpeechToTextRead,
 )
 from app.services.channels import (
+    INBOUND_PATHS,
     SECRET_MINTED_BY_US,
+    STREAM_ONLY,
     connection_state,
     get_adapter,
     inbound_webhook_url,
 )
+from app.services.channels.base import IncomingMessage
+from app.services.channels.email import is_address
+from app.services.channels.exceptions import ChannelNotConfigured
+from app.services.channels.imessage import TAPBACK_REACTIONS
+from app.services.channels.imessage_transport import BridgeCredentials
 from app.services.channels.slack_manifest import slack_manifest
+from app.services.channels.sms import split_credentials
 from app.services.channels.supervisor import close_inbound_stream, open_inbound_stream
+from app.services.channels.teams import ConversationRef
+from app.services.channels.teams_auth import TeamsCredentials
+from app.services.channels.teams_package import teams_app_package
 from app.services.speech_to_text import is_offered as stt_is_offered
+from app.services.speech_to_text_settings import SpeechToTextSettingsService
+from app.services.transcription import TranscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +79,31 @@ def unseal_bot_token(bot: ChannelBot) -> str:
     the webhook router and the polling loop at startup - have the row and no
     service, and the row is what carries the organization the envelope is bound
     to.
+
+    A Teams bot's token is its client secret, and signing in needs the app and
+    tenant beside it; the three travel as one string, so every adapter call
+    still takes one token (#1985).
     """
-    return unseal(
+    token = unseal(
         bot.token_encrypted,
         scope=VaultScope.organization(bot.organization_id),
         key_version=bot.secret_key_version,
     )
+    if bot.platform == "teams":
+        return TeamsCredentials(
+            app_id=bot.teams_app_id or "",
+            tenant_id=bot.teams_tenant_id or "",
+            client_secret=token,
+        ).encode()
+    if bot.platform == "imessage":
+        secret = unseal_webhook_secret(bot)
+        return BridgeCredentials(
+            bot_id=bot.id,
+            server=bot.api_base_url or "",
+            password=SecretStr(token),
+            webhook_secret=SecretStr(secret) if secret is not None else None,
+        ).encode()
+    return token
 
 
 def unseal_webhook_secret(bot: ChannelBot) -> str | None:
@@ -118,14 +162,35 @@ def unseal_slack_app_token(bot: ChannelBot) -> str | None:
     )
 
 
+def _transcription_is_off() -> BadRequestError:
+    """The refusal for a transcription pair named for a bot that does not transcribe.
+
+    One sentence for create and update alike, so the form marks the same switch
+    whichever it was saving.
+    """
+    return refused_field(
+        "transcribe_voice_notes",
+        "Transcription is off for this bot - turn it on to choose a model",
+    )
+
+
+def _key_without_pair() -> BadRequestError:
+    """The refusal for a transcription key named with no pair of the bot's own."""
+    return refused_field(
+        "speech_to_text_secret_id",
+        "A transcription key goes with the bot's own provider and model - an "
+        "inheriting bot uses the key of the level it inherits from",
+    )
+
+
 class ChannelBotService:
     """Service for channel bot management.
 
     `organization_id` is the tenant every management call is scoped to. It is
     `None` only on the inbound path (webhook / poller), where no member is
     making the request and the bot row itself carries the organization - those
-    callers may use :meth:`find_active` and :meth:`get_decrypted_token` and
-    nothing else.
+    callers may use :meth:`find_active`, :meth:`get_decrypted_token` and
+    :meth:`queue_delivery`.
     """
 
     def __init__(self, db: AsyncSession, organization_id: UUID | None = None) -> None:
@@ -177,9 +242,66 @@ class ChannelBotService:
                 token=unseal_bot_token(bot),
                 api_base_url=bot.api_base_url,
                 app_token=unseal_slack_app_token(bot),
+                approved_guild_ids=(
+                    tuple(AccessPolicy.model_validate(bot.access_policy).discord_guild_ids)
+                    if bot.platform == "discord"
+                    else ()
+                ),
             ),
             name=f"open_channel_stream:{bot_id}",
         )
+
+    async def queue_delivery(
+        self, bot: ChannelBot, payload: dict[str, JsonValue], incoming: IncomingMessage
+    ) -> None:
+        """Persist an authenticated SMS/iMessage before the provider receives its acknowledgement."""
+        from app.repositories import background_job as job_repo
+        from app.services.background_jobs import enqueue
+        from app.worker.jobs import PROCESS_CHANNEL_DELIVERY, ChannelDelivery
+
+        if bot.platform not in {"sms", "imessage"}:
+            raise ValueError("This delivery queue accepts SMS and iMessage only")
+        job = ChannelDelivery.model_validate(
+            {
+                "organization_id": bot.organization_id,
+                "bot_id": bot.id,
+                "platform": bot.platform,
+                "payload": payload,
+            }
+        )
+        key = (
+            f"channel:{bot.id}:{hashlib.sha256(incoming.message_id.encode()).hexdigest()}"
+            if incoming.message_id
+            else None
+        )
+        if (
+            key is not None
+            and await job_repo.get_by_idempotency_key(
+                self.db, organization_id=bot.organization_id, idempotency_key=key
+            )
+            is not None
+        ):
+            return
+        try:
+            async with self.db.begin_nested():
+                await enqueue(
+                    self.db,
+                    PROCESS_CHANNEL_DELIVERY,
+                    job,
+                    organization_id=bot.organization_id,
+                    idempotency_key=key,
+                    concurrency_key=f"channel:{bot.id}:{hashlib.sha256(incoming.platform_chat_id.encode()).hexdigest()}",
+                )
+        except IntegrityError:
+            if (
+                key is not None
+                and await job_repo.get_by_idempotency_key(
+                    self.db, organization_id=bot.organization_id, idempotency_key=key
+                )
+                is not None
+            ):
+                return
+            raise
 
     async def create(self, data: ChannelBotCreate) -> ChannelBot:
         """Create a new channel bot with its credentials sealed, and open its stream.
@@ -191,10 +313,24 @@ class ChannelBotService:
         Raises:
             BadRequestError: If Slack-app credentials arrive on a bot that is
                 not a Slack bot - accepting them would store secrets nothing
-                will ever read.
+                will ever read - or a transcription pair arrives with
+                transcription off, refused as an update refuses it rather than
+                stored as a pair that can never run.
         """
         self._check_slack_fields(data.platform, data.slack_signing_secret, data.slack_app_token)
+        self._check_discord_policy(data.platform, data.access_policy)
+        if data.speech_to_text_provider is not None:
+            # The schema has already made the pair whole, and refused a key
+            # without one, so the provider stands for all three.
+            if not data.transcribe_voice_notes:
+                raise _transcription_is_off()
+            await self._check_key(
+                data.speech_to_text_secret_id, provider=data.speech_to_text_provider
+            )
         self._check_command_token(data.platform, data.command_token)
+        self._check_sms(data)
+        self._check_email(data)
+        self._check_imessage_reaction(data.platform, data.ack_reaction)
         sealed = seal_bot_token(data.token, organization_id=self._org_id)
         webhook_secret = self._initial_webhook_secret(data)
         bot = await channel_bot_repo.create(
@@ -218,8 +354,12 @@ class ChannelBotService:
             command_token_encrypted=self._seal_at(
                 data.command_token, key_version=sealed.key_version
             ),
+            transcribe_voice_notes=data.transcribe_voice_notes,
+            teams_app_id=data.teams_app_id,
+            teams_tenant_id=data.teams_tenant_id,
             speech_to_text_provider=data.speech_to_text_provider,
             speech_to_text_model=data.speech_to_text_model,
+            speech_to_text_secret_id=data.speech_to_text_secret_id,
             ack_reaction=data.ack_reaction,
             stream_answers=data.stream_answers,
             step_display=data.step_display,
@@ -265,9 +405,8 @@ class ChannelBotService:
             value, scope=VaultScope.organization(self._org_id), key_version=key_version
         ).ciphertext
 
-    @staticmethod
-    def _check_transcription(bot: ChannelBot, update_data: dict[str, Any]) -> None:
-        """Both halves of the transcription pair, against what is already stored.
+    async def _check_transcription(self, bot: ChannelBot, update_data: dict[str, Any]) -> None:
+        """The transcription pair and its key, against what is already stored.
 
         The schema can only see the request, and a patch legitimately carries one
         field: somebody switching model keeps the provider. So the pairing is
@@ -276,12 +415,29 @@ class ChannelBotService:
         either alone is a setting that reads as configured and does nothing. That
         is the state somebody debugs by sending voice notes into silence.
 
-        Clearing is a pair too: turning transcription off means both fields null,
-        not a provider left pointing at nothing.
+        A pair goes with a key named beside it (`_check_key`). Changing the
+        provider without naming a key is refused rather than keeping the old
+        one: a key never carries over to another provider.
+
+        Clearing is a pair too: both fields null, and the key with them, not a
+        provider left pointing at nothing. Null is "inherit" since #1797; "off"
+        is `transcribe_voice_notes`, and switching it off clears the pair and
+        the key here so an off bot never carries an engine it will not use. A
+        pair or a key named for a bot that is switched off in the same request,
+        or that stays off, is refused for the same reason rather than dropped or
+        stored - the answer `create` gives too.
         """
+        fields = ("speech_to_text_provider", "speech_to_text_model", "speech_to_text_secret_id")
+        if update_data.get("transcribe_voice_notes") is False:
+            if any(update_data.get(field) is not None for field in fields):
+                raise _transcription_is_off()
+            for field in fields:
+                update_data[field] = None
+            return
         provider_given = "speech_to_text_provider" in update_data
         model_given = "speech_to_text_model" in update_data
-        if not provider_given and not model_given:
+        key_given = "speech_to_text_secret_id" in update_data
+        if not provider_given and not model_given and not key_given:
             return
         provider = (
             update_data["speech_to_text_provider"]
@@ -289,6 +445,9 @@ class ChannelBotService:
             else bot.speech_to_text_provider
         )
         model = update_data["speech_to_text_model"] if model_given else bot.speech_to_text_model
+        secret_id = (
+            update_data["speech_to_text_secret_id"] if key_given else bot.speech_to_text_secret_id
+        )
         if (provider is None) != (model is None):
             raise BadRequestError(
                 message=(
@@ -297,11 +456,36 @@ class ChannelBotService:
                 ),
                 details={"fields": ["speech_to_text_provider", "speech_to_text_model"]},
             )
-        if provider is not None and model is not None and not stt_is_offered(provider, model):
+        if provider is None:
+            if key_given and secret_id is not None:
+                raise _key_without_pair()
+            update_data["speech_to_text_secret_id"] = None
+            return
+        if model is not None and not stt_is_offered(provider, model):
             raise refused_field(
                 "speech_to_text_model",
                 f"'{model}' is not a transcription model this deployment offers for {provider}",
             )
+        if not update_data.get("transcribe_voice_notes", bot.transcribe_voice_notes):
+            raise _transcription_is_off()
+        await self._check_key(secret_id, provider=provider)
+
+    async def _check_key(self, secret_id: UUID | None, *, provider: str) -> None:
+        """Refuse a bot pair with no key, or with one a bot may not be saved with.
+
+        A bot's voice notes are paid for on behalf of whoever writes to it, so
+        its key is held to the organization's rule - organization-visible, an
+        API key for this provider (`SpeechToTextSettingsService.key_problem`).
+        """
+        if secret_id is None:
+            raise refused_field(
+                "speech_to_text_secret_id", f"Choose a key for {provider} to transcribe with"
+            )
+        problem = await SpeechToTextSettingsService(self.db).key_problem(
+            secret_id, organization_id=self._org_id, provider=provider, ctx=None
+        )
+        if problem is not None:
+            raise refused_field("speech_to_text_secret_id", problem)
 
     @staticmethod
     def _check_server_url(platform: str, api_base_url: str | None) -> None:
@@ -315,20 +499,79 @@ class ChannelBotService:
         an attachment, which is the state every Mattermost bot was in before the
         field existed.
         """
-        if platform == "mattermost" and api_base_url is None:
+        if platform in {"mattermost", "imessage"} and api_base_url is None:
             raise refused_field(
                 "api_base_url",
-                "A Mattermost bot cannot lose its server URL - it is self-hosted, "
+                "A self-hosted bot cannot lose its server URL - "
                 "so there is no default address to fall back to",
                 platform=platform,
             )
-        if platform != "mattermost" and api_base_url is not None:
+        if platform == "imessage" and api_base_url is not None:
+            endpoint = urlsplit(api_base_url)
+            if endpoint.query or endpoint.fragment:
+                raise refused_field(
+                    "api_base_url", "An iMessage bridge endpoint cannot contain query or fragment"
+                )
+        if platform not in {"mattermost", "imessage"} and api_base_url is not None:
             raise refused_field(
                 "api_base_url",
                 f"A server URL is for a self-hosted platform - a {platform} bot "
                 "has one address for everybody",
                 platform=platform,
             )
+
+    @staticmethod
+    def _check_imessage_reaction(platform: str, reaction: str | None) -> None:
+        if (
+            platform == "imessage"
+            and reaction is not None
+            and reaction not in TAPBACK_REACTIONS | {"eyes"}
+        ):
+            raise refused_field(
+                "ack_reaction", "Choose a supported iMessage tapback or turn it off"
+            )
+
+    @staticmethod
+    def _check_sms(data: ChannelBotCreate) -> None:
+        """An SMS bot is a Twilio number: webhook only, and a token that can sign and send."""
+        if data.platform != "sms":
+            return
+        if not data.webhook_mode:
+            raise refused_field(
+                "webhook_mode", "SMS arrives only by webhook; there is no connection to open"
+            )
+        ChannelBotService._check_sms_token(data.platform, data.token)
+
+    @staticmethod
+    def _check_sms_token(platform: str, token: str) -> None:
+        """A replacement token for an SMS bot must still be one that can sign and send."""
+        if platform != "sms":
+            return
+        try:
+            split_credentials(token)
+        except ChannelNotConfigured as exc:
+            raise refused_field("token", exc.message) from exc
+
+    @staticmethod
+    def _check_email(data: ChannelBotCreate) -> None:
+        """An e-mail bot is an address and a relay: webhook only, signed with a secret it was given."""
+        if data.platform != "email":
+            return
+        if not data.webhook_mode:
+            raise refused_field(
+                "webhook_mode", "E-mail arrives only through the relay's webhook; nothing to poll"
+            )
+        ChannelBotService._check_email_token(data.platform, data.token)
+        if data.webhook_secret is None:
+            raise refused_field(
+                "webhook_secret", "Give the secret the mail relay will sign its requests with"
+            )
+
+    @staticmethod
+    def _check_email_token(platform: str, token: str) -> None:
+        """An e-mail bot's token is the address its replies come from."""
+        if platform == "email" and not is_address(token):
+            raise refused_field("token", "An e-mail bot's token is the address it sends from")
 
     @staticmethod
     def _check_command_token(platform: str, command_token: str | None) -> None:
@@ -348,6 +591,13 @@ class ChannelBotService:
                 details={"platform": platform},
             )
 
+    @staticmethod
+    def _check_discord_policy(platform: str, policy: AccessPolicy) -> None:
+        if platform != "discord" and policy.discord_guild_ids:
+            raise refused_field(
+                "access_policy.discord_guild_ids", "Only Discord bots use Discord server approvals"
+            )
+
     async def get(self, bot_id: UUID, *, for_update: bool = False) -> ChannelBot:
         """Get one of this organization's bots; raises NotFoundError if not found.
 
@@ -363,6 +613,75 @@ class ChannelBotService:
                 details={"bot_id": str(bot_id)},
             )
         return bot
+
+    async def read(self, bot_id: UUID) -> ChannelBotRead:
+        """One bot as its form reads it, with what "inherit" would transcribe on.
+
+        The inherited engine is resolved here and not on the listing: it reads
+        the version of the agent the bot serves, and a page of bots is a page of
+        those reads (#1797).
+        """
+        bot = await self.get(bot_id)
+        settings = await SpeechToTextSettingsService(self.db).for_bot(bot, inherited=True)
+        resolved = settings.resolved
+        inherited = (
+            None
+            if resolved is None or resolved.pair_source == "bot"
+            else InheritedSpeechToTextRead(
+                provider=resolved.provider,
+                model=resolved.model,
+                has_key=await TranscriptionService(self.db).has_key(
+                    bot.organization_id,
+                    provider=resolved.provider,
+                    secret_id=resolved.secret_id,
+                    shared_key=resolved.shared_key,
+                ),
+                language=resolved.language,
+                pair_source=resolved.pair_source,
+                language_source=resolved.language_source,
+                agent_name=settings.agent_name,
+            )
+        )
+        return ChannelBotRead.model_validate(bot).model_copy(
+            update={"inherited_speech_to_text": inherited}
+        )
+
+    async def teams_app_package(self, bot_id: UUID) -> bytes:
+        """The Teams app package for one bot, to upload to the tenant's app catalog.
+
+        Raises:
+            BadRequestError: If the bot is not a Teams bot.
+        """
+        bot = await self.get(bot_id)
+        if bot.platform != "teams" or not bot.teams_app_id:
+            raise BadRequestError(
+                message="Only a Teams bot has an app package", details={"bot_id": str(bot_id)}
+            )
+        return teams_app_package(bot)
+
+    async def record_teams_conversation(self, bot: ChannelBot, ref: ConversationRef) -> None:
+        """Remember where a Teams conversation lives, for answers and posts after this one."""
+        await teams_conversation_repo.record(
+            self.db,
+            organization_id=bot.organization_id,
+            bot_id=bot.id,
+            key=ref.key,
+            conversation_id=ref.conversation_id,
+            service_url=ref.service_url,
+            tenant_id=ref.tenant_id,
+            conversation_type=ref.conversation_type,
+            name=ref.name,
+        )
+
+    async def teams_conversations(self) -> list[TeamsConversation]:
+        """Where a trigger may post: the team channels this organization's Teams bots
+        are in. A group chat is private to its participants and a personal chat is
+        somebody's own, so neither is offered."""
+        return await teams_conversation_repo.list_shared(
+            self.db,
+            organization_id=self._org_id,
+            types=teams_conversation_repo.POSTABLE_TYPES,
+        )
 
     async def slack_manifest(self, bot_id: UUID) -> dict[str, Any]:
         """The Slack app manifest for one of this organization's Slack bots (#2067).
@@ -435,18 +754,78 @@ class ChannelBotService:
             )
         return await channel_bot_repo.list_for_org(self.db, organization_id=self._org_id)
 
-    async def update(self, bot_id: UUID, data: ChannelBotUpdate) -> ChannelBot:
+    async def update(self, bot_id: UUID, data: ChannelBotUpdate, ctx: AuthContext) -> ChannelBot:
         """Update a channel bot. Only the fields the caller sent are applied;
-        an explicit null clears a Slack credential, an omission leaves it."""
+        an explicit null clears a Slack credential, an omission leaves it.
+
+        Raises:
+            AuthorizationError: A new token for a bot holding Discord role
+                mappings the caller could not delete. A token of another
+                application is in none of the mapped servers, and the next sync
+                reads that as everybody having left them, so replacing the token
+                takes what deleting the mappings takes.
+        """
+        if data.token is not None:
+            candidate = await self.get(bot_id)
+            if candidate.platform == "sms":
+                from app.db.locks import LockScope, hold_subject
+                from app.repositories import telephony as phone_repo
+
+                # Match admission/deletion ordering: the org fence precedes the bot row.
+                await hold_subject(self.db, LockScope.PHONE_CALLS_PER_ORG, self._org_id)
+                if await phone_repo.bot_has_unfinished_calls(
+                    self.db, organization_id=self._org_id, bot_id=bot_id
+                ):
+                    raise ConflictError(
+                        message="End all telephone calls before replacing this SMS bot's credentials"
+                    )
         # Locked from the read: every credential below is sealed at the row's
         # recorded key version, and a rotation committing between an unlocked
         # read and this write would tag the new envelopes with a version they
         # were not sealed under.
         bot = await self.get(bot_id, for_update=True)
+        if data.access_policy is not None:
+            self._check_discord_policy(bot.platform, data.access_policy)
+        # Before `writable`, which would drop it as a NOT NULL column's sentinel:
+        # a null here is somebody asking for a third state that no longer
+        # exists - it used to be the pair that went null for "off" - and they are
+        # owed the sentence rather than a silent no-op.
+        if cleared(data, "transcribe_voice_notes"):
+            raise refused_field(
+                "transcribe_voice_notes",
+                "Say true or false - a null pair is what inherits now",
+            )
         update_data = writable(data, over=ChannelBot)
+        if "ack_reaction" in update_data:
+            self._check_imessage_reaction(bot.platform, update_data["ack_reaction"])
+        if bot.platform == "imessage" and update_data.get("webhook_mode") is False:
+            raise refused_field("webhook_mode", "iMessage arrives only through its bridge webhook")
+        if bot.platform == "imessage" and "webhook_secret" in update_data:
+            raise refused_field(
+                "webhook_secret", "The iMessage callback credential is generated by AgenticOS"
+            )
+        if update_data.get("token") is not None or any(
+            field in update_data and update_data[field] != getattr(bot, field)
+            for field in ("api_base_url", "teams_app_id", "teams_tenant_id")
+        ):
+            update_data["authorization_generation"] = uuid4()
+            if bot.platform == "imessage":
+                # The old Mac knows its callback credential. Replacing the bridge
+                # must revoke that caller too, before the new hook is registered.
+                update_data["webhook_secret_encrypted"] = self._seal_at(
+                    secrets.token_urlsafe(32), key_version=bot.secret_key_version
+                )
+
+        if bot.platform in STREAM_ONLY and (
+            update_data.get("webhook_mode") or update_data.get("webhook_secret") is not None
+        ):
+            raise refused_field(
+                "webhook_mode",
+                f"A {bot.platform} bot connects over its own Gateway connection and takes no webhook",
+            )
         if "api_base_url" in update_data:
             self._check_server_url(bot.platform, update_data["api_base_url"])
-        self._check_transcription(bot, update_data)
+        await self._check_transcription(bot, update_data)
         if "slack_signing_secret" in update_data or "slack_app_token" in update_data:
             self._check_slack_fields(
                 bot.platform,
@@ -467,6 +846,10 @@ class ChannelBotService:
                 update_data.pop("slack_app_token"), key_version=bot.secret_key_version
             )
         if update_data.get("token") is not None:
+            self._check_sms_token(bot.platform, update_data["token"])
+            self._check_email_token(bot.platform, update_data["token"])
+
+            await self._refuse_unless_mappings_removable(bot, ctx)
             # Sealed at the row's existing version, beside its other envelopes, and
             # the version column is left alone. Re-sealing the token afresh (at the
             # default v1) and resetting `secret_key_version` to match left the
@@ -515,9 +898,30 @@ class ChannelBotService:
         self._reopen_stream(updated)
         return updated
 
-    async def delete(self, bot_id: UUID) -> None:
-        """Delete a channel bot, and close the connection it was reached over."""
+    async def delete(self, bot_id: UUID, ctx: AuthContext) -> None:
+        """Delete a channel bot, and close the connection it was reached over.
+
+        Raises:
+            AuthorizationError: The bot holds Discord role mappings the caller
+                could not delete one by one (#2569): they cascade with it, and
+                the next sync takes back everything they gave, so deleting the
+                bot takes `members:manage` and, for a mapping that admits with
+                a role, the ceiling `DiscordRoleMappingService.delete` applies.
+        """
+        # Locked before its mappings are read: they cascade with the bot, and
+        # one committed between this check and the delete would go unchecked.
         bot = await self.get(bot_id)
+        if bot.platform == "sms":
+            from app.db.locks import LockScope, hold_subject
+            from app.repositories import telephony as phone_repo
+
+            await hold_subject(self.db, LockScope.PHONE_CALLS_PER_ORG, self._org_id)
+            if await phone_repo.bot_has_unfinished_calls(
+                self.db, organization_id=self._org_id, bot_id=bot_id
+            ):
+                raise ConflictError(message="End all telephone calls before deleting this SMS bot")
+        bot = await self.get(bot_id, for_update=True)
+        await self._refuse_unless_mappings_removable(bot, ctx)
         platform = bot.platform
         await channel_bot_repo.delete(self.db, bot_id, organization_id=self._org_id)
         # After the commit, and read out first: the row is gone by then, so the
@@ -527,6 +931,28 @@ class ChannelBotService:
             close_inbound_stream(bot_id=str(bot_id), platform=platform),
             name=f"close_channel_stream:{bot_id}",
         )
+
+    async def _refuse_unless_mappings_removable(self, bot: ChannelBot, ctx: AuthContext) -> None:
+        """Refuse a change that undoes the bot's Discord role mappings to one who could not delete them.
+
+        `members:manage` for any mapping, and for one that admits with a role
+        `roles:manage` and a role the caller's own strictly outranks - what
+        `DiscordRoleMappingService.delete` asks of each mapping (#2569).
+        """
+        for mapping in await discord_role_mapping_repo.list_for_bot(self.db, channel_bot_id=bot.id):
+            if not ctx.has(Perm.MEMBERS_MANAGE) or (
+                mapping.role is not None
+                and (
+                    not ctx.has(Perm.ROLES_MANAGE) or mapping.role not in assignable_roles(ctx.role)
+                )
+            ):
+                raise AuthorizationError(
+                    message=(
+                        "This bot's Discord role mappings place people you could not remove "
+                        "yourself; someone who may remove those mappings has to delete them first"
+                    ),
+                    details={"bot_id": bot.id, "role": mapping.role},
+                )
 
     async def activate(self, bot_id: UUID) -> ChannelBot:
         """Set is_active = True, and open the stream it is reached over."""
@@ -545,6 +971,18 @@ class ChannelBotService:
         "stop it" needed a deploy.
         """
         bot = await self.get(bot_id)
+        if bot.platform == "sms":
+            from app.db.locks import LockScope, hold_subject
+            from app.repositories import telephony as phone_repo
+
+            await hold_subject(self.db, LockScope.PHONE_CALLS_PER_ORG, self._org_id)
+            if await phone_repo.bot_has_unfinished_calls(
+                self.db, organization_id=self._org_id, bot_id=bot_id
+            ):
+                raise ConflictError(
+                    message="End all telephone calls before deactivating this SMS bot"
+                )
+        bot = await self.get(bot_id, for_update=True)
         deactivated = await channel_bot_repo.update(
             self.db, db_bot=bot, update_data={"is_active": False}
         )
@@ -578,6 +1016,11 @@ class ChannelBotService:
         webhook URL from settings, and asks the adapter to register it.
         """
         bot = await self.get(bot_id)
+        if bot.platform not in INBOUND_PATHS:
+            raise BadRequestError(
+                message=f"A {bot.platform} bot has no webhook to register",
+                details={"platform": bot.platform},
+            )
         adapter = get_adapter(bot.platform)
         token = self.get_decrypted_token(bot)
         webhook_url = inbound_webhook_url(bot.platform, bot_id)

@@ -1,6 +1,8 @@
 "use client";
 
+import { normalizeIdentifier } from "@/lib/normalize-identifier";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Plug, Settings2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
@@ -14,6 +16,10 @@ import type {
   Scope,
 } from "@/components/mcp/mcp-server-list-types";
 import { getErrorMessage } from "@/lib/api-error";
+import { openConsent } from "@/lib/desktop/commands";
+import { isDesktopShell } from "@/lib/desktop/shell";
+import { useShell } from "@/hooks/use-shell";
+import { qk } from "@/lib/query-keys";
 import { startMcpOAuth } from "@/lib/mcp-connections-api";
 import { mcpOAuthClient, rememberMcpOAuthReturn, secretWithoutClientId } from "@/lib/mcp-oauth";
 import { freePrefix, rowForEntry, slugForPrefix } from "@/lib/mcp-servers";
@@ -174,7 +180,7 @@ function ConnectForm<T extends McpConnectionRecord>({
   };
 
   const handleSubmit = async (values: ConnectionFormValues) => {
-    const name = values.name.trim().toLowerCase();
+    const name = normalizeIdentifier(values.name);
     const url = values.url.trim();
     if (!NAME_PATTERN.test(name)) {
       toast.error(t("nameMustBeLowercase"));
@@ -261,6 +267,35 @@ interface ConsentOptions {
   keepThisTab?: boolean;
 }
 
+/** How long a consent elsewhere may take before returning stops refetching. */
+const CONSENT_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Back in this window, the connection made elsewhere is fetched: focus refetches
+ * nothing by default here, so "it appears here once it is authorised" stayed
+ * untrue until a reload. Every return refetches, not only the first: somebody
+ * who comes back mid-consent - to copy a code - would otherwise spend it while
+ * the connection is still pending.
+ */
+function refreshOnReturn(queryClient: ReturnType<typeof useQueryClient>): void {
+  // The latest consent is the one being finished; an earlier listener goes.
+  pendingConsent?.abort();
+  const pending = new AbortController();
+  pendingConsent = pending;
+  window.addEventListener(
+    "focus",
+    () => {
+      void queryClient.invalidateQueries({ queryKey: qk.mcpConnections.all() });
+      void queryClient.invalidateQueries({ queryKey: qk.mcpServers.lists() });
+      void queryClient.invalidateQueries({ queryKey: qk.mcpServers.entries() });
+    },
+    { signal: pending.signal },
+  );
+  window.setTimeout(() => pending.abort(), CONSENT_WINDOW_MS);
+}
+
+let pendingConsent: AbortController | null = null;
+
 /**
  * Start a provider's consent for a new connection; true once it is under way.
  *
@@ -271,11 +306,42 @@ interface ConsentOptions {
  * blocked", navigated the Builder itself to the consent screen, discarded the
  * unsaved draft this flow exists to preserve, and left a blank tab behind. The
  * tab is opened before the first `await`, so it still counts as the click's.
+ *
+ * The desktop app opens no tabs: `window.open` returns null there, and the
+ * fallback navigated the console's own window to the provider. There the
+ * consent goes to the person's browser instead, where their sign-ins are; the
+ * callback needs only its `state`, so it finishes there.
  */
 function useConsent(scope: Scope, { returnTo, keepThisTab }: ConsentOptions) {
   const t = useTranslations("mcp");
   const tErrors = useTranslations("errors");
+  const queryClient = useQueryClient();
+  const desktop = isDesktopShell(useShell());
   return async (input: Parameters<typeof startMcpOAuth>[0]): Promise<boolean> => {
+    if (desktop) {
+      try {
+        const { authorization_url } = await startMcpOAuth(input, scope);
+        refreshOnReturn(queryClient);
+        try {
+          await openConsent(authorization_url);
+        } catch {
+          // An app older than this console has no such command, and the shell
+          // refuses a page it will not hand out (an allowlisted plain-HTTP
+          // provider): the consent then runs in this window, as it did before.
+          rememberMcpOAuthReturn(
+            returnTo ??
+              (input.catalog_key ? `/mcp-servers?server=${input.catalog_key}` : "/mcp-servers"),
+          );
+          window.location.assign(authorization_url);
+          return true;
+        }
+        toast.info(t("finishConsentInBrowser"));
+        return true;
+      } catch (caught) {
+        toast.error(getErrorMessage(caught, tErrors, t("couldNotStartSign")));
+        return false;
+      }
+    }
     const tab = returnTo === undefined ? window.open("", "_blank") : null;
     if (tab === null && keepThisTab) {
       toast.error(t("consentTabBlocked"));
@@ -284,8 +350,12 @@ function useConsent(scope: Scope, { returnTo, keepThisTab }: ConsentOptions) {
     if (tab) tab.opener = null;
     try {
       const { authorization_url } = await startMcpOAuth(input, scope);
-      if (returnTo !== undefined) rememberMcpOAuthReturn(returnTo);
+      // The other tab lands on this server's accounts, where the new one shows.
+      const back =
+        returnTo ?? (input.catalog_key ? `/mcp-servers?server=${input.catalog_key}` : undefined);
+      if (back !== undefined) rememberMcpOAuthReturn(back);
       if (tab) {
+        refreshOnReturn(queryClient);
         tab.location.href = authorization_url;
       } else {
         // Either this is the return-here flow, or the tab was blocked anyway -

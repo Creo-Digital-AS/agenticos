@@ -7,8 +7,6 @@ COUNT(DISTINCT user_id) really ignores anonymous runs. Those are properties
 of the database, so they are asserted against one.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -99,6 +97,7 @@ async def _run(
     provider: str | None = None,
     model_label: str | None = None,
     cost: Decimal = Decimal("0"),
+    tool_args_repaired: int = 0,
 ) -> AgentRunModel:
     run = AgentRunModel(
         id=uuid.uuid4(),
@@ -110,6 +109,7 @@ async def _run(
         provider=provider,
         model_label=model_label,
         cost_usd=cost,
+        tool_args_repaired=tool_args_repaired,
         started_at=started_at,
         ended_at=(
             started_at + timedelta(seconds=duration_seconds)
@@ -603,6 +603,117 @@ class TestSurfacesAndCost:
 
         assert rows == {"embed": 1, "mattermost": 1, "web": 1}
 
+    async def test_eval_traffic_is_billed_beside_production_and_counted_nowhere(self, db) -> None:
+        """An eval run answering a dataset and the judge grading it are measurement:
+        counted in, one eval of a hundred cases outweighs a week of people and the
+        judge reads as the organization's most adopted agent."""
+        organization, owner = await _org_with_owner(db, "Evals")
+        agent = await _agent(db, organization, owner)
+        judge = await _agent(db, organization, owner, slug="eval-judge")
+        await _run(
+            db,
+            organization=organization,
+            agent=agent,
+            started_at=START,
+            duration_seconds=2,
+            user_id=owner.id,
+            cost=Decimal("1"),
+        )
+        for each in (agent, judge, judge):
+            await _run(
+                db,
+                organization=organization,
+                agent=each,
+                started_at=START,
+                duration_seconds=60,
+                user_id=owner.id,
+                surface=RunSurface.EVAL.value,
+                cost=Decimal("0.25"),
+            )
+        await _run(
+            db,
+            organization=organization,
+            agent=judge,
+            started_at=START - timedelta(days=10),
+            surface=RunSurface.EVAL.value,
+            cost=Decimal("0.5"),
+        )
+
+        usage = await StatsService(db).usage(
+            AuthContext(
+                user_id=owner.id, organization_id=organization.id, role=OrgRoleName.OWNER.value
+            ),
+            from_date=START.date(),
+            to_date=(END - timedelta(days=1)).date(),
+        )
+
+        assert usage.total_runs == 1
+        assert [(row.name, row.runs) for row in usage.by_agent] == [("Support", 1)]
+        assert {row.surface for row in usage.by_surface} == {"web"}
+        assert usage.latency_ms.p95 == 2000
+        assert usage.cost is not None
+        assert usage.cost.model_usd == Decimal("1")
+        assert usage.cost.eval_usd == Decimal("0.75")
+        assert usage.cost.period_usd == Decimal("1.75")
+        assert usage.cost.previous_period_usd == Decimal("0.5")
+
+    async def test_the_platforms_improvers_are_billed_apart_from_evals(self, db) -> None:
+        """They run on the eval surface like every system agent, but they improve agents
+        and their knowledge rather than measuring them, so the bill names their cost on
+        a line of its own - the judge and the case generator stay on the evals line."""
+        organization, owner = await _org_with_owner(db, "Authoring")
+        judge = await _agent(db, organization, owner, slug="eval-judge")
+        judge.kind = "judge"
+        generator = await _agent(db, organization, owner, slug="case-generator")
+        generator.kind = "generator"
+        improver = await _agent(db, organization, owner, slug="authoring-assistant")
+        improver.kind = "improver"
+        drafter = await _agent(db, organization, owner, slug="gap-drafter")
+        drafter.kind = "drafter"
+        classifier = await _agent(db, organization, owner, slug="gap-classifier")
+        classifier.kind = "classifier"
+        await db.flush()
+        for each, cost in (
+            (judge, "0.25"),
+            (generator, "0.5"),
+            (improver, "0.10"),
+            (drafter, "0.05"),
+            (classifier, "0.01"),
+        ):
+            await _run(
+                db,
+                organization=organization,
+                agent=each,
+                started_at=START,
+                duration_seconds=60,
+                user_id=owner.id,
+                surface=RunSurface.EVAL.value,
+                cost=Decimal(cost),
+            )
+        await _run(
+            db,
+            organization=organization,
+            agent=improver,
+            started_at=START - timedelta(days=10),
+            surface=RunSurface.EVAL.value,
+            cost=Decimal("0.5"),
+        )
+
+        usage = await StatsService(db).usage(
+            AuthContext(
+                user_id=owner.id, organization_id=organization.id, role=OrgRoleName.OWNER.value
+            ),
+            from_date=START.date(),
+            to_date=(END - timedelta(days=1)).date(),
+        )
+
+        assert usage.total_runs == 0
+        assert usage.cost is not None
+        assert usage.cost.eval_usd == Decimal("0.75")
+        assert usage.cost.authoring_usd == Decimal("0.16")
+        assert usage.cost.period_usd == Decimal("0.91")
+        assert usage.cost.previous_period_usd == Decimal("0.5")
+
     async def test_the_cost_window_sums_only_its_own_days(self, db) -> None:
         organization, owner = await _org_with_owner(db, "Cost")
         agent = await _agent(db, organization, owner)
@@ -678,6 +789,7 @@ class TestTheGroupingSetsBreakdown:
             model_label="claude-sonnet-5",
             provider="anthropic",
             cost=Decimal("0.70"),
+            tool_args_repaired=3,
         )
 
         breakdown = await agent_run_repo.window_breakdown(
@@ -688,9 +800,12 @@ class TestTheGroupingSetsBreakdown:
         # happens to be missing its surface: GROUPING tells the two apart.
         assert dict(breakdown.by_surface) == {"web": 1, "embed": 1}
         assert dict(breakdown.by_status) == {RunStatus.COMPLETED.value: 2}
-        assert {(model, provider): runs for model, provider, runs in breakdown.by_model} == {
-            (None, None): 1,
-            ("claude-sonnet-5", "anthropic"): 1,
+        assert {
+            (model, provider): (runs, repaired)
+            for model, provider, runs, repaired in breakdown.by_model
+        } == {
+            (None, None): (1, 0),
+            ("claude-sonnet-5", "anthropic"): (1, 3),
         }
         assert dict(breakdown.by_provider) == {None: Decimal("0.30"), "anthropic": Decimal("0.70")}
         assert breakdown.by_day == [(START.date(), 2, 2, Decimal("1.00"))]
@@ -924,6 +1039,13 @@ class TestVersionRows:
             run.agent_version_id = v2.id
         # A run whose version was deleted afterwards: the id SET-NULLed.
         await _run(db, organization=organization, agent=agent, started_at=START)
+        # Evals - of a draft (no version) and of v2 - test the agent rather than
+        # use it, and must land in neither bucket.
+        await _run(db, organization=organization, agent=agent, started_at=START, surface="eval")
+        tested = await _run(
+            db, organization=organization, agent=agent, started_at=START, surface="eval"
+        )
+        tested.agent_version_id = v2.id
         await db.flush()
 
         rows = await agent_run_repo.usage_by_version(

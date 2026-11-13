@@ -2,22 +2,29 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
+
+import { formatUsd } from "@/components/dashboard/format";
 import {
+  FlaskConical,
   Activity,
   ArrowLeft,
   ArrowRight,
   CornerLeftUp,
   ExternalLink,
-  MessageSquare,
   Play,
+  Puzzle,
+  Wrench,
   X,
 } from "lucide-react";
+import { ChatIcon as MessageSquare } from "@/components/icons/product-icons";
 
 import { AgentAvatar } from "@/components/agents/agent-avatar";
 import { RunStatusBadge } from "@/components/agents/status-badge";
-import { SurfaceIcon, surfaceLabel } from "@/components/runs/surface-icon";
+import { ModalityBadge, SurfaceIcon, surfaceLabel } from "@/components/runs/surface-icon";
 import { RunManifest } from "@/components/runs/run-manifest";
+import { RunMoreMenu } from "@/components/runs/run-more-menu";
 import { RunTimeline } from "@/components/runs/run-timeline";
 import { ProviderIcon } from "@/components/vault/provider-icon";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states";
@@ -30,12 +37,13 @@ import {
   useResumeRun,
   useRun,
 } from "@/hooks";
+import { useRunsADataset } from "@/hooks/use-eval-runs";
 import { useAuthStore } from "@/stores";
 import { ApiError } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
 import { cn, formatDateTime, formatRunDuration, timeAgo } from "@/lib/utils";
 import { Perm } from "@/types/permissions";
-import type { AgentRun } from "@/types/runs";
+import type { AgentRun, EvalCaseLink, RunSkillUse } from "@/types/runs";
 import { RunTable } from "./run-table";
 
 /**
@@ -91,8 +99,13 @@ export function FocusedRun({
   const { can } = usePermissions();
   const meId = useAuthStore((state) => state.user?.id ?? null);
   const { run, isLoading, error } = useRun(runId);
+  // Scoring a run takes `datasets:run` on the dataset scored against, which a grant on
+  // one widens past the role - so the menu is for who may run a dataset with a case.
+  const scoresRuns = useRunsADataset({ enabled: run?.conversation_id != null });
+  // `?view=input` opens on what went in - how an eval case links to what its model saw.
+  const view = useSearchParams().get("view");
   const { runs: delegated } = useDelegatedRuns(runId);
-  const resume = useResumeRun();
+  const resume = useResumeRun({ continuesInChat: run?.continues_in_chat ?? false });
   // What is on screen is the answer being held, which during a step is the run
   // stepped away from. Nothing that navigates may act on it: its neighbours are
   // its own, so an arrow pressed twice quickly would otherwise walk back to
@@ -165,7 +178,7 @@ export function FocusedRun({
     // to the header that stays and the panels belong to the part that scrolls -
     // and Radix is happy for its list and its content to sit in different rows.
     <Tabs
-      defaultValue="timeline"
+      defaultValue={view === "input" ? "input" : "timeline"}
       className="flex h-full min-h-0 flex-col gap-0"
       aria-busy={settling}
     >
@@ -187,6 +200,17 @@ export function FocusedRun({
               header simply starts at the status - never a request that 403s. */}
             {can(Perm.agentsView) && <AgentIdentity agentId={run.agent_id} />}
             <RunStatusBadge status={run.status} />
+            {run.eval_case && (
+              <Link
+                href={evalCaseHref(run.eval_case)}
+                className="text-muted-foreground hover:text-foreground max-w-md truncate text-sm underline-offset-4 hover:underline"
+              >
+                {t(run.eval_case.graded ? "evalCaseGraded" : "evalCase", {
+                  dataset: run.eval_case.dataset_name,
+                  input: run.eval_case.case_input,
+                })}
+              </Link>
+            )}
           </div>
           {/* The run's conversation, one step either way - resolved server-side
             on this read, disabled at the edges (and on a conversationless run)
@@ -210,6 +234,7 @@ export function FocusedRun({
                 {t("resumeRun")}
               </Button>
             )}
+            {run.conversation_id !== null && scoresRuns && <RunMoreMenu runId={run.id} />}
             <Button
               variant="ghost"
               size="icon-sm"
@@ -252,6 +277,7 @@ export function FocusedRun({
           <span className="flex items-center gap-1.5">
             <SurfaceIcon surface={run.surface} />
             {surfaceLabel(run.surface, t)}
+            <ModalityBadge modality={run.modality} />
           </span>
           <span className="flex items-center gap-1.5">
             {run.provider !== null && (
@@ -264,6 +290,7 @@ export function FocusedRun({
               {timeAgo(run.started_at, tTime, locale)}
             </span>
           )}
+          {run.skills_used && run.skills_used.length > 0 && <SkillsUsed uses={run.skills_used} />}
         </div>
 
         {/* The three numbers somebody opens a run to check, on one filled
@@ -281,15 +308,33 @@ export function FocusedRun({
             {run.output_tokens.toLocaleString(locale)}
           </Fact>
           <Fact label={t("cost")}>
-            ${Number(run.cost_usd).toFixed(4)}
+            {formatUsd(run.cost_usd, locale, 4)}
             {run.cost_is_partial && (
               <span className="text-muted-foreground" title={t("modelRunHadNo")}>
                 {" +"}
               </span>
             )}
           </Fact>
-          <Fact label={t("took")}>{formatRunDuration(run.started_at, run.ended_at)}</Fact>
+          <Fact label={t("took")}>{formatRunDuration(run.started_at, run.ended_at, locale)}</Fact>
         </dl>
+
+        {!!run.tool_args_repaired && (
+          <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+            <Wrench className="size-3.5 shrink-0" aria-hidden />
+            {t("toolArgsRepaired", { count: run.tool_args_repaired })}
+          </p>
+        )}
+
+        {/* The input above includes the cache's share, priced apart from the rest:
+            this is what reconciles a run with the provider's console (#2170). */}
+        {!!(run.cache_read_tokens || run.cache_write_tokens) && (
+          <p className="text-muted-foreground text-xs">
+            {t("cacheSplit", {
+              read: run.cache_read_tokens ?? 0,
+              write: run.cache_write_tokens ?? 0,
+            })}
+          </p>
+        )}
 
         {/* Hidden when it holds none of the three, rather than repeating all
             three conditions around it. */}
@@ -305,14 +350,17 @@ export function FocusedRun({
               {t("openTheRunItCame")}
             </Button>
           )}
-          {run.conversation_id !== null && run.user_id !== null && run.user_id === meId && (
-            <Button variant="outline" size="sm" className="h-7 text-xs" asChild>
-              <Link href={`${ROUTES.CHAT}?id=${run.conversation_id}`}>
-                <MessageSquare className="h-3.5 w-3.5" aria-hidden />
-                {t("openTheChatBehind")}
-              </Link>
-            </Button>
-          )}
+          {run.conversation_id !== null &&
+            !run.initiated_by_publisher_fallback &&
+            run.user_id !== null &&
+            run.user_id === meId && (
+              <Button variant="outline" size="sm" className="h-7 text-xs" asChild>
+                <Link href={`${ROUTES.CHAT}?id=${run.conversation_id}`}>
+                  <MessageSquare className="h-3.5 w-3.5" aria-hidden />
+                  {t("openTheChatBehind")}
+                </Link>
+              </Button>
+            )}
           {/* The trace, where one can be read. The URL is this read's own field,
               resolved server-side because an agent may redirect its traces to a
               client's Logfire project - a link only when there is genuinely
@@ -343,9 +391,27 @@ export function FocusedRun({
 
       {/* The one scrolling column. `min-h-0` is what makes it scroll rather than
           push the header off a flex parent that has no room to give. */}
-      <div className="min-h-0 flex-1 scrollbar-thin space-y-6 overflow-y-auto px-4 py-4">
+      <div
+        data-run-scrollport
+        className="min-h-0 flex-1 scrollbar-thin space-y-6 overflow-y-auto px-4 py-4"
+      >
         <TabsContent value="timeline">
-          <RunTimeline runId={runId} />
+          {/* An eval case keeps no conversation: its answer and grade live on
+              the eval run, so the timeline says where rather than that nothing
+              was recorded. */}
+          {run.eval_case ? (
+            <EmptyState
+              icon={FlaskConical}
+              title={t(run.eval_case.graded ? "evalCaseGradedTitle" : "evalCaseTitle")}
+              description={t(run.eval_case.graded ? "evalCaseGradedBody" : "evalCaseBody")}
+              cta={{
+                label: t("evalCaseOpen"),
+                href: evalCaseHref(run.eval_case),
+              }}
+            />
+          ) : (
+            <RunTimeline runId={runId} />
+          )}
         </TabsContent>
         <TabsContent value="input">
           <RunManifest runId={runId} />
@@ -366,6 +432,11 @@ export function FocusedRun({
 }
 
 /** The agent's face and name, linking to its Builder page. */
+/** The eval run a case belongs to, opened on that case. */
+function evalCaseHref(link: EvalCaseLink): string {
+  return `${ROUTES.AGENTS}/${link.agent_id}/evals/${link.eval_run_id}?case=${link.case_id}`;
+}
+
 function AgentIdentity({ agentId }: { agentId: string }) {
   const t = useTranslations("pages.runs");
   const { agent } = useAgent(agentId);
@@ -395,5 +466,32 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
       <dt className="text-muted-foreground text-xs">{label}</dt>
       <dd className="text-foreground truncate text-sm font-medium tabular-nums">{children}</dd>
     </div>
+  );
+}
+
+/** The skills a run opened or read, each by name and the version it was served. */
+function SkillsUsed({ uses }: { uses: RunSkillUse[] }) {
+  const t = useTranslations("pages.runs");
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <Puzzle className="h-3.5 w-3.5" aria-hidden />
+      {t("skillsUsed")}
+      {uses.map((use) => (
+        <Link
+          key={`${use.skill_id}:${use.fork ?? ""}:${use.version ?? ""}`}
+          href={ROUTES.SKILL_DETAIL(use.skill_id)}
+          className="hover:text-foreground font-mono underline-offset-4 hover:underline"
+        >
+          {use.version === null
+            ? use.name
+            : t("skillVersion", {
+                name: use.name,
+                version: use.version,
+                fork: use.fork ?? "",
+                onFork: use.fork === null ? "no" : "yes",
+              })}
+        </Link>
+      ))}
+    </span>
   );
 }

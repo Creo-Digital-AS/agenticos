@@ -2,7 +2,7 @@
 
 #948, then #12. `PgVectorStore.__init__` used to create a pooled SQLAlchemy
 engine, and the three flows in `app/worker/tasks/rag_tasks.py` each built one
-and disposed none. One flow runs per uploaded document, so two hundred uploads
+and disposed none. One job runs per uploaded document, so two hundred uploads
 meant two hundred pooled engines abandoned in one worker process, each holding
 its checked-in connections until the process exited - somewhere short of a
 hundred documents the worker reached `max_connections` and every query after
@@ -18,8 +18,6 @@ The API process is the other half of the same design: its stores ride the
 application's own engine and own nothing to dispose, where each used to open a
 private pool beside it.
 """
-
-from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
@@ -57,7 +55,7 @@ class EngineLedger:
 
 @asynccontextmanager
 async def _worker_db() -> Any:
-    yield MagicMock()
+    yield MagicMock(execute=AsyncMock(), refresh=AsyncMock())
 
 
 def _ingest_result(status: IngestionStatus = IngestionStatus.DONE) -> MagicMock:
@@ -68,6 +66,7 @@ def _ingest_result(status: IngestionStatus = IngestionStatus.DONE) -> MagicMock:
         replaced_document_id=None,
         error_message=None,
         message="",
+        refused=False,
     )
 
 
@@ -161,6 +160,7 @@ class TestAnUploadsEngine:
             with (
                 patch("app.services.rag_document.RAGDocumentService", return_value=documents),
                 patch.object(rag_tasks, "_fail_document", new=AsyncMock()),
+                patch.object(rag_tasks, "_still_ingestable", new=AsyncMock(return_value=True)),
                 pytest.raises(RuntimeError),
             ):
                 await rag_tasks._run_ingestion(
@@ -381,7 +381,7 @@ class TestTheKnowledgeCapabilitysStore:
     def test_a_search_off_the_pooled_loop_builds_an_unpooled_store(self):
         """The capability's cached store used to open the second private pool an
         API process ran (#948). It rides the pool-less engine when the loop it is
-        on does not own the process's pools - an agent inside a Prefect flow -
+        on does not own the process's pools - an agent inside the worker -
         because a pooled connection belongs to the loop that opened it."""
         import app.agents.capabilities.knowledge._search as search_module
 

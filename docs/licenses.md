@@ -34,6 +34,12 @@ Development and documentation tooling (`uv sync --dev`, the `docs` dependency gr
 in a builder stage and are absent from the final layer, such as `uv`, are recorded
 in `licenses/components.toml` as not distributed.
 
+The optional `kerberos` and `mirage` extras are not in the published images,
+so the notices leave them out. The published backend does include `browser`. An operator who builds an image with
+`EXTRAS` distributes those packages too, under their own licences. The `mirage`
+extra brings [Mirage](https://github.com/strukto-ai/mirage) (Apache-2.0) and the
+service clients its backends use.
+
 ## The inventory
 
 Two files carry it, and a script keeps them honest.
@@ -107,7 +113,8 @@ the current figure.
 | CC-BY-4.0 (`caniuse-lite`) | 1 | Attribution and a link to the source | Named with its source in the notices |
 | AGPL-3.0-only (`pymupdf`) | 1 | Network copyleft: the image is conveyed under AGPL-3.0 terms and a modified deployment owes its users the modified source (s.13) | Kept deliberately, terms stated: [the section below](#the-agpl-component) and the wheel's `COPYING` in the image |
 | OFL-1.1 (Inter, Bricolage Grotesque, Geist Mono) | 3 families | Licence text and copyright notices with the fonts; no selling the fonts alone; no reuse of the reserved names for modified fonts | `frontend/src/app/fonts/OFL.txt` carries all three notices; the fonts are served unmodified |
-| CC0-1.0, CC-BY-4.0, MIT (brand glyphs) | 3 sources | Attribution for the Font Awesome icons; the marks stay their owners' trademarks | `NOTICE` names the sources and the trademark position |
+| MIT, ISC, BSD-2-Clause, 0BSD (the [library set](artifacts.md#the-library-set)) | 7 libraries, and code adapted from Open Intelligent UI | Keep the notices with the copies | Chart.js, d3, Lucide, three.js, Mermaid, idiomorph and Leaflet are copied byte for byte into `backend/app/core/catalog/artifact_lib/`, whose README carries each licence text; `agenticos-map-1.js` adapts the pin-drop timing of Open Intelligent UI (MIT) and keeps its notice in its header, and the `visual-design` skill borrows its guidance. `NOTICE` and `licenses/components.toml` name all of them |
+| CC0-1.0, MIT (brand glyphs) | 4 sources | MIT notices for @lobehub/icons and theSVG; the marks stay their owners' trademarks | `NOTICE` names the sources and the trademark position |
 
 **A package that publishes no licence file** cannot have one copied. Several npm
 packages in the closure are like that, `@img/sharp-libvips-linux-x64` and its
@@ -188,7 +195,7 @@ owes the source offers for it.
 
 ## Hosted services and provider terms
 
-A model provider's API, Logfire, Tavily, Brave, Exa, LlamaParse, Mem0, Daytona,
+A model provider's API, Logfire, Tavily, Brave, Exa, LlamaParse, Daytona,
 Google Drive and S3 are not software this project distributes and have no licence
 in the sense above. Each is a service agreement between the deployment and the
 provider, entered into when an administrator stores that provider's credential in

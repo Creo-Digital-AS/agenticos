@@ -101,6 +101,7 @@ a file it can open, and one without gets the text in its prompt.
 | **Document (OpenDocument)** | …opendocument.text | .odt | Paragraphs via `odfpy`. Appended to prompt as context. |
 | **Email** | application/vnd.ms-outlook | .msg | Headers and body read from the OLE/MAPI streams via `olefile` (BSD); embedded attachments listed by name, not recursed. Appended to prompt as context. |
 | **Text** | text/plain, text/markdown, text/csv, text/html, text/xml, application/xml, application/json | .txt, .md, .csv, .html, .xml, .json | UTF-8 decoded directly (XML by its declared BOM/encoding). Appended to prompt as context. |
+| **Archive** | application/zip, application/x-zip-compressed, application/gzip, application/x-gzip | .zip, .tar.gz, .tgz | Read whole at upload and refused if unsafe (see [Archives](#archives)). Its text is the list of what it holds. Unpacked into the workspace; refused by an agent without one. |
 
 ### Where an attachment goes depends on the agent
 
@@ -118,6 +119,52 @@ gets the file instead of the text:
 | pdf, docx, spreadsheet, document, presentation, email | parsed text pasted inline | written to `uploads/`, with the extracted text beside it unless the runtime can read it (`email` always gets it — `lit` cannot read `.msg`); reference and a 20-line head |
 | image | `BinaryContent` | `BinaryContent` **and** written; reference names the path |
 | tiff | PNG page(s) as `BinaryContent`, page cap noted | original `.tiff` written; PNG page(s) shown, page cap noted |
+| archive (`.zip`, `.tar.gz`) | refused: the model is told the agent has no workspace to unpack it into, and nothing of it is pasted | unpacked into `uploads/<id>-<name>/`; reference names the folder and lists the top of the tree |
+
+### Archives { #archives }
+
+A `.zip` or `.tar.gz` is how a repository, or any folder of files, is given to an
+agent. The platform unpacks it on the server, before the agent runs, rather than
+giving the archive to the agent to unpack. A stored workspace has no shell to run
+`unzip` in, a sandbox image is not certain to have one, and an archive is a known
+way to write outside a folder. One check on the server can be tested; an agent
+running `tar -xf` on what it was given cannot.
+
+The archive is read whole when it is uploaded. The upload is refused with a 400,
+and nothing is stored, when:
+
+- a member's path leads outside the archive (`../`), starts at the root (`/etc/x`)
+  or at a drive (`C:/`), contains a backslash or a control character;
+- a member is a symlink, a hard link, a device file or a FIFO;
+- the same path is in it twice, or as both a file and a folder;
+- a member is encrypted, or the file is not the archive its name says;
+- it holds more than `WORKSPACE_ARCHIVE_MAX_ENTRIES` files and folders (5000),
+  unpacks to more than `WORKSPACE_ARCHIVE_MAX_BYTES` (200 MiB), or unpacks to more
+  than `WORKSPACE_ARCHIVE_MAX_RATIO` times its own size (100) — a decompression
+  bomb. Sizes are measured while the members are read, not taken from the
+  archive's headers, which can be false;
+- one file in it unpacks to more than `WORKSPACE_ARCHIVE_MAX_MEMBER_BYTES`
+  (50 MiB), since an unpack holds one file in memory at a time.
+
+The upload limit, `CHAT_MAX_UPLOAD_SIZE_MB`, applies to the archive itself.
+
+For an agent with a workspace, the members are written under
+`uploads/<first 8 hex of the file id>-<archive name without .zip>/`, with their
+folders kept — `repo.zip` holding `repo/src/app.py` becomes
+`uploads/3f2a1b9c-repo/repo/src/app.py`. The reference names that folder and
+starts with the first lines of the list of members. The members are written one
+at a time, so only one member is in memory at once. If the workspace refuses a
+write part of the way through, or the turn is stopped during the unpack, the
+folder is removed: the model is told the archive could not be written, and a
+half-unpacked tree is never taken for a whole one.
+
+An agent without a workspace has nowhere to unpack it. The model is told that it
+cannot open the archive and is not given the list of members, because a list of
+paths would let it answer questions about code it cannot read.
+
+To get files out again, the chat's **Files** panel offers each folder, and the
+whole workspace, as a `.zip` — see
+[Sandbox: downloading a folder](sandbox.md#downloading-a-folder-as-a-zip).
 
 **A later turn still has the file.** What the attachment added to the prompt -
 the paste, or the reference and its head - is kept beside the message and
@@ -125,6 +172,35 @@ replayed with the history, so "and what about March" reaches a model that still
 knows the file is there. A picture is named in that history rather than sent
 again; an agent that needs to look at it once more asks for it, or opens it from
 `uploads/` when it has a workspace.
+
+**A file whose turn stopped is put back by the next one.** A file is tied to the
+message it came with before the run starts, so it cannot be attached again. If the
+run answering that message ended without completing — failed, cancelled, or stopped
+by a budget or the loop guard — the same agent's next turn for that person in that
+conversation writes the file back to `uploads/` (with its extracted text, where the
+workspace cannot read the original, and that text alone if only it is missing)
+before it first uses the workspace: at once for a stored workspace, on first use for
+a sandbox. The run is told to list `uploads/` before it says a file is missing, and
+to say a file could not be put back if it is still not there.
+
+Only the person's own files are put back, only from that agent's interrupted turns,
+the newest 50 at most, and only until that agent completes a turn for the same
+person that started after the interrupted one ended and actually reached attachment setup in its workspace.
+A completed turn without a workspace, or without using its sandbox, leaves this window open. A turn run with an API key, for
+a widget visitor or released from an approval by somebody else does not end that
+period. A file removed after that stays removed.
+
+Some files are not put back: those of a turn a guardrail blocked, since the input
+guardrail refused what that turn carried; those of a prompt whose run was never
+opened, which belongs to no agent; files on a turn run with an API key or for a
+widget visitor.
+
+When the agent has an input guardrail, each file is also screened before it is put
+back, over what the guardrail would read of it: its name, its path and its first
+lines. A turn can stop before the guardrail reads its input, for example on a
+budget, so a file the guardrail refuses is not written, and the log names its id
+only. When every file is refused, the run is not told that any may be back.
+Without an input guardrail, nothing changes.
 
 **The extracted text comes with it only where nothing can read the original.** A
 `.txt` of the parse used to be written next to every PDF, `.docx` and spreadsheet,
@@ -174,6 +250,11 @@ had just written and kept trying — `ls`, then a `curl` of a `data:` URI, then
 three workarounds offered to the person, across two turns. One sentence now says
 the workspace is unavailable and that another attempt will fail the same way.
 
+**A turn the input guardrail blocks writes nothing.** The reference and its head
+are screened by the agent's input edge before the file is written, so a file in a
+blocked turn never reaches `uploads/` and a later turn cannot open it. See
+[Guardrails](reference/capabilities.md#guardrails).
+
 The reference is what the model actually reads:
 
 ```
@@ -217,7 +298,8 @@ not run when a surface is assembling its prompt.
 
 Chat attachments are read with **PyMuPDF**, and that is not configurable. An
 attachment belongs to no collection, so there is no stored configuration to read
-a parser choice from.
+a parser choice from. NUL characters are removed from the extracted text before
+it is stored so PostgreSQL can accept the upload. The original PDF bytes are kept.
 
 The `CHAT_PDF_PARSER` variable that used to select between three parsers is
 gone. Both alternatives were wrapped in `except Exception: return
@@ -273,6 +355,13 @@ media/
 SSE-S3 by default, SSE-KMS with a key the deployment names. See
 [configuration](configuration.md#uploaded-files-at-rest) for the settings.
 
+Knowledge-base ingestion with local storage still needs the API and worker to
+share `MEDIA_DIR/_rag_tmp`. With S3, each worker execution downloads its own
+stored object and removes the temporary copy on completion, parser failure or
+cancellation. No API scratch volume is shared between pods; see
+[Kubernetes deployment](kubernetes.md). A killed child can leave a temporary copy
+until the pod is replaced.
+
 !!! info "Which backend to run, and what each one asks of you"
 
     Local is the honest answer for a single host: encrypt the volume, and the
@@ -291,6 +380,23 @@ SSE-S3 by default, SSE-KMS with a key the deployment names. See
 
 `agenticos cmd doctor` prints which backend a running deployment uses and whether
 encryption is on.
+
+### Mail attachments in a workflow { #mail-attachments-in-a-workflow }
+
+A [workflow](workflows.md#from-an-email) started by a Gmail or Outlook message
+stores the message's attachments as files of that run, inside the run and never in
+the poll that read the mailbox. They follow the chat-upload file type allowlist and
+size limit: of the attachments a mailbox lists, only the first 10 per message are
+considered, and 25 MiB per message. One left out is listed with the reason, and a
+test run fetches nothing.
+
+A `.zip` or `.tar.gz` is left out as `type_not_allowed`:
+a chat checks an archive member by member before it unpacks it (see
+[Archives](#archives)), and nothing checks one that a workflow receives.
+
+An HTML file in a workflow, such as a stored page or an attachment, is read by
+[`html.parse`](reference/workflow-nodes.md#html-parse), not by `text.extract`, which
+reads documents and would return the markup as text.
 
 ### ChatFile model
 
@@ -346,6 +452,10 @@ flowchart TD
     background task with a session of their own - which is why an upload answers
     `202 {"status": "processing"}` rather than waiting.
 
+Concurrent first writes to the same collection wait for its table and indexes
+to be created in one transaction. If creation fails, that transaction rolls
+back and a waiting write can create the table.
+
 There are two addresses an upload can arrive at —
 `POST /rag/collections/{name}/ingest` and `POST /kb/{kb_id}/documents` — and both
 answer **202** with the same `RAGIngestResponse`, every field of it,
@@ -355,6 +465,23 @@ exist until the worker has indexed it.
 One of the two used to omit the key rather than send it null, so a client
 normalising the answer got a different shape from each
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
+
+**Wait for `complete`, not for vectors.** `GET /rag/collections/{name}/info`
+reports `indexing_status` from the collection's tracked documents: `indexing`
+while any of them is still `processing` - queued or being ingested - and
+`complete` once none is. `processing_count`, `indexed_count` and `failed_count`
+say how many documents are in each state. A failed document is in a terminal
+state, so it does not hold the collection at `indexing`; it shows in
+`failed_count`. The field used to be the constant `complete`, and
+`total_vectors` grows while the worker works through a batch, so a script
+waiting on either queried a half-built collection
+([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` answers the same for one knowledge base, counting
+the documents its page lists rather than everything under its collection name,
+which another base may share; the knowledge base page shows that state beside
+the document count. A document left `processing` keeps either answer at
+`indexing` until it is deleted or, for a synced document, until its source syncs
+again.
 
 !!! danger "The task is started after the request's transaction commits"
 
@@ -374,10 +501,11 @@ flow's work.**
 **One loop owns the process's pools, and everything else builds its own
 engine.** The API's lifespan claims them at startup: it serves every request and
 disposes them at shutdown, so it is the one loop whose connections they may
-cache. Off that loop `get_db_context` behaves like `get_worker_db_context` — a
-`NullPool` engine for the call, disposed at the end — because it is reached from
-Prefect flows (the report, MCP refresh, invitation and approval tasks, the
-channel loops) and from an agent's embedding resolver, each on a loop of its own
+cache. The worker claims them the same way for its one loop, and so does each
+ingestion child for its own. Off the owning loop `get_db_context` behaves like
+`get_worker_db_context` — a `NullPool` engine for the call, disposed at the end —
+because it is reached from the channel loops and from an agent's embedding
+resolver, each on a loop of its own
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
 An agent's knowledge search follows the same rule for its vector store: the
@@ -536,6 +664,20 @@ running this organization's text through their credential
 therefore resolves each organization's own configuration, falling back to an
 app-scoped collection but never to a third tenant's.
 
+The fallback is an app-scoped base only: a personal base outside any
+organization has no organization either, but it is one person's
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+A sync source records an organization and a collection name, not a knowledge
+base, so its sync writes into the base that resolution picks - the organization's
+oldest base by the name - and only that base lists and runs it. Every API route
+that points a source at a collection checks write access to that base, and adding
+one to another base of the same name is refused with 400.
+
+When a member's personal base is older than the organization's base of the same
+name, the organization's syncs by that name therefore land in the personal base, and
+the organization's base takes no source: create it under a name of its own.
+
 !!! warning "One collection name is one embedding space"
 
     Resolving per organization is only safe because every row on one collection
@@ -555,6 +697,21 @@ credential to another vendor's address. The catalog is also what
 `GET /rag/embedding-models` answers with, so the create form offers the models a
 provider can actually serve — it used to offer every model this build knew a
 *width* for, three of them sentence-transformer weights nothing here can call.
+
+An OpenRouter collection can name its own **endpoint** (`embedding_base_url`),
+such as the regional `https://eu.openrouter.ai/api/v1`. A regional endpoint
+serves a subset of the catalog, and only it knows which, so
+`GET /rag/embedding-models/openrouter?base_url=…` asks it and answers with the
+catalog's models it lists. The catalog still supplies the width, because the
+listing states none. The create form offers that narrower list, and the service
+refuses a collection whose model the endpoint leaves out, on `embedding_model`
+when it is created and on `embedding_base_url` when an existing one is moved.
+
+An endpoint that cannot be asked is not taken as a refusal: the form lists the
+whole catalog and says it is unconfirmed. A model the endpoint does not serve
+used to be accepted and then failed every upload with OpenRouter's "No endpoints
+found supporting your data region", stored as a generic hint to check the key;
+a 404 from an embedding endpoint is now stored as the model it does not serve.
 
 The key is validated at creation. A key another organization holds, one of the wrong
 purpose, or one the chooser cannot themselves see is refused there, where the person
@@ -581,7 +738,7 @@ variable.
 
 That degradation is announced rather than assumed. The resolution carries which
 of the five sources it landed on, and ingestion writes every degraded one into
-the Prefect run's log, a collection that simply names no key included. Before
+the worker's log, a collection that simply names no key included. Before
 issue #306 the ingestion worker was the one caller that never asked the resolver
 at all, so every uploaded document was embedded with the deployment's model and a
 deployment-wide key whatever its collection had chosen; that key is gone.
@@ -675,6 +832,22 @@ one of them is theirs.
 A name a caller does not supply is derived from the display name plus six random hex
 characters, and is claimed on the same path rather than trusted for being random.
 
+**Nor is a name holding content no base owns.** `rag-ingest` writes tracking rows and
+a `rag_<name>` table with no knowledge base and no organization. So `claim` refuses a
+name no base holds while it has unfiled rows describing chunks of any tenant but the
+caller's organization, or a vector table with such chunks. A member with
+`collections:edit` used to be able to create a base on an operator's collection and
+delete it, dropping the operator's chunks with it
+([#2747](https://github.com/vstorm-co/agenticos/issues/2747)). A name a base holds
+is not checked: the caller may write every holder, and could delete or clear them all
+anyway. An app admin may adopt such a name; a failed row with no vector id describes
+no chunk and does not hold it. A `rag-ingest` killed mid-file leaves a `processing`
+row that holds the name until an app admin adopts it or runs `rag-drop <name>`.
+
+Content arriving *after* a base claims the name cannot be refused here, so the
+teardown spares it instead: the last holder's table stays while it holds an unfiled
+chunk the base does not take, as described under deleting a base below.
+
 **And a name mid-teardown is not free either.** Dropping a collection removes its
 knowledge-base rows in the request but drops the physical `rag_<name>` vector table
 only *after* the request commits, handed to a durable worker — so a rollback keeps
@@ -690,10 +863,10 @@ window cannot recreate the table the drop is about to destroy and lose its own c
 to it (#1364). The **worker** ingestion paths — a sync, a retry — check it too, at the
 `still_wanted` gate right before the vector write, so a sync into a cleared default
 (whose row the clear keeps) stops rather than repopulating a table being dropped
-(#1382). Both are best-effort reservation checks rather than lock-held serialisation:
-holding the teardown lock across a write would deadlock against an organization purge,
-which locks the `organizations` row first, so closing the last narrow window is left
-to #1382.
+(#1382). Both are best-effort reservation checks rather than lock-held serialisation.
+A write filed under a base relies on them and on its base and row locks, and closing
+the last narrow window is left to #1382. A chunk write with no base holds the teardown
+lock through its commit, as described under the last holder's teardown below.
 
 A reservation whose drop never ran — lost to a crash between the commit and the
 dispatch, or to a drop that fails for good — would block its name forever, since
@@ -707,7 +880,23 @@ all the same, so the documents deleted with it stop being searchable rather than
 lingering in a table nothing lists (#1361). A search reads the absent table as empty
 and the next upload recreates it. The table is spared only when a sibling base still
 holds the same name, since the vector namespace is not tenant-unique and dropping it
-would take their chunks too (#913).
+would take their chunks too (#913). Then only the dropped base's own document rows and
+files go, and its chunks are removed from the kept table, as for a deleted base below.
+Unfiled document rows of the base's organization (uploads from before documents
+recorded their base) go too, with their files and chunks, unless another base of that
+organization holds the name and still lists them. A drop used to delete every
+document row under the name, another organization's included (#2560).
+
+`rag-drop <name>` goes through the same teardown. It used to drop the vector table
+directly, with no reference check, lock or reservation, and left the document rows
+behind, so it could destroy a table another base still used. Now it clears the one
+base that holds the name, or drops a name no base holds (one `rag-ingest` filled) with
+its document rows. When several bases hold the name it refuses and lists their ids;
+`--knowledge-base <id>` names the one to clear, and the table stays for the others.
+A worker drops the table and removes the files after the command commits (#2560).
+
+The last holder's table goes whatever it holds: the operator asked for the drop, and
+owns the content a console delete would spare (#2747).
 
 `documents` was also the **default** collection, so the CLI quickstart used to aim
 at the tracking table; the default is now `default`. A knowledge base created with
@@ -715,6 +904,12 @@ the old name before this landed still exists and is still deletable, but nothing
 can be ingested into it — delete it and create one under another name. Nothing is
 lost in doing so: an ingest into that collection has never succeeded, because
 building the vector index on a table with no `embedding` column fails.
+
+Deleting a base detaches and deactivates the sync sources whose resolved target was that base.
+They keep their connector configuration, but require an explicit reassignment before syncing
+again; another base with the same name does not inherit them. Clearing a default base keeps
+its sources because its target row remains. CLI ingestion refuses a name reserved for a
+queued drop until cleanup releases it.
 
 ### Who may reach a collection
 
@@ -790,6 +985,127 @@ selective filter cannot surface a row from outside the scope. An app-scoped,
 deployment-wide collection is matched on *having no tenant stamped* rather than on an
 equality every organization would fail, which is what lets everybody read the shared
 base without anybody reading each other's.
+
+**A filter cannot reach another knowledge base of the same name either.** The tenant
+alone does not tell every pair apart: an app-scoped base and a personal base outside
+any organization both have none, and an organization's base and a member's personal
+base in it both have the organization. So every chunk also records the knowledge base
+it was ingested for, and search, the vector count, the replace lookup and delete read
+a base's own chunks only; deleting a document also removes its own chunks that
+record no base. A chunk written before chunks recorded their base, and not filed
+by the upgrade, matches by its tenant as before - except for a personal base
+outside any organization, whose search and count take none of those
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Deleting a knowledge base whose collection name another base still holds keeps the
+shared table, and the cleanup job queued with the delete removes the chunks filed under
+the deleted base. An organization purge and an account deletion do the same for the
+bases they remove, and so does dropping a collection (`DELETE /rag/collections/{name}`),
+which also deletes only that base's document rows; for a kept default it removes
+only the chunks of the documents it deleted, so an upload made after the drop keeps
+its own, and a chunk with no document row stays
+([#2560](https://github.com/vstorm-co/agenticos/issues/2560)).
+
+Deleting a knowledge base (`DELETE /kb/{id}`) while another base holds its name also
+deletes the unfiled document rows of its organization, with their files and chunks,
+unless another base of that organization holds the name and still lists them - the
+same rule as a collection drop ([#2560](https://github.com/vstorm-co/agenticos/issues/2560)). Otherwise unfiled chunks stay, matched by
+their tenant, and unfiled document rows stay listed under the bases of their tenant
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+When no other base holds the name, both routes and `rag-drop` delete the same rows,
+with their files: the base's own rows and the unfiled rows of its tenant. That is its
+organization's for an organization's or a personal base, the ones with no organization
+(what `rag-ingest` writes) for an app-scoped base, and none for a personal base
+outside an organization.
+
+Both routes then keep the table if it holds an unfiled chunk the base does not take:
+an operator's `rag-ingest` or CLI sync into the held name, or another tenant's. A
+claim cannot refuse content that arrives after it, and the caller has no authority
+over it. Only the chunks the base takes are purged, and the other rows under the name
+stay as they are.
+
+Unless the base is a default, which stays on the name, the name is left as `rag-ingest`
+leaves it: no base holds it, `rag-drop <name>` removes it, and `claim` refuses it to
+everyone but an app admin and an organization whose chunks are all that remain
+([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
+
+A chunk write with no base holds the name until it commits, so the table is asked only
+after any such write already running has finished. A write that reaches the name while
+it is reserved is refused, and the file has to be ingested again. The cleanup job drops
+only a reserved name, so a rerun of the job leaves a write made after its first drop.
+
+A large document can hold the name for several seconds. A create on the name
+(`POST /kb`, `POST /rag/collections/{name}`) waits for one second and then answers
+409 with a request to try again, because each waiting request occupies a database
+connection and enough of them refuse every other request. A delete waits for the
+write to finish.
+
+A personal base outside an organization takes no unfiled chunk, though a chunk its own
+rows name goes with it. A legacy chunk with no base, no organization and no tracking
+row has unknown ownership. It keeps the table but is **not readable through an
+app-scoped base**, even after an app admin claims the name ([#2773](https://github.com/vstorm-co/agenticos/issues/2773)).
+
+An app-scoped base takes global unfiled chunks and tracking rows only when their
+`writer_kind` is `operator`. New `rag-ingest` and CLI sync writes record that origin;
+platform ingestions record `document`, which survives deletion of a user or base.
+Migration `0300_unfiled_writer_provenance.py` treats old origin tags as untrusted,
+retains certain document ownership and quarantines everything ambiguous as
+`legacy_unknown`. Organization-scoped unfiled reads retain their tenant restriction.
+
+**Upgrade action:** audit a retained collection from the server shell. The command
+uses the database only and prints aggregate counts, never document content:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name>
+```
+
+Only after inspecting the source and confirming that its unknown global unfiled data
+is an operator import intended for every organization, run:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name> --confirm-operator
+```
+
+This requires an interactive confirmation (`--yes` supplies it for automation).
+The update is atomic and repeatable, and skips chunks or rows with known document
+ownership. Keep uncertain data quarantined; re-ingest it into its authorized base,
+or use the existing operator `rag-drop <name>` procedure when it should be removed.
+Claiming the name in the console never confirms its data's origin.
+
+Otherwise, and always for `rag-drop`, the cleanup job drops the table. Another
+tenant's unfiled rows under the name stay, with their files, because the caller has no
+authority over them. Nothing stands behind them once the table is gone, so they are
+marked as failed: that tenant's next base on the name lists them as failed, an
+uploaded document has to be uploaded again, and a sync indexes a synced document
+again.
+
+Before, `DELETE /kb/{id}` left the tenant's unfiled rows behind the dropped table,
+still listed as indexed, and the collection drop deleted every row under the name,
+whichever tenant it belonged to ([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
+
+An upload or a sync still indexing a file for the base when it is deleted leaves
+no chunks behind. The write takes a lock on the base's row that conflicts with the
+delete's, in the transaction that inserts the chunks: a write that comes second finds the base gone, writes
+nothing and fails at the index step, and a write that comes first commits before
+the delete, whose cleanup then removes its chunks
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+A single document deleted while it is still indexing leaves no chunks behind
+either. Its row has no vector document id until the ingest records one, so the
+delete may have nothing to remove; the worker that finds the row gone when it
+records the result queues a job, in the same transaction, that removes the
+chunks it has just written and is retried if the removal fails. A delete that discovers the newly recorded id queues the same durable removal
+from the id its deleted row holds
+([#2565](https://github.com/vstorm-co/agenticos/issues/2565)).
+
+A local sync queued for a base deleted before it runs ends with an error and writes
+nothing
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+An agent searches the knowledge bases it is bound to under their own scopes, not by
+resolving their names again. An agent bound to two bases that share a name
+searches their combined scope, excluding other same-named bases.
 
 **`GET /rag/collections/{name}/filter-values`** answers with the `organizational_unit`
 values actually present in the collection, under that same scope. It exists because
@@ -898,13 +1214,18 @@ caller who asked for no such thing. A `NULL` address matches no comparison, whic
 is the answer wanted rather than one to work around, and it is what every row
 written before the column has.
 
-Three things decide what a retirement may take, and each of them was got wrong
+Four things decide what a retirement may take, and each of them was got wrong
 first:
 
 - **By address, never by filename.** That is the collision
   [#990](https://github.com/vstorm-co/agenticos/issues/990) removed on the vector
   side reached from the other direction: `a/readme.md` and `b/readme.md` in one
   bucket share a basename, so a name match deletes the other file's row.
+- **In the new row's scope, never by collection name.** A name is not unique, so
+  two organizations, or two bases of one, can sync the same path into it. A row
+  filed under a base retires only the rows that base lists — its own and its
+  tenant's unfiled ones — and an unfiled row only the unfiled rows of its own
+  organization ([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
 - **`ERROR`, not "has no vector id".** Those are different sets, and treating
   them as one is a race: a `PROCESSING` row belongs to an attempt still running,
   and two overlapping ingestions of one source would have the second delete the
@@ -932,6 +1253,12 @@ document that did not fail, or that has no stored file — one that predates
 uploads keeping theirs, or one a sync ingested — is refused with a 400 rather
 than moved to `processing`
 ([#441](https://github.com/vstorm-co/agenticos/issues/441)).
+
+The retry also refuses an organization's document filed under no knowledge base: its
+chunks would be written deployment-wide, where the organization's base that lists it
+does not read, so it has to be uploaded again. One with no organization is an
+app-scoped base's, which reads there, and is retried
+([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
 
 ### What a failed ingest says
 
@@ -964,14 +1291,16 @@ credential is configured for this collection"*, *"Organization monthly budget
 exhausted: $40.15 spent of $40.00 limit"*.
 
 What is **not** stored is the failing client's own text. A provider SDK, `httpx`,
-`boto3` and the Google Drive client all put the request they were making into
-their exception message, which routinely means an endpoint, an internal host, a
-bucket, or a URL with a key in its query string — and unlike an HTTP error body,
-a column is read again weeks later by anyone who opens the failed document. That
-text is not lost: every one of these call sites logs it with `logger.exception`,
-so the worker log has the message and the traceback, and a Prefect flow that
-re-raises has both in its run. `app/services/rag/failures.py` is where the two
-are separated.
+`boto3` and the Google Drive client all put the request they were making into their
+exception message, which routinely means an endpoint, an internal host, a bucket, or
+a URL with a key in its query string — and unlike an HTTP error body, a column is
+read again weeks later by anyone who opens the failed document.
+
+That text is not lost: every one of these call sites logs it with
+`logger.exception`, so the worker log has the message and the traceback, and a job
+that re-raises has its type, message and last frames on its row in
+`background_jobs`, where only the deployment's owner reads them.
+`app/services/rag/failures.py` is where the column and the log are separated.
 
 The log is a smaller audience than the column, not a safe one — treat a worker
 log as something only operators read, and see [#440] for why the redaction
@@ -1245,9 +1574,11 @@ consequence is the same (#982).
 
 Cloning says it too, and for the reason above: it is the only way to change a
 source's audience from this product's own UI. Repointing an existing one is a
-`PATCH` on `collection_name`, which no screen sends today - there is no source
-editor - so it is reachable through the API and the CLI, where the audit entry
-above is what records it.
+`PATCH` on `collection_name` to `/rag/sync/sources/{id}`. The source editor on a
+knowledge base's **Sync** tab does not send one, and that base's own
+`PATCH /kb/{kb_id}/sync-sources/{source_id}` refuses a `collection_name` naming
+another base - so repointing is reachable through the API and the CLI, where the
+audit entry above is what records it.
 
 ### What a new connector owes
 
@@ -1356,13 +1687,18 @@ configuration and pick a vision-capable model profile there. The picker is the
 one the agent builder uses, so a provider, a model and its key can be defined
 without leaving the dialog — a deployment with no model profiles yet is not a
 dead end. What it does not offer is deleting a profile: that belongs where an
-organization's models are managed, because every agent pointed at one loses it.
-The generated descriptions are included in the document text for better semantic
-search.
+organization's models are managed, and a profile that agents use cannot be
+deleted at all.
+
+PyMuPDF skips embedded image extraction when image description is off. When it
+is on, each image xref is extracted once per document, repeated references on a
+page are collapsed, and identical image bytes are described once. Each page
+referencing an image still receives its description in the text for semantic
+search. Chunks carry that text without copying the page's embedded images.
 
 ## From a channel
 
-A file sent to a Slack, Telegram or Mattermost bot enters here, not beside here.
+A file sent to a Slack, Teams, Telegram or Mattermost bot enters here, not beside here.
 The adapter fetches it with the bot's own credential, it goes through the same
 validation a browser upload does, and it becomes the same `ChatFile` row — so the
 routing above applies unchanged and a channel cannot become the lenient path.

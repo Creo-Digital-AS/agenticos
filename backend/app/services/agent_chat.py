@@ -20,8 +20,6 @@ its cost, its budget check, its approval gate and its capabilities - stamped
 the run and forwards events, because only the caller knows what a frame is.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -31,7 +29,7 @@ from typing import Any, NamedTuple
 from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, UserContent
+from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.run import AgentRun
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,15 +38,23 @@ from app.agents import prompt_variables
 from app.agents.browser_events import BrowserEventSink
 from app.agents.capabilities.approval import ApprovalMode
 from app.agents.capabilities.budget import BudgetExceeded, BudgetScope
+from app.agents.capabilities.drafts._spec import draft_tool_names
 from app.agents.capabilities.guardrails import GuardrailBlocked
 from app.agents.capabilities.media import offloaded_history
+from app.agents.computer_on_use import ComputerAccessCallback
 from app.agents.connect_on_use import ConnectionCallback
 from app.agents.deps import AgentDeps, AskUserCallback, CompactionSink, QuestionsCallback
+from app.agents.ephemeral_media import dump_messages
+from app.agents.factory import AgentOutput, answer_text
 from app.agents.failures import run_failure_summary
+from app.agents.loop_guard import ToolLoopStopped
 from app.agents.steering import SteeringInbox
 from app.agents.subagent_events import SubagentEventSink
-from app.core.exceptions import AuthorizationError, BadRequestError
-from app.core.permissions import AuthContext
+from app.agents.system_agents import refuse_system_agent
+from app.agents.visual_reports import VisualReports
+from app.core.exceptions import AuthorizationError, BadRequestError, RunFailedError
+from app.core.field_errors import field_problems
+from app.core.permissions import AuthContext, Perm
 from app.db.models.agent_run import RunStatus, RunSurface
 from app.db.models.chat_file import ChatFile
 from app.db.models.organization import Organization
@@ -67,7 +73,12 @@ from app.services.agent_runner import (
     input_screen_for,
 )
 from app.services.attachments import AttachmentRouter
+from app.services.conversation import check_history_snapshot, model_context_check
+from app.services.device_hub import LocalTarget
 from app.services.mentions import MentionService, ResolvedMentions
+from app.services.message_history import ModelHistory
+from app.services.run_heartbeat import run_heartbeat
+from app.services.sandbox_workspace import SandboxWaitSink
 from app.services.usage_report import UsageReport, UsageReportService, context_fill
 
 logger = logging.getLogger(__name__)
@@ -75,7 +86,7 @@ logger = logging.getLogger(__name__)
 # Iterating the run is the caller's job; this is how it is handed back the
 # iterator. Typed against the agent the factory builds, so a surface that
 # forwards events cannot quietly be given a different kind of run.
-type ChatStream = Callable[[AgentRun[AgentDeps, str | DeferredToolRequests]], Awaitable[None]]
+type ChatStream = Callable[[AgentRun[AgentDeps, AgentOutput]], Awaitable[None]]
 
 # Told once per turn, before the model answers, which of the agent's personal MCP
 # services this person cannot reach - so a surface can draw the button that
@@ -161,6 +172,32 @@ def requested_approval_mode(frame: Mapping[str, Any]) -> ApprovalMode:
         raise BadRequestError(
             message="That is not an approval mode",
             details={"approval_mode": str(raw)},
+        ) from exc
+
+
+def requested_local(frame: Mapping[str, Any]) -> LocalTarget | None:
+    """The chat's "Work on: This computer", if it asked for it (#2305).
+
+    `None` - the agent's own sandbox - for a frame that names nothing. Whether the
+    run may work there, and whether the computer is connected, is decided where
+    the workspace opens.
+
+    Raises:
+        BadRequestError: The frame names a target that is not a folder and a mode.
+    """
+    raw = frame.get("local")
+    if raw is None:
+        return None
+    try:
+        return LocalTarget.model_validate(raw)
+    except ValidationError as exc:
+        raise BadRequestError(
+            message="That is not a folder on your computer to work in",
+            details={
+                "fields": field_problems(
+                    exc.errors(include_url=False, include_input=False), root="local"
+                )
+            },
         ) from exc
 
 
@@ -251,13 +288,14 @@ def requested_environment_id(frame: Mapping[str, Any]) -> UUID | None:
         ) from exc
 
 
-def display_output(output: str | DeferredToolRequests) -> str:
+def display_output(output: AgentOutput) -> str:
     """The text to show for whatever a run ended with.
 
     A run can end without an answer: when the approval gate parks a
     side-effecting call, Pydantic AI ends the run with the calls waiting on a
     human. There is no model text to show then, and the object itself is not
-    something a client can render.
+    something a client can render. An answer in the agent's `output_schema` is
+    shown as that object in a JSON block (:func:`answer_text`).
 
     Empty, then - and deliberately not a sentence about the queue. This value
     becomes the assistant message's `content`, so a notice put here is stored as
@@ -269,7 +307,9 @@ def display_output(output: str | DeferredToolRequests) -> str:
     empty answer here too (:meth:`AgentRunnerService._run`), so this is the whole
     platform's answer rather than this one's.
     """
-    return output if isinstance(output, str) else ""
+    if isinstance(output, DeferredToolRequests):
+        return ""
+    return answer_text(output)
 
 
 @dataclass(frozen=True)
@@ -291,6 +331,7 @@ class OpenedRun:
     run_id: UUID
     model_label: str
     agent_version_id: UUID | None
+    draft_tools: frozenset[str] = field(default_factory=frozenset)
     mcp_origins: Mapping[str, UUID] = field(default_factory=dict)
     """The run's own `PreparedRun.mcp_origins`, filled as it lists its tools."""
 
@@ -324,9 +365,14 @@ class ChatTurn:
     """
 
     questions: tuple[str, ...] = ()
-    """The `ask_user_question` calls this turn parked on, by tool call id - asked
-    of somebody who left before answering (#2064). Their steps are stored waiting,
-    and answering them continues the run."""
+    """The `ask_user_question` calls this turn awaits, by tool call id.
+
+    Their steps are stored waiting before the surface offers the question card,
+    and answering them continues the run, including after a reload (#2064).
+    """
+
+    history_revision: int | None = None
+    """The input snapshot's refusal revision; absent for unversioned caller histories."""
 
     summarized_history: list[dict[str, Any]] | None = None
     """The history a summary reduced this turn to, or `None` if none ran.
@@ -344,6 +390,7 @@ class ChatTurn:
     and a one-request turn, which is most of them, never gets that far (#49).
     """
 
+    draft_tools: frozenset[str] = field(default_factory=frozenset)
     mcp_origins: Mapping[str, UUID] = field(default_factory=dict)
     """Which organization MCP connection served each tool, by the name called -
     what the surface stores each call against (`PreparedRun.mcp_origins`)."""
@@ -378,6 +425,20 @@ class ChatAgentRunner:
         self.runner = AgentRunnerService(db)
         self.usage = UsageReportService(db)
 
+    async def refuse_system_agent(
+        self, *, user: User, organization_id: UUID, agent_id: UUID
+    ) -> None:
+        """Refuse a chat with an agent only the platform runs, before anything is written.
+
+        Raises:
+            AuthorizationError: If the user is not a member of this organization.
+            NotFoundError: If no agent here has that id, or they may not run it.
+            SystemAgentRestrictedError: If the agent is a system agent, such as a judge.
+        """
+        ctx = await self._context(user, organization_id)
+        agent = await self.runner.registry.get(ctx, agent_id, perm=Perm.AGENTS_RUN)
+        refuse_system_agent(agent, action=f"a {RunSurface.WEB.value} run")
+
     async def run(
         self,
         *,
@@ -396,14 +457,18 @@ class ChatAgentRunner:
         subagent_events: SubagentEventSink | None = None,
         on_compaction: CompactionSink | None = None,
         browser_events: BrowserEventSink | None = None,
+        on_sandbox_wait: SandboxWaitSink | None = None,
         on_personal_gaps: PersonalGapSink | None = None,
         request_connection: ConnectionCallback | None = None,
+        request_computer_access: ComputerAccessCallback | None = None,
         model_profile_id: UUID | None = None,
         environment_id: UUID | None = None,
         approval_mode: ApprovalMode = ApprovalMode.FOLLOW_AGENT,
+        local: LocalTarget | None = None,
         person_time_zone: str | None = None,
         testing: Testing = Testing(test=False, draft=False),
         steering: SteeringInbox | None = None,
+        visual_reports: VisualReports | None = None,
     ) -> ChatTurn:
         """Run the named agent for this turn and record what it consumed.
 
@@ -448,12 +513,20 @@ class ChatAgentRunner:
                 confidences and, when the agent asked for them, the viewport. A
                 `browse_web` call is the longest tool call this platform makes;
                 without this it is a tool call that goes quiet for a minute.
+            on_sandbox_wait: Told when the run's sandbox is still opening a few
+                seconds in - after an update the host builds the runtime's image
+                first, which is minutes of nothing streaming (#2222).
             request_connection: How to ask the person to connect one of their
                 own services while the run waits. Given, a personal service they
                 have not connected is asked for when the agent reaches for it,
                 and `on_personal_gaps` hears only the gaps nobody here can fix.
+            request_computer_access: How to ask the person where the agent may
+                work on their computer, for an agent whose workspace is that
+                computer and that has none chosen yet.
             steering: Where what the person sends mid-run lands, read by the
                 model at its next request (#2087).
+            visual_reports: Where the console reports how each drawing rendered,
+                so `draw` can tell the model what broke (#2171).
 
         Returns:
             The answer to show and persist, and the model that produced it. A
@@ -491,7 +564,15 @@ class ChatAgentRunner:
             # caller who may not waive approvals is told, and the turn does not
             # run believing it has consent it was never given (#925).
             approval_mode=approval_mode,
+            # "Work on: This computer" (#2305): the sandbox's tools carried out by
+            # the person's desktop app, in the folder they picked there.
+            local=local,
             request_connection=request_connection,
+            request_computer_access=request_computer_access,
+            # A sandbox whose image is still being built is minutes in which no
+            # token and no tool step arrives. Passed in rather than set on the
+            # prepared run: preparing already opens the session.
+            on_sandbox_wait=on_sandbox_wait,
             person_time_zone=person_time_zone,
             draft=testing.draft,
             test=testing.test,
@@ -514,8 +595,12 @@ class ChatAgentRunner:
         # And what the person adds while it works: the surface fills it, the next
         # model request reads it.
         prepared.deps.steering = steering
+        prepared.deps.visual_reports = visual_reports
+        # This runner is the console's, which draws a draft as a card.
+        prepared.deps.shows_drafts = True
+        input_edge = input_screen_for(prepared.spec)
         if steering is not None:
-            steering.screen = input_screen_for(prepared.spec)
+            steering.screen = input_edge
         # Before the model answers, not after: the model is about to say it cannot
         # reach the person's Notion, and the card with the button that connects it
         # belongs beside that sentence, not under it once the turn is over.
@@ -539,13 +624,20 @@ class ChatAgentRunner:
                     model_label=prepared.built.model_label,
                     agent_version_id=prepared.run.agent_version_id,
                     mcp_origins=prepared.mcp_origins,
+                    draft_tools=draft_tool_names(prepared.spec),
                 )
             )
 
+        # The prompt row a file's briefing was kept on, so a refused turn can take
+        # it back: written before the input edge has read the prompt.
+        briefed: tuple[UUID, UUID] | None = None
         if attachments:
             router = AttachmentRouter(
                 prepared.workspace.workspace if prepared.workspace is not None else None,
                 can_parse=prepared.workspace is not None and prepared.workspace.parses_documents,
+                # Screened before a file is written, not only once the run starts
+                # (#2559): a refused file must not outlive its turn.
+                screen=input_edge,
             )
             user_input = await router.build_prompt(_as_text(user_input), attachments)
             # Kept on the prompt's row so the next turn's history still carries
@@ -557,6 +649,7 @@ class ChatAgentRunner:
                     conversation_id=conversation_id,
                     context=router.context,
                 )
+                briefed = (prompt_message_id, conversation_id)
 
         status = RunStatus.FAILED
         error: str | None = None
@@ -574,13 +667,18 @@ class ChatAgentRunner:
         finished_cleanly = False
         # The transaction ends before the model is asked anything - the same
         # boundary `AgentRunnerService._run` sets, and for its reasons (#12).
-        await self.db.commit()
-        await change_feed.publish_run(prepared.run, "created")
+        prepared.model_context_check = model_context_check(conversation_id, message_history)
         try:
-            async with prepared.iterate(
-                user_input,
-                message_history=message_history,
-            ) as agent_run:
+            if isinstance(message_history, ModelHistory):
+                await check_history_snapshot(self.db, conversation_id, message_history)
+            await self.db.commit()
+            await change_feed.publish_run(prepared.run, "created")
+            # Stamped alive while the model works, as `AgentRunnerService._run`
+            # does: a restart under this turn ends it in minutes, not hours.
+            async with (
+                run_heartbeat(prepared.run.id),
+                prepared.iterate(user_input, message_history=message_history) as agent_run,
+            ):
                 await stream(agent_run)
 
             result = _outcome(agent_run)
@@ -590,9 +688,17 @@ class ChatAgentRunner:
             if prepared.built.context.summarized:
                 summarized = await offloaded_history(
                     prepared.built.capabilities,
-                    ModelMessagesTypeAdapter.dump_python(result.all_messages(), mode="json"),
+                    dump_messages(result.all_messages()),
                 )
-            status, output, paused = _classify_output(result, parked=prepared.approvals.parked)
+            status, output, _structured, paused = _classify_output(
+                result,
+                parked=prepared.checkpointed_approvals(),
+                history_revision=message_history.revision
+                if isinstance(message_history, ModelHistory)
+                else None,
+            )
+            if paused is not None:
+                paused.tool_identities = dict(prepared.built.deps.tool_identities)
             finished_cleanly = True
         except asyncio.CancelledError:
             # The user pressed stop, or the socket went away mid-run. Cancelled
@@ -618,6 +724,13 @@ class ChatAgentRunner:
             error = str(exc)
             logger.info("Chat run %s blocked by a %s guardrail", prepared.run.id, exc.edge)
             raise
+        except ToolLoopStopped as exc:
+            # Raised on, like a guardrail block: the person is owed the reason
+            # the answer stopped, and it names tools, never what they returned.
+            status = RunStatus.LOOP_STOPPED
+            error = str(exc)
+            logger.info("Chat run %s stopped for looping: %s", prepared.run.id, exc)
+            raise
         except Exception as exc:
             error = run_failure_summary(exc)
             logger.exception("Chat run %s failed", prepared.run.id)
@@ -641,12 +754,26 @@ class ChatAgentRunner:
                     paused_state=paused,
                     budget_scope=budget_scope,
                 )
+                if prepared.run.status == RunStatus.FAILED.value:
+                    status = RunStatus.FAILED
+                    paused = None
+                # Every later turn replays the briefing after the prompt, and the
+                # input edge screens only the newest one - left on the row, a file
+                # the edge refused reaches the model a follow-up later (#2578).
+                if briefed is not None and status is RunStatus.GUARDRAIL_BLOCKED:
+                    await conversation_repo.set_attachment_context(
+                        self.db, message_id=briefed[0], conversation_id=briefed[1], context=None
+                    )
+                await self.runner.keep_plan(prepared, status=status)
                 await self.db.commit()
                 await change_feed.publish_run(prepared.run, "updated")
             except Exception:
                 if finished_cleanly:
                     raise
                 logger.exception("Could not persist the terminal state of run %s", prepared.run.id)
+
+        if finished_cleanly and prepared.run.status == RunStatus.FAILED.value:
+            raise RunFailedError(message=prepared.run.error or "The run could not be saved")
 
         return ChatTurn(
             output=output,
@@ -657,8 +784,12 @@ class ChatAgentRunner:
             parked=tuple(prepared.approvals.requested),
             questions=tuple(paused.questions) if paused is not None else (),
             mcp_origins=prepared.mcp_origins,
+            draft_tools=draft_tool_names(prepared.spec),
             usage=await self._usage(ctx, prepared),
             summarized_history=summarized,
+            history_revision=message_history.revision
+            if isinstance(message_history, ModelHistory)
+            else None,
             overhead_tokens=prepared.built.context.overhead,
         )
 

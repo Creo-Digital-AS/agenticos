@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,9 +26,17 @@ vi.mock("@/hooks/use-mcp-connections", () => ({
   useMcpConnections: () => ({ create: createOwn, connections: held.own }),
 }));
 vi.mock("@/lib/mcp-connections-api", () => ({ startMcpOAuth: vi.fn() }));
+const shell = vi.hoisted(() => ({ desktop: false, openConsent: vi.fn() }));
+vi.mock("@/hooks/use-shell", () => ({
+  useShell: () => (shell.desktop ? { platform: "macos", window: "main" } : null),
+}));
+vi.mock("@/lib/desktop/commands", () => ({ openConsent: shell.openConsent }));
+vi.mock("@/lib/api-client", () => ({ apiClient: { get: vi.fn() } }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 import { startMcpOAuth } from "@/lib/mcp-connections-api";
+import { apiClient } from "@/lib/api-client";
+import { useMcpCatalogPage, useMcpServerEntry } from "@/hooks/use-mcp-servers";
 import { toast } from "sonner";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -120,12 +128,24 @@ describe("ConnectServerDialog", () => {
     );
   });
 
+  it("formats an edited tool prefix instead of refusing a human title", async () => {
+    open(TOKEN_ENTRY);
+    await userEvent.click(await screen.findByRole("button", { name: "More options" }));
+    const name = screen.getByLabelText("Tool prefix");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Support CRM");
+    await submit();
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "support-crm" })),
+    );
+  });
+
   it("refuses a name the server would not accept, without calling the API", async () => {
     open(TOKEN_ENTRY);
     await userEvent.click(await screen.findByRole("button", { name: "More options" }));
     const name = screen.getByLabelText("Tool prefix");
     await userEvent.clear(name);
-    await userEvent.type(name, "Not A Name");
+    await userEvent.type(name, "---");
 
     await submit();
 
@@ -147,6 +167,82 @@ describe("ConnectServerDialog", () => {
   });
 
   describe("OAuth", () => {
+    it("runs the consent in the window when the app cannot hand it to the browser", async () => {
+      // An app older than the console has no open_consent, and the shell refuses
+      // an allowlisted plain-HTTP provider: neither may block the connection.
+      shell.desktop = true;
+      shell.openConsent.mockRejectedValue(new Error("unavailable: open_consent"));
+      const assign = vi.fn();
+      Object.defineProperty(window, "location", { configurable: true, value: { assign } });
+      vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "http://mcp.internal/a" });
+      try {
+        open(OAUTH_ENTRY);
+        await submit();
+        await waitFor(() => expect(assign).toHaveBeenCalledWith("http://mcp.internal/a"));
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        shell.desktop = false;
+      }
+    });
+
+    it("says so when the consent cannot start in the desktop app", async () => {
+      shell.desktop = true;
+      vi.mocked(startMcpOAuth).mockRejectedValue(new Error("down"));
+      try {
+        open(OAUTH_ENTRY);
+        await submit();
+        await waitFor(() => expect(toast.error).toHaveBeenCalled());
+        expect(shell.openConsent).not.toHaveBeenCalled();
+      } finally {
+        shell.desktop = false;
+      }
+    });
+
+    it("refetches the connections on every return while the consent may still finish", async () => {
+      shell.desktop = true;
+      shell.openConsent.mockResolvedValue(undefined);
+      vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "https://consent" });
+      const spy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+      const timer = vi.spyOn(window, "setTimeout");
+      try {
+        open(OAUTH_ENTRY);
+        await submit();
+        await waitFor(() => expect(shell.openConsent).toHaveBeenCalled());
+        spy.mockClear();
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("focus"));
+        expect(spy).toHaveBeenCalledTimes(6);
+        // Fifteen minutes on, a return refetches nothing any more.
+        const expire = timer.mock.calls.find(([, ms]) => ms === 15 * 60 * 1000)?.[0];
+        (expire as () => void)();
+        window.dispatchEvent(new Event("focus"));
+        expect(spy).toHaveBeenCalledTimes(6);
+      } finally {
+        shell.desktop = false;
+        spy.mockRestore();
+        timer.mockRestore();
+      }
+    });
+
+    it("signs in through the person's browser in the desktop app, leaving the console", async () => {
+      shell.desktop = true;
+      shell.openConsent.mockResolvedValue(undefined);
+      const opened = vi.spyOn(window, "open");
+      const assign = vi.fn();
+      Object.defineProperty(window, "location", { configurable: true, value: { assign } });
+      vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "https://consent" });
+      try {
+        open(OAUTH_ENTRY);
+        await submit();
+        await waitFor(() => expect(shell.openConsent).toHaveBeenCalledWith("https://consent"));
+        expect(opened).not.toHaveBeenCalled();
+        expect(assign).not.toHaveBeenCalled();
+        expect(toast.info).toHaveBeenCalled();
+      } finally {
+        shell.desktop = false;
+      }
+    });
+
     it("sends a client registered by hand, for a server that registers none itself", async () => {
       // HubSpot publishes no registration endpoint: without these two fields
       // the flow ended at "This server rejected the client registration
@@ -260,6 +356,33 @@ describe("ConnectServerDialog", () => {
       // refused at publish.
       expect(startMcpOAuth).toHaveBeenCalledWith(expect.anything(), "organization");
       expect(create).not.toHaveBeenCalled();
+      openSpy.mockRestore();
+    });
+
+    it("lands the other tab on the server's accounts and refetches here on return", async () => {
+      const tab = { location: { href: "" }, close: vi.fn() };
+      const openSpy = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+      const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+      vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "https://consent" });
+
+      open(OAUTH_ENTRY);
+      await submit();
+
+      await waitFor(() => expect(tab.location.href).toBe("https://consent"));
+      expect(document.cookie).toContain(
+        `mcp_oauth_return=${encodeURIComponent("/mcp-servers?server=notion")}`,
+      );
+      expect(invalidate).not.toHaveBeenCalled();
+      window.dispatchEvent(new Event("focus"));
+      // On every return while the consent may still finish; an earlier
+      // consent's listener was replaced by this one.
+      expect(invalidate).toHaveBeenCalledTimes(3);
+      window.dispatchEvent(new Event("focus"));
+      expect(invalidate).toHaveBeenCalledTimes(6);
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["mcp-connections"] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["mcp-servers", "list"] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["mcp-servers", "entry"] });
+      invalidate.mockRestore();
       openSpy.mockRestore();
     });
 
@@ -633,4 +756,76 @@ describe("useSignInOwn", () => {
       ),
     );
   });
+
+  it("names no page to come back to for a server outside the catalog, from another tab", async () => {
+    function NewTab({ connection }: { connection: McpConnectionRecord }) {
+      const signIn = useSignInOwn({});
+      return (
+        <button type="button" onClick={() => signIn(connection)}>
+          go
+        </button>
+      );
+    }
+    vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "https://consent.example" });
+    const tab = { location: { href: "" }, close: vi.fn() };
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+    document.cookie = "mcp_oauth_return=; path=/; max-age=0";
+    const custom = { id: "p3", name: "crm", url: "https://crm.example/mcp", catalog_key: null };
+    render(<NewTab connection={custom as McpConnectionRecord} />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: "go" }));
+    await waitFor(() => expect(tab.location.href).toBe("https://consent.example"));
+    expect(document.cookie).not.toContain("mcp_oauth_return=");
+    openSpy.mockRestore();
+  });
+});
+
+it("refreshes cached server counts and a saved bookmark after popup OAuth", async () => {
+  let connected = false;
+  const saved: McpCatalogEntry = {
+    ...OAUTH_ENTRY,
+    key: "registry/saved",
+    connection_ids: ["account-1"],
+  };
+  vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+    const items = path === "/agents/mcp-catalog" || !connected ? [] : [saved];
+    return { items, total: items.length, registry_total: 1 };
+  });
+  vi.mocked(startMcpOAuth).mockResolvedValue({ authorization_url: "https://consent.example" });
+  const tab = { opener: null, location: { href: "" }, close: vi.fn() };
+  const opened = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function Probe() {
+    const listing = useMcpCatalogPage("", "", "", 0, true, "connected");
+    const bookmark = useMcpServerEntry(saved.key);
+    const connect = useConnectEntry("personal", { openForm: vi.fn() });
+    return (
+      <>
+        <button onClick={() => connect(saved)}>Sign in</button>
+        <output data-testid="saved-count">{listing.isLoading ? "Loading" : listing.total}</output>
+        <output data-testid="saved-bookmark">
+          {bookmark.isLoading ? "Loading" : (bookmark.entry?.key ?? "Missing")}
+        </output>
+      </>
+    );
+  }
+  try {
+    render(
+      <QueryClientProvider client={client}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("saved-count")).toHaveTextContent("0"));
+    await waitFor(() => expect(screen.getByTestId("saved-bookmark")).toHaveTextContent("Missing"));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(tab.location.href).toBe("https://consent.example"));
+    connected = true;
+    expect(screen.getByTestId("saved-count")).toHaveTextContent("0");
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(screen.getByTestId("saved-count")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("saved-bookmark")).toHaveTextContent(saved.key));
+  } finally {
+    opened.mockRestore();
+    client.clear();
+  }
 });

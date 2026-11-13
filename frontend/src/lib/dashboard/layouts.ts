@@ -292,8 +292,10 @@ const DEFAULT_SECTIONS: SectionDef[] = [
     id: "usage",
     titleKey: "usage",
     entries: [
-      { widget: "agents", span: "s6", rows: "r3" },
-      { widget: "spend", span: "s6", rows: "r3" },
+      // Three to a row: the call minutes beside the money they are spent like.
+      { widget: "agents", span: "s4", rows: "r3" },
+      { widget: "spend", span: "s4", rows: "r3" },
+      { widget: "voice-minutes", span: "s4", rows: "r3" },
       // Eight columns are enough for twenty-four hours, and the channel list
       // beside it is about as tall as seven days are.
       { widget: "activity-rhythm", span: "s8", rows: "r4" },
@@ -323,20 +325,46 @@ const ME_SECTIONS: SectionDef[] = [
       // Then what a person acts on: the calls waiting on them beside the
       // conversations they left open. The queue sat at the foot of the page,
       // under three cards of history, which is the wrong way round.
-      { widget: "approvals", span: "s6", rows: "r3" },
-      { widget: "conversations", span: "s6", rows: "r3" },
-      { widget: "my-agents", span: "s6", rows: "r3" },
-      { widget: "my-top-agents", span: "s6", rows: "r3" },
+      { widget: "approvals", span: "s6", rows: "r2" },
+      { widget: "conversations", span: "s6", rows: "r2" },
+      // The agents to look at, each a click from improving it.
+      { widget: "needs-attention", span: "s12", rows: "r2" },
+      // Improvements stopped for a decision, each a click from its waiting step.
+      { widget: "improvements-waiting", span: "s12", rows: "r2" },
+      { widget: "background-tasks", span: "s12", rows: "r2" },
+      // Where their ongoing work is, a row of tiles under what they left open.
+      { widget: "projects", span: "s12", rows: "r2" },
+      { widget: "my-agents", span: "s6", rows: "r2" },
+      { widget: "my-top-agents", span: "s6", rows: "r2" },
       // Three rows like the pair above: two left the quality chart a sliver
       // under its figure and legend, which said nothing either.
       { widget: "my-quality", span: "s6", rows: "r3" },
       { widget: "shared-with-you", span: "s6", rows: "r3" },
+      // Every role reads datasets, and a member collecting cases from their own
+      // ratings and deciding the scores sent for review is who this page is for.
+      { widget: "datasets", span: "s6", rows: "r3" },
+      { widget: "review-queue", span: "s6", rows: "r3" },
+      // How the agents fared on those datasets: the latest eval runs and their
+      // verdicts, beside the suites that run them on their own.
+      { widget: "eval-runs", span: "s6", rows: "r3" },
+      { widget: "eval-suites", span: "s6", rows: "r3" },
+      // What waits on the reader to improve an agent: the assistant's suggestions
+      // beside the questions its knowledge could not answer.
+      { widget: "authoring-suggestions", span: "s6", rows: "r3" },
+      { widget: "knowledge-gaps", span: "s6", rows: "r3" },
+      { widget: "tables", span: "s6", rows: "r4" },
+      { widget: "workflows", span: "s6", rows: "r4" },
+      // What agents drew for them lately, as pictures: the one card here that is
+      // something to look at rather than a list to read. Four rows, so a
+      // thumbnail is big enough to tell one drawing from another.
+      { widget: "recent-visuals", span: "s12", rows: "r4" },
     ],
   },
   {
     id: "attention",
     titleKey: "attention",
-    entries: [{ widget: "notifications", span: "s12", rows: "r2" }],
+    // Three rows: at two, the third notification was cut through by the card's edge.
+    entries: [{ widget: "notifications", span: "s12", rows: "r3" }],
   },
 ];
 
@@ -379,6 +407,7 @@ const DEPLOYMENT_SECTIONS: SectionDef[] = [
     entries: [
       { widget: "platform", span: "s6", rows: "r2" },
       { widget: "health", span: "s6", rows: "r2" },
+      { widget: "background-jobs", span: "s12", rows: "r3" },
       { widget: "top-orgs", span: "s6", rows: "r3" },
       { widget: "platform-ratings", span: "s6", rows: "r3" },
     ],

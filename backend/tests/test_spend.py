@@ -17,13 +17,16 @@ from app.agents.capabilities.budget import (
     BudgetExceeded,
     BudgetGuard,
     BudgetScope,
+    SpendEntry,
     SpendLedger,
     SpendLimit,
+    booked_to,
     can_afford_ambient_call,
     guarded_by,
     metered_by,
     metered_nested_run,
     price_request,
+    record_ambient_cost,
     record_ambient_usage,
     reserved_limits,
     usage_counts,
@@ -120,6 +123,27 @@ class TestPricing:
         assert through_openrouter == price_request(
             _usage(input_tokens=MILLION), "claude-sonnet-5-5", "anthropic"
         )
+
+    def test_an_embedding_model_openrouter_serves_by_its_bare_name_is_priced_as_openais(self):
+        through_openrouter = price_request(
+            _usage(input_tokens=MILLION), "text-embedding-3-small", "openrouter"
+        )
+        assert through_openrouter is not None
+        assert through_openrouter == price_request(
+            _usage(input_tokens=MILLION), "text-embedding-3-small", "openai"
+        )
+
+    @pytest.mark.parametrize("provider", ["openrouter", None])
+    def test_openrouter_mistral_embeddings_use_the_known_upstream_price(self, provider):
+        upstream = price_request(_usage(input_tokens=MILLION), "mistral-embed", "mistral")
+        assert upstream is not None and upstream > 0
+        ledger = SpendLedger()
+        ledger.record("mistralai/mistral-embed-2312", _usage(input_tokens=MILLION), provider)
+        assert ledger.total_usd == upstream
+        assert not ledger.has_unpriced_models
+
+    def test_unknown_mistral_embedding_versions_remain_unpriced(self):
+        assert price_request(_usage(1000), "mistralai/mistral-embed-9999", "openrouter") is None
 
     def test_a_vendor_that_does_not_list_the_model_leaves_it_unpriced(self):
         assert price_request(_usage(input_tokens=1000), "acme/unknown-9.9", "openrouter") is None
@@ -477,7 +501,7 @@ class TestUsageDelta:
     def test_a_change_carries_all_four_priced_counts(self):
         before = usage_counts(RunUsage())
         usage = RunUsage(input_tokens=8, output_tokens=2, cache_read_tokens=1, cache_write_tokens=3)
-        assert usage_delta(before, usage) == RequestUsage(
+        assert usage_delta(before, usage) == RunUsage(
             input_tokens=8, output_tokens=2, cache_read_tokens=1, cache_write_tokens=3
         )
 
@@ -544,6 +568,72 @@ class TestCanAffordAmbientCall:
             assert await can_afford_ambient_call() is False
         # The guard is cleared on block exit, so an ambient call outside it proceeds.
         assert await can_afford_ambient_call() is True
+
+
+class TestUnitPricedCalls:
+    """Speech and video are priced per character and per second, not per token
+    (#2259, #2260): the caller knows the price before the call and books it after."""
+
+    @pytest.mark.anyio
+    async def test_a_known_cost_that_would_pass_the_cap_is_refused_before_it_is_spent(self):
+        guard = BudgetGuard(
+            ledger=SpendLedger(),
+            limits=[SpendLimit(scope=BudgetScope.AGENT, limit_usd=Decimal("1.00"))],
+        )
+        with guarded_by(guard):
+            assert await can_afford_ambient_call(Decimal("0.99")) is True
+            assert await can_afford_ambient_call(Decimal("1.00")) is True
+            assert await can_afford_ambient_call(Decimal("1.01")) is False
+
+    @pytest.mark.anyio
+    async def test_the_known_cost_is_weighed_against_what_the_period_already_spent(self):
+        guard = BudgetGuard(
+            ledger=SpendLedger(),
+            limits=[
+                SpendLimit(
+                    scope=BudgetScope.ORGANIZATION,
+                    limit_usd=Decimal("10"),
+                    period_spend=AsyncMock(return_value=Decimal("9.50")),
+                )
+            ],
+        )
+        assert await guard.can_afford_next_request(Decimal("0.40")) is True
+        assert await guard.can_afford_next_request(Decimal("0.60")) is False
+
+    def test_a_priced_call_books_its_cost_and_no_tokens(self):
+        ledger = SpendLedger()
+        with metered_by(ledger):
+            record_ambient_cost("elevenlabs:eleven_v4_turbo", Decimal("0.04"))
+
+        [entry] = ledger.entries
+        assert entry.model_name == "elevenlabs:eleven_v4_turbo"
+        assert entry.cost_usd == Decimal("0.04")
+        assert (entry.input_tokens, entry.output_tokens) == (0, 0)
+        assert ledger.total_usd == Decimal("0.04")
+        assert ledger.has_unpriced_models is False
+
+    def test_an_unpriced_call_is_booked_at_zero_and_marks_the_total_a_floor(self):
+        ledger = SpendLedger()
+        with metered_by(ledger):
+            record_ambient_cost("xai:grok-imagine-video-1.5", None)
+
+        assert ledger.total_usd == Decimal(0)
+        assert ledger.has_unpriced_models is True
+
+    def test_a_priced_call_is_attributed_to_the_delegation_that_made_it(self):
+        ledger = SpendLedger()
+        with metered_by(ledger), booked_to("narrator", has_own_row=True):
+            record_ambient_cost("openai:gpt-4o-mini-tts", Decimal("0.02"))
+
+        assert ledger.share_of("narrator").cost_usd == Decimal("0.02")
+
+    def test_outside_a_metered_block_nothing_is_booked(self):
+        ledger = SpendLedger()
+        with metered_by(ledger):
+            pass
+        record_ambient_cost("openai:gpt-4o-mini-tts", Decimal("0.02"))
+
+        assert ledger.entries == []
 
 
 class TestReservedLimits:
@@ -633,3 +723,126 @@ class TestMeteredNestedRun:
             pass
         assert usage.requests == 2
         assert ledger.entries == []
+
+
+class TestHeadroom:
+    """What a voice call may still spend, and re-reading the month under a long call (#54)."""
+
+    @pytest.mark.security
+    @pytest.mark.anyio
+    async def test_headroom_is_the_smallest_remaining_cap(self):
+        guard = BudgetGuard(
+            ledger=SpendLedger(),
+            limits=[
+                SpendLimit(
+                    scope=BudgetScope.AGENT,
+                    limit_usd=Decimal("10"),
+                    period_spend=AsyncMock(return_value=Decimal("7")),
+                ),
+                SpendLimit(
+                    scope=BudgetScope.ORGANIZATION,
+                    limit_usd=Decimal("100"),
+                    period_spend=AsyncMock(return_value=Decimal("50")),
+                ),
+            ],
+        )
+        guard.ledger.book(
+            SpendEntry(
+                model_name="m", input_tokens=0, output_tokens=0, cost_usd=Decimal("1"), priced=True
+            )
+        )
+
+        assert await guard.headroom() == Decimal("2")
+
+    @pytest.mark.security
+    @pytest.mark.anyio
+    async def test_an_uncapped_run_has_no_headroom_figure(self):
+        assert await BudgetGuard(ledger=SpendLedger(), limits=[]).headroom() is None
+
+    @pytest.mark.security
+    @pytest.mark.anyio
+    async def test_refreshing_rereads_what_other_runs_spent(self):
+        """A call lasts up to fifty minutes; other runs keep spending under it."""
+        lookup = AsyncMock(side_effect=[Decimal("1"), Decimal("9.5")])
+        guard = BudgetGuard(
+            ledger=SpendLedger(),
+            limits=[
+                SpendLimit(
+                    scope=BudgetScope.ORGANIZATION, limit_usd=Decimal("10"), period_spend=lookup
+                )
+            ],
+        )
+        guard.ledger.book(
+            SpendEntry(
+                model_name="m",
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=Decimal("0.6"),
+                priced=True,
+            )
+        )
+
+        assert await guard.can_afford_next_request()
+        assert await guard.can_afford_next_request()
+        guard.refresh_baselines()
+        assert not await guard.can_afford_next_request()
+        assert lookup.await_count == 2
+
+    @pytest.mark.security
+    @pytest.mark.anyio
+    async def test_headroom_never_goes_below_zero(self):
+        guard = BudgetGuard(
+            ledger=SpendLedger(),
+            limits=[
+                SpendLimit(
+                    scope=BudgetScope.AGENT,
+                    limit_usd=Decimal("1"),
+                    period_spend=AsyncMock(return_value=Decimal("3")),
+                )
+            ],
+        )
+        assert await guard.headroom() == Decimal(0)
+
+
+@pytest.mark.parametrize(
+    "selector,upstream,model",
+    [
+        ("anthropic:claude-sonnet-4-6", "anthropic", "claude-sonnet-4-6"),
+        ("openai:gpt-4.1", "openai", "gpt-4.1"),
+        ("openai/gpt-4.1", "openai", "gpt-4.1"),
+        ("gemini:gemini-2.5-pro", "google", "gemini-2.5-pro"),
+    ],
+)
+def test_otari_direct_selectors_use_the_upstream_price(
+    selector: str, upstream: str, model: str
+) -> None:
+    usage = _usage(input_tokens=1000, output_tokens=1000)
+    amount = price_request(usage, selector, "otari")
+    assert amount == price_request(usage, model, upstream)
+    assert amount is not None and amount > 0
+
+
+@pytest.mark.parametrize(
+    "alias", ["support-agent", "gpt-4.1", "openai:", ":gpt-4.1", "mystery:model"]
+)
+def test_otari_routing_aliases_and_unknown_upstreams_stay_partially_priced(alias: str) -> None:
+    ledger = SpendLedger()
+    ledger.record(alias, _usage(1000, 1000), "otari")
+    assert ledger.has_unpriced_models
+    assert ledger.total_usd == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.security
+async def test_otari_spend_stops_the_next_model_request() -> None:
+    guard = BudgetGuard(
+        ledger=SpendLedger(),
+        provider="otari",
+        limits=[SpendLimit(scope=BudgetScope.RUN, limit_usd=Decimal("0.005"))],
+    )
+    handler = AsyncMock(return_value=_response("openai:gpt-4.1", 1000, 1000))
+    await guard.wrap_model_request(MagicMock(), request_context=MagicMock(), handler=handler)
+    assert guard.ledger.total_usd > Decimal("0.005")
+    with pytest.raises(BudgetExceeded):
+        await guard.wrap_model_request(MagicMock(), request_context=MagicMock(), handler=handler)
+    assert handler.await_count == 1

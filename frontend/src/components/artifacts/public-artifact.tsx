@@ -4,34 +4,59 @@ import { useState } from "react";
 import { Lock } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
 
+import { ArtifactThemeToggle } from "@/components/artifacts/artifact-theme-toggle";
 import { ArtifactFrameView } from "@/components/artifacts/artifact-frame";
+import { AgenticosAttribution } from "@/components/shared/agenticos-attribution";
 import { Button, FormField, Input } from "@/components/ui";
 import { usePublicArtifactUnlock } from "@/hooks/use-artifacts";
 import { ApiError, getErrorMessage } from "@/lib/api-error";
-import type { OpenPublicArtifact, PublicArtifact as PublicArtifactData } from "@/types/artifact";
+import type {
+  ArtifactTheme,
+  OpenPublicArtifact,
+  PublicArtifact as PublicArtifactData,
+} from "@/types/artifact";
 
 /**
  * What a stranger holding the link sees: the page, its title, and when it was
  * last published. Nothing about who made it or which organization it is from.
+ *
+ * The window's height, not at least it: the frame fills what is left below the
+ * header, which only resolves against a definite height. Under `min-h-dvh` the
+ * frame fell back to its own minimum and the page scrolled inside a box half
+ * the window tall.
  */
 export function OpenedArtifact({ artifact }: { artifact: OpenPublicArtifact }) {
   const t = useTranslations("artifacts");
   const format = useFormatter();
+  const [theme, setTheme] = useState<ArtifactTheme>("light");
   return (
-    <main className="bg-background flex min-h-dvh flex-col gap-3 p-4">
+    <main className="bg-background flex h-dvh flex-col gap-3 p-4">
       <header className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-foreground text-lg font-semibold">{artifact.title}</h1>
-        <p className="text-muted-foreground text-xs">
-          {t("publicUpdated", {
-            when: format.dateTime(new Date(artifact.published_at), {
-              dateStyle: "medium",
-              timeStyle: "short",
-            }),
-          })}
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-muted-foreground text-xs">
+            {t("publicUpdated", {
+              when: format.dateTime(new Date(artifact.published_at), {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }),
+            })}
+          </p>
+          <ArtifactThemeToggle theme={theme} onChange={setTheme} />
+        </div>
       </header>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <ArtifactFrameView url={artifact.view.url} title={artifact.title} />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {/* No minimum: on a short window the frame shrinks with it rather than
+            pushing the page into a scroll. */}
+        <ArtifactFrameView
+          url={artifact.view.url}
+          title={artifact.title}
+          className="min-h-0"
+          theme={theme}
+        />
+        <div className="pointer-events-none absolute right-3 bottom-3 left-3 flex justify-end sm:left-auto">
+          <AgenticosAttribution visible={artifact.show_agenticos_attribution} />
+        </div>
       </div>
     </main>
   );

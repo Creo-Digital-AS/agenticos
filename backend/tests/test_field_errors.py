@@ -8,8 +8,6 @@ site cannot restate for itself: what the path looks like, and that nothing but
 the path and the sentence leaves the process.
 """
 
-from __future__ import annotations
-
 import pytest
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_core import ErrorDetails
@@ -18,6 +16,7 @@ from app.core.exceptions import BadRequestError
 from app.core.field_errors import (
     field_details,
     field_problems,
+    named_field_problems,
     refused_field,
     request_field_problems,
 )
@@ -177,6 +176,27 @@ class TestNothingElseLeaves:
 
     def test_an_empty_report_is_an_empty_list_rather_than_an_invented_field(self) -> None:
         assert field_problems([], root="ingestion_config") == []
+
+
+@pytest.mark.parametrize(
+    ("path", "root", "expected"),
+    [
+        ("items.0.name", "input", "input.items.0.name"),
+        ("", "input", "input"),
+        ("input", "values", "values.input"),
+        ("name", "", "name"),
+    ],
+)
+def test_named_constraints_use_the_same_request_field_paths(
+    path: str, root: str, expected: str
+) -> None:
+    assert named_field_problems([(path, "Field required")], root=root) == [
+        {"field": expected, "message": "Field required"}
+    ]
+
+
+def test_an_empty_named_constraint_report_stays_empty() -> None:
+    assert named_field_problems([], root="input") == []
 
 
 class TestARuleStatedInProse:

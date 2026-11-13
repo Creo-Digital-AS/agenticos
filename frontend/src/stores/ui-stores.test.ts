@@ -63,12 +63,16 @@ describe("the two sidebars", () => {
     // A preference that resets on every load is one nobody sets twice - but
     // restoring `isOpen` would open a drawer over a page somebody just
     // loaded, so it is the one thing not persisted.
-    useSidebarStore.setState({ isOpen: true, isCollapsed: true, openGroups: [] });
+    useSidebarStore.setState({ isOpen: true, isCollapsed: true, openGroups: [], closedGroups: [] });
     useSidebarStore.getState().toggleGroup("connections");
 
     const persisted = JSON.parse(window.localStorage.getItem("agenticos.sidebar") ?? "{}");
 
-    expect(persisted.state).toEqual({ isCollapsed: true, openGroups: ["connections"] });
+    expect(persisted.state).toEqual({
+      isCollapsed: true,
+      openGroups: ["connections"],
+      closedGroups: [],
+    });
 
     useSidebarStore.getState().toggleGroup("connections");
     expect(useSidebarStore.getState().openGroups).toEqual([]);
@@ -183,6 +187,23 @@ describe("the conversation selection", () => {
       isLoading: true,
       error: "Could not load",
     });
+  });
+
+  it("adopts a server-created conversation atomically and clears that fact on navigation or reset", () => {
+    const states: unknown[] = [];
+    const unsubscribe = useConversationStore.subscribe((state) => {
+      states.push([state.currentConversationId, state.createdConversationId]);
+    });
+    useConversationStore.getState().adoptCreatedConversation("c-new");
+    expect(states).toEqual([["c-new", "c-new"]]);
+    useConversationStore.getState().setCurrentConversationId("c-new");
+    expect(useConversationStore.getState().createdConversationId).toBe("c-new");
+    useConversationStore.getState().setCurrentConversationId("c-other");
+    expect(useConversationStore.getState().createdConversationId).toBeNull();
+    useConversationStore.getState().adoptCreatedConversation("c-next");
+    useConversationStore.getState().reset();
+    expect(useConversationStore.getState().createdConversationId).toBeNull();
+    unsubscribe();
   });
 
   it("appends a message to the loaded history", () => {
@@ -339,4 +360,45 @@ describe("useChatBandsStore", () => {
     expect(useChatBandsStore.getState().folded).toEqual(["week", "older"]);
     expect(useChatBandsStore.getState().opened).toEqual(["today"]);
   });
+});
+
+it("remembers an explicit knowledge closure across reloads and lets it reopen", async () => {
+  useSidebarStore.setState({ openGroups: ["connections"], closedGroups: [] });
+  useSidebarStore.getState().toggleGroup("knowledge");
+  expect(useSidebarStore.getState().closedGroups).toEqual(["knowledge"]);
+  const saved = window.localStorage.getItem("agenticos.sidebar");
+  if (saved === null) throw new Error("Sidebar preferences were not persisted");
+  useSidebarStore.setState({ closedGroups: [] });
+  window.localStorage.setItem("agenticos.sidebar", saved);
+  await useSidebarStore.persist.rehydrate();
+  expect(useSidebarStore.getState().closedGroups).toEqual(["knowledge"]);
+  expect(useSidebarStore.getState().openGroups).toEqual(["connections"]);
+  useSidebarStore.getState().toggleGroup("knowledge");
+  expect(useSidebarStore.getState().closedGroups).toEqual([]);
+  expect(useSidebarStore.getState().openGroups).toEqual(["connections", "knowledge"]);
+});
+
+it("retains older connection preferences when explicit closures are not stored yet", async () => {
+  useSidebarStore.setState({ closedGroups: [] });
+  window.localStorage.setItem(
+    "agenticos.sidebar",
+    JSON.stringify({
+      state: { isCollapsed: true, openGroups: ["connections", "organization"] },
+      version: 0,
+    }),
+  );
+  await useSidebarStore.persist.rehydrate();
+  expect(useSidebarStore.getState().openGroups).toEqual(["connections", "organization"]);
+  expect(useSidebarStore.getState().closedGroups).toEqual([]);
+  expect(useSidebarStore.getState().isCollapsed).toBe(true);
+});
+
+it("can close an explicitly opened sidebar group without duplicating stored preferences", () => {
+  useSidebarStore.setState({ openGroups: ["connections"], closedGroups: ["organization"] });
+  useSidebarStore.getState().toggleGroup("connections");
+  expect(useSidebarStore.getState().openGroups).toEqual([]);
+  expect(useSidebarStore.getState().closedGroups).toEqual(["organization", "connections"]);
+  useSidebarStore.getState().toggleGroup("connections");
+  expect(useSidebarStore.getState().openGroups).toEqual(["connections"]);
+  expect(useSidebarStore.getState().closedGroups).toEqual(["organization"]);
 });

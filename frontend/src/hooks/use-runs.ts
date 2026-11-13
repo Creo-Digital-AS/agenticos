@@ -6,6 +6,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { toast } from "sonner";
 import { getErrorMessage } from "@/lib/api-error";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { readThrough } from "@/lib/offline/device-cache";
 import { DASHBOARD_FRESHNESS } from "@/lib/query-freshness";
 import { qk } from "@/lib/query-keys";
 import type {
@@ -13,9 +14,10 @@ import type {
   AgentRunList,
   ApprovalList,
   CostSummary,
-  RunStatus,
   ResumedRun,
   RunManifest,
+  RunSource,
+  RunStatus,
   RunTranscript,
   ToolApproval,
 } from "@/types/runs";
@@ -54,6 +56,7 @@ export function useRuns(
      * after its request committed, so for a moment there is no row for it.
      */
     refetchIntervalMs?: number;
+    refetchInBackground?: boolean;
     startedFrom?: string;
     startedTo?: string;
     orderBy?: "started_at" | "duration" | "cost" | "tokens";
@@ -62,6 +65,10 @@ export function useRuns(
     /** Narrows to these statuses - `failed,budget_exceeded` is "the problems". */
     statuses?: RunStatus[];
     surface?: string;
+    /** Conversations, an agent answering evals, or a platform agent's own work. */
+    source?: RunSource;
+    /** Voice calls or text runs (#54); a call is one row, however often it reconnected. */
+    modality?: "text" | "voice";
     /** The model as the run recorded it - the dashboard's bars count these. */
     modelLabel?: string;
     /** Who the run ran as. */
@@ -91,6 +98,8 @@ export function useRuns(
     rated,
     statuses,
     surface,
+    source,
+    modality,
     modelLabel,
     userId,
     conversationId,
@@ -108,6 +117,8 @@ export function useRuns(
       rated,
       statuses,
       surface,
+      source,
+      modality,
       modelLabel,
       userId,
       conversationId,
@@ -131,6 +142,8 @@ export function useRuns(
       if (isTest !== undefined) params.test = String(isTest);
       if (statuses && statuses.length > 0) params.status = statuses.join(",");
       if (surface) params.surface = surface;
+      if (source) params.source = source;
+      if (modality) params.modality = modality;
       if (modelLabel) params.model_label = modelLabel;
       if (userId) params.user_id = userId;
       if (conversationId) params.conversation_id = conversationId;
@@ -143,6 +156,7 @@ export function useRuns(
     },
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchIntervalMs ?? false,
+    refetchIntervalInBackground: options?.refetchInBackground ?? false,
     // The RUNS figure and the Run history tab are left open while an agent runs
     // and read back on return, so they carry the dashboard's freshness like the
     // spend figure beside them; on the app-wide five-minute cache the list only
@@ -298,14 +312,30 @@ export function useRunTranscript(
  * Never refetched on its own: a manifest is written once when the run ends and
  * cannot change afterwards, so the app-wide cache is exactly right for it.
  */
+class PendingRunManifest extends Error {}
+
 export function useRunManifest(runId: string, options?: { enabled?: boolean }) {
   const { data, isLoading, error } = useQuery({
     queryKey: qk.runs.manifest(runId),
-    queryFn: () => apiClient.get<RunManifest>(`/runs/${runId}/manifest`),
+    queryFn: async () => {
+      try {
+        return await apiClient.get<RunManifest>(`/runs/${runId}/manifest`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          const run = await apiClient.get<AgentRun>(`/runs/${runId}`);
+          if (run.status === "running") throw new PendingRunManifest();
+          // Settlement may have committed between the missing record and the
+          // status read. Close that race with one fresh read, even for old runs.
+          return await apiClient.get<RunManifest>(`/runs/${runId}/manifest`);
+        }
+        throw error;
+      }
+    },
     enabled: options?.enabled ?? true,
-    // A 404 here is an answer, not a hiccup. Retrying it three times delays the
-    // panel that says so by as many round trips.
-    retry: false,
+    // An active run has no record until settlement. Only that state is polled;
+    // a terminal run's 404 and authorization/network errors remain final.
+    retry: (_count, error) => error instanceof PendingRunManifest,
+    retryDelay: 2000,
   });
   return { manifest: data, isLoading, error };
 }
@@ -347,7 +377,13 @@ export function useApprovals(options?: { enabled?: boolean; skip?: number }) {
   const skip = options?.skip ?? 0;
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.runs.approvals(skip),
-    queryFn: () => apiClient.get<ApprovalList>("/approvals", { params: { skip: String(skip) } }),
+    queryFn: () => {
+      const ask = () =>
+        apiClient.get<ApprovalList>("/approvals", { params: { skip: String(skip) } });
+      // The first page is what the apps keep to read offline (#2097).
+      return skip === 0 ? readThrough("approvals", ask) : ask();
+    },
+    networkMode: "offlineFirst",
     refetchInterval: 30_000,
     enabled: options?.enabled ?? true,
     // The previous page stays on screen while the next loads. Not only to avoid
@@ -365,7 +401,14 @@ export function useApprovals(options?: { enabled?: boolean; skip?: number }) {
     onSuccess: async (approval) => {
       // The invalidation refetches the queue, so the read below is fresh.
       await queryClient.invalidateQueries({ queryKey: qk.runs.all() });
-      toast.success(approval.status === "approved" ? t("decisionApproved") : t("decisionRejected"));
+      const approved = approval.status === "approved";
+      if (approval.continues_in_chat) {
+        // The server continues a chat run itself once its last call is decided;
+        // a resume from here would answer the chat twice.
+        toast.success(t(approved ? "decisionApprovedInChat" : "decisionRejectedInChat"));
+        return;
+      }
+      toast.success(approved ? t("decisionApproved") : t("decisionRejected"));
       // Deciding the last outstanding call makes the resume possible; nothing
       // performs it (the backend keeps the click and the execution apart). The
       // chat's dialog has always followed its decision with the resume - the
@@ -405,6 +448,22 @@ function stillAwaitingDecision(error: unknown): boolean {
 }
 
 /**
+ * The resume refusal that means the run is already past its park.
+ *
+ * On a chat run the server continues the run itself, so a resume can arrive
+ * after the run has moved on. It then loses the race and is refused with the run
+ * `running` or `completed`. Any other status (stopped, failed, expired) is news
+ * worth a toast.
+ */
+function alreadyContinuing(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 400 &&
+    (error.details?.status === "running" || error.details?.status === "completed")
+  );
+}
+
+/**
  * Continue a run whose parked tool calls have all been decided.
  *
  * A decision is a click; continuing the run executes an agent - the backend
@@ -420,8 +479,12 @@ function stillAwaitingDecision(error: unknown): boolean {
  * that check's answer arriving late, not news for the person who just decided.
  * Every other failure still toasts, and a resume somebody clicked never passes
  * this flag.
+ *
+ * `continuesInChat` marks a run the server continues in its chat. The button
+ * then is a manual retry: its answer also goes to the chat, and losing the race
+ * to the server's own continuation is not an error.
  */
-export function useResumeRun(options?: { ignoreStillParked?: boolean }) {
+export function useResumeRun(options?: { ignoreStillParked?: boolean; continuesInChat?: boolean }) {
   const tErrors = useTranslations("errors");
   const t = useTranslations("pages.runs");
   const queryClient = useQueryClient();
@@ -429,9 +492,39 @@ export function useResumeRun(options?: { ignoreStillParked?: boolean }) {
     mutationFn: (runId: string) => apiClient.post<ResumedRun>(`/runs/${runId}/resume`),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: qk.runs.all() });
-      toast.success(t("runResumed"));
+      toast.success(t(options?.continuesInChat ? "runResumedInChat" : "runResumed"));
     },
-    onError: (error) => {
+    onError: async (error, runId) => {
+      if (options?.continuesInChat) {
+        if (alreadyContinuing(error)) {
+          await queryClient.invalidateQueries({ queryKey: qk.runs.all() });
+          toast.info(t("alreadyContinuing"));
+          return;
+        }
+        if (
+          stillAwaitingDecision(error) ||
+          (error instanceof ApiError &&
+            error.status === 400 &&
+            error.details?.status === "awaiting_answer")
+        ) {
+          try {
+            const current = await apiClient.get<AgentRun>(`/runs/${runId}`);
+            queryClient.setQueryData(qk.runs.detail(runId), current);
+            await queryClient.invalidateQueries({ queryKey: qk.runs.all() });
+            if (
+              current.continues_in_chat &&
+              ["running", "completed", "awaiting_approval", "awaiting_answer"].includes(
+                current.status,
+              )
+            ) {
+              toast.info(t("alreadyContinuing"));
+              return;
+            }
+          } catch {
+            // A failed refresh must not hide the original resume failure.
+          }
+        }
+      }
       if (options?.ignoreStillParked && stillAwaitingDecision(error)) return;
       toast.error(getErrorMessage(error, tErrors, t("resumeFailed")));
     },
@@ -498,10 +591,14 @@ export function useSpend(
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.runs.spend(range),
     queryFn: () =>
-      apiClient.get<CostSummary>("/spend", {
-        params:
-          typeof range === "number" ? { days: String(range) } : { from: range.from, to: range.to },
-      }),
+      readThrough(`spend:${typeof range === "number" ? range : `${range.from}..${range.to}`}`, () =>
+        apiClient.get<CostSummary>("/spend", {
+          params:
+            typeof range === "number"
+              ? { days: String(range) }
+              : { from: range.from, to: range.to },
+        }),
+      ),
     enabled: options?.enabled ?? true,
     ...DASHBOARD_FRESHNESS,
   });

@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 interface McpServerCardProps {
   name: string;
   icon: string | null;
+  category?: string;
+  /** Drawn in place of the catalog icon - the deployment's own mark, which no catalog holds. */
+  mark?: ReactNode;
   url: string | null;
   description: string;
   /** Beside the name, for the one thing worth saying there - a registry server. */
@@ -41,6 +44,8 @@ interface McpServerCardProps {
 export function McpServerCard({
   name,
   icon,
+  category,
+  mark,
   url,
   description,
   badge,
@@ -73,7 +78,15 @@ export function McpServerCard({
         <div className="flex items-start gap-3">
           {/* A white tile in both themes: the logos are drawn for a light ground. */}
           <span className="border-foreground/10 grid size-10 shrink-0 place-items-center rounded-xl border bg-white">
-            <McpServerIcon icon={icon} name={name} url={url} className="size-6 text-neutral-900" />
+            {mark ?? (
+              <McpServerIcon
+                icon={icon}
+                category={category}
+                name={name}
+                url={url}
+                className="size-6 text-neutral-900"
+              />
+            )}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">

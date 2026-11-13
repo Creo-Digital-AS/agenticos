@@ -24,6 +24,8 @@ export type WidgetId =
   | "summary"
   | "platform"
   | "health"
+  | "background-tasks"
+  | "background-jobs"
   | "top-orgs"
   | "platform-ratings"
   | "runs"
@@ -60,8 +62,25 @@ export type WidgetId =
   | "activity-rhythm"
   | "routines"
   | "notifications"
-  | "artifacts";
-
+  | "artifacts"
+  | "datasets"
+  | "review-queue"
+  | "eval-runs"
+  | "eval-suites"
+  | "suggestions"
+  | "phone-calls"
+  | "voice-minutes"
+  | "projects"
+  | "recent-visuals"
+  | "authoring-suggestions"
+  | "knowledge-gaps"
+  | "needs-attention"
+  | "improvements-waiting"
+  | "tables"
+  | "workflows"
+  | "approval-outcomes"
+  | "workflow-logs"
+  | "suggestions";
 /** The closed set of card widths the grid supports (12 columns). */
 export type Span = "s3" | "s4" | "s5" | "s6" | "s7" | "s8" | "s12";
 
@@ -226,6 +245,14 @@ const holds =
 const everyone: Gate = () => true;
 
 export const WIDGETS: Record<WidgetId, WidgetDef> = {
+  "background-tasks": {
+    id: "background-tasks",
+    gate: everyone,
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "workspace",
+    seeAll: ROUTES.CHAT,
+  },
   "activity-rhythm": {
     id: "activity-rhythm",
     gate: holds(Perm.runsView),
@@ -263,6 +290,46 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     category: "attention",
     seeAll: ROUTES.RAG,
   },
+  tables: {
+    id: "tables",
+    gate: holds(Perm.tablesView),
+    defaultSpan: "s4",
+    defaultRows: "r4",
+    category: "attention",
+    seeAll: ROUTES.TABLES,
+  },
+  // The period sets what the figures count; the runs waiting on a person are
+  // counted whatever the window, because they are waiting now.
+  // Four rows: the waiting-runs line, the figures and five workflows under them.
+  workflows: {
+    id: "workflows",
+    gate: holds(Perm.workflowsView),
+    defaultSpan: "s6",
+    defaultRows: "r4",
+    category: "attention",
+    seeAll: ROUTES.WORKFLOWS,
+  },
+  // Catalog only: most organizations have no approval step, and the Workflows
+  // card already counts the runs waiting on a person. Three rows: the figures
+  // and the busiest workflows under them.
+  "approval-outcomes": {
+    id: "approval-outcomes",
+    gate: holds(Perm.workflowsView),
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "attention",
+    seeAll: ROUTES.WORKFLOWS,
+  },
+  // Catalog only: a log is only as busy as the Quick Logs its workflows set. Four
+  // rows: the two figures and the newest six lines, two lines each.
+  "workflow-logs": {
+    id: "workflow-logs",
+    gate: holds(Perm.workflowsView),
+    defaultSpan: "s6",
+    defaultRows: "r4",
+    category: "attention",
+    seeAll: ROUTES.WORKFLOWS,
+  },
   notifications: {
     id: "notifications",
     gate: everyone,
@@ -290,6 +357,14 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     // The people behind the counts. It pointed at `/admin`, which rendered
     // these same figures a second time and now redirects here anyway (#922).
     seeAll: ROUTES.ADMIN_USERS,
+  },
+  "background-jobs": {
+    id: "background-jobs",
+    gate: adminOnly,
+    defaultSpan: "s12",
+    defaultRows: "r3",
+    category: "platform",
+    seeAll: ROUTES.ADMIN_BACKGROUND_JOBS,
   },
   health: {
     id: "health",
@@ -397,6 +472,25 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     options: { period: true, agent: true, person: true },
     seeAll: ROUTES.RUNS,
   },
+  // Call minutes by agent, and the month against the organization's limit (#54).
+  // What `GET /voice/usage` asks, and nothing more.
+  "phone-calls": {
+    id: "phone-calls",
+    gate: everyone,
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "attention",
+    seeAll: ROUTES.SETTINGS_NOTIFICATIONS,
+  },
+  "voice-minutes": {
+    id: "voice-minutes",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s4",
+    defaultRows: "r3",
+    category: "usage",
+    options: { period: true },
+    seeAll: runsHref({ filters: { modality: "voice" } }),
+  },
   "model-mix": {
     id: "model-mix",
     gate: holds(Perm.runsView),
@@ -468,6 +562,33 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     category: "attention",
     seeAll: ROUTES.RAG,
   },
+  // The agents with answers rated down, failed runs or a failing suite, gated on
+  // what `GET /stats/attention` asks: it counts over everybody's runs.
+  "needs-attention": {
+    id: "needs-attention",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s12",
+    defaultRows: "r2",
+    category: "attention",
+  },
+  // `runs:view`, as `GET /improvements` asks: a session is read from its agent's runs.
+  "improvements-waiting": {
+    id: "improvements-waiting",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s12",
+    defaultRows: "r2",
+    category: "attention",
+  },
+  // `runs:view`, not `collections:view`: a topic is made of people's questions,
+  // which `GET /knowledge-gaps` shows only to a member who reads every run.
+  "knowledge-gaps": {
+    id: "knowledge-gaps",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "attention",
+    seeAll: ROUTES.RAG,
+  },
   members: {
     id: "members",
     gate: holds(Perm.membersManage),
@@ -511,6 +632,16 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     category: "workspace",
     seeAll: ROUTES.CHAT,
   },
+  // The person's briefing (#2301): what their watches found and the nightly look
+  // proposed - their own, so anybody who may talk to an agent may see it.
+  suggestions: {
+    id: "suggestions",
+    gate: holds(Perm.agentsRun),
+    defaultSpan: "s12",
+    defaultRows: "r3",
+    category: "workspace",
+    seeAll: ROUTES.INBOX,
+  },
   "my-summary": {
     id: "my-summary",
     gate: holds(Perm.agentsRun),
@@ -552,6 +683,73 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     defaultRows: "r4",
     category: "workspace",
     seeAll: ROUTES.ARTIFACTS,
+  },
+  // The datasets an eval would run over, gated on the permission `GET /datasets`
+  // itself asks.
+  datasets: {
+    id: "datasets",
+    gate: holds(Perm.datasetsView),
+    defaultSpan: "s6",
+    defaultRows: "r4",
+    category: "workspace",
+    seeAll: ROUTES.DATASETS,
+  },
+  // Eval results waiting for a verdict, gated on what `GET /datasets/review-queue`
+  // asks; the queue itself only holds datasets the reader may see. Its "See all"
+  // is the Review tab of the dataset holding the most, which the card works out.
+  "review-queue": {
+    id: "review-queue",
+    gate: holds(Perm.datasetsView),
+    defaultSpan: "s6",
+    defaultRows: "r4",
+    category: "workspace",
+  },
+  // The latest eval runs, gated on what `GET /eval-runs/recent` asks; the list
+  // holds only runs over agents and datasets the reader may see.
+  "eval-runs": {
+    id: "eval-runs",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s6",
+    defaultRows: "r4",
+    category: "workspace",
+    seeAll: ROUTES.EVALS,
+  },
+  // The organization's eval suites by how they last came out, gated on what
+  // `GET /eval-suites` asks; it lists suites only on agents the reader may see.
+  "eval-suites": {
+    id: "eval-suites",
+    gate: holds(Perm.runsView),
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "workspace",
+  },
+  // What the authoring assistant suggested and nobody decided, gated on what
+  // `GET /authoring/waiting` asks; it lists only agents the reader may edit.
+  "authoring-suggestions": {
+    id: "authoring-suggestions",
+    gate: holds(Perm.agentsEdit),
+    defaultSpan: "s6",
+    defaultRows: "r3",
+    category: "workspace",
+  },
+  // The reader's projects, most recently changed first - what `GET /projects`
+  // itself asks, and nothing more.
+  projects: {
+    id: "projects",
+    gate: holds(Perm.projectsView),
+    defaultSpan: "s12",
+    defaultRows: "r2",
+    category: "workspace",
+    seeAll: ROUTES.PROJECTS,
+  },
+  // The drawings agents made for the caller (#2171). Gated on running agents, the
+  // one thing that makes a drawing: `GET /visuals` lists only the caller's own.
+  "recent-visuals": {
+    id: "recent-visuals",
+    gate: holds(Perm.agentsRun),
+    defaultSpan: "s12",
+    defaultRows: "r3",
+    category: "workspace",
   },
   "shared-with-you": {
     id: "shared-with-you",

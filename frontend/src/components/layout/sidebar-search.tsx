@@ -40,7 +40,7 @@ export function SidebarSearch({ variant = "row" }: SidebarSearchProps) {
         onClick={open}
         aria-label={t("search")}
         title={t("search")}
-        className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors outline-none focus-visible:ring-1"
+        className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring touch:min-h-11 touch:min-w-11 relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors outline-none focus-visible:ring-1"
       >
         <Search className="h-[1.1rem] w-[1.1rem] shrink-0" aria-hidden />
         {/* In the corner, as a count sits on an icon: the button keeps the bell's
@@ -49,7 +49,8 @@ export function SidebarSearch({ variant = "row" }: SidebarSearchProps) {
         {mounted && (
           <kbd
             aria-hidden
-            className="bg-background text-muted-foreground ring-border absolute -top-0.5 -right-1 rounded px-0.5 font-sans text-[9px] leading-3 ring-1"
+            // No keyboard shortcut to show on a touch screen.
+            className="bg-background text-muted-foreground ring-border touch:hidden absolute -top-0.5 -right-1 rounded px-0.5 font-sans text-[9px] leading-3 ring-1"
           >
             {mac ? "⌘K" : t("searchShortcut")}
           </kbd>
@@ -62,10 +63,18 @@ export function SidebarSearch({ variant = "row" }: SidebarSearchProps) {
     <button
       type="button"
       onClick={open}
-      className="text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-ring flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1"
+      className="border-foreground/8 bg-foreground/3 text-muted-foreground hover:bg-foreground/6 hover:text-foreground focus-visible:ring-ring touch:min-h-11 flex min-h-10 w-full items-center gap-2.5 rounded-xl border px-3 py-2 text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset"
     >
       <Search className="h-4 w-4 shrink-0" aria-hidden />
       <span className="flex-1 text-left">{t("search")}</span>
+      {mounted && (
+        <kbd
+          aria-hidden
+          className="bg-foreground/5 text-foreground/75 touch:hidden rounded px-1.5 py-0.5 text-[10px] leading-4"
+        >
+          {mac ? "⌘K" : t("searchShortcut")}
+        </kbd>
+      )}
     </button>
   );
 }

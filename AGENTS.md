@@ -19,7 +19,7 @@ agent through its spec; change Python when implementing platform behaviour or
 capabilities. Tools reach models through the capability registry.
 
 **Stack:** FastAPI, Pydantic v2, Pydantic AI, PostgreSQL with pgvector, Redis,
-Prefect, Next.js, React, bun, next-intl and MkDocs Material. Use versions from the
+Next.js, React, bun, next-intl and MkDocs Material. Use versions from the
 repository manifests and lockfiles; Python is pinned in `backend/.python-version`.
 
 The repository originated from the Full-Stack AI Agent Template. Platform and
@@ -50,12 +50,25 @@ template-inherited subsystems have different coverage gates, described below.
   `DBSession`: its `scope="function"` commits after the route returns and before
   the response is written. A bare `Depends(get_db_session)` has different timing.
   The agent run paths in `AgentRunnerService._run` and `ChatAgentRunner.run`
-  explicitly commit before the model call and in terminal cleanup, and
-  `SessionService.detect_refresh_reuse` commits the security response its caller
-  is about to raise past. See `docs/architecture.md#the-requests-transaction`.
-- Dispatch background work needing rows written by the request with
-  `spawn_after_commit`, so its own session can see those rows. See
-  `docs/architecture.md#dispatching-background-work-from-a-request`.
+  explicitly commit before the model call and in terminal cleanup;
+  `app.services.telephony.runtime` commits telephone admission, submission, transfer, hang-up and
+  single-use media claims before external effects; unknown acceptance is retained
+  for signed callbacks and cleanup, never automatic redial.
+  `ChannelMessageRouter._route_inner` commits admitted channel identity/session/conversation
+  state before prompt resumption or independent platform MCP credential creation;
+  `VoiceCallStarter.start` commits a call's row and its run before the call
+  connects and `VoiceCallSession` commits again in its teardown (per-turn
+  messages, heartbeats and approval writes use their own `get_db_context()`
+  sessions); `SessionService.detect_refresh_reuse` commits the security
+  response its caller is about to raise past; and `WorkflowExposureService._answer`
+  commits a webhook's admission before waiting for its Respond to webhook step. See
+  `docs/architecture.md#the-requests-transaction`.
+- Queue background work that must happen as a job with
+  `app.services.background_jobs.enqueue`, in the request's own transaction, so it
+  commits with the rows it reads. Best-effort work that may be lost goes to
+  `spawn_after_commit`. See
+  `docs/architecture.md#dispatching-background-work-from-a-request` and the
+  `background-task` skill.
 - Collection routes use `require(...)` gates. Per-resource routes for agents, skills
   and collections delegate to a service using `resolve_access`; a role gate must
   not reject access allowed by a resource grant. Follow `permissions-rbac`.
@@ -101,7 +114,7 @@ Skills live in `.claude/skills/<name>/SKILL.md`. Read the skills matching the ta
 | MCP servers, or an integration with a SaaS product | `mcp-connections` |
 | Ingestion, retrieval, connectors, parsers | `rag-knowledge` |
 | Telegram / Slack / Mattermost | `channel-bot` |
-| Prefect flows, or work that outlives a request | `background-task` |
+| Background jobs, schedules, or work that outlives a request | `background-task` |
 | A schema change or a backfill | `alembic-migration` |
 | Backend tests, or a failing coverage gate | `backend-tests` |
 | A Playwright spec | `e2e-tests` |
@@ -216,6 +229,7 @@ retranslated is how a stale translation stops being visible.
 | Budgets, approvals, alerts, audit | `docs/governance.md` |
 | What ships as a capability, its tools and config | `docs/reference/capabilities.md` |
 | The agent spec, field by field | `docs/reference/spec.md` |
+| Every workflow node: config, ports, errors, retries | `docs/reference/workflow-nodes.md` |
 | What the console calls each thing, and its name in the API and spec | `docs/reference/glossary.md` |
 | MCP connections, the server catalog, OAuth | `docs/mcp.md` |
 | Providers, model profiles, fallbacks, cost | `docs/models.md` |
@@ -228,10 +242,21 @@ retranslated is how a stale translation stops being visible.
 | Threat model, data flow, at-rest, the controls matrix | `docs/security.md` |
 | Skills — format, library, skills vs knowledge | `docs/skills.md` |
 | Context files — standing knowledge bound to agents | `docs/context.md` |
-| Named environments, promotion, per-environment tracing | `docs/environments.md` |
+| Datasets — versioned eval cases, import/export, Add to dataset | `docs/datasets.md` |
+| Eval runs — estimate, isolation, baselines, confirmed regressions, model comparison | `docs/evals.md` |
+| Authoring assistant — suggestions from evidence, decisions, checking with evals | `docs/authoring.md` |
+| Virtual Tables — typed records, schema versions, revisions, idempotent writes, the `/tables` API | `docs/virtual-tables.md` |
+| Agent and team tasks: research and proposal only | `docs/design/agent-tasks.md` (repo only) |
+| Workflows — the visual editor: canvas, palette, bindings, autosave, publish, versions | `docs/workflows.md` |
+| Projects: shared files, instructions and chats | `docs/projects.md` |
+| Knowledge gaps — questions the knowledge base could not answer, grouped into topics | `docs/knowledge-gaps.md` |
+| Named environments, promotion, per-environment tracing, test connections, isolated (eval) runs | `docs/environments.md` |
 | Surfaces: widget, WebSocket, Slack, Telegram | `docs/channels.md` |
+| Voice conversations: calls, realtime models, limits, hang-up | `docs/voice.md` |
 | Published pages: artifacts, versions, public links, isolation | `docs/artifacts.md` |
-| The desktop app: a Tauri shell around a deployment's console | `docs/desktop.md` |
+| The desktop app: the console, blobby, quick ask, local work and the screen | `docs/desktop.md` |
+| macOS Gatekeeper warnings, install verification and release signing | `docs/howto/macos-warning.md` |
+| The phone app: live activities, widgets, push, offline | `docs/mobile.md` |
 | Upload, parsing, ingestion | `docs/file-processing.md` |
 | The console: dashboard widgets, chat, slash commands, the map | `docs/console.md` |
 | Every module, screenshotted in both themes | `docs/screens.md` |
@@ -243,15 +268,18 @@ retranslated is how a stale translation stops being visible.
 | Adding a feature end to end | `docs/adding_features.md` |
 | Test layers and what belongs in each | `docs/testing.md` |
 | The load suite: the workload, the thresholds, the measured runs | `docs/load-testing.md` |
+| Why the job queue is Postgres: ten engines, the OOM test, the limits | `docs/task-queue-benchmark.md` |
 | The automated pull request reviewer | `docs/code-review.md` |
 | Branches, rulesets and what protects `main` | `docs/branching.md` |
 | Recurring patterns | `docs/patterns.md` |
 | Translating a page, and the terminology that has to be exact | `docs/howto/translate.md` |
 | Getting it onto a host: sizing, TLS, the approved deploy | `docs/deploy.md` |
+| Kubernetes and the candidate OpenShift configuration | `docs/kubernetes.md` |
+| Past one host: an external Postgres, connection counts, more API hosts and workers, several deployments | `docs/scaling.md` |
 | The deployment's identity, sign-up policy, notices | `docs/deployment.md` |
 | Settings and the production checklist | `docs/configuration.md` |
 | What the platform does, on one page | `docs/features.md` |
-| Choosing a first task, and the 29 use-case tutorials it indexes | `docs/use-cases.md` (tutorials live in `docs/howto/`) |
+| Choosing a first task, and the 30 use-case tutorials it indexes | `docs/use-cases.md` (tutorials live in `docs/howto/`) |
 | The Learn track's own landing | `docs/learn/index.md` |
 | Help, contributing, extending the platform | `docs/resources/index.md` |
 | Why it exists, and what it is not | `docs/about/index.md` |
@@ -291,13 +319,14 @@ retranslated is how a stale translation stops being visible.
 
 ## Releases
 
-Versions follow [Semantic Versioning](https://semver.org) from 1.0.0 onwards; every
-release before it was `0.0.N`. A release is numbered by the largest change it ships,
+Versions follow [Semantic Versioning](https://semver.org) from 1.0.0 onwards, except
+that the major stays 1 (below); every release before 1.0.0 was `0.0.N`. CHANGELOG.md
+and `docs/release-notes.md` state that exception to operators. A release is numbered by the largest change it ships,
 judged by someone running a deployment, not by the size of the diff:
 
 | Bump | When the release contains |
 |---|---|
-| MAJOR | A change an existing deployment has to act on: a removed or renamed API route, field or setting, a spec that no longer loads or must be republished, a migration that drops data, a changed default that alters stored behaviour. The commit carries `!` and a `BREAKING CHANGE:` footer |
+| MAJOR | Not used: AgenticOS stays on major version 1. A change an existing deployment has to act on - a removed or renamed API route, field or setting, a spec that no longer loads or must be republished, a migration that drops data, a changed default that alters stored behaviour - ships as the next MINOR. Its commit still carries `!` and a `BREAKING CHANGE:` footer, and its changelog entry says what to do |
 | MINOR | Something new a member or operator can do: a feature, a capability or tool, an endpoint, a setting, a new screen. Backwards compatible |
 | PATCH | Fixes, documentation, dependency updates and refactors with no new behaviour |
 
@@ -307,6 +336,10 @@ judged by someone running a deployment, not by the size of the diff:
   `backend/pyproject.toml`, `backend/uv.lock` and `frontend/package.json`. Feature
   PRs write their changelog entries under `[Unreleased]`; the cut does not add new
   ones.
+- Prepare a release train with `make release-cut BUMP=patch` (or `minor`); add
+  `CREATE_PR=1` to create the cut PR from fresh `origin/main`. The default only
+  prints a plan. CI and CodeQL may reuse successful full runs for a proven
+  version-only cut; missing evidence runs full checks. See `docs/branching.md`.
 - After the cut merges, publish the release and its tag in one step:
   `gh release create vX.Y.Z --target <cut merge commit> --notes-file <its changelog
   section>`. Never push the tag first: it starts `images.yml` at once, and that
@@ -316,5 +349,5 @@ judged by someone running a deployment, not by the size of the diff:
   the largest change in it. Stacked PRs are released in merge order, each with its
   own number.
 - An agent asked to release may pick a PATCH or MINOR number by the table above.
-  A MAJOR release, and any number the maintainer has named, is the maintainer's
-  decision.
+  Never propose 2.0.0 or any later major; a number the maintainer has named is
+  the maintainer's decision.

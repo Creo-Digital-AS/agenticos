@@ -17,8 +17,6 @@ whoever holds `edit` on an agent - one that could name a Docker image could name
 one whose entrypoint mounts the host.
 """
 
-from __future__ import annotations
-
 from typing import Any, Literal
 from uuid import UUID
 
@@ -36,7 +34,9 @@ from app.agents.capabilities.sandbox._identity import (
 )
 
 __all__ = [
+    "SHARED_SCOPES",
     "WORKSPACE_RESOURCE",
+    "WORKSPACE_SHARED_RESOURCE",
     "BackendKind",
     "SandboxConfig",
     "SessionScope",
@@ -44,6 +44,17 @@ __all__ = [
     "WorkspaceScopeUnavailable",
     "scope_key",
 ]
+
+WORKSPACE_SHARED_RESOURCE = "workspace_shared"
+"""Whether other people's runs work in the run's workspace too, beside `WORKSPACE_RESOURCE`.
+
+They run as the same sandbox user, so anything one writes there the others can
+read - which is what a person's own credential must not be written into.
+"""
+
+SHARED_SCOPES: frozenset[str] = frozenset({"project", "agent", "channel"})
+"""Scopes whose container other people's runs always work in. A `conversation`
+one is shared too once somebody else may write in the conversation."""
 
 WORKSPACE_RESOURCE = "workspace"
 """Where the runner leaves the workspace it opened for this run.
@@ -69,14 +80,16 @@ class SandboxConfig(BaseModel):
     shows one person another person's files.
     """
 
-    backend: Literal["state", "service"] = Field(
+    backend: Literal["state", "service", "local"] = Field(
         title="Where files live",
         default="state",
         description=(
             "state: files only, no shell, stored by the platform - works on every "
             "deployment with no extra services. "
             "service: a container or cloud sandbox, on one of the connections this "
-            "organization has registered."
+            "organization has registered. "
+            "local: the person selects and approves their own computer in desktop chat; "
+            "no machine path or native consent is stored in this spec."
         ),
     )
     connection_id: UUID | None = Field(
@@ -87,7 +100,7 @@ class SandboxConfig(BaseModel):
             "organization's default. An id, never an address or a token - a spec is "
             "exported to a client's git repository, so the only thing it may carry "
             "is a reference. The connection decides whether that is a container on "
-            "a host you run or a sandbox in Daytona's cloud."
+            "a host you run or a sandbox on a cloud provider or OpenSandbox server."
         ),
     )
     # The default on every surface; a binding on one exposure may say otherwise. A
@@ -108,9 +121,10 @@ class SandboxConfig(BaseModel):
         default=None,
         max_length=64,
         description=(
-            "Which environment a container-backed workspace runs, named from the "
-            "list the connection's service allows. Empty takes the connection's "
-            "default. An alias, never an image."
+            "Optional provider-specific runtime override, up to 64 characters: "
+            "a sandboxd alias, E2B template, Daytona snapshot or OpenSandbox image. "
+            "Empty uses the connection's default; configure longer OpenSandbox "
+            "image references on the connection."
         ),
     )
     include_execute: bool = Field(
@@ -125,6 +139,7 @@ class SandboxConfig(BaseModel):
 
 @register(
     id="sandbox",
+    voice="hand_off",
     name="Sandbox",
     category="analysis",
     description="Read, write and run things in a workspace that persists between turns.",

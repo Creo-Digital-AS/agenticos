@@ -1,5 +1,5 @@
 ---
-source_sha: "1986f3e8ba0a"
+source_sha: "f3dba1d7839c"
 ---
 
 # Ein Modell wählen { #choosing-a-model }
@@ -44,9 +44,14 @@ bezahlen ist der häufigste Weg, auf dem ein Agent-Budget verschwindet.
     es jemandem auffällt. Andersherum debuggen Sie Ihre Instruktionen und das
     Modell gleichzeitig, und Sie werden dem Falschen die Schuld geben.
 
+Die Selbstauskunft eines Modells, wie sicher es ist, nach der `ai.classify` mit gesetztem `min_confidence` fragen kann, ordnet Antworten von sicherer zu unsicherer;
+sie ist keine Wahrscheinlichkeit. Kleinere Modelle mit offenen Gewichten melden sie
+weniger verlässlich. Wählen Sie den Schwellenwert anhand Ihrer eigenen Evals, nicht
+nach dem Nennwert der Zahl.
+
 ## Geschlossene Modelle oder offene Gewichte { #closed-models-or-open-weights }
 
-Beide sind hier gleichrangig. Die 27 Provider umfassen die geschlossenen
+Beide sind hier gleichrangig. Die 28 Provider umfassen die geschlossenen
 Frontier-Labore, die Open-Weights-Hoster und zwei Einträge ohne Schlüssel —
 [Ollama](models.md) und einen LiteLLM-Proxy — für Modelle, die auf Ihrer eigenen
 Hardware laufen.
@@ -75,9 +80,20 @@ technische Entscheidung, nicht nur die günstigere.
     Volumen die Hardware wirklich weit übersteigt — nicht, um bei vierzig
     Unterhaltungen am Tag Geld zu sparen.
 
+**Kaputte Tool-Aufrufe werden repariert und gezählt.** Modelle mit offenen
+Gewichten senden einen Tool-Aufruf mit fehlerhaftem JSON - ein Komma am Ende,
+einfache Anführungszeichen, ein abgeschnittenes Objekt - weit häufiger als
+Frontier-Modelle. Jeder Agent repariert die Syntax, bevor die Argumente validiert
+werden, sodass ein kaputter Aufruf sein Tool beim ersten Versuch erreicht, statt
+eine Wiederholung zu kosten; ein fehlendes Feld oder ein falscher Typ scheitert
+weiterhin an der Validierung, und ein reparierter Aufruf durchläuft weiterhin
+Freigabe und Guardrails. Jeder Run zählt seine Reparaturen, sichtbar am Run und
+pro Modell auf der Modellkarte des Dashboards - ein Modell, das viele braucht,
+ist eines, das man überdenken sollte.
+
 ## Ein Gateway davorsetzen { #putting-a-gateway-in-front }
 
-Drei der 27 sind keine Modellanbieter, sondern Router: **OpenRouter**, **Vercel AI
+Drei der 28 sind keine Modellanbieter, sondern Router: **OpenRouter**, **Vercel AI
 Gateway** und ein **LiteLLM-Proxy**, den Sie selbst betreiben. Jeder gibt Ihnen
 einen Schlüssel und einen Endpunkt vor vielen Modellen.
 

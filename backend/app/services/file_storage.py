@@ -13,8 +13,6 @@ which is what the S3 backend is for (#1423). Neither migrates what the other
 holds; switching backend leaves the files already written where they were.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import re
@@ -24,7 +22,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from app.core.blocking import (
     create_cancel_safe,
@@ -33,6 +31,7 @@ from app.core.blocking import (
     write_bytes_cancel_safe,
 )
 from app.core.config import settings
+from app.core.exceptions import ExternalServiceError
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -106,6 +105,21 @@ _ODT_MIME = "application/vnd.oasis.opendocument.text"
 _ODS_MIME = "application/vnd.oasis.opendocument.spreadsheet"
 _ODP_MIME = "application/vnd.oasis.opendocument.presentation"
 _TIFF_MIME = "image/tiff"
+_ZIP_MIME = "application/zip"
+_GZIP_MIME = "application/gzip"
+
+# What a browser or a platform calls a `.zip` or a `.tar.gz` (#2479). Kept apart
+# from `_MIME_TO_FORMAT` on purpose: an archive type is a *weak* claim, never one
+# that overrides a recognised extension. A `.docx` is a zip, and a client that
+# labels one `application/zip` is describing its container rather than asking
+# for it to be unpacked - so the extension decides, as it did before archives
+# were accepted at all. See `resolve_format`.
+_ARCHIVE_MIME_TO_FORMAT = {
+    _ZIP_MIME: "zip",
+    "application/x-zip-compressed": "zip",
+    _GZIP_MIME: "targz",
+    "application/x-gzip": "targz",
+}
 
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
@@ -139,6 +153,9 @@ ALLOWED_MIME_TYPES = {
     _ODP_MIME,
     _MSG_MIME,
     "application/x-yaml",
+    # Unpacked into an agent's workspace, and refused by an agent without one
+    # (`attachments.py`); validated member by member at upload (#2479).
+    *_ARCHIVE_MIME_TO_FORMAT,
 }
 
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -195,6 +212,11 @@ _EXTENSION_TO_FORMAT = {
     "pptx": "pptx",
     "odp": "odp",
     "msg": "msg",
+    "zip": "zip",
+    "tgz": "targz",
+    # `file_extension` reads `repo.tar.gz` as `gz`. A `.gz` that is not a tar is
+    # refused at upload, when the archive is read.
+    "gz": "targz",
 }
 
 _FORMAT_TO_MIME = {
@@ -213,7 +235,12 @@ _FORMAT_TO_MIME = {
     "pptx": _PPTX_MIME,
     "odp": _ODP_MIME,
     "msg": _MSG_MIME,
+    "zip": _ZIP_MIME,
+    "targz": _GZIP_MIME,
 }
+
+ARCHIVE_FILE_TYPE = "archive"
+"""The `file_type` of a `.zip` or `.tar.gz`, which is unpacked rather than written (#2479)."""
 
 _FORMAT_TO_FILE_TYPE = {
     "png": "image",
@@ -231,6 +258,8 @@ _FORMAT_TO_FILE_TYPE = {
     "pptx": "presentation",
     "odp": "presentation",
     "msg": "email",
+    "zip": ARCHIVE_FILE_TYPE,
+    "targz": ARCHIVE_FILE_TYPE,
     "text": "text",
 }
 
@@ -266,7 +295,7 @@ _GENERIC_MIME_TYPES = {"", "application/octet-stream"}
 # not one of the recognised binary/image formats. A declaration from this set on a
 # binary extension (`text/plain` on `photo.png`) is a contradiction the byte phase
 # cannot catch - images and PDF are not sniffed - so it is a conflict here (#1591).
-_TEXT_MIME_TYPES = ALLOWED_MIME_TYPES - _MIME_TO_FORMAT.keys()
+_TEXT_MIME_TYPES = ALLOWED_MIME_TYPES - _MIME_TO_FORMAT.keys() - _ARCHIVE_MIME_TO_FORMAT.keys()
 
 
 def normalize_media_type(content_type: str | None) -> str:
@@ -290,10 +319,20 @@ def resolve_format(mime_type: str | None, filename: str) -> str:
     of `classify_file`. Validation, not this, rejects a MIME that *contradicts* the
     extension; here the declared MIME is simply believed when it is specific.
     """
-    fmt = _MIME_TO_FORMAT.get(normalize_media_type(mime_type))
+    normalized = normalize_media_type(mime_type)
+    fmt = _MIME_TO_FORMAT.get(normalized)
     if fmt is not None:
         return fmt
-    return _EXTENSION_TO_FORMAT.get(file_extension(filename), "text")
+    extension = file_extension(filename)
+    fmt = _EXTENSION_TO_FORMAT.get(extension)
+    if fmt is not None:
+        return fmt
+    # An archive type names the format only where the name names none we know:
+    # `notes.txt` sent as `application/zip` is still the text file it says it is.
+    archive = _ARCHIVE_MIME_TO_FORMAT.get(normalized)
+    if archive is not None and extension not in ALLOWED_EXTENSIONS:
+        return archive
+    return "text"
 
 
 def canonical_mime(mime_type: str | None, filename: str) -> str:
@@ -318,25 +357,32 @@ def canonical_mime(mime_type: str | None, filename: str) -> str:
             return _XLSM_MIME
         return known
     normalized = normalize_media_type(mime_type)
-    if normalized in ALLOWED_MIME_TYPES:
+    # A text type only: an archive type on a text file's name is the weak claim
+    # `resolve_format` already overruled, and must not be what the file is
+    # stored - and then served - as.
+    if normalized in _TEXT_MIME_TYPES:
         return normalized
     return _EXTENSION_TO_TEXT_MIME.get(file_extension(filename), "text/plain")
 
 
 def sniff_container(data: bytes) -> str | None:
-    """The container a file's own first bytes say it is: TIFF, OLE, ZIP, or `None`.
+    """The container a file's own first bytes say it is: TIFF, OLE, ZIP, gzip, or `None`.
 
     Cheap and bounded - a handful of leading bytes - and enough to catch a forged
     signature that contradicts the resolved format before a parser is handed it.
     OLE (`D0 CF 11 E0`) backs legacy DOC/XLS/MSG; ZIP (`PK\\x03\\x04`) backs the
-    OOXML and OpenDocument formats; TIFF is little- or big-endian.
+    OOXML and OpenDocument formats and a `.zip` archive; gzip (`1F 8B`) a `.tar.gz`;
+    TIFF is little- or big-endian.
     """
     if data[:4] in (b"II*\x00", b"MM\x00*"):
         return "tiff"
     if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
         return "ole"
-    if data[:4] == b"PK\x03\x04":
+    # An archive with no members is only its end record, so it opens on that.
+    if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
         return "zip"
+    if data[:2] == b"\x1f\x8b":
+        return "gzip"
     return None
 
 
@@ -353,6 +399,8 @@ _FORMAT_TO_CONTAINER = {
     "odt": "zip",
     "ods": "zip",
     "odp": "zip",
+    "zip": "zip",
+    "targz": "gzip",
 }
 
 
@@ -490,6 +538,28 @@ def make_storage_filename(filename: str) -> str:
     return f"{uuid.uuid4().hex[:12]}_{safe}"
 
 
+def _open_at(file_path: Path, start: int) -> BinaryIO:
+    """Open a file for reading and seek to `start`; both are blocking syscalls."""
+    handle = file_path.open("rb")
+    handle.seek(start)
+    return handle
+
+
+async def _read_span(handle: BinaryIO, length: int) -> AsyncIterator[bytes]:
+    """`length` bytes from an open file, a chunk at a time, closing it however
+    the iteration ends - a player that seeks away abandons the stream mid-way."""
+    remaining = length
+    try:
+        while remaining > 0:
+            chunk = await run_blocking(handle.read, min(STREAM_CHUNK_BYTES, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
+    finally:
+        await run_blocking(handle.close)
+
+
 class BaseFileStorage(ABC):
     """Abstract file storage backend."""
 
@@ -546,6 +616,9 @@ class BaseFileStorage(ABC):
 
         Not abstract, for `save_at`'s reason: a backend with no use for it says
         so at the call site rather than failing to import.
+
+        A prefix left partly in place raises rather than reporting success, so a
+        caller that retries - an organization purge's cleanup job - is told.
         """
         raise NotImplementedError(
             f"{type(self).__name__} cannot delete a prefix"
@@ -572,6 +645,45 @@ class BaseFileStorage(ABC):
             yield data
 
         return _one()
+
+    async def size(self, storage_path: str) -> int:
+        """How many bytes the file holds, without reading them.
+
+        What a ranged read is measured against: a `Range` header is answered
+        against the file's length, and a `416` names it. Asked before
+        :meth:`open_range` so a range is decided without the bytes passing
+        through this process.
+
+        Not abstract, for `save_at`'s reason.
+
+        Raises:
+            FileNotFoundError: the backend does not hold that path.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot measure a file"
+        )  # pragma: no cover - every backend in this codebase implements it
+
+    async def open_range(self, storage_path: str, start: int, end: int) -> AsyncIterator[bytes]:
+        """Bytes `start` to `end` of the file, inclusive, in bounded chunks.
+
+        The read a media player's `Range` request needs (#2310). A generated
+        video can be hundreds of megabytes and the route serving it has no rate
+        limit of its own, so a ranged answer that loaded the whole file to slice
+        it held the whole clip once per concurrent request. This reads only the
+        span asked for, a chunk at a time.
+
+        Opened here rather than on the first chunk, for :meth:`open_stream`'s
+        reason: a file gone between the size and the read is still a 404 rather
+        than a body that dies mid-way.
+
+        Not abstract, for `save_at`'s reason.
+
+        Raises:
+            FileNotFoundError: the backend does not hold that path.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot read a byte range"
+        )  # pragma: no cover - every backend in this codebase implements it
 
     @abstractmethod
     async def exists(self, storage_path: str) -> bool:
@@ -668,11 +780,19 @@ class LocalFileStorage(BaseFileStorage):
 
         Missing is not an error: a conversation that offloaded nothing has no
         directory, and the teardown must not care.
+
+        Raises:
+            OSError: When anything is left - a file the process may not unlink,
+                or one written while the tree was removed. The rows that named
+                these bytes are gone, so a caller that retries (the cleanup job)
+                is the only thing that will ever try again, and it must be told.
         """
         if not directory.is_dir():
             return 0
         count = sum(1 for path in directory.rglob("*") if path.is_file())
         shutil.rmtree(directory, ignore_errors=True)
+        if directory.exists():
+            raise OSError(f"Stored prefix not fully removed: {directory.name}")
         return count
 
     async def load(self, storage_path: str) -> bytes:
@@ -680,6 +800,16 @@ class LocalFileStorage(BaseFileStorage):
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {storage_path}")
         return await run_blocking(file_path.read_bytes)
+
+    async def size(self, storage_path: str) -> int:
+        file_path = self._resolve_safe_path(storage_path)
+        return await run_blocking(os.path.getsize, file_path)
+
+    async def open_range(self, storage_path: str, start: int, end: int) -> AsyncIterator[bytes]:
+        """The span off disk, a chunk at a time, on the file pool."""
+        file_path = self._resolve_safe_path(storage_path)
+        handle = await run_blocking(_open_at, file_path, start)
+        return _read_span(handle, end - start + 1)
 
     async def delete(self, storage_path: str) -> None:
         await delete_cancel_safe(self._delete_blocking, storage_path)
@@ -856,14 +986,30 @@ class S3FileStorage(BaseFileStorage):
         return await run_blocking(self._delete_prefix_blocking, self._key(prefix))
 
     def _delete_prefix_blocking(self, key_prefix: str) -> int:
+        """Raises `ExternalServiceError` when S3 refused any key - `delete_objects`
+        answers 200 and lists per-key failures (an `AccessDenied`, an object lock)
+        in `Errors`, which would otherwise read as success. Every page is tried
+        first, so one refused key does not keep the rest."""
         removed = 0
+        refused: list[str] = []
         paginator = self.client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=f"{key_prefix}/"):
             keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
             if not keys:
                 continue
-            self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": keys})
-            removed += len(keys)
+            response = self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": keys})
+            errors = response.get("Errors", [])
+            refused.extend(str(error.get("Code", "")) for error in errors)
+            removed += len(keys) - len(errors)
+        if refused:
+            raise ExternalServiceError(
+                message="S3 refused to delete objects under a prefix",
+                details={
+                    "prefix": key_prefix,
+                    "refused": len(refused),
+                    "codes": sorted(set(refused)),
+                },
+            )
         return removed
 
     async def exists(self, storage_path: str) -> bool:
@@ -871,7 +1017,7 @@ class S3FileStorage(BaseFileStorage):
             key = self._key(storage_path)
         except ValueError:
             return False
-        return await run_blocking(self._head_blocking, key)
+        return await run_blocking(self._head_blocking, key) is not None
 
     async def open_stream(self, storage_path: str) -> AsyncIterator[bytes]:
         """One object, in bounded chunks, never held whole in this process.
@@ -887,12 +1033,31 @@ class S3FileStorage(BaseFileStorage):
         body = await run_blocking(self._open_blocking, self._key(storage_path))
         return self._chunks(body)
 
-    def _open_blocking(self, key: str) -> Any:
+    async def size(self, storage_path: str) -> int:
+        key = self._key(storage_path)
+        length = await run_blocking(self._head_blocking, key)
+        if length is None:
+            raise FileNotFoundError(f"File not found: {key}")
+        return length
+
+    async def open_range(self, storage_path: str, start: int, end: int) -> AsyncIterator[bytes]:
+        """A ranged `GetObject`, read in bounded chunks.
+
+        The store sends only the span, so neither the object nor the part of it
+        before `start` crosses the network into this process.
+        """
+        body = await run_blocking(
+            self._open_blocking, self._key(storage_path), f"bytes={start}-{end}"
+        )
+        return self._chunks(body)
+
+    def _open_blocking(self, key: str, byte_range: str | None = None) -> Any:
         """The open body of one object, translating a miss the way `load` does."""
         from botocore.exceptions import ClientError
 
+        ranged = {"Range": byte_range} if byte_range is not None else {}
         try:
-            response = self.client.get_object(Bucket=self.bucket, Key=key)
+            response = self.client.get_object(Bucket=self.bucket, Key=key, **ranged)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") in _MISSING_OBJECT_CODES:
                 raise FileNotFoundError(f"File not found: {key}") from exc
@@ -916,25 +1081,26 @@ class S3FileStorage(BaseFileStorage):
         finally:
             await run_blocking(body.close)
 
-    def _head_blocking(self, key: str) -> bool:
-        """Whether the object is there, and only that.
+    def _head_blocking(self, key: str) -> int | None:
+        """The object's `ContentLength`, or `None` where there is no such object.
 
         A blanket `except ClientError` would answer "not there" for an
         `AccessDenied`, a throttle or an outage - so a bad bucket policy would
         read as an agent with no avatar and a knowledge base whose documents
         have all been deleted, which is the wrong thing for anybody to act on.
-        Only the codes that mean "no such object" answer `False`; everything
+        Only the codes that mean "no such object" answer `None`; everything
         else is the caller's to see.
         """
         from botocore.exceptions import ClientError
 
         try:
-            self.client.head_object(Bucket=self.bucket, Key=key)
+            response = self.client.head_object(Bucket=self.bucket, Key=key)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") in _MISSING_OBJECT_CODES:
-                return False
+                return None
             raise
-        return True
+        length: int = response["ContentLength"]
+        return length
 
 
 def build_s3_client() -> BaseClient:

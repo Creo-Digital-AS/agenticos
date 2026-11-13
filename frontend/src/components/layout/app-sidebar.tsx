@@ -21,14 +21,18 @@
  * reveals entries rather than briefly offering ones about to disappear.
  */
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ChevronRight, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+
+import { ProjectRows } from "@/components/layout/project-rows";
 
 import { BrandLink } from "@/components/layout/brand-link";
+import { stripLocale } from "@/lib/active-route";
 import { SidebarShell } from "@/components/layout/sidebar-shell";
 import { useMounted } from "@/hooks/use-mounted";
+import { useSuggestions } from "@/hooks/use-suggestions";
 import { usePermissions } from "@/hooks/use-permissions";
 import { cn, isAppAdmin } from "@/lib/utils";
 import { useAuthStore, useSidebarStore } from "@/stores";
@@ -47,7 +51,7 @@ function NavLink({
 }) {
   const pathname = usePathname();
   const t = useTranslations("nav");
-  const active = isActive(pathname, item.href);
+  const active = item.exact ? stripLocale(pathname) === item.href : isActive(pathname, item.href);
   const label = t(item.labelKey);
 
   return (
@@ -62,19 +66,56 @@ function NavLink({
       title={collapsed ? label : undefined}
       aria-label={collapsed ? label : undefined}
       className={cn(
-        "flex items-center rounded-lg text-sm font-medium transition-colors",
-        collapsed ? "h-9 w-9 justify-center" : "gap-2.5 px-2.5 py-1.5",
+        "touch:min-h-11 focus-visible:ring-ring relative flex items-center rounded-xl text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset",
+        // One row height in both states, so collapsing the column moves no icon
+        // up or down - the rail is the same list with its words taken away.
+        collapsed ? "touch:min-w-11 h-8 w-8 justify-center" : "h-8 gap-2.5 px-2.5",
         // Selected is a neutral raised pill with a dark label. Section hues live
         // on the page's own tile, not here: a column of coloured pills competed
         // with the content it points at.
         active
           ? "bg-accent text-foreground"
-          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          : "text-foreground/80 hover:bg-foreground/5 hover:text-foreground",
       )}
     >
-      <item.icon className="h-4 w-4 shrink-0" aria-hidden />
+      <NavIcon icon={item.icon} />
       {collapsed ? null : <span className="truncate">{label}</span>}
+      {item.count === "inbox" && <InboxCount collapsed={collapsed} />}
     </Link>
+  );
+}
+
+/** How many open items wait in the inbox: a number in the column, a dot on the rail. */
+function InboxCount({ collapsed }: { collapsed: boolean }) {
+  const t = useTranslations("nav");
+  const { suggestions } = useSuggestions();
+  if (suggestions.length === 0) return null;
+  const label = t("inboxCount", { count: suggestions.length });
+  return collapsed ? (
+    <span
+      className="bg-muted-foreground absolute top-1 right-1 h-1.5 w-1.5 rounded-full"
+      aria-label={label}
+    />
+  ) : (
+    <span
+      className="text-muted-foreground ml-auto px-1 text-xs font-medium tabular-nums"
+      aria-label={label}
+    >
+      {suggestions.length}
+    </span>
+  );
+}
+
+/**
+ * The entry's icon, turning while the page it opens is on its way: the click
+ * answers where it was made, beside the bar along the top edge.
+ */
+function NavIcon({ icon: Icon }: { icon: NavItem["icon"] }) {
+  const { pending } = useLinkStatus();
+  return pending ? (
+    <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+  ) : (
+    <Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden />
   );
 }
 
@@ -102,7 +143,7 @@ export function SidebarNav({
   return (
     <nav
       aria-label={t("primary")}
-      className={cn("flex flex-col py-4", collapsed ? "items-center gap-3 px-2" : "gap-5 px-3")}
+      className={cn("flex flex-col gap-3 py-3", collapsed ? "items-center px-2" : "px-3")}
     >
       {groups.map((group) => (
         <NavGroupBlock
@@ -129,31 +170,57 @@ function NavGroupBlock({
   const pathname = usePathname();
   const mounted = useMounted();
   const openGroups = useSidebarStore((state) => state.openGroups);
+  const closedGroups = useSidebarStore((state) => state.closedGroups);
   const toggleGroup = useSidebarStore((state) => state.toggleGroup);
   const key = group.labelKey ?? "main";
   // The page you are on is never hidden behind a folded heading. The stored
   // choice is read only after mount, for the same hydration reason as the rail.
   const holdsActive = group.items.some((item) => isActive(pathname, item.href));
-  const folds = !!group.collapsible && !collapsed;
-  const open = !folds || holdsActive || (mounted && openGroups.includes(key));
+  // The rail folds too: a group closed in the column is closed on the rail, so
+  // the two show the same destinations rather than the rail every one of them.
+  const folds = !!group.collapsible;
+  const open =
+    !folds ||
+    holdsActive ||
+    (mounted && (openGroups.includes(key) || (key === "knowledge" && !closedGroups.includes(key))));
 
   return (
-    <div className={cn("flex flex-col gap-0.5", collapsed && "w-full items-center gap-1")}>
+    <div className={cn("flex flex-col gap-0.5", collapsed && "w-full items-center")}>
       {group.labelKey &&
         // The heading is what tells the groups apart, and on the rail there is
         // no room for the word. A rule does the same job: it says "a different
         // kind of thing starts here" without claiming to say which, which an
-        // abbreviation would do badly. The rail never folds - it is already
-        // one icon per row.
+        // abbreviation would do badly. A folding group's rule is its fold
+        // control, at the height the heading has in the column.
         (collapsed ? (
-          <div aria-hidden className="bg-border mb-1 h-px w-5" />
+          folds ? (
+            <button
+              type="button"
+              onClick={() => toggleGroup(key)}
+              disabled={holdsActive}
+              aria-expanded={open}
+              aria-label={t(group.labelKey)}
+              title={t(group.labelKey)}
+              className="text-muted-foreground hover:text-foreground touch:min-h-11 touch:min-w-11 flex h-6 w-8 items-center justify-center gap-0.5 rounded-md disabled:cursor-default"
+            >
+              <span aria-hidden className="bg-border h-px w-3" />
+              <ChevronRight
+                className={cn("size-3 transition-transform", open && "rotate-90")}
+                aria-hidden
+              />
+            </button>
+          ) : (
+            <div aria-hidden className="flex h-6 items-center">
+              <span className="bg-border h-px w-5" />
+            </div>
+          )
         ) : folds ? (
           <button
             type="button"
             onClick={() => toggleGroup(key)}
             disabled={holdsActive}
             aria-expanded={open}
-            className="text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground flex items-center gap-1 rounded-md px-2.5 pb-1.5 text-left text-xs font-medium tracking-wide uppercase transition-colors disabled:cursor-default"
+            className="text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground touch:min-h-11 flex h-7 items-center gap-1 rounded-md px-2.5 text-left text-xs font-medium transition-colors disabled:cursor-default"
           >
             <span className="flex-1">{t(group.labelKey)}</span>
             <ChevronRight
@@ -162,10 +229,11 @@ function NavGroupBlock({
             />
           </button>
         ) : (
-          <div className="text-muted-foreground px-2.5 pb-1.5 text-xs font-medium tracking-wide uppercase">
+          <div className="text-muted-foreground flex h-7 items-center px-2.5 text-xs font-medium">
             {t(group.labelKey)}
           </div>
         ))}
+      {key === "projects" && <ProjectRows onNavigate={onNavigate} collapsed={collapsed} />}
       {open
         ? group.items.map((item) => (
             <NavLink key={item.href} item={item} onNavigate={onNavigate} collapsed={collapsed} />
@@ -198,21 +266,30 @@ export function AppSidebar() {
     // deepest of the four surfaces in both themes, and a deployment can
     // retheme it.
     <aside
+      data-collapsed={collapsed ? "" : undefined}
       className={cn(
-        "bg-sidebar hidden shrink-0 border-r md:flex md:flex-col",
+        "bg-sidebar hidden shrink-0 md:flex md:flex-col",
         mounted && "transition-[width] duration-200",
         collapsed ? "w-14" : "w-[240px]",
       )}
     >
+      {/* Native macOS window controls need their own draggable row, including
+          when the navigation is collapsed. Hidden on every other surface. */}
+      <div aria-hidden className="macos-window-controls" data-tauri-drag-region />
       {/* The brand heads the column because there is no top bar above `md` for
           it to head instead, and the collapse control sits beside it: the one
           control that is about the column rather than about anything in it,
           on the column's own title bar - where every editor and console with a
           collapsible panel puts one. Search and the bell are actions and live
           with the account at the foot, where a hand rests. */}
+      {/* In the desktop app this row also drags the window. "deep", so its
+          empty space drags and its controls still click -
+          Tauri's drag script skips buttons and links on its own. */}
       <div
+        data-titlebar
+        data-tauri-drag-region="deep"
         className={cn(
-          "flex h-14 shrink-0 items-center border-b",
+          "flex h-14 shrink-0 items-center",
           collapsed ? "justify-center px-2" : "gap-1 px-3",
         )}
       >

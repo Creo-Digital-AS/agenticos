@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { SidebarShell } from "./sidebar-shell";
+import { version } from "../../../package.json";
 
 /**
  * The blocks are stubbed because this is a test about arrangement, not about
@@ -10,6 +11,9 @@ import { SidebarShell } from "./sidebar-shell";
  * full: a long nav that scrolls the organization out of reach, or pushes
  * signing out past the bottom of the screen.
  */
+vi.mock("@/hooks/use-release-update", () => ({
+  useReleaseUpdate: () => ({ data: { latest: null } }),
+}));
 vi.mock("@/components/layout/sidebar-search", () => ({
   SidebarSearch: () => <button>the search row</button>,
 }));
@@ -21,14 +25,27 @@ vi.mock("@/components/layout/sidebar-user", () => ({
     <button>{compact ? "the account avatar" : "the account menu"}</button>
   ),
 }));
+vi.mock("@/components/layout/organization-switcher", () => ({
+  OrganizationSwitcher: ({
+    collapsed,
+    onNavigate,
+  }: {
+    collapsed?: boolean;
+    onNavigate?: () => void;
+  }) => (
+    <button onClick={onNavigate}>
+      {collapsed ? "the organization avatar" : "the organization switcher"}
+    </button>
+  ),
+}));
 vi.mock("@/components/language-switcher", () => ({
   LanguageSwitcherIcon: () => <button>the language switcher</button>,
 }));
 vi.mock("@/components/theme", () => ({ ThemeToggle: () => <button>the theme toggle</button> }));
 
-function renderShell(props: { collapsed?: boolean } = {}) {
+function renderShell(props: { collapsed?: boolean; onNavigate?: () => void } = {}) {
   return render(
-    <SidebarShell collapsed={props.collapsed}>
+    <SidebarShell collapsed={props.collapsed} onNavigate={props.onNavigate}>
       <nav aria-label="Primary">the destinations</nav>
     </SidebarShell>,
   );
@@ -39,15 +56,26 @@ function follows(earlier: HTMLElement, later: HTMLElement): boolean {
 }
 
 describe("SidebarShell", () => {
-  it("opens on the destinations, with nothing above them", () => {
-    // The organization moved into the account's menu, so the column starts with
-    // the places you can go rather than with the tenant they are read through.
+  it("shows organization context before chat, search and destinations", () => {
     renderShell();
-
-    const nav = screen.getByRole("navigation");
-    for (const below of ["the search row", "the account menu"]) {
-      expect(follows(nav, screen.getByRole("button", { name: below }))).toBe(true);
+    const switcher = screen.getByRole("button", { name: "the organization switcher" });
+    for (const following of [
+      screen.getByRole("link", { name: "New chat" }),
+      screen.getByRole("button", { name: "the search row" }),
+      screen.getByRole("navigation"),
+    ]) {
+      expect(follows(switcher, following)).toBe(true);
     }
+  });
+
+  it("keeps labelled search above the destinations", () => {
+    renderShell();
+    expect(
+      follows(
+        screen.getByRole("button", { name: "the search row" }),
+        screen.getByRole("navigation"),
+      ),
+    ).toBe(true);
   });
 
   it("puts the account last", () => {
@@ -68,6 +96,9 @@ describe("SidebarShell", () => {
     expect(scroller).toHaveClass("overflow-y-auto");
     expect(scroller).not.toContainElement(screen.getByRole("button", { name: "the account menu" }));
     expect(scroller).not.toContainElement(screen.getByRole("button", { name: "the search row" }));
+    expect(scroller).not.toContainElement(
+      screen.getByRole("button", { name: "the organization switcher" }),
+    );
   });
 
   it("keeps the actions out of the destination list", () => {
@@ -100,6 +131,22 @@ describe("SidebarShell", () => {
     renderShell({ collapsed: true });
 
     expect(screen.getByRole("button", { name: "the account avatar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "the organization avatar" })).toBeInTheDocument();
+    expect(
+      follows(
+        screen.getByRole("button", { name: "the organization avatar" }),
+        screen.getByRole("navigation"),
+      ),
+    ).toBe(true);
+  });
+
+  it("lets organization selection dismiss the mobile navigation", () => {
+    const onNavigate = vi.fn();
+    renderShell({ onNavigate });
+
+    fireEvent.click(screen.getByRole("button", { name: "the organization switcher" }));
+
+    expect(onNavigate).toHaveBeenCalledOnce();
   });
 
   it("draws no collapse control, which belongs on the column's own title bar", () => {
@@ -109,4 +156,9 @@ describe("SidebarShell", () => {
 
     expect(screen.queryByRole("button", { name: "the collapse control" })).not.toBeInTheDocument();
   });
+});
+
+it.each([false, true])("shows the running console version with collapsed=%s", (collapsed) => {
+  renderShell({ collapsed });
+  expect(screen.getByLabelText(`Console version ${version}`)).toHaveTextContent(`v${version}`);
 });

@@ -6,14 +6,14 @@ storage and access; turning context files into something a run reads - injected
 into the instructions or exposed through a tool - is the context *capability*.
 """
 
-from __future__ import annotations
-
 import logging
+from collections.abc import Mapping
 from typing import cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.capabilities.context import ContextBody, ContextConfig
 from app.core.audit import record_audit
 from app.core.exceptions import AlreadyExistsError, NotFoundError
 from app.core.excerpt import excerpt
@@ -29,7 +29,7 @@ from app.schemas.context import (
     ContextFileUpdate,
     ContextModeLiteral,
 )
-from app.services.access import CONTEXT, resolve_access, visible_resource_ids
+from app.services.access import CONTEXT, accessible_ids, resolve_access, visible_resource_ids
 from app.services.resource_usage import agents_using, groups_sharing, shared_with_group
 from app.services.sharing import SharingService
 
@@ -149,10 +149,17 @@ class ContextService:
         groups = await groups_sharing(
             self.db, ctx, resource_type=CONTEXT, resource_ids=[file.id for file in items]
         )
+        editable = await accessible_ids(
+            self.db, ctx, items, Perm.CONTEXT_EDIT, resource_type=CONTEXT
+        )
         return ContextFileList(
             items=[
                 _summary(file).model_copy(
-                    update={"used_by": used[file.id], "shared_groups": groups[file.id]}
+                    update={
+                        "used_by": used[file.id],
+                        "shared_groups": groups[file.id],
+                        "can_edit": file.id in editable,
+                    }
                 )
                 for file in items
             ],
@@ -160,7 +167,12 @@ class ContextService:
         )
 
     async def resolve_for_agent(
-        self, ctx: AuthContext, context_ids: list[UUID]
+        self,
+        ctx: AuthContext,
+        context_ids: list[UUID],
+        *,
+        projected: Mapping[UUID, ContextBody] | None = None,
+        config: ContextConfig | None = None,
     ) -> list[ContextFile]:
         """The enabled context files an agent is bound to.
 
@@ -180,13 +192,37 @@ class ContextService:
         """
         if not context_ids:
             return []
+        virtual = {
+            key: body
+            for key, body in (projected or {}).items()
+            if body.name is not None and key in context_ids
+        }
         found = await context_repo.get_many(
-            self.db, context_ids, organization_id=ctx.organization_id
+            self.db,
+            [key for key in context_ids if key not in virtual],
+            organization_id=ctx.organization_id,
         )
         resolved = []
         for context_id in context_ids:
-            file = found.get(context_id)
-            if file is None or not file.enabled:
+            body = virtual.get(context_id)
+            file = (
+                ContextFile(
+                    id=context_id,
+                    organization_id=ctx.organization_id,
+                    owner_user_id=ctx.user_id,
+                    visibility=Visibility.PRIVATE.value,
+                    name=body.name,
+                    description=body.description,
+                    content=body.content,
+                    format="md",
+                    mode="inject",
+                    enabled=True,
+                )
+                if body is not None
+                else found.get(context_id)
+            )
+            setting = config.file_settings.get(context_id) if config is not None else None
+            if file is None or not (setting.enabled if setting is not None else file.enabled):
                 logger.warning(
                     "Agent references context file %s which is disabled, deleted, or not org %s's",
                     context_id,
@@ -257,10 +293,16 @@ class ContextService:
     async def update(
         self, ctx: AuthContext, context_id: UUID, data: ContextFileUpdate
     ) -> ContextFile:
-        """Edit a context file. Every agent bound to it is current on the next run."""
+        """Edit a context file. Every agent bound to it is current on the next run.
+
+        A file has no draft: what bound agents read changes at once, so the eval
+        suites watching for that change are queued.
+        """
         file = await self.get(ctx, context_id, perm=Perm.CONTEXT_EDIT)
         update_data = writable(data, over=ContextFile)
         updated = await context_repo.update(self.db, file=file, update_data=update_data)
+        if update_data:
+            await self._changed(file)
         await record_audit(
             self.db,
             actor_user_id=ctx.subject_id,
@@ -274,6 +316,14 @@ class ContextService:
         )
         return updated
 
+    async def _changed(self, file: ContextFile) -> None:
+        """Queue the eval suites of the agents that read this file."""
+        from app.services.eval_suite import EvalSuiteService
+
+        await EvalSuiteService(self.db).dependency_changed(
+            organization_id=file.organization_id, kind="context", resource_id=file.id
+        )
+
     async def delete(self, ctx: AuthContext, context_id: UUID) -> None:
         file = await self.get(ctx, context_id, perm=Perm.CONTEXT_EDIT)
         await resource_grant_repo.delete_for_resource(
@@ -283,6 +333,8 @@ class ContextService:
             resource_id=file.id,
         )
         await context_repo.delete(self.db, file)
+        # The agents that bound it now run without it.
+        await self._changed(file)
         await record_audit(
             self.db,
             actor_user_id=ctx.subject_id,

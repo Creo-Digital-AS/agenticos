@@ -1,11 +1,9 @@
 """An answer a platform draws itself while it is written, and the steps in it (#2084)."""
 
-from __future__ import annotations
-
 import contextlib
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -15,7 +13,6 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -370,8 +367,9 @@ class _ToolNode:
 
 
 class TestStepsFromARun:
+    @pytest.mark.parametrize("outcome", ["failed", "retried"])
     async def test_each_tool_call_is_a_step_from_its_call_to_its_result(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, outcome: Literal["failed", "retried"]
     ) -> None:
         from pydantic_ai import Agent
 
@@ -380,7 +378,12 @@ class TestStepsFromARun:
             FunctionToolResultEvent(ToolReturnPart("web_search", "ok", tool_call_id="a")),
             FunctionToolCallEvent(ToolCallPart("lookup", {}, tool_call_id="b")),
             FunctionToolResultEvent(
-                RetryPromptPart("bad args", tool_name="lookup", tool_call_id="b")
+                ToolReturnPart(
+                    tool_name="lookup",
+                    tool_call_id="b",
+                    content={"url": "https://provider.invalid/?key=fixture"},
+                    outcome=outcome,
+                )
             ),
             FunctionToolResultEvent(ToolReturnPart("ghost", "ok", tool_call_id="c")),
             # The structured answer is the reply itself, not a step towards it.
@@ -410,6 +413,7 @@ class TestStepsFromARun:
             ("b", "error"),
             ("c", "complete"),
         ]
+        assert steps[3].sources == ()
         assert steps[0].title == "Searching the web…"
         assert steps[4].title == "Working on it…"
 
@@ -421,7 +425,13 @@ class TestABrowseInAChannel:
     LINK = "https://agents.example.com/browse/{run}/web-1"
 
     async def _drive(
-        self, monkeypatch: pytest.MonkeyPatch, heard: list[BrowserEvent], *, deps: AgentDeps
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        heard: list[BrowserEvent],
+        *,
+        deps: AgentDeps,
+        tool_name: str = "browse_web",
+        wait_for_follow: bool = True,
     ) -> list[AnswerStep]:
         from pydantic_ai import Agent
 
@@ -438,7 +448,7 @@ class TestABrowseInAChannel:
         monkeypatch.setattr(live_browse, "available", lambda: True)
         monkeypatch.setattr(live_browse, "watch", watch)
         monkeypatch.setattr(settings, "FRONTEND_URL", "https://agents.example.com")
-        if deps.run_id is None:
+        if deps.run_id is None or not wait_for_follow:
             followed.set()
 
         class _Node:
@@ -447,12 +457,12 @@ class TestABrowseInAChannel:
                 async def opened() -> AsyncIterator[Any]:
                     async def events() -> AsyncIterator[Any]:
                         yield FunctionToolCallEvent(
-                            ToolCallPart("browse_web", {}, tool_call_id="web-1")
+                            ToolCallPart(tool_name, {}, tool_call_id="web-1")
                         )
                         with anyio.fail_after(5):
                             await followed.wait()
                         yield FunctionToolResultEvent(
-                            ToolReturnPart("browse_web", "ok", tool_call_id="web-1")
+                            ToolReturnPart(tool_name, "ok", tool_call_id="web-1")
                         )
 
                     yield events()
@@ -601,3 +611,34 @@ class TestStepSources:
 
     def test_a_result_naming_no_page_links_none(self) -> None:
         assert step_sources("just text") == ()
+
+
+@pytest.mark.parametrize("from_definition", [False, True])
+async def test_a_renamed_channel_browse_keeps_the_live_takeover_link(
+    monkeypatch: pytest.MonkeyPatch, from_definition: bool
+) -> None:
+    from app.core.tool_identity import ToolIdentity
+
+    harness = TestABrowseInAChannel()
+    deps = AgentDeps(run_id=harness.RUN)
+    if from_definition:
+        deps.tool_definitions["visit"] = ToolIdentity("browse_web")
+    else:
+        deps.tool_identities["web-1"] = ToolIdentity("browse_web")
+    steps = await harness._drive(monkeypatch, [], deps=deps, tool_name="visit")
+    assert steps[0].title == "Browsing the web…"
+    assert steps[0].sources == (
+        StepSource(harness.LINK.format(run=harness.RUN), "Watch or take over"),
+    )
+
+
+@pytest.mark.security
+async def test_an_external_channel_call_cannot_claim_the_internal_browser_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.tool_identity import GENERIC_TOOL
+
+    harness = TestABrowseInAChannel()
+    deps = AgentDeps(run_id=harness.RUN, tool_definitions={"browse_web": GENERIC_TOOL})
+    steps = await harness._drive(monkeypatch, [], deps=deps, wait_for_follow=False)
+    assert all(not step.sources for step in steps)

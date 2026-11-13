@@ -1,19 +1,119 @@
 # The console
 
+The personal dashboard reads onboarding and Briefing together before drawing its opening row. A single reserved loading area avoids alternating placeholder layouts; other widgets load independently. Failed reads retain their retry state. Workspace expansion is offered on phones; resizing to desktop restores navigation and keeps unsaved fields.
+
+Context settings lists files in compact rows with per-agent usage controls. Long descriptions no longer stretch neighbouring files, and injected-only context uses an informational note. Availability shows each chat app’s platform logo beside the bot name. App sharing puts the page link and people with access first; expiration, version pinning, embedding and password settings start collapsed under Link settings. Active restrictions remain visible as badges, and collapsing the options preserves edits.
+
+On phones, channel registration uses a compact platform selector. Cancelling a new channel, new vault key or key rotation clears its entered credentials. Channel and vault forms block editing and dismissal during a write; a refused write keeps the values for correction and retry. Channel editing and key rotation keep their action footer visible in short windows.
+
 The console is the web application everything else on this site is configured
 through. This page is the map: what each area is for, and which page explains it
 properly.
 
+On phones, new context files put the source editor before optional details. Details shows the effective audience even while collapsed; expand it to change the description or access. A refused description automatically expands that section so its error can be corrected.
+
+New project, context-file and dataset forms ask before discarding a draft. Stay preserves it; Discard resets it. During creation, fields, Cancel, Close and Escape are blocked until the write settles. A refusal restores editing and retains the values. Context source editing is read-only during that write.
+
+When several context files were dropped, closing asks only Stay or Discard; use Create to process them in order. Dataset details and case forms also lock fields and dismissal while saving, including the case form/JSON switch. Their Save actions remain reachable in short phone windows.
+
+Starting MCP sign-in keeps the form open until the consent destination is ready. A refused start preserves its values for correction and retry.
+
+Custom slash-command editing asks before dropping a draft. Save freezes its fields and dismissal until the request settles; a refusal keeps the draft. On phones, command actions have their own row and touch-sized controls. A pending toggle blocks conflicting actions, and removal asks for confirmation. MCP connection forms also freeze their fields and dismissal while saving.
+
+When you edit project settings, an organization name, spending cap, voice defaults or data-retention periods, a skill or a context file, leaving asks whether to save, discard or stay. Switching away from an edited skill resource asks too. A refused save keeps the draft open; **Save file** clears it only after the server confirms the write. Typing added while that resource save is in flight remains unsaved.
+
+On phones, knowledge-base documents and organization members use labeled rows with visible actions. Member removal asks for confirmation and a refusal keeps it open. Knowledge-base creation, parsing and embedding-provider dialogs keep their fields disabled and stay open while saving, then restore editing and dismissal if the write is refused. A failed document download shows an error and can be retried.
+
+Changing the knowledge-search question or scope clears previous results and cancels the pending request. A late response cannot replace the results of a newer search.
+
+Hosted chat lets you compose while connecting, but enables Send only after the current WebSocket opens. Starting a new conversation waits for its own connection; an early click cannot silently drop the first question.
+
 If you are looking for one screen, the fastest route is the **"?"** in a page's
 header — it replays that page's walkthrough, and a page whose header carries no
-"?" has no walkthrough to replay.
+"?" has no walkthrough to replay. Chat has no header: its tips are under the chat
+settings, the sliders beside the microphone.
+
+Resource lists, including Inbox and Routines, fill the remaining page height even when empty. Routines keeps its templates in the creation form rather than a separate ideas panel.
+
+Chat uses larger agent portraits without rings. Its Files toggle stays in the composer while the panel opens or closes, with reduced motion respected. Chat settings show the current model first. Expand **Change model** to edit the prefilled provider and model; the choice applies only after **Run on this model**. Attachment cards sit above the composer without an extra shadowed panel.
+
+On phones, skill and context editors keep descriptions, categories and file management folded away while writing. One button switches between source and preview. Apps use floating back and options buttons; opening options reveals the title, version, theme and sharing controls.
+
+Page introductions and settings explanations are available from the information icon beside their heading. Live summaries and destructive-action warnings remain visible.
+
+In Agents, Skills, Context and run history, **Filters** reveals secondary controls on every screen size and shows how many filters are active.
+
+Agent cards show status, access and the edit date directly. Skills and Context cards keep the document preview, summary, **Used by** with agent portraits and **Add to an agent** visible. Category and audience metadata sit in a compact row beside the action. There is no Details expansion. To delete a skill or context file, open its editor and use the three-dot menu beside **Share**; deletion still asks for confirmation and is available only to an editor.
+
+Names, navigation and form values use strong foreground text; metadata stays
+secondary. Primary actions use a contrasting neutral fill. Glass keeps the native
+material while giving content, cards and menus more opaque surfaces for reading.
+
+Organization, agent builder and project tabs carry matching icons. Budget headroom rows include agent portraits.
+
+Generated portraits use a constrained set of Blobatar 2.7 silhouettes and brighter tones; idle faces animate on hover, while working agents keep their thinking animation. Uploaded pictures are preserved. New starter-agent pictures use the same portrait family; existing stored uploads are not automatically replaced.
+
+Chat settings show Browser and Work on before Permissions. Conversation notifications
+and account connections remain below the permissions controls.
+
+Chat settings use a fixed heading and close button above a scrolling body. Information icons explain the model, Browser, Work on and permission modes on demand; the selected permission mode keeps its explanation visible. Under **Knowledge bases → Integrations**, integrations and local services use compact panels that fit their content, with explanatory text behind information icons.
+
+Conversation agents are ordered by their latest message or top-level run, newest first. The collapsed chat rail keeps full-size avatars, overlaps up to three, and hides older participants; the full participant list remains available in the tooltip.
+
+When **Approve everything** is unavailable, chat settings distinguish missing approval-decision permission from an organization policy that disables standing consent. A person allowed to decide approvals gets a link to **Budget and approvals**, where that policy can be changed explicitly. The chat never changes organization policy automatically.
+
+Phone dialogs keep a 12px gutter on every edge. Compact page headers place the title and actions on one row when they fit. Context descriptions open from the editor toolbar.
+
+On phones, primary page actions stay visible and secondary commands fold behind **More page actions**. Inbox filters and the table format use selects. Settings with many sections use a section menu, while the MCP client is selected from a dropdown. Opening a project or workspace file opens its full-screen reader; the back arrow returns to the folders. Workflow step dialogs show one chosen panel at a time: settings, input or output. Switching panels preserves edits; desktop keeps the panels side by side.
+
+Markdown fields and file editors also offer an expand button without discarding the current draft. Skill descriptions and categories can be expanded above the editor. The chat composer uses less space and caps long drafts against the available screen height. Opening navigation focuses the panel, while Tab still reaches its controls. The workflow canvas has a floating full-screen control and a smaller minimap on phones.
+
+Page headers use the surrounding layout’s spacing once. Cards, sidebar rows, tabs and empty states use compact spacing on desktop while interactive controls keep larger touch targets.
+
+Secondary buttons and toolbar filters share a more visible filled surface, full-contrast labels and distinct hover, pressed and open states. The chat model picker follows the same secondary-action styling.
+
+Personal settings keep horizontal tabs at the top, including desktop-only pages inside the app. Settings panels show their descriptions directly and use content-sized forms. Account holds password changes and active sessions; the password action sits below the fields.
+
+Profile fields share a row when there is room; **Save changes** is available only after an edit. Capability cards have one settings target and a separate enable switch; settings panels keep examples behind an information icon rather than repeating the gallery illustration.
+
+Template category dialogs fit their content; choosing an agent or skill industry opens the larger library. On phones, appearance choices use compact rows with thumbnails.
+
+Agent and project instructions share one compact toolbar for their heading, help, source/preview and expansion. Expanded Markdown keeps the selected source or preview view. Unused prompt variables start folded, while existing custom variables or a custom time zone keep the panel open. Expanded text and file editors keep consistent phone gutters; phone text inputs use larger type without enlarging desktop fields.
+
+On phones, focusing the chat message switches to a compact writing row with attachment and send controls. Agent selection and voice input remain available under **+**. The welcome suggestions and connection suggestions step aside while composing, and completion menus stay within the available height. Moving focus from the draft to Send keeps the layout stable.
+
+Entering the main chat focuses the composer as soon as it becomes writable, including when the navigation button still holds focus during connection. A control deliberately used while connecting keeps its focus.
+
+Every explicit **New chat** action focuses the composer again, including starting over from an empty draft; receiving a conversation ID while typing does not request focus.
+
+On phones, the actions beneath user and agent messages start hidden. Tap the **More** button beside the sender to show or hide copying, replies, ratings and other available actions. Desktop keeps its hover controls.
+
+Preview CSS imports, images and fonts resolve relative to their stylesheet through the same authorized file source. Previews limit recursion to four nested levels, 64 assets, 8 MiB of input assets and 16 MiB of expanded output. Turn file links retain their original conversation or local folder, recorded with the saved timeline; changing Work on cannot retarget them. Older turns without a recorded origin have no inferred links. Opening a local file still requires its current native folder grant.
+
+File-link metadata stores only an opaque origin identifier for local turns. The folder mapping stays on the initiating desktop, scoped to its account and organization; other participants and computers cannot resolve those links. Legacy origins containing a local path are omitted when reading stored turns.
+
+The agent Builder’s **Visual map** fits the whole configuration on opening and when the canvas changes size. **Reset view** fits it again after panning or zooming. Large groups show six items and their remaining count; select a group to read its complete, scrollable list. The workflow minimap shows the whole graph and lets you move to another part without changing the zoom.
+
+The Builder’s test panel can expand to a full workspace without resetting its conversation or unsent text. Comparing two versions opens that workspace automatically; the full-screen button or Escape returns to the Builder. Version selectors have their own row, so the test controls remain usable in narrow panels. On phones, switch between the compared chats using their version buttons; both conversations keep running and keep their drafts. The shared prompt still asks both at once.
+
+Navigation keeps shared page layouts mounted when moving between sections, with a short fade instead of resetting the frame. Reduced motion disables the fade. Dashboard widgets wait for the saved arrangement, permission-dependent pages wait for the permission result, and the administration user list starts in a loading state rather than briefly claiming it is empty. Group and app-publisher filters reserve their space while loading. Inbox source marks wait for catalog metadata; links to a working conversation open the same chat route as the sidebar.
+
+On phones, sent messages stop below the floating chat buttons, keeping the user portrait visible. The initial transcript and the space reserved for a reply use the same toolbar clearance; desktop and embedded chats retain their smaller inset.
+
+Default agents finish a one-off request without holding the answer open for an optional automation question. Questions settle decisions needed for the current task or an automation the person requests or accepts. Optional setup cards remain non-blocking proposals.
+
+The compact source button below an answer opens Sources beside the conversation, with a full-width panel on phones. Files and Sources share the side space: opening one replaces the other. Web sources use the site favicon, requested without a referrer, or a known service logo; a globe remains when the icon is unavailable. Knowledge-base sources retain their file marks and original-document viewer.
+
+Inline web links use the same favicon policy independently of MCP connections. Unknown-site icons pass through the console's same-origin proxy and DuckDuckGo's fixed icon service. Only the hostname is sent to that service, never the reader's cookies, IP address, URL path or query. The proxy refuses redirects, non-raster content and icons over 64 KiB, and times out after three seconds. Missing or unavailable icons fall back to a globe. Inert transcript views keep remote images and unknown-site icons unloaded.
+
+A failed chat run shows its failure separately from the assistant’s answer, outside folded tool work, including after reloading the conversation. A provider content filter is identified explicitly; raw provider responses and unknown historical error strings are not copied into shared transcripts. Partial work remains available, and failed work is not labelled as completed.
 
 ## The dashboard
 
 The landing page is an **arrangeable grid of widgets**, and it is the answer to
 "what is happening" without opening five pages.
 
-Thirty-eight cards exist. You will not see all of them: **a card is gated on the
+Fifty-seven cards exist. You will not see all of them: **a card is gated on the
 permission its data needs**, so a widget you may not read is never mounted and
 its queries are never issued — except your own notifications, below, which need
 only that you are signed in. An empty band disappears with its heading rather
@@ -22,28 +122,59 @@ than sitting there empty.
 A switch at the top says whose dashboard it is, and offers only the views you
 may open. Everybody opens on **Me**:
 
-| View | Answers |
-|---|---|
-| **Me** | A greeting and your period in one sentence; your runs, how many finished, what is waiting on you and what it cost; then the calls waiting on you, your conversations, your agents and what was shared with you |
-| **Organization** | The arrangeable page below |
-| **Group** | One [group](departments.md)'s members - their runs, spend, models, when they work and who uses it most. Choose the group beside the switch. A group whose members ran nothing in the period says so once, with a way to the group, rather than showing a page of empty cards |
-| **Deployment** | Only for a [deployment admin](permissions.md) — platform totals, health, busiest tenants, ratings |
+| View             | Answers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Me**           | A greeting, your period and everything waiting on you, in two sentences - calls, answers to review, failing suites, the assistant's suggestions; your runs, how many finished, what is waiting on you (counted the same way) and what it cost; then the calls waiting on you, your conversations, the agents that need attention, the improvements waiting for you, your agents, what was shared with you, your [datasets](datasets.md) with what their cases test against, the latest eval runs and suites, the assistant's suggestions by agent, skill and file, and knowledge gaps |
+| **Organization** | The arrangeable page below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Group**        | One [group](departments.md)'s members - their runs, spend, models, when they work and who uses it most. Choose the group beside the switch. A group whose members ran nothing in the period says so once, with a way to the group, rather than showing a page of empty cards                                                                                                                                                                                                                                                                                   |
+| **Deployment**   | Only for a [deployment admin](permissions.md) — platform totals, health, busiest tenants, ratings                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+
+On **Me**, **Agents that need attention** lists the agents you may see with
+answers rated down, failed runs or a failing eval suite in the period - counts
+only, never what was said - with **Improve** on those you may edit. The Agents
+gallery marks the same agents over the last thirty days with a **Needs
+attention** badge that says why on hover. Answers and runs count only on the
+version each agent serves now in its default environment: publishing a fix
+clears the signal until the new version earns its own. Both need `runs:view`.
+
+Below it, **Improvements waiting for you** lists the [Improve](authoring.md#the-improve-wizard)
+sessions stopped for your next step or decision, each opening at its stop, and the
+[checks of a skill change](skills.md#when-an-agent-got-worse) you can decide that
+still run or wait for a decision. After them come the skill changes agents
+proposed, then the pinned agents and the forks that main has
+[moved past](skills.md#which-version-an-agent-reads). A fork is caught up from
+there, and a pinned agent is moved on its skill's page.
 
 The organization's view shows the cards that answer with data, grouped into
 bands. The rest - integrations, channels, routines, knowledge sync, departments,
 members, sandboxes - wait in the catalog, one click away under **Customize**:
 
-| Band | Answers |
-|---|---|
-| *(untitled, at the top)* | The summary, runs over time and how they ended |
-| **Needs attention** | What is waiting: [approvals](governance.md#approvals), recent failures, budget headroom, your most recent [notifications](#the-bell) |
-| **Usage & cost** | Which agents are used, spend, when the work happens, where runs come from, model mix, latency, answer quality, who is using it |
+| Band                     | Answers                                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _(untitled, at the top)_ | The summary, runs over time and how they ended                                                                                                                |
+| **Needs attention**      | What is waiting: [approvals](governance.md#approvals), recent failures, budget headroom, your most recent [notifications](#the-bell)                          |
+| **Usage & cost**         | Which agents are used, spend, [voice minutes](#voice-calls), when the work happens, where runs come from, model mix, latency, answer quality, who is using it |
 
-Somebody who builds agents also sees **Get started** above the bands until each
-of its steps is done: create an agent, publish it, give it a knowledge base, add
-departments, invite a teammate and - for whoever may - put an agent in a chat
-app. Each step is ticked from what exists, wherever it was done; closing the card
-hides it in that browser.
+**Approval outcomes** waits in the catalog, for whoever may view workflows. It shows how
+people decided the [approval steps](workflows.md#running-a-workflow) the period's
+workflows asked them. It shows the share approved as proposed, the edits and their
+median change, the time to decide and the five workflows with the most requests. It is
+empty when no request falls in the dashboard's period.
+
+**Workflow logs** waits in the catalog too, for whoever may view workflows. It shows the
+newest lines the [Quick Logs](workflows.md#the-logs-page) of the workflows you may view wrote, real
+runs only, and how many lines the last 24 hours added, errors among them. A line links to
+its run and its workflow's name to that workflow's Logs page. It is empty until a step
+with a Quick Log has run, and it ignores the dashboard's period.
+
+The dashboard opens with **Get started** until each of its steps is done: tell
+agents about yourself, start a conversation, connect a service with your own
+account, set up a routine and build an agent - that one is a question to the
+Architect, which builds it with you. Somebody who builds agents has the
+organization's steps after those: publish an agent, give it a knowledge base, add
+departments, invite a teammate and - for whoever may - put an agent in a chat app.
+Each step is ticked from what exists, wherever it was done, not from a click on the
+card; closing the card hides it in that browser.
 
 Your own view also shows **Discover AgenticOS**: one tile each for what is easy to
 miss - this deployment's own MCP server for Claude Code, Codex or Cursor,
@@ -72,13 +203,73 @@ snapshot you meant to keep.
     filtering runs after the layout is resolved, whether the layout came from
     the default or from your own saved one.
 
+## Routines and watches
+
+Routine names wrap on phones. A search with no matches offers **Clear search**; **Retry** reloads both tasks and watches after a read failure. Schedule and event editing scrolls between a fixed header and action footer. Routine writes freeze fields and dismissal until they settle; a refusal preserves the draft.
+
+Routines has two tabs. **Agent routines** runs a chosen agent on a schedule or
+event, with its configured tools; runs appear in Activity. **My watches** only
+reads your personal connected accounts and sends findings to your private Inbox.
+Each check makes at most 30 model requests, with long results trimmed, so a watch
+on a large workspace stays cheap. Each tab has its own creation controls. `/routines?tab=watches` opens watches.
+
+Organization → Proactivity separates suggestions, monitoring, shared limits, delivery timing and welcome messages. Unsaved changes can be discarded. Background services show status and usage, with model and budget controls expanded per service.
+
+Scheduled, event and monitoring routines use the same dialog frame, with a fixed header and navigation and a scrolling form. Creating a watch walks through Configure, Message and Schedule; Back preserves your draft. Agent pickers show the same avatars as chat. Watch execution and delivery settings live together under one Advanced options panel.
+
+On the dashboard, Discover starts with illustrated capabilities. Hover over a
+_Your period_ sparkline to read its bucket and value; spend is formatted as money.
+Projects show descriptions, and agent rows use the same avatars as chat.
+
+Dashboard cards use the same compact rows, service marks and status labels. Counts and charts adapt to the card width, including custom layouts. Loading placeholders follow the kind of content being loaded; an unavailable briefing shows a retry instead of claiming that no proposals exist.
+
+An empty chat greets you by local time, with the composer first and up to four opening messages beneath it. Published agent prompts take priority; AgenticOS can use personal suggestions, cached in the current account session for five minutes. Placeholders hold their space until the source is ready. Inbox and background-work previews and keyboard-shortcut hints stay off the welcome screen; use **Inbox** or **Background work** in navigation to review them.
+
+Opening a saved conversation shows transcript placeholders directly, without flashing welcome suggestions; the sidebar and transcript load independently. Explicit sends glide the message near the top; queued messages do not reposition the reader. Scroll, touch and keyboard input cancel the glide. Shared menus and dialogs use small, eased transitions; the Motion preference disables movement.
+
+## The inbox { #the-inbox }
+
+**Inbox**, under Chat in the sidebar, is what the platform brought you on its
+own: what your [watches](governance.md#proactive-work) found in your connections
+and what the nightly look proposed. The number beside it is how many wait. It
+reads like a mailbox: one row each, urgent ones first, where it came from and
+when, and the answers in the row. Filter by where they came from, or open
+**Done** for what you already took or declined, and bring a declined one back.
+**What they found** on the Watches card under Routines opens it narrowed to
+watches. Shorter rows head your dashboard as **Briefing**, and the empty chat
+with the starter agent offers the first of them as a card, with a link to the
+rest.
+
+What a watch finds that need not be heard at once waits for your morning: at
+the hour your organization's proactivity keeps, one notification and one direct
+message from each of its Slack, Teams and Mattermost bots that knows you list
+what is new. Each finding is in one briefing only.
+
+The organization switcher sits below the brand at the top of the sidebar and shows
+the active organization's name and avatar. Open it to switch organizations or
+reach the organization management and creation actions. The collapsed sidebar
+keeps the avatar as the switcher; the phone menu offers the same control. Account
+settings stay in the account menu at the bottom.
+
+Search stays above the sidebar's destinations, with its keyboard shortcut visible
+on a computer. Notifications and the account menu stay below the scrolling list.
+On touch devices, shared buttons, fields, tabs and menu choices have larger hit
+areas. Dialogs use the visible height above the on-screen keyboard; side panels
+keep keyboard focus inside and return it to the opener when dismissed. In a list's
+search field, Escape clears the query first and closes its dialog on the next press.
+
 ## The bell
 
-Next to search, in the sidebar: a running count of what you have not read yet,
+At the foot of the sidebar: a running count of what you have not read yet,
 and a click opens the list itself. Unlike the widget above, opening it fetches
 the page you are looking at, not a five-card preview - **Load more** keeps
 paging back through the organization you are currently in, plus anything
 addressed to the deployment as a whole, until it reaches what has aged out.
+
+Each row starts with what it is about: the agent's face, with a badge for how
+its run went, or an icon for the kind of event - green for a finished run or an
+MCP server back up, red for a failure or a spent budget, amber for an approval
+or a budget warning.
 
 Switch organizations and the bell is that one's: a notification from the
 organization you left is not gone, it is behind the switcher. A deployment
@@ -95,7 +286,7 @@ is still unread and a further click finishes it, rather than the badge claiming
 an inbox it only partly worked through.
 
 Each click always gets further, even where the whole batch was rows the reader
-can no longer see. It never marks those: the check is against *current*
+can no longer see. It never marks those: the check is against _current_
 permissions, so somebody demoted for a week and restored would find that week's
 security notices already read. Instead a truncated sweep says where it stopped,
 and the next click resumes from there.
@@ -113,11 +304,11 @@ also marks it read, because a row nothing on screen can reach must not go on
 counting towards the badge. Like "Mark all read", one clear is bounded - a
 thousand rows - and a longer backlog takes a second click.
 
-What a cleared row does *not* do is come back. The notification is kept and
+What a cleared row does _not_ do is come back. The notification is kept and
 stops being listed rather than being deleted, which is what makes that true:
 the inbox recognises a repeat by the fact it describes, so a deleted row is one
 the next budget check or the next retry would write again. Dismissing an alert
-you have dealt with is therefore final, for that occurrence - a *new* one, about
+you have dealt with is therefore final, for that occurrence - a _new_ one, about
 a new fact, still arrives. Rows also age out on their own: ninety days after
 being written if they were read, a year regardless.
 
@@ -128,17 +319,25 @@ time you open the page.
 
 ## The assistant
 
-Every page has the **Architect** in its bottom-right corner: an agent every
+The **Architect** sits in the phone header beside notifications and in the
+bottom-right corner on desktop: an agent every
 organization gets without installing anything, shared with everyone who may run
 agents (`agents:run`). It is bound to the
 [platform's own MCP server](mcp.md#agenticos-as-an-mcp-server). Ask it which
 agents can answer refund questions, why last night's run failed, or what is in a
 knowledge base.
 
-Ask it to draft an agent or invite a colleague, and it first shows you what to approve: an
-agent draft as the draft itself - where it is created, its name, what it may do
-and its instructions - and anything else as the exact call. It acts with your permissions, so it finds
-and does what you could, and no more. Its cost counts like any agent's.
+Tell it what an agent should do and it builds one with you, one question at a
+time, each with proposed answers: it picks the capabilities, the knowledge base
+and the model, says why in a line, drafts the agent, tries it on your own
+questions as the unpublished draft, fixes what was wrong, and publishes it when
+you approve. It sets up a routine the same way.
+
+Before anything changes it shows you what to approve: an agent draft as the
+draft itself - where it is created, its name, what it may do and its
+instructions - and anything else as the exact call. It acts with your
+permissions, so it finds and does what you could, and no more. Its cost counts
+like any agent's.
 
 A speech bubble above it speaks to what is waiting for you — approvals, an
 organization with no agents yet — or to the page you are on, and now and then
@@ -163,22 +362,48 @@ browser asks which tab to share, and one picture is attached to your next
 message.
 
 It plans longer jobs as a checklist you can watch, keeps notes about
-you between conversations, can tell you what your agents cost, and can undo an
-agent draft it made by mistake — never anything else. Besides approvals and an
+you between conversations, can tell you what your agents cost, and deletes
+nothing but an agent draft it made by mistake and a routine you ask it to
+remove. Besides approvals and an
 empty organization, its bubble speaks up when a run of yours has just failed
 and when a form has been open, unfinished, for a minute.
 
-Until the organization has a model, it cannot answer. Opening it then types out
-a short conversation explaining how to connect one: get an API key from a
-provider, open the Architect in the Agent Builder, choose the provider under
-**Model** and paste the key, and pick a model. Only somebody who may change the
-organization's settings is given the button; anybody else is told who can do it.
+Before a model is connected, the Architect opens the same chat with a visual setup card, a short checklist and the model-settings action. You can write a message in the widget or select the draft Architect in chat: it saves a setup reply and card in the conversation without calling a model or recording an AI run. The reply uses the selected agent’s name. Configuration actions respect permissions; other members see administrator guidance. Once published, the normal conversation continues without closing the widget.
 
 The Architect is an agent like any other, so its name, model, knowledge and the
 rest of its spec are edited in the Agent Builder - by somebody who may change
 the organization's settings, because everyone in the organization runs it. The
 organization's page has a card that switches it off for everyone and sets its
 greeting. **Settings → Assistant** holds only your own tips.
+
+## Shipped agent defaults
+
+AgenticOS, Architect and new-agent defaults do not include scratch planning tools. Agents report progress in chat and use managed Tasks through AgenticOS MCP for work that must persist.
+
+Both starters and new console agents include Watch a command, Background topics, Work while tools run, bounded past-conversation search and tool search using local BM25 with five results. They include research, explore and review specialists, dynamic specialists and automatic sync/async delegation. Monitors end with the turn and require a persistent shell; background topics survive the turn. Past conversations are searched only on demand, with snippets before bounded transcript windows; group chats and unattended runs cannot search private history.
+
+Only the shipped AgenticOS includes Computer use, the web browser and Coding agent. Computer use and coding default to the approved desktop; sandbox coding needs its own configured credential. The shipped browser also uses the paired desktop; an administrator can instead configure a deployment browser endpoint. New console agents inherit the common setup without these three tools. AgenticOS answers platform questions directly using its guide and AgenticOS MCP. The shipped defaults no longer pin Architect; an untouched shipped pin is removed on refresh, while custom delegates remain protected.
+
+Every organization gets **AgenticOS**, a general-purpose coworker, and
+**Architect**, the platform setup assistant. Both include memory. New agents
+created in the console start from the current AgenticOS template; their authors
+can then change the prompt and tools. AgenticOS can ask the published Architect
+for platform help through the existing AgenticOS MCP tools, subject to the same
+permissions, budgets and approvals.
+
+Opening the console also checks installed defaults. Unmodified instructions,
+capabilities, MCP bindings, skills and starters receive the shipped updates.
+Changing only the model or budget does not freeze those defaults, and those
+choices are preserved. Custom prompts and tool settings remain yours. An
+unpublished edit stays a draft; refreshing the live agent does not publish it.
+Archived agents stay archived. Legacy agents are adopted only when their shipped
+origin or historical defaults can be recognized, not just by display name.
+
+Chat shows confirmed memory writes and corrections with a link to **Your memory**;
+refusals and disputed claims are not reported as successful saves. A proposed
+routine or watch appears as a setup card and becomes active only after review.
+The routine and watch forms keep execution and delivery options under
+**Advanced options**, retaining their existing defaults.
 
 ## Changes made elsewhere
 
@@ -196,6 +421,15 @@ Runs are announced too, as they start, park on an approval or a question, and
 finish: a run a schedule fires appears on an open Activity page and changes
 status there, with no request from you behind it.
 
+So are datasets: a case added or removed, a change to grading, a score or a
+review decision, and drafts the [case generator](datasets.md#generating-cases)
+finishes in the background, which appear in an open dataset's Generated tab
+without a reload.
+
+Knowledge gaps are announced the same way: a topic dismissed or drafted in one
+tab, and the questions a grouping pass places every 15 minutes, appear on an
+open Knowledge gaps tab without a reload.
+
 The Builder is the exception, because it saves your draft as you type. When the
 agent you are editing changes elsewhere it stops saving and fetches the new
 version. With nothing unsaved it simply takes it; with unsaved edits it tells you
@@ -203,10 +437,11 @@ who changed it and through what, and waits for you to choose **Reload** (their
 version) or **Keep my changes** (yours, saved over theirs).
 
 You only hear about what you could read: a change to an agent, skill, knowledge
-base, context file, page, key or MCP server you cannot see never reaches your
+base, context file, page, key, MCP server or dataset you cannot see never reaches your
 console, and a deletion reaches only roles that see every row of its kind. Runs
-reach the roles that read run history or decide approvals, channel bots the roles
-that manage them, and your notifications only you. When the connection
+reach the roles that read run history or decide approvals, knowledge gaps the
+roles that read every run, channel bots the roles that manage them, and your
+notifications only you. When the connection
 drops the console works as before and reconnects on its own.
 
 ## Chat
@@ -221,6 +456,19 @@ moved. One whose run is still at work shows a spinner and how long it has been
 going; one with an answer you have not seen since you last had it open carries a
 dot, which opening it clears - for you only, since a shared thread is read by each
 of its readers separately.
+
+Conversations other people shared with you sit under **Shared with you**, below
+your favourites. They are theirs to rename, share, archive or delete. Their menu
+lets you favourite or unfavourite them, or **Remove from my chats**, which ends your access and leaves the
+conversation as it is for everybody else. One shared with you to read has no
+message box. When somebody shares a conversation with you, you get a
+notification that opens it. Unread and favourite shared conversations use their usual bands.
+
+In **Share**, each person the conversation is shared with has a **View** or
+**Edit** picker beside their name, to change what they may do without revoking
+and sharing again. A share link stays view-only.
+
+Direct shares are limited per minute to 100 attempts per organization, 20 per sender, 20 per recipient and five per sender–recipient pair within that organization. New conversations do not reset these limits. A refused share returns `429` with a retry interval and creates neither a share nor its notification. Shared lists and effective access refresh every 15 seconds while the page is active.
 
 Three things in the composer worth knowing.
 
@@ -255,7 +503,78 @@ widens what the agent may reach: the server checks each one again as you, agains
 what the agent already has. In the Builder's test panel the menu reads the draft
 you are testing. While a conversation is empty, the box cycles through examples
 built from what the agent can use - its server, a capability, a delegate, a
-skill - and `/`; they are gone the moment you click into it.
+skill - and `/`; they are gone the moment you click into it. Above it, the cards
+are the agent's own **first messages**, set under its instructions in the
+Builder; an agent with none offers the chat's own four, two of them to ask what it
+can do and to set up a routine.
+
+Conversation lists keep the main agent and also name Claude Code or Codex when saved task reports show they worked in the thread. The sidebar, project chats, dashboard and Quick Ask history share the same portraits and labels. Each coding harness appears once, survives a refresh and is independent of current chat settings; choosing a harness without running it does not add it to the history.
+
+The Files panel groups files by folder, keeping identical names in different directories distinct. HTML previews load local stylesheets and their nested assets through the same file access as the page. Preview and Source remain separate; scripts stay disabled. If a linked stylesheet cannot be read, the preview says which one failed. Files changed by a turn are linked below its answer, using paths reported by successful write/edit tools or the coding harness. These links open the current workspace files, not a versioned snapshot.
+
+While an agent works, progress messages and their following tool calls appear in arrival order inside one expanded timeline. Completing the run collapses that history under one “Worked for…” or “Thought for…” control, with only the final answer below it. Opening the history restores the same chronological messages and tool groups. Reasoning remains a separate, optional disclosure; its headings do not create process stages. Questions and approvals keep their waiting status until resolved, including delegated requests. Actionable approval cards and visual results remain visible outside completed history.
+
+Consecutive tool calls between messages share a collapsed group; expand it to inspect individual calls.
+
+Chat approvals stay in one compact card beside the composer: the operation, its icon and the task or object title, with extra arguments behind Details. Approve and Reject sit beside the request, or below it on narrow screens. Completed activity uses a quiet completion mark, waiting steps keep a distinct status, and running steps retain their operation icon instead of animating a separate orb for every call.
+
+Reopening a chat also restores approvals and questions for delegated tools absent from the parent timeline. A paused delegate is shown as working during its approved HTTP continuation. A finished published delegate keeps its own outcome when the parent stops on another decision.
+
+Incoming text remains readable while its Markdown formatting module loads. The composer uses an opaque surface with a quiet focus state, without a moving border or background blur.
+
+The live timeline follows the page flow; completed, expanded history has a height limit and its own scrolling area. Adjacent segments of the same agent run share one summary and the run’s start time, including progress messages between tools and continuations after approval. A different agent or an intervening user message starts a separate turn. Finished and nested agent exchanges remain available, including coding-agent reports; open an exchange to inspect its instructions, response and collapsed reasoning.
+
+Successful MCP writes show linked cards for projects, tables, tasks, records, agents, workflows, skills and Context. Errors do not become success cards. After sending a message, the chat places it near the top with space for the answer; scrolling manually keeps your position. Person and Agent pickers scroll inside record dialogs. Questions remain available after an approval resumes a chat through HTTP.
+
+Outcome notices also sit beside the composer. Approval notices are hidden while a decision panel is visible or the chat is working, including notices from older runs. Otherwise they link to the approval queue. They never offer Seen, Done or Stop asking: only approving or rejecting the actual request decides the operation. The Inbox and bell retain their own approval notifications.
+
+**Under an answer.** An agent with [Follow-ups](reference/capabilities.md#follow-ups)
+offers up to three next steps as buttons under its latest answer, and a click
+sends one. A line says what it noted about you, or forgot, with **Manage** for
+[the notes themselves](reference/capabilities.md#memory-files) - ask it to forget
+something and it does. When a request needs a capability the agent lacks, a card
+asks to switch it on, or to ask the agent's owner
+([how](reference/capabilities.md)).
+
+**Keeping a request that worked.** Hover your own message: the calendar turns it
+into a routine - the same prompt, weekly by default, on the agent that answered -
+and the robot asks the Architect to build an agent that does it. Hover the answer
+and the bookmark asks the Architect to make a [skill](skills.md) of how it was
+done, so any agent can do it the same way next time; it is handed your request
+and the answer, and offered to whoever may write skills.
+
+**Links that point.** A console link an agent writes in its answer - "here is the
+button that connects your Gmail" - opens that page without reloading the console,
+and a `?highlight=` in it points at the control it names, as the Architect's
+links do.
+
+**The AgenticOS agent gets to know you.** While your account says nothing about
+your role or your work, a greeting starts a short interview: what you do, what
+fills your week, which tools you work in - one question at a time, each with
+answers to pick. What you say is saved to your profile, so every agent knows it
+from then on, and the interview ends with up to three cards to set up - a
+routine, a service to connect, an agent of your own - each one click. Skip a
+question, or ask for something real, and it does the work instead.
+
+**What it noticed overnight.** Where your organization turned it on, once a day,
+early in your morning, the platform looks at your recent conversations in a
+background job: a request you keep
+repeating becomes a proposed routine, what an agent learnt about your role
+becomes a proposed profile, and your empty AgenticOS chat gets first messages
+written for your work. Proposals wait as cards in that empty chat, on your
+dashboard and in the bell, and **Settings → Assistant** lists them all - bring a
+dismissed one back there, or leave yourself out; accept one and it is set up, dismiss it and the same proposal is never
+made again. Nothing runs when nothing new happened, and what this may spend is
+[capped per person](governance.md#proactive-work). A chat link with
+`?agent=<slug>` opens the chat on that agent.
+
+**Working hours** under **Settings → Profile** tell agents when you work, so a
+routine they propose lands inside your day. Nothing waits on them: they are
+knowledge for the agent, not a schedule.
+
+Reopening a conversation shows its newest messages first. Use **Load earlier messages** above the transcript to read older turns. Live answers and unsaved results stay visible while stored history refreshes.
+
+If an assistant reply cannot be saved, the chat tells you to copy any text you need before leaving. This also applies to partial replies from interrupted runs. The streamed text stays visible, but it may be missing when you reopen the conversation.
 
 **While the agent works**, what you send waits for its answer, as in any chat:
 it sits in a queue above the composer and goes out when the run ends. Drag a
@@ -272,39 +591,57 @@ for runs that finish or fail - tells you it is there, with a link back to it. A
 turn still going after an hour with nobody watching is stopped, and you are told
 that instead ([`CHAT_DETACHED_TURN_MINUTES`](configuration.md#a-chat-turn-left-running)).
 One that waits on an approval or on your answer to a question tells you through
-those.
+those. Come back while it is still answering - to the conversation, from
+another tab, after a reload - and the chat picks the answer up where it is,
+with everything it has done so far, and goes on drawing it as it arrives.
 
 **On a phone** the chat behaves like a messaging app: the composer stays above
 the keyboard and the conversation stays on its last message while it opens,
 Enter starts a new line, and attaching a file or dictating sits behind one
 **+**. Fields are never small enough for iOS to zoom into them.
 
-**Watching a browse.** When an agent with the
-[web browser](reference/capabilities.md#browser-automation) starts on a page, its
-browser draws under the agent's message, live: a window with the address and the page
-as the agent sees it, what it is doing now in one line over the page, and its cursor
-moving to whatever it clicks or types into. The window keeps a fixed shape and grows
-and shrinks with the conversation; several browses at once sit side by side, two to a
-row where there is room. The maximise button opens one full screen, and restoring puts
-it back under the message. The full list of steps, each with what it was for, is behind
-the steps button.
+**Drawings.** An agent with [Visuals](reference/capabilities.md#visuals) draws
+under its message - a diagram, an explainer with sliders, a 3D scene - and you watch
+it appear while it is written; its scripts start once it is complete. The panel shows
+the whole drawing, sized to the conversation, with buttons to open it full screen,
+show its code, download it, copy an SVG as an image, zoom in, and save it as an
+[app](artifacts.md#visuals) with a link you can share. When a drawing reports an
+error, the agent has already been told; **Fix it** asks again. On a phone a tap opens
+it full screen. The dashboard's **Recent visuals** card shows the latest ones drawn for
+you, each opening the conversation it was drawn in.
+
+**Drafts.** An agent with [Drafts](reference/capabilities.md#drafts) shows text you will
+send or paste elsewhere - an e-mail, a reply, a post - as a card in its answer. Each
+part has its own copy icon, which copies plain text; several variants of one draft
+are tabs in the same card. A message's own **Copy** includes its drafts.
+
+**Watching a browse.** The [web browser](reference/capabilities.md#browser-automation)
+opens automatically in a full-height side panel while the transcript scrolls.
+On narrow screens it opens full screen. Closing the panel leaves a compact link
+in the conversation to reopen it. Visited-page cards show the site icon, domain
+and page title, including when the conversation is reopened. Each answer keeps
+one card per browser tab; clicks, rereads and going back update that card.
+The panel's tab strip switches between pages. After the run, the last image remains. **Resume session** asks the
+agent to restore the private conversation checkpoint, available for up to one hour.
+Remote pages close after each run; resuming reloads URLs, cookies and local storage,
+not unsaved forms or JavaScript memory. The agent reads fresh element numbers.
 
 **Taking a browse over.** While a browse runs, **Take over** in the browser's toolbar
 pauses the agent after its current step and hands you the page, in the same window:
 click, type, scroll, paste. **Hand it back** and the agent carries on from where you
 left it. When the agent cannot get past a page alone - a sign-in, a captcha - the browser
-says *The agent needs you* and what for. Someone who may view runs but
+says _The agent needs you_ and what for. Someone who may view runs but
 not edit the agent can watch, not drive. The same window opens on a page of its own
 from a channel's link. See [Web browser](reference/capabilities.md#browser-automation).
 
 **Pointing at the page.** The speech-bubble button in the browser's toolbar lets you
-click a spot on the page and write a note about it - *this button, not that one*.
+click a spot on the page and write a note about it - _this button, not that one_.
 **Add to message** puts the page into your message as a picture with the spot ringed,
 with your note and the page's address, for you to send or keep writing. It works on a
 finished browse too, from its last picture.
 
 **Staying signed in.** When the browse acts for you - your own chat, your direct
-message, your own schedule - **Hand it back** offers *Keep me signed in to* the site
+message, your own schedule - **Hand it back** offers _Keep me signed in to_ the site
 you are on. Tick it after signing in, and later browses acting for you start signed
 in there: the site's cookies and storage are sealed in the vault for you alone, never
 shown, and never used for a widget visitor, a shared room, an API key or an event
@@ -314,32 +651,272 @@ you alone, before an agent needs it: sign in, hand it back with the box ticked, 
 is kept the same way. It needs the deployment's sign-in browser
 ([`BROWSER_SIGN_IN_CDP_URL`](configuration.md)).
 
+**Stopping a waiting run.** The composer keeps **Stop** available while the agent waits
+for your answer, an approval or an account connection. It also works after you reload a
+parked question or approval. Stopping a parked run closes its pending calls without
+asking the model to continue and preserves the cost already recorded. You can stop your
+own run; approval deciders can also stop a run awaiting approval. If a temporary error
+prevents stopping, the card stays available for retry.
+
+### Dictation
+
+The microphone sits beside Send for every agent, and in the `+` menu. It turns
+speech into text in the box and never sends it: what you said lands where the
+caret was when you pressed the microphone, ready to edit, and goes nowhere until
+you press Send. How it transcribes is the agent's choice, made on the Dictation
+tab of [its Voice card](#an-agents-voice-card):
+
+- **Transcribe with a provider** on — the browser records, and this deployment
+  sends the recording to the agent's provider or the organization's default. It
+  works in every browser that can record. See
+  [Dictation in chat](ml-services.md#dictation-in-chat) for the endpoint, its
+  limits and what is recorded.
+- Off, or with no key to send it with — the browser's own speech recognition, so
+  the audio goes to the browser vendor (Google, Apple) and costs nothing.
+  Firefox has none: its microphone says so when pressed. While it listens, a
+  note above the composer says the agent's Dictation is off, and links whoever
+  may edit the agent to its Dictation tab.
+
+With a provider, pressing the microphone floats a **recording pill** above the
+composer, which does not change: Cancel, the level, a timer and Stop. **Enter**
+stops and transcribes, **Escape** cancels, and nothing typed or pressed while a
+recording is running or being transcribed is sent. The recording stops by itself
+at the organization's longest dictation and is transcribed, and a microphone
+unplugged mid-way ends it the same way rather than discarding it. While the
+recording uploads, the pill shows how much has gone up, once that takes longer
+than a second; after that it says **Transcribing** until the text arrives. The
+browser's recognition has a pill of its own, with **Done**.
+
+Everything dictation has to say appears in a strip above the composer, beside
+the pill: the permission prompt, a blocked or missing microphone, the last 30
+seconds, five seconds without sound, a recording under a second (not sent), a
+recording that stopped at the limit, and every failure. How many words were
+inserted is announced to a screen reader rather than shown, since the words are
+in the box. A recording that failed to transcribe is kept until you press
+**Retry** or **Discard**.
+
+The glow around a hosted page's box while you speak follows **Voice glow** under
+**Settings → Profile → Appearance**, beside the theme and **Motion**: **Vivid**,
+**Subtle** (the default) or **Off**. It is remembered per browser. **Motion**
+decides how much the whole console moves: **System** (the default) follows the
+operating system's reduced-motion setting, **Reduce** turns motion down without
+it, and **Full** keeps it whatever the operating system says. While motion is
+reduced there is no glow at all, the strip appears without sliding, and the level
+is a five-step indicator.
+
+**Workflow steps** in the same card chooses how the workflow canvas draws a step:
+**In colour** (the default) draws each step in its family, **Simple** keeps the tiles
+neutral and the minimap grey. It is remembered per browser; the canvas toolbar has
+the same switch. See [How a step is drawn](workflows.md#how-a-step-is-drawn).
+
+### The Voice card
+
+On the organization's **Members** page, for somebody holding `org:settings`. It
+holds the speech-to-text **default** agents and channel bots inherit, and how
+long a dictation may run; whether an agent dictates with a provider, or takes
+calls, is switched on in that agent's own Voice card. **Max recording length**
+is from 10 seconds to 10 minutes. **Default provider** is the provider and model
+from the speech-to-text catalog and a language (auto-detect, or one fixed
+language, which is more accurate). It is also what
+[channel bots](channels.md#what-every-channel-shares) set to inherit send their
+voice messages to; **None** clears it.
+
+**Key**, beside the provider, is the vault key the default is sent with. It
+lists the API keys whose purpose is that provider and that the whole
+organization can see - the platform spends this key for every member's
+dictation and every inheriting bot, so a member's private key is not offered and
+is refused if sent. With exactly one such key it is chosen for you, and saved by
+name either way; nothing picks a key at run time. A provider with no key is
+marked **no key for this provider** and the picker links to the vault to add
+one. Where the default cannot run - the model was withdrawn from the catalog, or
+the key was deleted or made private - the card says so, and asks to **choose a
+key** where that is what is missing.
+
+For somebody who also holds `runs:view`, the card opens with one line on what
+the organization transcribed in the last 30 days — "42 min · 118 recordings (30
+without a length)" — across dictation, channel voice messages and the API.
+**Show breakdown** lists it by agent and by channel bot. The minutes count only
+recordings whose length was reported, so the line says how many were not; it is
+hidden while nothing has been transcribed. The figures come from
+[`GET /ml/calls/summary`](ml-services.md#what-is-recorded).
+
+### An agent's Voice card
+
+An agent's **Build** tab has a **Voice** card after its model settings, with two
+tabs: **Voice calls** and **Dictation**.
+
+**Dictation** holds **Transcribe with a provider**. On, the chat microphone
+sends the recording to a provider: **This agent's own** (the default) picks a
+pair from the catalog and the key to send it with - an API key for that provider
+that you can view, since publishing lends it to everybody who can run the agent
+
+- and, until you choose one, the organization's default is used and named.
+  **Organization's** keeps the organization's provider, model and key. Off, or
+  with no key to send it with, the browser transcribes instead, which costs
+  nothing.
+
+The language is chosen on its own: inherit the organization's, or fix one - so a
+Polish agent can keep the organization's provider and key. The card is part of
+the spec, saved with the draft and live once the agent is published, and it
+applies to [dictation](#dictation) into this agent and to voice messages its
+channel bots inherit. [The order](ml-services.md#which-engine-a-recording-reaches)
+has the rest.
+
+### Voice calls
+
+A [voice call](voice.md) is a spoken conversation with a published agent: you
+talk, it answers aloud, and you can interrupt it. Calls are switched on in the
+agent; the organization has no call settings.
+
+- **The agent's Voice card**, on its **Voice calls** tab: the call provider and
+  model (for Azure, the deployment name and its base model), the key, the voice
+  with a **play** button to hear it, the spoken language (or **Follow the
+  caller**), the **Longest call** (10 minutes when unset, at most 50) and
+  **Instructions for calls**. The card lists what the agent
+  [hands to its text model](voice.md#handing-work-off) in calls, says that
+  guardrails cannot filter spoken words before they are heard, and that calls
+  are recorded as text with no audio kept. It takes effect when the agent is
+  published.
+- **An embed's Voice calls switch**, in the widget and hosted page forms - see
+  [Channels](channels.md#voice-calls-on-a-widget-or-a-hosted-page).
+
+Before offering a call, the console asks whether this agent can take one
+(`GET /agents/{id}/voice`), so nobody grants the microphone only to be refused.
+The answer names what is missing: no voice set up on the agent, the model no
+longer offered, or no key.
+
+The **call button** stands in the chat composer where Send is, for every agent,
+while the box is empty; type something and Send comes back. Where this agent cannot take a call it is crossed out, and hovering,
+focusing or pressing it says why. Somebody who may edit the agent gets **Open in
+the Agent Builder**, which opens its Voice card on the Calls tab; anybody else is
+told to ask someone who can.
+
+During a call a **pill** floats above the composer, which stays as it was, a
+draft and attachments included: what the call is doing, its time, a waveform of
+both voices, push-to-talk, mute and **End**. Only End ends a call; opening
+another conversation or a new chat hangs it up. Talking is hands-free by
+default; **push-to-talk** (hold the button or Space) is a choice remembered in
+your browser. With reduced motion a stepped level meter replaces the waveform.
+
+A call moves through states the pill names: connecting, listening, you
+speaking, thinking, the agent speaking, interrupted, working on a tool, waiting
+for your approval, an approval you cannot give, almost out of time, and ended -
+by you, by a limit, a dropped connection or a failure.
+
+The call happens in the conversation: each turn is drawn as the message it
+becomes, growing word by word as it is spoken, a screen reader hears each line
+once it is final, and the saved message takes its place without anything
+moving, so the call is in your history afterwards and you can carry on typing.
+While the agent thinks or runs a tool, the conversation says so where its answer
+will appear.
+
+**Approvals** are decided in the call: a card in the conversation shows the
+tool, its exact arguments and what you were heard to say, with a 60-second
+countdown. Only its buttons decide; saying "yes" does not. Without
+`approvals:decide` the card says the tool needs an approval you cannot give by
+voice, and offers to end the call and continue in text. **Questions** the agent
+asks appear as the chat's question card, read aloud as well: tap an answer, or
+just say it. Work the agent [hands to its text model](voice.md#handing-work-off)
+shows each step while it runs, and the steps stay on the turn afterwards.
+**Limits** are spoken: a minute before the longest call ends you are warned, and
+when the time or the budget runs out the agent says one sentence and the call
+ends.
+
+A **strip above the composer** points to whatever needs you: the microphone
+prompt, an approval waiting (with **Show card**), the last minute, a limit
+ending the call, a reconnect, or how push-to-talk works. When the call ends, a
+card in the conversation says how long it ran and how many turns were saved, or
+which limit ended it, with **Call again**. A call that never started says why
+above the composer, with **Try again**.
+
+In **Activity**, a call is one row with a microphone badge, and the kind filter
+(**Text** or **Voice calls**) narrows to calls; a call that reconnected is still
+one row, with every connection's time and cost summed. The **Voice minutes**
+dashboard card, in the Usage band for a holder of `runs:view`, shows the
+period's call minutes and calls and the top three agents.
+
+### Forking a conversation { #forking }
+
+To try another approach, or to take a side question somewhere it will not crowd the main thread, choose **Fork into a new conversation** under one of the agent's answers. You get a new conversation of your own, in the same project, holding everything up to and including that answer. The next message continues from there with the same history; the original is not changed.
+
+Only the conversation's owner can fork it: somebody it is shared with, for viewing or editing, does not get the action. A fork copies the messages and the tool calls, not the attachments' files, the files the agent wrote in its workspace, the images agents generated, the cost or the run records. The agent still has the text of an attachment, but the fork shows no card for it; an image an agent generated is the original's, and stops loading once the original is deleted. While a run in the history is still writing, or waits on an approval or a question, the conversation cannot be forked.
+
+The top of a fork says **Forked from** the original, with a link to it. Only you see that line: if you share the fork, the person you share it with sees an ordinary conversation.
+
+Forks are limited to 2,000 messages, 10,000 tool calls and 20 MiB of copied text and structured data, with at most ten requests per minute per member and organization. A conversation being updated may briefly refuse a fork; retry once the update finishes. Over-limit histories must be shortened before they can be copied.
+
+Retained fork copies have a separate allowance of 100 MiB per member within an organization and 1 GiB across the organization. Each copy reserves its payload size plus 4 KiB for the conversation and 1 KiB per message or tool call. Admission is serialized in PostgreSQL, so concurrent requests cannot exceed the allowance. The charge remains until the fork itself is deleted; deleting its source or archiving it does not free it. A drawing with stored image files cannot currently be forked: choose an answer before that drawing instead. The request is refused before a broken copy can be created.
+
+An eligible summary's externalized text and media are restored into the copy, so deleting the source does not remove that context. Restored content counts toward the 20 MiB limit. Restoration is limited to 100 external references and ten seconds; unavailable content or an exceeded limit refuses the fork without creating a partial copy.
+
+A conversation with a saved checklist can be forked only at its latest message, which must be an assistant answer. The fork keeps that checklist, including task IDs and dependencies. Earlier checklist snapshots are not stored, so an earlier fork is refused rather than copying later tasks into an older history.
+
+### Background topics { #background-topics }
+
+Enable **Background topics** on a published agent to ask, for example: “Investigate the export bug in a new topic while we continue the release plan”, or “Have the finance agent check these figures while we discuss the proposal”. It can use its own pinned version or a published delegate pinned in its spec. Start from a conversation you own; the fresh topic belongs to the same project and carries the agent's brief and a link back, without copying the original transcript.
+
+The **Background topics** strip above the composer shows queued, working and waiting tasks. Open the independent topic to inspect its work or answer an ordinary approval/question. **Stop** cancels further work; it cannot undo file edits or external actions already completed. The dashboard has the same tasks. Up to four may be active per person; a task and its result turn cannot spawn another background topic.
+
+When the task finishes, the original agent wakes for a result turn using the conversation's current history. It waits for foreground turns to finish and summarizes without tools, so task output cannot become permission for another action. Your selected main model and reasoning setting are retained; local inference stays local. Local coding work stays on the exact paired computer and approved folder. The child keeps its ordinary budgets and approvals. Closing the chat does not cancel it. A worker interruption is reported and external actions are not automatically replayed. Tasks waiting for an approval continue after it; missing membership or project access stops new work and result delivery.
+
+This is explicit delegation, separate from memory, watches and routines. The existing async subagent/tools modes still belong to one run; use **Background topics** for work that must outlive its source reply.
+
+### Referring to another conversation { #conversation-references }
+
+An agent with **Past conversations** offers your thirty most recent accessible conversations in the `@` menu. Pick one and ask a specific question about it. The mention identifies the topic; it does not copy its transcript or change the answering agent. The agent reads the relevant part through its existing conversation tool, with the same access and audience checks. Group-chat restrictions still apply. For an older topic, paste its link or id and ask the agent to read it.
+
+## Activity { #activity }
+
+**Activity** lists every run in the organization to a holder of `runs:view`:
+conversations, the organization's agents answering eval cases, and the
+platform's own agents at work. Who may read a run and its transcript does not
+change with the kind of run.
+
+A platform agent's run shows its name in the Agent column and a label beside
+its surface: **Improve** for the assistant, **Grader** for the judge,
+**Knowledge gaps** for the classifier and the drafter, and **Test questions**
+for the case generator. An agent answering an eval case is labelled **Eval**.
+Beside the label is a link to where that work is read: the Improve session, the
+eval run, the knowledge-gap topic or the dataset.
+
+The **Source** filter narrows the list to **Conversations**, **Improve and
+evals** or **System agents**. It starts on every source, so a link from a draft
+or a session to its run lands on a row the list shows.
+
 ## What each area is for
 
-The sidebar groups them. **Build** holds Agents, Routines, Apps and Activity;
-**Knowledge** holds Knowledge bases, Documents, Skills and Context. Two groups
-fold to their heading until you open them, because they are set up once and
-visited rarely: **Connections** (MCP servers, Channels, Vault, Sandboxes) and
-**Organization** (Organizations, Groups). A folded group opens by itself on any
-page inside it, and stays the way you left it.
+**Overview** (Dashboard), **Chat** and **Inbox** lead the sidebar. **Build & manage**
+keeps Agents, Workflows, Routines and Apps visible; Projects follow.
 
-| Area | It holds | Read |
-|---|---|---|
-| **Agents** | The catalog, the Builder, versions, sharing, testing, activity | [Your first agent](first-agent.md) |
-| **Chat** | Talking to a published agent | [Surfaces](channels.md) |
-| **Knowledge** | Collections, documents, sync sources, ingestion settings | [File processing](file-processing.md) |
-| **Skills** | Written procedures an agent loads on demand | [Skills](skills.md) |
-| **Context** | Standing knowledge bound to many agents | [Context files](context.md) |
-| **Routines** | Schedules and event triggers | [Triggers](triggers.md) |
-| **Runs** | What ran, what it cost, what it touched, whether it failed | [Governance](governance.md#audit) |
-| **Documents** | Every file agents are keeping for you, what you attached and what they wrote | [The sandbox](sandbox.md#what-the-file-browser-shows-and-what-it-leaves-out) |
-| **Sandboxes** | Where agents run code: hosts, live sessions, policy | [The sandbox](sandbox.md) |
-| **MCP servers** | Connections to external tools, personal and organization-wide | [MCP](mcp.md) |
-| **Channels** | Slack, Telegram and Mattermost bots, widgets, hosted pages | [Surfaces](channels.md) |
-| **Vault** | Credentials, sealed per organization | [Secrets](secrets.md) |
-| **Organizations** | Members, roles, invitations | [Permissions](permissions.md) |
-| **Settings** | Providers, ingestion defaults, notifications, your own profile | [Configuration](configuration.md) |
-| **Admin** | The deployment itself: users, tenants, system, deployment settings | [The deployment](deployment.md) |
+**Knowledge** opens by default and holds Knowledge bases, Tables, Skills, Context
+and Documents. Its manually chosen open or closed state is remembered.
+**Monitoring** groups Activity and Background work and starts collapsed.
+
+**Connections** (MCP servers, Channels, Remote agents, Vault, Sandboxes) and
+**Organization** (Organizations, Groups) remain collapsible and remember your
+choice. A group containing the current page always opens to keep that page visible.
+
+| Area              | It holds                                                                            | Read                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **Agents**        | The catalog, the Builder, versions, sharing, testing, activity                      | [Your first agent](first-agent.md)                                           |
+| **Chat**          | Talking to a published agent                                                        | [Surfaces](channels.md)                                                      |
+| **Knowledge**     | Collections, documents, sync sources, ingestion settings                            | [File processing](file-processing.md)                                        |
+| **Skills**        | Written procedures an agent loads on demand                                         | [Skills](skills.md)                                                          |
+| **Context**       | Standing knowledge bound to many agents                                             | [Context files](context.md)                                                  |
+| **Datasets**      | Versioned test cases, imported, exported or added from a rated answer               | [Datasets](datasets.md)                                                      |
+| **Tables**        | Typed records and their columns, seen as a table, a kanban board or a list          | [Virtual Tables](virtual-tables.md)                                          |
+| **Workflows**     | Multi-step automations your agents run, built on a canvas                           | [Workflows](workflows.md)                                                    |
+| **Routines**      | Schedules and event triggers                                                        | [Triggers](triggers.md)                                                      |
+| **Runs**          | What ran, what it cost, what it touched, whether it failed                          | [Governance](governance.md#audit)                                            |
+| **Documents**     | Every file agents are keeping for you, what you attached and what they wrote        | [The sandbox](sandbox.md#what-the-file-browser-shows-and-what-it-leaves-out) |
+| **Sandboxes**     | Where agents run code: hosts, live sessions, policy                                 | [The sandbox](sandbox.md)                                                    |
+| **MCP servers**   | Connections to external tools, personal and organization-wide                       | [MCP](mcp.md)                                                                |
+| **Channels**      | Slack, Teams, Telegram and Mattermost bots, widgets, hosted pages                   | [Surfaces](channels.md)                                                      |
+| **Remote agents** | Other vendors' agents, registered by their A2A agent card, that agents delegate to  | [Capabilities](reference/capabilities.md#remote-agents)                      |
+| **Vault**         | Credentials, sealed per organization                                                | [Secrets](secrets.md)                                                        |
+| **Organizations** | Members, roles, invitations                                                         | [Permissions](permissions.md)                                                |
+| **Settings**      | Providers, ingestion defaults, notifications, your own profile                      | [Configuration](configuration.md)                                            |
+| **Admin**         | The deployment itself: users, tenants, system, background jobs, deployment settings | [The deployment](deployment.md)                                              |
 
 The **Agents** catalog can be filtered by **category** and **tag** — the editable,
 organization-local labels shown on each agent's card. Each filter is a menu of the
@@ -347,13 +924,50 @@ labels on the agents you can see; tick several to widen it. You maintain an agen
 categories and tags from its detail page, beside the avatar controls, and the
 change takes effect at once, without publishing a new version.
 
+An agent's **History** tab holds its published versions and named environments
+and, for whoever may read its runs, its **Improvement history**: each Improve
+session, what it measured, what was decided and what it cost. A finished session
+opens its wizard to be read, with what was decided on its last step; see
+[Improvement history](authoring.md#improvement-history).
+
+Organization details use five tabs: **Members** for people and invitations; **Workspace** for the organization profile and default voice settings; **Budget and approvals** for spending and access policies; **Proactivity** for suggestions, monitoring and delivery; and **AI & services** for the Architect and system services. Controls retain their own permission gates. AI & services is available to budget managers even when Architect configuration is unavailable. The selected tab is stored in the URL, switching tabs preserves drafts, and old `?tab=voice` links open Workspace.
+
+After signing in, addressed email invitations also appear in the console and onboarding without opening the email link. The recipient chooses a workspace and accepts explicitly; Later keeps an Invitations shortcut available. Only live invitations to the account’s current email are shown, excluding shareable links and organizations already joined. Acceptance switches to the chosen organization and opens its welcome flow. The server never returns the invitation token through this inbox.
+
+The inbox requires mailbox proof in the current session: a fresh verified OAuth sign-in or an address-bound email sign-in link. Password-only and legacy sessions are not prompted to verify their mailbox or configure email delivery. They can accept through the original invitation link, including on deployments without an email provider. Proof is not inherited by another session or a changed address. The list is paginated with **Show more invitations**, and logo access checks the specific invitation independently of its page.
+
+Amber setup dots mark organization tabs and the matching Voice, nightly-suggestion, memory-maintenance and Architect cards when configuration is incomplete or suggestions are off. Hover or focus the dot for a specific explanation; click or tap it to keep the explanation open. Indicators use saved configuration, disappear when completed and respect the permissions needed to edit it. Disabled suggestions are described as optional setup, not an error. The iPhone push configuration card also marks a missing Apple key. Reduced-motion preferences disable the pulsing animation.
+
+Saved browser sign-ins use a compact, full-width settings panel instead of stretching a single entry to fill the page. Known services use their bundled brand marks; other sites use their own favicon without a referrer, with a globe if the image is unavailable.
+
 ## Languages
 
-The console speaks English, Polish and German, all of it except the legal
-pages, which stay in English. The walkthrough's first card offers the three, and
-the account menu changes the language at any time; the choice is remembered in
-the browser. Product words - agent, skill, run, budget, MCP and the rest of the
-list in [translating](howto/translate.md) - stay English in every language.
+The console speaks English, Polish, German and Turkish. The walkthrough's first
+card offers the four, and
+the account menu changes the language at any time; the choice is kept on your
+account, so the console opens in it on every device you sign in on. You can also
+ask an agent - "switch to English" - and the page changes as it answers, without a
+reload. Every agent answers in it unless you write in another language. Product
+words - agent, skill, run, budget, MCP and the rest of the list in
+[translating](howto/translate.md) - stay English in every language.
+
+The same card asks what you do, and **Settings → Profile** keeps the rest of what
+agents know about you: your role, what you work on and your time zone. Every agent
+reads them at the start of a run, so you never repeat them in a chat; "every Monday
+at 9" is your 9. The time zone is taken from your browser the first time you sign
+in, until you choose one.
+
+Profile settings keep your portrait, display name and email in one form, with
+fallback colours under an expandable control. Save sits below the fields and
+Enter submits the identity or role form. While any profile write is pending,
+both identity and context fields stay locked; a refusal retains the draft.
+Working days use larger targets, with separate start and end fields on phones.
+
+**Settings → Notifications** searches event names and descriptions and lists six
+events per page. The chat selector changes the additional channel without
+changing other preferences. Connected private-chat destinations appear first;
+other platforms are folded below. Failed preference, destination and linked-account
+reads offer Retry instead of displaying invented defaults or an empty account list.
 
 ## The next step
 
@@ -374,7 +988,7 @@ quiet one.
 
 ## Recap
 
-- The dashboard is **thirty-six widgets** you arrange yourself, saved per
+- The dashboard is **fifty-seven widgets** you arrange yourself, saved per
   person and per organization — all but your own notifications gated on the
   permission their data needs.
 - A saved arrangement **can hide and reorder but never reveal** — the gate runs
@@ -389,3 +1003,112 @@ quiet one.
   ones you do not use.
 - A page showing "nothing yet" may be **a failed request**, not an empty
   resource.
+
+The sidebar footer shows the console build version beside search and notifications, including in the collapsed rail and mobile menu. It comes from the frontend package version embedded in that build, so checking it needs no network request. The tooltip identifies it as the console version; an API process upgraded separately can run another version.
+
+A newer stable AgenticOS release highlights that version with a green dot. Click it to see the running and available versions and open the official release. A background check runs when the console opens, every 30 minutes while active, and when stale data is revisited after focus or connectivity returns. The server shares public release checks for five minutes and sends no account, organization or deployment data to GitHub. Network failures leave the running version visible without claiming it is current. The notice never reloads the page or installs an update automatically.
+
+After sign-in, **What’s new** shows the installed version’s public GitHub release notes once per account on this device. It waits for onboarding dialogs to close. Dismissing it marks that version as read; missing notes or a failed request do not interrupt the session. Features in a newer, uninstalled release appear only behind the update notice.
+
+Chat controls remember the model, permission mode and desktop tool preferences for this account and organization across chats. Project file settings take precedence. Whole-computer consent belongs to one conversation, or to one agent when that agent works on your computer. Approval waivers still require the current permission and organization policy. Agent setting (or Cloud for files) is disabled when the published agent lacks that capability; no local alternative is enabled automatically. Local tools can be switched off by clicking their selected option.
+
+Muting notifications has a bell icon; the composer no longer repeats the local folder/access badge. Multi-agent portraits overlap at full size and spread slightly on hover in the expanded chat list.
+
+List footers stay at the bottom of their panel, with a solid background and consistent spacing. Paged administration tables scroll their rows independently while keeping column headers and pagination visible. Empty and failed reads stay inside the same scroll area.
+
+The administration organization directory shows the uploaded organization picture, or initials in its chosen color when no image is set. Image access is limited to deployment administrators; the regular organization avatar route continues to require membership.
+
+**Chat controls → Tools & files** shows the coding account an agent needs when its Coding agent runs as **Private cloud task with my account**: only that harness, with its logo and consent status. Connect or manage it without leaving the chat; every account appears under **Settings → Profile**. Connecting does not change the agent’s execution mode: private cloud tasks still require **Private cloud task with my account**, while desktop coding uses its separate local sign-in.
+
+## Your first task
+
+In a new workspace, the shipped **AgenticOS** is selected before publication unless you chose another default. Its first message can explain model setup and show a configuration card without executing the draft or calling an AI provider. The reply and card remain in chat history. Builders can open the agent's model settings; other members see administrator guidance and the deployment's support contact when configured. Choose a model, add a key if required and publish the agent before normal AI replies can run. Ordinary drafts and archived agents remain unavailable for execution.
+
+When no published agent is available, onboarding also offers an accessible shipped AgenticOS draft as a setup chat. Members can open it without model-management permissions; it provides configuration guidance, not an AI task result. Inaccessible drafts remain unavailable, and an accessible published agent takes precedence.
+
+Closing the start banner or choosing **Hide for 24 hours** snoozes the offer for 24 hours,
+using server time. It can return afterward if setup is unfinished and the workspace still
+needs a first start. After going through the questions, **Finish setup and open the app**
+records completion for this membership. Optional fields, invitations, a model, an agent
+and an AI run are not required. Completion and a successful task are separate states.
+
+Open **Get started** from the dashboard, the first-use offer or a page's help.
+On desktop, the chat start notice is a translucent overlay above the console.
+Both navigation columns retain their full height. It offers setup guidance to administrators
+and an example to members, and can be dismissed.
+An accepted organization invitation opens this same start in the organization
+you joined. Registration tries to sign you in immediately; if that session
+fails, the sign-in form keeps the destination and the account already created.
+
+The start follows the person's authority and existing work:
+
+| Person | Guided start |
+| --- | --- |
+| Application administrator | Create or choose a company workspace, prepare identity and invitations, then decide how future accounts join. |
+| Organization administrator | Prepare their workspace and its spending limit; no deployment controls. |
+| New member account | Welcome, optional personal profile and work context, then a first task. |
+| Existing account joining another organization | Welcome to that workspace; use the saved personal profile or deliberately review it. |
+
+A scripted AgenticOS companion explains each decision. These are interface messages,
+not model responses, and they make no AI calls. Personal identity and work context
+follow the account across workspaces. Optional details can be skipped. **Save and
+continue** advances after a successful save; a failed save keeps the current question.
+
+Deployment setup asks about registration, the destination of future accounts and
+an optional announcement with a preview. It sends only edited fields. **Keep current
+settings** discards this question's draft without writing it. Choosing a company
+keeps the configured default role and does not move existing accounts. App branding,
+voice, mobile push credentials and maintenance are optional cards linking to the
+appropriate administrator section in a new tab. The walkthrough never activates
+maintenance or uploads credentials automatically.
+
+Organization setup offers budget presets and a slider. An
+existing decimal cap is preserved. No limit is an explicit option; zero warns that
+runs can be blocked. This is a ceiling for tracked usage, not a subscription or
+prepaid credit. Advanced approvals, assistants and voice settings stay collapsed
+and retain their usual permissions and save actions.
+
+The URL keeps the current step, setup question and workspace for a reload. It does not preserve
+unsaved field edits, grant access or mark completion. A changed organization or
+revoked authority cannot restore a privileged step. Finishing the last step records
+membership completion even when optional fields and AI setup were skipped.
+
+Legacy account completion applies to memberships joined by that timestamp. A later
+membership starts separately. Existing personal chats and completed walkthroughs
+continue to suppress automatic restarts; available published agents also hide ordinary
+start offers. Registration and accepted-invitation entry links give a member with no
+personal activity or completion a welcome even in a workspace that already has agents.
+Older and failed chats count as activity without claiming a successful run. Explicit
+Get started and resumed walkthroughs remain available. Ordinary sign-in opens chat
+or the requested deep link.
+
+The workspace name updates a labelled preview before creation. Existing organizations
+use their uploaded logo or configured fallback avatar. Adjacent desktop cards share
+a height. Step transitions and transient field highlights respect Motion preferences. Members choose a
+recorded example in a split view with separate answer and source tabs. Switching
+examples keeps the preview on the page. AI setup opens a dismissible dialog with
+Escape support and focus restoration; no example selection calls a model.
+
+Choose a fictional meeting note, a policy question or an offer comparison.
+Review or edit the text before **Run this task**. Execution uses the selected
+agent's model and normal spending limits, and may incur provider charges. No
+screen, microphone, sandbox or external account is required by these text examples.
+
+The example preview remains available without an agent. It makes
+no model call, does not process your edits and does not count as a successful
+run. A permitted builder can prepare a shared text assistant on a deliberately
+selected shared chat model. Its monthly agent limit is $5, within the workspace
+budget. Preparation never changes an existing agent's draft; use the Builder to
+change an existing assistant. Members without those rights see the owner's contact.
+
+Your example choice and dismissal are stored per membership and follow you to
+another device. The start also links to your latest completed personal web chat.
+A completed run is evidence of execution, not a rating of its usefulness. Tours
+are optional help; closing one does not create a successful run. Integrations,
+files, agent building, team invitations and routines are optional next steps.
+
+Member managers can check whether an existing teammate and they can run a common published agent. The preview returns only that answer, never private agent names, and makes no model call. It does not certify provider availability. Team invitations from a loopback address are blocked in this start; use a server address reachable by the recipient.
+
+Completed chat turns keep the text delivered before an agent asks a question visible beside the final answer, including after the question is declined or the run resumes. Tool results and reasoning stay in the expandable work history. This applies to stored conversations and shared chat views; it does not infer answers from text length.
+
+Run history distinguishes the person asking from the publisher whose authority admits an external request. An unlinked channel sender appears as their chat account, explicitly unverified, on desktop and phones; an anonymous request has no invented member identity. The run API retains `user_id` for its authority context and exposes `initiated_by_publisher_fallback` and `asked_in_chat` for truthful attribution. This presentation does not link accounts or grant access to a publisher’s personal connections.

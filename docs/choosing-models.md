@@ -40,9 +40,14 @@ budget disappears.
     the other way round means debugging your instructions and the model at the
     same time, and you will blame the wrong one.
 
+A model's own report of how sure it is, as `ai.classify` can ask for with
+`min_confidence` set, ranks answers from more to less certain; it is not a
+probability. Smaller open-weights models report it less reliably. Choose the
+threshold from your own evals, not from the number's face value.
+
 ## Closed models or open weights
 
-Both are first-class here. The 27 providers include the closed frontier labs,
+Both are first-class here. The 28 providers include the closed frontier labs,
 the open-weights hosts, and two keyless entries — [Ollama](models.md) and a
 LiteLLM proxy — for models running on hardware you own.
 
@@ -68,9 +73,18 @@ decision as well as the cheaper one.
     residency requires it or when your volume genuinely dwarfs the hardware —
     not to save money on forty conversations a day.
 
+**Broken tool calls are repaired, and counted.** Open-weight models send a
+tool call with malformed JSON - a trailing comma, single quotes, an object cut
+short - far more often than frontier ones. Every agent repairs the syntax before
+the arguments are validated, so a broken call reaches its tool on the first
+attempt instead of costing a retry; a missing field or a wrong type still fails
+validation, and a repaired call still goes through approval and guardrails. Each
+run counts its repairs, shown on the run and per model on the dashboard's model
+card - a model that needs many is one to reconsider.
+
 ## Putting a gateway in front
 
-Three of the 27 are not model vendors but routers: **OpenRouter**, **Vercel AI
+Three of the 28 are not model vendors but routers: **OpenRouter**, **Vercel AI
 Gateway** and a **LiteLLM proxy** you run. Each gives one key and one endpoint in
 front of many models.
 

@@ -64,14 +64,18 @@ const QUALITY = {
 };
 
 /** The test catalog's roles, plus `runs:view` where a test reads spend. */
-function serve(role: string, { seesSpend = false } = {}) {
+function serve(role: string, { seesSpend = false, groupsFailed = false } = {}) {
   const granted = permissionsOf(role);
   if (seesSpend)
     granted.permissions = [...granted.permissions, { permission: "runs:view", scope: "all" }];
   vi.mocked(apiClient.get).mockImplementation((url: string) => {
+    if (url === "/tasks/boards") return Promise.resolve([]);
     if (url === "/roles/catalog") return Promise.resolve(ROLE_CATALOG);
     if (url.startsWith("/me/permissions")) return Promise.resolve(granted);
-    if (url === "/orgs/org-1/groups") return Promise.resolve({ items: [FINANCE], total: 1 });
+    if (url === "/orgs/org-1/groups")
+      return groupsFailed
+        ? Promise.reject(new Error("Controlled group read refusal"))
+        : Promise.resolve({ items: [FINANCE], total: 1 });
     if (url === "/orgs/org-1/groups/spend")
       return Promise.resolve({
         since: "2026-10-01T00:00:00Z",
@@ -151,10 +155,10 @@ describe("the groups page", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "New group" }));
     await userEvent.type(screen.getByLabelText("Name"), "Legal");
-    await userEvent.click(screen.getByRole("radio", { name: "Money" }));
-    await userEvent.click(screen.getByRole("radio", { name: "Scales" }));
-    await userEvent.click(screen.getByRole("radio", { name: "Scales" }));
-    await userEvent.click(screen.getByRole("radio", { name: "Scales" }));
+    await userEvent.click(screen.getByRole("button", { name: "Money" }));
+    await userEvent.click(screen.getByRole("button", { name: "Scales" }));
+    await userEvent.click(screen.getByRole("button", { name: "Scales" }));
+    await userEvent.click(screen.getByRole("button", { name: "Scales" }));
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() =>
@@ -293,4 +297,22 @@ describe("one group's page", () => {
 
     expect(await screen.findByText("Group not found")).toBeInTheDocument();
   });
+});
+
+it("puts shared resources before the department's usage panels", async () => {
+  serve("owner", { seesSpend: true });
+  await mount(<GroupPage params={Promise.resolve({ id: "g-fin" })} />);
+  const resources = await screen.findByText("Shared with this group");
+  const usage = await screen.findByText("This month");
+  expect(resources.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("retries a failed department read without labelling it not found", async () => {
+  serve("owner", { groupsFailed: true });
+  await mount(<GroupPage params={Promise.resolve({ id: "g-fin" })} />);
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible();
+  expect(screen.queryByText("Group not found")).toBeNull();
+  serve("owner");
+  await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("Shared with this group")).toBeVisible();
 });

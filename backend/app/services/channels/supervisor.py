@@ -22,8 +22,6 @@ a row that is really gone - a rolled-back registration must not leave a
 connection behind talking to somebody's Mattermost.
 """
 
-from __future__ import annotations
-
 import logging
 
 from app.services.channels import connection_state, get_adapter, stream_lease
@@ -59,6 +57,7 @@ async def open_inbound_stream(
     token: str,
     api_base_url: str | None = None,
     app_token: str | None = None,
+    approved_guild_ids: tuple[str, ...] = (),
     take_over: bool = True,
 ) -> None:
     """Start this bot's stream, replacing one it already has.
@@ -97,7 +96,12 @@ async def open_inbound_stream(
         leases.drop(bot_id)
         return
     adapter = get_adapter(platform)
-    adapter.prepare_connection(bot_id, api_base_url=api_base_url, app_token=app_token)
+    adapter.prepare_connection(
+        bot_id,
+        api_base_url=api_base_url,
+        app_token=app_token,
+        approved_guild_ids=approved_guild_ids,
+    )
 
     await adapter.stop_polling(bot_id)
     if _shutting_down:
@@ -106,6 +110,8 @@ async def open_inbound_stream(
         logger.info("Not reopening inbound stream for bot %s: the server is shutting down", bot_id)
         return
     await adapter.start_polling(bot_id, token)
+    # The holder, so two copies of one stream can be told apart in the log (#2224).
+    logger.info("%s: stream of bot %s opened on worker %s", platform, bot_id, leases.holder)
 
 
 async def close_inbound_stream(*, bot_id: str, platform: str) -> None:

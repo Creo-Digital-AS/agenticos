@@ -14,20 +14,47 @@
  * not here - they are `file-kinds.ts`, which answers that for every surface.
  */
 
-import { readConversationFile, readConversationFileBytes } from "./conversation-workspace-api";
+import {
+  readConversationFile,
+  readConversationFileBytes,
+  readConversationFolderZip,
+} from "./conversation-workspace-api";
+import { readLocalFile } from "./desktop/commands";
 import { saveBlob, type FileAccess, type FileText } from "./file-access";
+import { readProjectBytes, readProjectText } from "./projects-api";
+import { prepareHtmlFilePreview } from "./html-file-preview";
 import { qk } from "./query-keys";
 import { readWorkspaceBytes, readWorkspaceFile } from "./sandbox-workspaces-api";
 
 /** Where a workspace file is read from. */
 export type FileSource =
   | { readonly kind: "conversation"; readonly id: string }
-  | { readonly kind: "workspace"; readonly id: string };
+  | { readonly kind: "workspace"; readonly id: string }
+  | { readonly kind: "project"; readonly id: string }
+  /** A folder on this computer the person granted, read through the desktop app (#2305). */
+  | { readonly kind: "local"; readonly root: string };
+
+/** The most of a local file shown as text; the rest is there to download. */
+const LOCAL_TEXT_LIMIT = 512 * 1024;
+
+async function readLocalText(root: string, path: string): Promise<FileText> {
+  const bytes = await readLocalFile(root, path);
+  const truncated = bytes.length > LOCAL_TEXT_LIMIT;
+  const content = new TextDecoder().decode(truncated ? bytes.slice(0, LOCAL_TEXT_LIMIT) : bytes);
+  return { content, truncated };
+}
 
 export function readFileText(source: FileSource, path: string): Promise<FileText> {
-  return source.kind === "conversation"
-    ? readConversationFile(source.id, path)
-    : readWorkspaceFile(source.id, path);
+  switch (source.kind) {
+    case "conversation":
+      return readConversationFile(source.id, path);
+    case "project":
+      return readProjectText(source.id, path);
+    case "workspace":
+      return readWorkspaceFile(source.id, path);
+    case "local":
+      return readLocalText(source.root, path);
+  }
 }
 
 export function readFileBytes(
@@ -35,21 +62,42 @@ export function readFileBytes(
   path: string,
   options: { download?: boolean } = {},
 ): Promise<Blob> {
-  return source.kind === "conversation"
-    ? readConversationFileBytes(source.id, path, options)
-    : readWorkspaceBytes(source.id, path, options);
+  switch (source.kind) {
+    case "conversation":
+      return readConversationFileBytes(source.id, path, options);
+    case "project":
+      return readProjectBytes(source.id, path, options);
+    case "workspace":
+      return readWorkspaceBytes(source.id, path, options);
+    case "local":
+      return readLocalFile(source.root, path).then((bytes) => new Blob([bytes]));
+  }
 }
 
 export function textKey(source: FileSource, path: string) {
-  return source.kind === "conversation"
-    ? qk.conversationWorkspace.file(source.id, path)
-    : qk.sandboxWorkspaces.file(source.id, path);
+  switch (source.kind) {
+    case "conversation":
+      return qk.conversationWorkspace.file(source.id, path);
+    case "project":
+      return qk.projects.file(source.id, path);
+    case "workspace":
+      return qk.sandboxWorkspaces.file(source.id, path);
+    case "local":
+      return qk.desktop.localFile(source.root, path);
+  }
 }
 
 export function bytesKey(source: FileSource, path: string) {
-  return source.kind === "conversation"
-    ? qk.conversationWorkspace.bytes(source.id, path)
-    : qk.sandboxWorkspaces.bytes(source.id, path);
+  switch (source.kind) {
+    case "conversation":
+      return qk.conversationWorkspace.bytes(source.id, path);
+    case "project":
+      return qk.projects.bytes(source.id, path);
+    case "workspace":
+      return qk.sandboxWorkspaces.bytes(source.id, path);
+    case "local":
+      return [...qk.desktop.localFile(source.root, path), "bytes"] as const;
+  }
 }
 
 /**
@@ -64,12 +112,39 @@ export function workspaceFileAccess(source: FileSource, path: string): FileAcces
     textKey: textKey(source, path),
     bytesKey: bytesKey(source, path),
     readText: () => readFileText(source, path),
+    readPreview: async () =>
+      prepareHtmlFilePreview(
+        path,
+        await readFileText(source, path),
+        (asset) => readFileText(source, asset),
+        (asset) => readFileBytes(source, asset),
+      ),
     readBytes: () => readFileBytes(source, path),
     download: async () => {
       const blob = await readFileBytes(source, path, { download: true });
       saveBlob(blob, path.split("/").filter(Boolean).pop() ?? "file");
     },
   };
+}
+
+/** What a whole workspace's zip is called, where there is no folder to name it after. */
+const WHOLE_WORKSPACE = "workspace";
+
+/**
+ * Save one folder of a conversation's workspace as `<folder>.zip` (#2479).
+ *
+ * Named here by the rule the server names it by - the folder's last segment, or
+ * `workspace` for the whole of it - rather than parsed out of the response's
+ * `Content-Disposition`, which the server writes in RFC 5987's `filename*` form
+ * for any name a person may have chosen.
+ */
+export async function downloadConversationFolder(
+  conversationId: string,
+  folder: string,
+): Promise<void> {
+  const blob = await readConversationFolderZip(conversationId, folder);
+  const segments = folder.split("/").filter((segment) => segment !== "" && segment !== ".");
+  saveBlob(blob, `${segments.at(-1) ?? WHOLE_WORKSPACE}.zip`);
 }
 
 /** The id an attachment is filed under, ahead of its own name - `uploads/<8 hex>-<name>`. */

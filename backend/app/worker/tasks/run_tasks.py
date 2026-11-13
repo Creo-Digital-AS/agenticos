@@ -1,36 +1,58 @@
-"""Scheduled upkeep for run history.
+"""Agent runs the API queued, and the scheduled upkeep for run history.
 
-One flow, for the one state a run can be left in that nothing in-process will
-ever resolve: `running` with its process dead underneath it. Everything else a
-run can end in is written by the run's own `finally`; this is the ceiling for
-the runs that never got one.
+For the one state a run can be left in that nothing in-process will ever
+resolve: `running` with its process dead underneath it. Everything else a run
+can end in is written by the run's own `finally`; these are the ceiling for the
+runs that never got one - an hourly sweep for agent runs, and a minute sweep for
+eval runs, which hold their organization's eval slots while they stand.
 """
 
 import logging
 
-from prefect import flow
-
 from app.db.session import get_worker_db_context
+from app.schemas.agent import AgentRunResult
+from app.services import change_feed
+from app.services.api_runs import ApiRunService
 from app.services.run_reaper import RunReaperService
+from app.worker.jobs import RunAgent
 
 logger = logging.getLogger(__name__)
 
 
-@flow(name="stale-run-sweep")
-async def stale_run_sweep_flow() -> int:
-    """Fail every run left `running` past `STALE_RUN_REAPED_AFTER_HOURS`.
+async def reap_stale_runs() -> int:
+    """Fail every run left `running` with no sign of life past `STALE_RUN_REAPED_AFTER_SECONDS`.
 
-    On the worker context, not the pooled one: successive flow runs do not
-    share an event loop, and a pooled connection made on one loop breaks
-    whoever checks it out on the next - the reason `get_worker_db_context`
-    exists. Returns how many runs were reaped, so a flow run's result says
-    what it found without anybody reading the logs.
+    Returns how many runs were reaped, so a caller can say what the sweep
+    found without anybody reading the logs. Each is announced to open
+    consoles once the session has committed it - a chat says "Working" over
+    a reaped turn until it hears.
     """
     async with get_worker_db_context() as db:
         reaped = await RunReaperService(db).reap_stale()
 
+    for event in reaped:
+        await change_feed.publish(event)
     if reaped:
         # A warning rather than an info: each one is a process that died with
         # work in hand, and the spend it made is recorded nowhere.
-        logger.warning("Stale-run sweep: %d run(s) reaped", reaped)
-    return reaped
+        logger.warning("Stale-run sweep: %d run(s) reaped", len(reaped))
+    return len(reaped)
+
+
+async def reap_abandoned_evals() -> int:
+    """Fail the eval runs whose worker went silent, and the attempts they left. Returns how many.
+
+    Scheduled every minute (`app/worker/schedules.py`): a run whose worker died
+    waits `EVAL_ABANDONED_AFTER_MINUTES` and at most one tick more.
+    """
+    async with get_worker_db_context() as db:
+        evals = await RunReaperService(db).reap_abandoned_evals()
+    if evals:
+        logger.warning("Abandoned-eval sweep: %d eval run(s) and attempt(s) closed", evals)
+    return evals
+
+
+async def run_agent(job: RunAgent) -> AgentRunResult:
+    """An asynchronous API run: the synchronous call, made by the worker (`app.services.api_runs`)."""
+    async with get_worker_db_context() as db:
+        return await ApiRunService(db).run(job)

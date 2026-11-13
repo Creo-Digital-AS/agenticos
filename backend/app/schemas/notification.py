@@ -1,17 +1,82 @@
 """Schemas for the notification inbox (#1598)."""
 
-from __future__ import annotations
-
 from datetime import datetime
+from typing import Any
 from uuid import UUID
+
+from pydantic import Field, ValidationError
 
 from app.db.models.notification import Notification, NotificationChannel, NotificationEventType
 from app.db.models.notification_delivery import NotificationDelivery
 from app.schemas.base import BaseSchema
+from app.schemas.improvement import NextStepBlocked
+
+
+class NotificationAgent(BaseSchema):
+    """The agent a notification is about, as much as the bell needs to draw its face."""
+
+    id: UUID
+    slug: str
+    name: str
+    has_avatar: bool = False
+    avatar_color: int | None = None
+
+
+def _agent_of(context: dict[str, Any] | None) -> NotificationAgent | None:
+    """The agent a row's render context names, or `None` for one about no agent.
+
+    Rows written before the face was kept carry only the name, and draw the
+    icon for their kind instead.
+    """
+    if not context or "agent_id" not in context:
+        return None
+    try:
+        return NotificationAgent(
+            id=context["agent_id"],
+            slug=context.get("agent_slug", ""),
+            name=context.get("agent_name", ""),
+            has_avatar=bool(context.get("agent_has_avatar")),
+            avatar_color=context.get("agent_avatar_color"),
+        )
+    except ValidationError:
+        return None
+
+
+class NotificationOutcome(BaseSchema):
+    """How a finished session, test or question writing ended, as codes the console words."""
+
+    status: str
+    reason: str | None = None
+    next_step_blocked: NextStepBlocked | None = Field(
+        default=None, description="Why an improvement's next step cannot be taken, when it cannot"
+    )
+
+
+_OUTCOME_EVENTS = {
+    NotificationEventType.IMPROVEMENT_FINISHED.value,
+    NotificationEventType.EVAL_RUN_FINISHED.value,
+    NotificationEventType.CASE_GENERATION_FINISHED.value,
+}
+
+
+def _outcome_of(notification: Notification) -> NotificationOutcome | None:
+    context = notification.render_context or {}
+    if notification.event_type not in _OUTCOME_EVENTS or not isinstance(context.get("status"), str):
+        return None
+    reason = context.get("reason")
+    try:
+        blocked = NextStepBlocked.model_validate(context.get("next_step_blocked"))
+    except ValidationError:
+        blocked = None
+    return NotificationOutcome(
+        status=context["status"],
+        reason=reason if isinstance(reason, str) else None,
+        next_step_blocked=blocked,
+    )
 
 
 class NotificationRead(BaseSchema):
-    """One inbox row - `render_context` never leaves the service layer."""
+    """One inbox row - `render_context` itself never leaves the service layer."""
 
     id: UUID
     event_type: str
@@ -19,6 +84,19 @@ class NotificationRead(BaseSchema):
     context_url: str | None = None
     read_at: datetime | None = None
     created_at: datetime
+    agent: NotificationAgent | None = Field(
+        default=None,
+        description="The agent the row is about, for its face; null for a row about none.",
+    )
+    outcome: NotificationOutcome | None = Field(
+        default=None,
+        description="For a finished improvement, test or question writing: how it ended, "
+        "so the console can word it in the reader's language.",
+    )
+    outcome_id: UUID | None = Field(
+        default=None,
+        description="The shared outcome this row is a delivery of; settling it clears every one.",
+    )
 
     @classmethod
     def from_row(
@@ -39,6 +117,9 @@ class NotificationRead(BaseSchema):
             context_url=None if strip_context_url else notification.context_url,
             read_at=notification.read_at,
             created_at=notification.created_at,
+            agent=_agent_of(notification.render_context),
+            outcome=_outcome_of(notification),
+            outcome_id=notification.outcome_id,
         )
 
 

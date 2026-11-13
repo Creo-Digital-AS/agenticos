@@ -1,9 +1,7 @@
 """Schemas for user-configured MCP server connections."""
 
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -24,6 +22,12 @@ MAX_ALLOWED_TOOLS = 100
 class McpToolRead(BaseSchema):
     name: str
     description: str
+    # The JSON Schema of the tool's arguments, when the server's was small
+    # enough to keep. Absent from a list recorded before it was kept.
+    input_schema: dict[str, Any] | None = None
+    read_only_hint: bool | None = Field(
+        default=None, description="Explicit server readOnlyHint; null means no recorded declaration"
+    )
     read_only: bool = Field(
         default=False,
         description="The server marks it readOnlyHint; anything else is treated as a write",
@@ -142,6 +146,7 @@ class McpConnectionRead(TimestampSchema, BaseSchema):
     # Whether an agent speaking as this member uses this account. Only ever true
     # for one of their connections per service.
     is_default: bool = False
+    trust_read_only_hints: bool = False
     # The agents binding an organization connection that the reader may see
     # (#2072). Null where the listing did not ask, which is not "none".
     used_by: list[AgentUsage] | None = None
@@ -175,9 +180,10 @@ class McpConnectionRead(TimestampSchema, BaseSchema):
             last_tools=(
                 None
                 if connection.last_tools is None
-                else [McpToolRead(**tool) for tool in connection.last_tools]
+                else [McpToolRead.model_validate(tool) for tool in connection.last_tools]
             ),
             is_default=connection.is_default,
+            trust_read_only_hints=connection.trust_read_only_hints,
             created_at=connection.created_at,
             updated_at=connection.updated_at,
         )
@@ -185,6 +191,48 @@ class McpConnectionRead(TimestampSchema, BaseSchema):
 
 class McpConnectionList(BaseSchema):
     items: list[McpConnectionRead]
+    total: int
+
+
+class McpConnectionUsable(BaseSchema):
+    """An organization connection as a workflow editor picks it (`mcp.call`).
+
+    A narrow projection, not `McpConnectionRead`: choosing a server and a tool
+    needs the name, what it offers and whether it is on - never where it points,
+    how it authenticates, what it consented to or why it last failed. Those stay
+    behind `mcp:manage`.
+    """
+
+    id: UUID
+    name: str
+    label: str | None = None
+    catalog_key: str | None = None
+    is_enabled: bool
+    allowed_tools: list[str] | None = None
+    # Null means nothing has tested the server yet, which is not "offers none".
+    last_tools: list[McpToolRead] | None = None
+    last_checked_at: datetime | None = None
+
+    @classmethod
+    def from_model(cls, connection: McpConnection) -> McpConnectionUsable:
+        return cls(
+            id=connection.id,
+            name=connection.name,
+            label=connection.label,
+            catalog_key=connection.catalog_key,
+            is_enabled=connection.is_enabled,
+            allowed_tools=connection.allowed_tools,
+            last_tools=(
+                None
+                if connection.last_tools is None
+                else [McpToolRead(**tool) for tool in connection.last_tools]
+            ),
+            last_checked_at=connection.last_checked_at,
+        )
+
+
+class McpConnectionUsableList(BaseSchema):
+    items: list[McpConnectionUsable]
     total: int
 
 
@@ -229,6 +277,14 @@ class OrgMcpConnectionUpdate(BaseSchema):
     allowed_tools: list[str] | None = Field(default=None, max_length=MAX_ALLOWED_TOOLS)
     clear_allowed_tools: bool = False
     is_enabled: bool | None = None
+    trust_read_only_hints: bool | None = Field(
+        default=None,
+        description=(
+            "Let an isolated run (an eval) call a tool this server marks "
+            "`readOnlyHint` live. The hint is the server's own claim; off, every "
+            "tool of this connection without a test connection is held instead."
+        ),
+    )
     include_instructions: bool | None = Field(
         default=None,
         description=(
@@ -369,6 +425,23 @@ class GithubOAuthStart(BaseSchema):
     portal_key: str = Field(..., min_length=1, max_length=64)
 
 
+class PortalPollIntervalUpdate(BaseSchema):
+    """How often a connected mailbox is checked, for every trigger on it.
+
+    The values are the ones `ck_mcp_connection_poll_interval` allows; a literal so
+    the refusal of anything else names the field like every other 422.
+    """
+
+    poll_interval_minutes: Literal[1, 5, 15, 30, 60]
+
+
+class PortalPollIntervalRead(BaseSchema):
+    """The mailbox grant and how often it is now checked, in minutes."""
+
+    connection_id: UUID
+    poll_interval_minutes: int
+
+
 class McpOAuthStartResult(BaseSchema):
     # The provider consent URL the browser should be redirected to.
     authorization_url: str
@@ -398,6 +471,7 @@ class McpOAuthCallback(BaseSchema):
     """Payload the frontend callback route forwards from the provider redirect."""
 
     state: str = Field(..., min_length=1, max_length=128)
+    browser_nonce: str | None = Field(default=None, max_length=128)
     code: str = Field(..., min_length=1, max_length=4096)
 
 

@@ -2,11 +2,15 @@
 
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Code2, Eye, Trash2 } from "lucide-react";
+import { Maximize2, Trash2 } from "lucide-react";
 
+import { EditorTextLoading } from "./editor-loading";
 import { FileTextView } from "./file-render";
 import { Button } from "@/components/ui";
+import { MarkdownModeToggle } from "@/components/ui/markdown-mode-toggle";
 import { CodeArea } from "@/components/ui/code-area";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { DIALOG_WINDOW } from "@/lib/dialog-sizes";
 import { resolveFileKind } from "@/lib/file-kinds";
 import { cn } from "@/lib/utils";
 import { useTranslations } from "next-intl";
@@ -28,6 +32,7 @@ import { useTranslations } from "next-intl";
  */
 export function FileEditor({
   name,
+  label,
   content,
   loading,
   canEdit,
@@ -35,11 +40,14 @@ export function FileEditor({
   onDelete,
   footer,
   header,
+  toolbar,
   initialMode = "source",
   placeholder,
   className,
 }: {
   name: string;
+  /** What the pane calls the file, where its name is not what a reader knows it by. */
+  label?: string;
   content: string;
   loading?: boolean;
   canEdit: boolean;
@@ -49,6 +57,8 @@ export function FileEditor({
   footer?: ReactNode;
   /** Anything the owner wants above the content - the body's own fields. */
   header?: ReactNode;
+  /** Owner controls that belong beside source/preview, rather than above the editor. */
+  toolbar?: ReactNode;
   /**
    * Which half opens first. A browser of files somebody else wrote opens on the
    * preview; a pane somebody came to *write* in opens on the source, where a
@@ -66,31 +76,47 @@ export function FileEditor({
 }) {
   const t = useTranslations("files");
   const tc = useTranslations("common");
+  const tu = useTranslations("ui");
   const [mode, setMode] = useState<"preview" | "source">(initialMode);
+  const [expanded, setExpanded] = useState(false);
+  const called = label ?? name;
 
-  return (
-    <div className={cn("flex min-h-0 flex-1 flex-col rounded-md border", className)}>
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs">{name}</span>
-        <div className="flex items-center gap-0.5 rounded-md border p-0.5">
-          <ModeButton
-            icon={Eye}
-            label={t("preview")}
-            active={mode === "preview"}
-            onClick={() => setMode("preview")}
-          />
-          <ModeButton
-            icon={Code2}
-            label={t("source")}
-            active={mode === "source"}
-            onClick={() => setMode("source")}
-          />
-        </div>
+  const pane = (
+    <div
+      className={cn(
+        "bg-background flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border",
+        expanded && "overflow-hidden rounded-2xl border-0",
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          "bg-muted/70 flex flex-wrap items-center gap-2 border-b px-3 py-2",
+          expanded && "pr-14",
+        )}
+      >
+        <span className={cn("min-w-0 flex-1 truncate text-xs", label === undefined && "font-mono")}>
+          {called}
+        </span>
+        {!expanded && toolbar}
+        <MarkdownModeToggle mode={mode} onChange={setMode} />
+        {!expanded && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            data-tour="text-editor-expand"
+            aria-label={tu("expandEditor", { label: called })}
+            onClick={() => setExpanded(true)}
+          >
+            <Maximize2 className="size-4" aria-hidden />
+          </Button>
+        )}
         {onDelete && canEdit && (
           <Button
             variant="ghost"
             size="icon"
-            aria-label={tc("removeNamed", { name })}
+            aria-label={tc("removeNamed", { name: called })}
             onClick={onDelete}
           >
             <Trash2 className="h-4 w-4" />
@@ -104,7 +130,9 @@ export function FileEditor({
           have to carry the same one to stay in register. */}
       <div className={cn("min-h-0 flex-1 overflow-auto", mode === "source" ? "p-0" : "p-3")}>
         {loading ? (
-          <p className="text-muted-foreground text-xs">{tc("loading")}</p>
+          <div role="status" aria-busy="true" aria-label={tc("loading")}>
+            <EditorTextLoading />
+          </div>
         ) : mode === "source" ? (
           // Fills the pane rather than sitting in it: a fixed-row box inside a
           // tall panel leaves the text in a letterbox with dead space under it.
@@ -114,7 +142,7 @@ export function FileEditor({
             readOnly={!canEdit}
             placeholder={placeholder}
             name={name}
-            aria-label={t("namedSource", { name })}
+            aria-label={t("namedSource", { name: called })}
             className="min-h-[14rem]"
           />
         ) : (
@@ -129,31 +157,18 @@ export function FileEditor({
       {footer && <div className="flex items-center gap-2 border-t px-3 py-2">{footer}</div>}
     </div>
   );
-}
-
-function ModeButton({
-  icon: Icon,
-  label,
-  active,
-  onClick,
-}: {
-  icon: typeof Eye;
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-        active ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      <Icon className="h-3 w-3" />
-      {label}
-    </button>
+    <>
+      {!expanded && pane}
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent
+          className={cn(DIALOG_WINDOW, "gap-0 p-0 sm:p-0")}
+          aria-describedby={undefined}
+        >
+          <DialogTitle className="sr-only">{called}</DialogTitle>
+          {pane}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

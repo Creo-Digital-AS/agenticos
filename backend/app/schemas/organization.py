@@ -9,7 +9,8 @@ from uuid import UUID
 from pydantic import AfterValidator, EmailStr, Field, field_validator
 
 from app.core.permissions import OrgRoleName
-from app.db.models.organization import MembershipSourceLiteral
+from app.db.models.organization import MembershipSourceLiteral, ProactiveTiming
+from app.db.models.watch import MIN_WATCH_MINUTES
 from app.schemas.base import BaseSchema, TimestampSchema
 from app.schemas.user import UserRead
 
@@ -63,6 +64,92 @@ class OrganizationUpdate(BaseSchema):
             "or null for no limit. Omit to leave the current setting alone."
         ),
     )
+    proactive_limit_usd: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=12,
+        decimal_places=6,
+        description=(
+            "Dollars the platform may spend per person per month on work it does on its "
+            "own initiative - noticing repeated requests, writing first messages. Zero "
+            "switches that work off. Omit to leave it alone; changing it needs "
+            "'budgets:manage'."
+        ),
+    )
+    proactive_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the platform looks at each person's week on its own initiative and "
+            "proposes what would save them time. Turning it on needs a "
+            "`proactive_model_profile_id`. Needs 'budgets:manage'."
+        ),
+    )
+    proactive_model_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The model profile that work runs on, one of this organization's. Send null "
+            "to clear it, which only an organization with the work off may do."
+        ),
+    )
+    proactive_days: list[int] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=7,
+        description="The ISO weekdays it runs on, in each person's time zone; 1 is Monday.",
+    )
+    proactive_hour: int | None = Field(
+        default=None,
+        ge=0,
+        le=23,
+        description="The hour it runs at, in each person's time zone.",
+    )
+    proactive_timing: ProactiveTiming | None = Field(
+        default=None,
+        description=(
+            "`fixed`: at `proactive_hour`. `before_work`: an hour before the working "
+            "hours a person's profile states, and at `proactive_hour` for anyone whose "
+            "profile states none."
+        ),
+    )
+    proactive_watches_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether people may have the platform watch their own MCP connections and "
+            "report what is new. Uses the selected agent model and the per-person proactive limit; no nightly suggestions model is required. Needs "
+            "'budgets:manage'."
+        ),
+    )
+    proactive_watch_min_minutes: int | None = Field(
+        default=None,
+        ge=MIN_WATCH_MINUTES,
+        le=10080,
+        description="The most often any watch here may run, in minutes.",
+    )
+    welcome_dm_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a new member gets a direct message from the organization's Slack, "
+            "Teams and Mattermost bots. Needs 'org:settings'."
+        ),
+    )
+    welcome_dm_text: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "What that message says; `{organization}`, `{bot}` and `{url}` are filled "
+            "in. Null for the built-in greeting in the member's language."
+        ),
+    )
+
+    @field_validator("proactive_days")
+    @classmethod
+    def _weekdays(cls, days: list[int] | None) -> list[int] | None:
+        if days is None:
+            return None
+        if any(day < 1 or day > 7 for day in days):
+            raise ValueError("Weekdays run from 1 (Monday) to 7 (Sunday)")
+        return sorted(set(days))
+
     chat_may_waive_approvals: bool | None = Field(
         default=None,
         description=(
@@ -72,6 +159,43 @@ class OrganizationUpdate(BaseSchema):
             "name."
         ),
     )
+    public_agenticos_attribution: bool | None = Field(
+        default=None,
+        description="Show the AgenticOS GitHub footer on public pages and shared chats. Needs org:settings.",
+    )
+    public_live_data: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a page's data may reach anyone with its public link or on the sites "
+            "that embed it, once the page's owner confirms it. Omit to leave it alone. "
+            "Needs 'org:settings' (Owner or Admin), signed in as themselves."
+        ),
+    )
+    speech_to_text_provider: str | None = Field(
+        default=None,
+        max_length=32,
+        description="A provider from the speech-to-text catalog; null clears it.",
+    )
+    speech_to_text_model: str | None = Field(
+        default=None,
+        max_length=255,
+        description="A model that provider offers; null clears it. Set with the provider.",
+    )
+    speech_to_text_secret_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The vault key the pair is sent with: an organization-visible API key "
+            "whose purpose is the provider. Required with a pair; null clears it."
+        ),
+    )
+    speech_to_text_language: str | None = Field(
+        default=None,
+        max_length=8,
+        description="ISO-639-1 code to pin recordings to, or null to auto-detect.",
+    )
+    dictation_max_seconds: int | None = Field(
+        default=None, ge=10, le=600, description="Longest dictation, in seconds (10-600)."
+    )
 
 
 class OrganizationRead(BaseSchema, TimestampSchema):
@@ -79,19 +203,61 @@ class OrganizationRead(BaseSchema, TimestampSchema):
     name: str
     slug: str
     is_personal: bool
+    is_default: bool = Field(
+        default=False,
+        description=(
+            "Whether this is the deployment's default organization: the one every new "
+            "account joins, and where a request naming no organization acts."
+        ),
+    )
     avatar_url: str | None = None
     avatar_color: int | None = None
     member_count: int = 0
     role: str  # current user's role in this org
     monthly_budget_usd: Decimal | None = None
+    proactive_limit_usd: Decimal = Field(
+        default=Decimal("1"),
+        description="What background work may spend per person per month; zero is off.",
+    )
+    proactive_enabled: bool = False
+    proactive_model_profile_id: UUID | None = None
+    proactive_days: list[int] = Field(default_factory=lambda: [1, 2, 3, 4, 5])
+    proactive_hour: int = 5
+    proactive_timing: ProactiveTiming = "fixed"
+    proactive_watches_enabled: bool = False
+    proactive_watch_min_minutes: int = 60
+    welcome_dm_enabled: bool = False
+    welcome_dm_text: str | None = None
     chat_may_waive_approvals: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Whether a chat session here may grant standing consent to gated tool "
             "calls. The chat reads it to decide whether to offer the control at "
             "all; who may then use it is `approvals:decide`."
         ),
     )
+    public_agenticos_attribution: bool = Field(
+        default=True,
+        description="Show the AgenticOS GitHub footer on public pages and shared chats",
+    )
+    public_live_data: bool = Field(
+        default=False,
+        description=(
+            "Whether a page's data may reach anonymous visitors of its public link or its "
+            "embeds, where the page's owner has confirmed it"
+        ),
+    )
+    speech_to_text_provider: str | None = None
+    speech_to_text_model: str | None = None
+    speech_to_text_secret_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The vault key the pair is sent with, by id. Null with a pair means the "
+            "key was deleted, and dictation waits for another to be chosen."
+        ),
+    )
+    speech_to_text_language: str | None = None
+    dictation_max_seconds: int = 300
 
 
 class OrganizationList(BaseSchema):
@@ -248,6 +414,12 @@ class InvitationStageRequest(BaseSchema):
     token: str = Field(min_length=1, max_length=64)
 
 
+class InvitationAccepted(BaseSchema):
+    """The organization an accepted invitation joined, for the console to switch to."""
+
+    organization_id: UUID
+
+
 class InvitationStaged(BaseSchema):
     """The opaque handle the exchange mints, for the frontend's server layer to hold.
 
@@ -264,3 +436,15 @@ class InvitationStaged(BaseSchema):
 
 class TransferOwnershipRequest(BaseSchema):
     new_owner_user_id: _ID
+
+
+class ReceivedInvitation(BaseSchema):
+    """A signed-in recipient's invitation, without its bearer token."""
+
+    id: UUID
+    organization_id: UUID
+    organization_name: str
+    organization_has_avatar: bool = False
+    organization_avatar_color: int | None = None
+    role: str
+    expires_at: datetime

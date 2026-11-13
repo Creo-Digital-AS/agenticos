@@ -1,5 +1,5 @@
 ---
-source_sha: "3409285bde3b"
+source_sha: "64b3eac00c71"
 ---
 
 # MCP — die Tools, die hier niemand schreiben muss { #mcp-the-tools-nobody-here-has-to-write }
@@ -31,8 +31,8 @@ oder Server-Sent Events — wird aus der URL abgeleitet, sodass ein reiner
 SSE-Server wie Atlassian neben einem mit streamable HTTP läuft, ohne dass etwas zu
 konfigurieren wäre.
 
-| | |
-|---|---|
+|  |  |
+| --- | --- |
 | `name` | Zugleich das Tool-Präfix. Siehe [Namenskollisionen](#name-collisions) |
 | `url` | Gegen SSRF geprüft, bevor wir sie überhaupt anfragen |
 | `auth_token` | Im [Vault](secrets.md) versiegelt, von keinem Endpunkt je zurückgegeben |
@@ -61,6 +61,42 @@ konfigurieren wäre.
     und eine `localhost`-URL einzufügen ist der gewöhnliche Fall, nicht der
     exotische.
 
+    Ein Betreiber kann einer Connection erlauben, einen Server im eigenen Netz
+    des Deployments zu erreichen, etwa einen Compose-Dienst oder einen Server
+    in einem VPN oder Tailnet. Dazu listet er dessen Host in
+    [`OUTBOUND_PRIVATE_ALLOWLIST`](configuration.md#project-settings): ein
+    exakter Host, ein Suffix mit führendem Punkt wie `.corp.example` (das
+    `corp.example` selbst nicht trifft), eine IP-Adresse oder ein CIDR-Bereich
+    wie `10.1.2.0/24`. Die Einstellung gilt auch für Workflow-HTTP-Schritte,
+    Konnektoren und A2A. `MCP_ALLOWED_HOSTS` nimmt dieselben Formen an, gilt aber
+    nur für MCP; nutzen Sie sie, wenn nichts anderes den Host erreichen soll. Ein
+    gelisteter Host darf auf eine private Adresse auflösen, Loopback-, Link-Local-
+    und Metadaten-Antworten werden aber abgelehnt, und ein gelisteter Name, der
+    noch nicht aufgelöst wird, kann trotzdem gespeichert werden. Die URL braucht
+    weiterhin `http` oder `https`.
+
+    Bei einem gelisteten Server kann man sich auch per OAuth anmelden. Ein
+    solcher Server führt die Anmeldung oft selbst, also dürfen seine Discovery,
+    die Client-Registrierung und die Token-Anfragen die gelisteten Hosts
+    erreichen, und keine andere private Adresse. Jede Anfrage bleibt an die
+    geprüfte Adresse gepinnt, und ein gelisteter Name, der mit einer Loopback-,
+    Link-Local- oder Cloud-Metadaten-Adresse antwortet, wird abgelehnt. Die
+    Liste gilt nur für eine Kette, die bei einem gelisteten Host beginnt: Die
+    Anmeldung bei einem öffentlichen Server erreicht nie einen gelisteten Host,
+    auch wenn seine Metadaten ihn nennen.
+
+    Jedes Konto des Deployments erreicht dann jeden Port dieses Hosts. Listen
+    Sie also nur einen Server, der ein Token prüft, und niemals `localhost` oder
+    einen Dienst dieses Stacks wie `app`, `db` oder `redis`. Die Liste wird beim
+    Speichern einer Connection und bei jeder Anmeldung und Token-Erneuerung
+    gelesen. Einen Host zu entfernen, trennt keine gespeicherte Connection, aber
+    eine OAuth-Connection zu ihm erneuert ihr Token nicht mehr.
+
+    Ein Server, der nur stdio spricht, lässt sich nicht verbinden, weil eine
+    Connection eine URL ist. Betreiben Sie im privaten Netz eine Brücke von
+    stdio zu Streamable HTTP, listen Sie deren Host und verbinden Sie sich mit
+    ihr. Die Brücke muss selbst ein Token prüfen, da jedes Konto sie erreicht.
+
 ### Persönlich oder organisationsweit { #personal-or-organization-wide }
 
 Zwei Arten, und der Unterschied ist der Punkt. Der Verbindungsdialog fragt das als
@@ -74,13 +110,13 @@ das Konto jeder Person; einer mit Schlüssel empfiehlt das gemeinsame.
 dessen eigenem Assistenten erreicht, und von einem Agent, der an das jeweils
 eigene Konto gebunden ist, wenn diese Person gerade mit ihm spricht.
 
-Die Zugangsdaten sind auf das *Mitglied* versiegelt, nicht auf eine Organisation —
+Die Zugangsdaten sind auf das _Mitglied_ versiegelt, nicht auf eine Organisation —
 eine persönliche Connection hat keine, und ihr Besitzer kann mehreren angehören;
 sie an diejenige zu binden, die beim Anlegen aktiv war, würde das Token
 unlesbar machen, sobald er wechselt.
 
 **Organization** gilt für die Organisation, ist auf `mcp:manage` beschränkt und
-ist die einzige Art, die der Spec eines veröffentlichten Agents *per id* benennen
+ist die einzige Art, die der Spec eines veröffentlichten Agents _per id_ benennen
 darf.
 
 Ein Server der Organisation kann einer Abteilung gehören. Unter **Wer es nutzen
@@ -105,6 +141,9 @@ dazu mit.
 GET  /api/v1/me/mcp-connections     personal
 GET  /api/v1/mcp-connections        organization, requires mcp:manage; each server
                                     narrowed to groups only for them
+GET  /api/v1/workflows/{id}/mcp-connections   the servers a step of this workflow may
+                                    bind - for whoever may edit it (role or grant); name,
+                                    tools, no URL or credential
 POST /api/v1/mcp-connections/{id}/test   probe it, list its tools, store the status
 GET  /api/v1/mcp-connections/{id}/sharing   who it is narrowed to, and the same
                                             grant routes as an agent's
@@ -164,6 +203,27 @@ die Auswahl sagt das und verweist auf die Server-Seite, wo eine Connection gepr�
 wird. Ein Binding, das bereits Tools benennt, zeigt diese, sodass sichtbar bleibt,
 woran es gebunden ist, und weiter eingegrenzt werden kann.
 
+Mit [Tool-Suche](reference/capabilities.md#tool-search) bleiben geeignete MCP-Tools
+verborgen, bis der Agent danach sucht. In den Einstellungen können Sie MCP-Tools,
+Capability-Tools oder beide zurückstellen und ausgewählte Server-Namensräume oder
+einzelne Tools ab der ersten Anfrage sichtbar halten. Diese Ausnahmen ändern,
+wann ein Tool-Schema angezeigt wird; die Allowlists von Connection und Binding
+entscheiden weiterhin, ob das Tool verfügbar ist.
+
+Neue Vorlagen für AgenticOS und Architect stellen auch Capability-Tools zurück,
+lassen Fragen und Sandbox-Tools sofort sichtbar und nutzen die lokale BM25-Suche
+mit bis zu fünf Ergebnissen. Bestehende veröffentlichte Agents behalten ihre
+Konfiguration; die neuen Standardwerte lassen sich in den Einstellungen der
+Tool-Suche übernehmen. Die Suche entfernt weder Anweisungen noch den Chatverlauf;
+die Summe der Eingabetokens umfasst sämtliche Modellanfragen.
+
+Die Verfügbarkeit der Browser-Tools folgt zusätzlich dem Zustand der Tabs:
+Öffnen, Lesen und Auflisten bleiben zum Starten oder Wiederherstellen einer Sitzung
+verfügbar. Schließen und Wechseln erfordern einen offenen Tab, Seitenaktionen einen
+aktiven Tab. Die Suche zeigt keine im aktuellen Zustand nicht verfügbare Aktion.
+Änderungen der Verfügbarkeit können das Prompt-Caching des Anbieters beeinflussen;
+weniger Tool-Schemas allein belegen daher keine niedrigeren Kosten.
+
 ### Welche Aufrufe auf eine Person warten { #which-calls-wait-for-a-person }
 
 Jedes Binding hat eine `approval`-Richtlinie für die Tools seines Servers. Die
@@ -175,13 +235,33 @@ freigegebenen. `all` hält jeden Aufruf an. Der Nur-lesen-Hinweis ist die
 Behauptung des Servers selbst, also ist `writes` nur so streng, wie der Server
 ehrlich ist — wählen Sie `all` für einen Server, den Sie nicht kontrollieren.
 
-Die eigene Vorlage des Architect verlangt `writes` für den Server der Plattform, damit
-er nichts ohne die Person entwirft, für die er handelt. Das Binding jedes Agents an
-diesen Server gilt mindestens als `writes`, auch bei `none`: Seine Tools handeln mit
-der Berechtigung dessen, der fragt, auch eines Admins.
+Die Vorlage des Architect verwendet `writes` für den Plattformserver. Bindings
+an diesen Server erzwingen mindestens `writes`, auch bei `none`, da Tools mit den
+Berechtigungen des Aufrufers handeln. Lesezugriffe einschließlich `get_project`
+und `read_conversation` laufen unter `writes` automatisch. Erstellen, Aktualisieren,
+Löschen und andere zustandsändernde Aktionen benötigen eine Freigabe. Mit `all`
+benötigen auch Lesezugriffe eine Freigabe.
 
 Im Builder sagen die Einstellungen eines Servers das je
 Gruppe: **Lesen** und **Ändern** laufen jeweils ohne Rückfrage oder fragen erst.
+
+Jedes Tool kann außerdem für sich ohne Rückfrage laufen oder erst fragen,
+unabhängig von seiner Gruppe und seinem Nur-lesen-Hinweis: Klicken Sie auf das
+Schild daneben. Ein Server, der kein Tool als nur lesend markiert, führt alle Tools
+in einer Gruppe, die `writes` vollständig anhält; stellen Sie seine Lesetools auf
+**Ohne Rückfrage**, laufen sie, während seine Schreibtools erst fragen. Mit
+demselben Schalter läuft ein einzelnes Schreibtool ohne Rückfrage, ohne dass `none`
+alle anderen freigibt.
+
+Der Spec hält diese Einstellungen im `tool_approval` des Bindings, nach dem Namen
+des Tools auf dem Server. Eine Gruppe, deren Tools sich unterscheiden, zeigt
+**Pro Tool**, und eine Wahl für die Gruppe stellt wieder alle ihre Tools ein. Ein
+Tool, das der Server später hinzufügt, folgt seiner Gruppe.
+
+An zwei Stellen gilt stattdessen der Hinweis des Servers. In einer Chat-App fragt
+ein Tool, das der Server nicht als nur lesend markiert, erst, auch wenn es ohne
+Rückfrage laufen soll, und eine Beobachtung liest nie ein Tool, vor dem ihr Binding
+fragt, weil niemand da ist, um zu antworten.
 
 ### Durch wessen Konto ein Binding spricht { #whose-account-a-binding-speaks-through }
 
@@ -200,7 +280,7 @@ Agent spricht als diese Person mit Notion: im Dashboard, in einer Direktnachrich
 und in einem Channel gleichermaßen. Der Audit-Trail bei Notion sagt dann, wer was
 getan hat — was ein geteiltes Dienstkonto nie kann.
 
-Das Konto ist das des Autors *dieser Nachricht*, nie das des Threads. Ania fragt
+Das Konto ist das des Autors _dieser Nachricht_, nie das des Threads. Ania fragt
 in `#ops` und bekommt eine Antwort aus ihrem Notion; Bartek stellt dieselbe Frage
 im selben Thread und bekommt seine, oder wird gebeten, eines zu verbinden. Ein
 Thread ist keine Grenze, die jemandes Zugangsdaten überschreiten sollten — würde
@@ -258,7 +338,7 @@ beiden schneiden sich.
     Connections umzubenennen ist die Korrektur des Autors.
 
 Ein Agent darf einen Dienst auf beide Weisen binden — das Handbuch-Notion der
-Organisation *und* das jeweils eigene —, solange die Organisations-Connection
+Organisation _und_ das jeweils eigene —, solange die Organisations-Connection
 nicht nach dem Katalogschlüssel benannt ist, denn diesen Präfix erhält das
 eigene Konto jeder Person.
 
@@ -289,9 +369,11 @@ Verbinden danach, und die API lehnt ein unbenanntes zweites Konto bei `label` ab
 Die Freigabe sagt dann, welches Konto handelt. Ein Aufruf über eine Verbindung
 mit Label oder über eines von mehreren Konten bei einem Dienst trägt den Namen
 dieses Kontos: Chat, Activity und Dashboard zeigen ihn neben der Aktion, eine
-Slack- oder Telegram-Nachricht fragt „to *send in Gmail* as *Work*“, und die
+Slack- oder Telegram-Nachricht fragt „to _send in Gmail_ as _Work_“, und die
 Freigabe-E-Mail nennt ihn nach dem Tool. Ein einzelnes Konto ohne Label hat
 nichts zu unterscheiden, also kommt nichts hinzu.
+
+Der Werkzeugdialog zeigt **nur lesen** bei ausdrücklichem `readOnlyHint: true`, **kann Daten ändern** bei ausdrücklichem false und **nicht angegeben**, wenn die Deklaration fehlt oder ein älterer Test sie nicht gespeichert hat. Die Richtlinie `writes` behandelt fehlende Metadaten vorsichtig; sie beweisen keinen Schreibzugriff. Teste ältere Verbindungen erneut, um die Angaben zu aktualisieren. Diese Klassifizierung ist unabhängig vom Vertrauen in Serverangaben bei isolierten Evals.
 
 ## Authentifizierung { #authentication }
 
@@ -390,9 +472,15 @@ Zwei Ränder bleiben, beide schmal und beide gewollt:
   selbst auflöst. Es gibt nichts zu pinnen.
 - Die **eigene URL der Connection** wird beim Speichern geprüft und erneut
   aufgelöst, wenn ein Agent läuft — vom Betreiber getippt, sie neu zu binden
-  heißt also, der Betreiber zu sein.
+  heißt also, der Betreiber zu sein. Ein gelisteter
+  Host (`OUTBOUND_PRIVATE_ALLOWLIST` oder `MCP_ALLOWED_HOSTS`) wird ebenfalls
+  aufgelöst und jede Antwort geprüft: Eine private Antwort geht nur für einen Host
+  durch, den die Liste zulässt, eine Loopback- oder Metadaten-Antwort nie, und ein
+  per Namen gelisteter Host, der noch nicht aufgelöst wird, kann trotzdem
+  gespeichert werden. Die OAuth-Anfragen einer Connection, deren eigener Host gelistet ist, dürfen die
+  gelisteten Hosts erreichen, gepinnt wie jeder andere Schritt.
 
-Nichts, was ein *Modell* wählt, erreicht diese Prüfung überhaupt, und das soll auch
+Nichts, was ein _Modell_ wählt, erreicht diese Prüfung überhaupt, und das soll auch
 so sein: Eine URL, die ein Agent ausgewählt hat, gehört zu Pydantic AIs
 `safe_download`.
 
@@ -435,7 +523,7 @@ nichts anwählen kann — und die eine als die andere zu melden wäre eine feste
 Behauptung darüber, wessen Schuld ein Fehlschlag war.
 
 Ein unbrauchbarer `WWW-Authenticate`-Hinweis beendet diesen
-Discovery-*Kandidaten*, nicht den Flow, denn die darauf folgenden
+Discovery-_Kandidaten_, nicht den Flow, denn die darauf folgenden
 Well-known-URIs leiten sich von der URL ab, die ein Betreiber getippt hat, und
 antworten womöglich sehr wohl.
 
@@ -493,8 +581,11 @@ weiter, bis die neue Einwilligung eintrifft.
 
 ## Was bei einem Zug passiert { #what-happens-on-a-turn }
 
-Jeder Server wird vor Beginn des Zuges mit einem kurzen `tools/list`-Roundtrip
-geprüft — 3 Sekunden — und die Prüfungen laufen nebenläufig. Ein Server, der in den
+Jeder Server wird vor Beginn des Zuges mit einem kurzen `tools/list`-Handshake
+geprüft, und die Prüfungen laufen nebenläufig. Ein Server hat 3 Sekunden, um die
+Verbindung anzunehmen, und 10 Sekunden für den ganzen Handshake, denn einer, der
+das Token jeder Anfrage bei seinem Identitätsanbieter prüft, ist langsam, ohne
+ausgefallen zu sein. Ein Server, der in den
 letzten zwei Minuten mit derselben Anmeldung auf seine Prüfung geantwortet hat, wird
 nicht erneut geprüft: Der nächste Zug einer Unterhaltung bindet ihn sofort ein. Ist
 er inzwischen ausgefallen, läuft dieser Zug ohne seine Tools weiter, und der nächste
@@ -514,12 +605,34 @@ Server wird weiterhin unter seinem echten Namen aufgerufen.
     Connection legte jeden Agent lahm, der sie benennt, auch die, die sie nie
     gebraucht haben.
 
-    Das Modell antwortet dann **ohne** diese Tools — richtig für einen Chat-Zug,
-    falsch, wenn Sie angenommen haben, ein Tool sei immer da.
+    Das Modell antwortet dann **ohne** diese Tools und erfährt das: Die
+    Anweisungen des Zugs nennen den Server, sagen, dass er nicht geantwortet oder
+    die Verbindung abgelehnt hat, und bitten das Modell zu sagen, dass er gerade
+    nicht erreichbar war, statt ein leeres Ergebnis zu melden. Das gilt auch für
+    einen Server, der eben noch geantwortet hat und beim Verbinden des Zugs
+    scheitert. Richtig für einen Chat-Zug, falsch, wenn Sie angenommen haben, ein
+    Tool sei immer da.
 
 Das ist ein bewusster Kompromiss. Der `/test`-Endpunkt und `last_status` sind der
 Weg, es herauszufinden, und der [Audit-Trail](governance.md#audit) hält fest, was
 tatsächlich gelaufen ist.
+
+### In einer Testumgebung und in einem Eval { #in-a-test-environment-and-in-an-eval }
+
+Eine benannte [Umgebung](environments.md#test-connections) kann ein
+organisationsweites Binding mit einer Testverbindung beantworten — einem
+Sandbox-CRM in `staging`. Der Turn erreicht dann den Testserver unter dem Namen
+der Produktionsverbindung, sodass das Modell dieselben Tools sieht; ist die
+Testverbindung weg oder deaktiviert, ist das Binding für diesen Turn aus, und
+die Produktion wird nie stattdessen erreicht.
+
+In einem Eval wird jeder Aufruf einer Produktionsverbindung angehalten und mit
+seinen Argumenten aufgezeichnet statt ausgeführt. Die einzige Ausnahme ist ein
+Tool, das der Server mit `readOnlyHint` markiert, auf einer Verbindung, die
+dieser Markierung vertraut. Die Markierung ist die eigene Angabe des Servers,
+deshalb ist das Vertrauen auf jeder Verbindung aus. Eingeschaltet wird es im
+Dialog **Tools** der Verbindung. Der Dialog nennt, wie viele Tools die
+Markierung beanspruchen, und die Änderung wird mit dieser Zahl im Audit erfasst.
 
 ### Einen aus dem Builder heraus verbinden { #connecting-one-from-the-builder }
 
@@ -578,6 +691,18 @@ Zwei Connections, deren Namen auf dasselbe Präfix hinauslaufen, werden
 dedupliziert — die erste gewinnt, mit einer Warnung, die die unterlegene benennt.
 Vom Deployment verwaltete Server kommen zuerst, gewinnen also gegen eine
 Nutzer-Connection, die zufällig denselben Namen wählt.
+
+Ein Präfix hält die Tools eines Servers von denen eines anderen getrennt, aber nicht
+von den übrigen Tools des Agenten. Eine Connection namens `request`, deren Server
+`capability` anbietet, präsentiert `request_capability`, das fast jeder Agent schon
+hat, und `create` mit `chart` landet auf `create_chart` der Capability charts.
+
+Das Veröffentlichen lehnt eine solche Bindung ab und vergleicht dafür die Tools aus der
+letzten Prüfung der Connection mit den Capability-Tools des Agenten und den eigenen
+der Plattform. Erreicht eine Kollision trotzdem einen Run - ein Server hat das Tool
+hinzugefügt, eine Connection wurde umbenannt -, bleibt in diesem Zug der ganze
+Server außen vor, und das Modell erfährt, warum, wie bei einer Präfix-Kollision.
+Benennen Sie die Connection um, oder schränken Sie ihre Tools ein.
 
 ### Zustand, Nutzer und Aufrufe { #health-users-and-calls }
 
@@ -664,7 +789,7 @@ Tausende Einträge im Speicher könnten „Server, die auf 'linear' passen“ be
 und nicht „die vierte Seite von allen“, ohne alles zu laden und zu schneiden. Die
 Rangfolge ist aus demselben Grund mit in SQL gewandert: Eine Seite zu ranken heißt,
 zu ranken, was auf dieser Seite zufällig stand. Drei Bänder — der Server, der
-Linear *heißt*, dann Namen, die es bloß enthalten, dann Beschreibungen, die es
+Linear _heißt_, dann Namen, die es bloß enthalten, dann Beschreibungen, die es
 erwähnen — innerhalb eines Bandes der kürzere Name zuerst, sodass `Stripe` vor
 `Sweden Payments (Stripe)` liegt.
 
@@ -684,29 +809,49 @@ und keine Auflistung:
   Seitengröße von 50 — also lebt die Arithmetik in `mcp_listing.page`, mit einem
   Test auf der Grenze, denn ein Off-by-one dort überspringt einen Server oder zeigt
   ihn zweimal, in einer Liste, in der niemand merken würde, welches von beidem.
+
+  **Verbunden (Connected)** umfasst jeden zugänglichen Dienst mit einem
+  gespeicherten Organisationskonto oder persönlichen Konto, auch eigene Server
+  und Katalog- oder Registry-Einträge auf anderen Seiten. Mehrere Konten teilen
+  sich eine Serverkarte. Deaktivierte Konten und Konten mit Handlungsbedarf
+  bleiben zur Verwaltung sichtbar. Die Filter für Suche, Kategorie, Anmeldung
+  und Verbindungszustand greifen, bevor die Ergebnisse gezählt und seitenweise
+  ausgegeben werden.
+
+  Gespeicherte Serverlinks öffnen den Kontodialog auch dann wieder, wenn eine
+  fehlgeschlagene Registry-Prüfung oder ein Duplikat den Server unter **Alle (All)**
+  ausblendet. Beim URL-Abgleich bleibt die Groß- und Kleinschreibung von Pfaden und
+  Abfragewerten erhalten, sodass verschiedene Endpunkte getrennt bleiben. Eine
+  erneute Autorisierung verwendet die gespeicherte URL des jeweiligen Kontos.
+
+  In Connected und im Register haben exakte Serverschlüssel Vorrang vor verwandten
+  Suchtreffern. Gespeicherte Links werden dadurch auch dann aufgelöst, wenn andere
+  Beschreibungen denselben Schlüssel nennen. Registereinträge mit identischen Namen behalten
+  eine stabile Reihenfolge über Seiten hinweg.
+
+  Wird ein Registereintrag bei der Synchronisierung entfernt, öffnet sein gespeicherter
+  Katalogschlüssel weiterhin die bestehenden Konten. Die Rückkehr von der Anmeldung im Popup
+  aktualisiert sowohl Serverseiten als auch gespeicherte Kontolinks.
+
 - **Eine Kategorie erreicht auch den Spiegel.** Die Registry hat keine
   Kategorien, also bekommt jeder Eintrag beim Sync eine aus seinem eigenen Namen
   und seiner Beschreibung, gezählt an den Wörtern, an denen man jede Kategorie
-  erkennt; ein Eintrag, der keines davon nennt, landet unter *other*, statt in
+  erkennt; ein Eintrag, der keines davon nennt, landet unter _other_, statt in
   eine Überschrift geraten zu werden. Der Filter **Sign-in** fragt danach, was ein
   Server verlangt - OAuth, ein Token, nichts -, und für einen gespiegelten Eintrag
   ist das, was die Katalogprüfung herausgefunden hat.
-- **Kein eingebackenes Logo.** Die Konsole bettet ein Favicon je kuratiertem Host
-  ein, damit ein Abzeichen offline rendert; bei 1,9 KB je Stück wären das für den
-  Spiegel 10,5 MB Base64 in einem Modul, das der Browser lädt. Registry-Zeilen
-  fallen auf den Favicon-Dienst zur Laufzeit durch, und genau dafür wurde er
-  geschrieben.
+- **Lokale Symbole.** Kuratierte Dienste verwenden mitgelieferte Markenlogos. Registereinträge ohne bekanntes Logo erhalten Dienst- oder Kategoriesymbole, statt für jeden Server ein Favicon abzurufen. Private, nicht klassifizierte Verbindungen behalten ein Monogramm. Der Katalog funktioniert offline und gibt die betrachteten Serverdomains nicht an einen externen Favicon-Dienst weiter.
 - **Ein Snapshot, kein Proxy.** Eine Installation darf nicht aufhören zu
   funktionieren, weil die Registry von jemand anderem ausgefallen ist, und ein
   Name, der gestern aufgelöst hat und heute ins Leere führt, ist schlimmer als
   einer, der nie da war.
 
-    `make platform-bootstrap` lädt sie, ein neues Deployment hat sie also, ohne
-    dass jemand das hier liest. `agenticos cmd mcp-registry-sync` frischt sie auf,
-    und `--fetch` liest die Live-Registry statt des mitgelieferten Snapshots. Auf
-    einem Deployment, das älter ist als die Tabelle, ist die Liste die kuratierten
-    hundert, bis der Sync läuft — was sie vor all dem war, es geht also nichts
-    verloren, während jemand dazu kommt.
+  `make platform-bootstrap` lädt sie, ein neues Deployment hat sie also, ohne
+  dass jemand das hier liest. `agenticos cmd mcp-registry-sync` frischt sie auf,
+  und `--fetch` liest die Live-Registry statt des mitgelieferten Snapshots. Auf
+  einem Deployment, das älter ist als die Tabelle, ist die Liste die kuratierten
+  hundert, bis der Sync läuft — was sie vor all dem war, es geht also nichts
+  verloren, während jemand dazu kommt.
 
 Ein Server in keiner der beiden Listen ist trotzdem erreichbar: **Custom server**
 nimmt jede URL und braucht überhaupt keinen Katalogeintrag.
@@ -773,7 +918,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Entwicklung { #development }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | GitHub | token | `https://api.githubcopilot.com/mcp/` |
 | Cloudflare docs | none | `https://docs.mcp.cloudflare.com/mcp` |
 | GitLab | token | self-hosted |
@@ -793,7 +938,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Projektmanagement { #project-management }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Linear | oauth | `https://mcp.linear.app/mcp` |
 | Jira & Confluence | oauth | `https://mcp.atlassian.com/v1/sse` |
 | Asana | oauth | `https://mcp.asana.com/sse` |
@@ -805,14 +950,14 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Daten und Analytics { #data-and-analytics }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | PostgreSQL | token | self-hosted |
 | Supabase | token | `https://mcp.supabase.com/mcp` |
 | Elasticsearch | token | self-hosted |
 | Airtable | token | `https://mcp.airtable.com/mcp` |
 | Snowflake | token | self-hosted |
 | Databricks | token | self-hosted |
-| Google BigQuery | oauth | self-hosted |
+| Google BigQuery | oauth | `https://bigquery.googleapis.com/mcp` |
 | PostHog | token | `https://mcp.posthog.com/mcp` |
 | Mixpanel | token | `https://mcp.mixpanel.com/mcp` |
 | Google Analytics 4 | token | self-hosted |
@@ -828,11 +973,11 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Kommunikation, Support, Wissen { #communication-support-knowledge }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Slack | oauth | `https://mcp.slack.com/mcp` |
 | Microsoft Work IQ | oauth | `https://workiq.svc.cloud.microsoft/mcp` |
-| Outlook Mail (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_MailTools` |
-| Microsoft Teams (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_TeamsServer` |
+| Google Workspace (self-hosted) | oauth | self-hosted |
+| Microsoft 365 (self-hosted) | oauth | self-hosted |
 | Zoom | oauth | self-hosted |
 | Intercom | oauth | `https://mcp.intercom.com/sse` |
 | Notion | oauth | `https://mcp.notion.com/mcp` |
@@ -847,7 +992,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Finanzen, Vertrieb, Handel { #finance-sales-commerce }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Stripe | token | `https://mcp.stripe.com` |
 | PayPal | oauth | `https://mcp.paypal.com/sse` |
 | Xero | oauth | `https://mcp.xero.com/mcp` |
@@ -860,7 +1005,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Observability { #observability }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Sentry | oauth | `https://mcp.sentry.dev/mcp` |
 | Grafana | token | `https://mcp.grafana.com/mcp` |
 | PagerDuty | oauth | `https://mcp.pagerduty.com/mcp` |
@@ -873,7 +1018,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Marketing und Design { #marketing-and-design }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Mailchimp | oauth | `https://ai-inc.mailchimp.com/claude/mcp/v2` |
 | Resend | token | `https://mcp.resend.com/mcp` |
 | Webflow | oauth | `https://mcp.webflow.com/mcp` |
@@ -893,7 +1038,7 @@ Anbieter einen Endpunkt je Konto ausgibt.
 ### Automatisierung, Speicher, Produktivität, Medien { #automation-storage-productivity-media }
 
 | Server | Auth | URL |
-|---|---|---|
+| --- | --- | --- |
 | Zapier | oauth | `https://mcp.zapier.com/api/mcp/mcp` |
 | Make | token | self-hosted |
 | n8n | token | self-hosted |
@@ -912,10 +1057,6 @@ Anbieter einen Endpunkt je Konto ausgibt.
 | Composio | token | self-hosted |
 | Activepieces | token | `https://mcp.activepieces.com/mcp` |
 | Cal.com | token | `https://mcp.cal.com/mcp` |
-| Outlook Calendar (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_CalendarTools` |
-| Word (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_WordServer` |
-| SharePoint (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_SharePointRemoteServer` |
-| OneDrive (Work IQ) | oauth | `https://agent365.svc.cloud.microsoft/agents/servers/mcp_OneDriveRemoteServer` |
 
 ### Alles Übrige { #anything-else }
 
@@ -941,24 +1082,166 @@ Um einen Eintrag zur Liste hinzuzufügen, siehe
 
 ### Microsoft 365 und Outlook { #microsoft-365-and-outlook }
 
-Microsoft veröffentlicht eigene MCP-Server für Microsoft 365, und der Katalog
-listet sie: **Work IQ** - ein Endpunkt für Mail, Besprechungen, Chats und Dateien -
-und die einzelnen Server für Mail, Calendar, Teams, SharePoint, OneDrive und Word.
-Jeder braucht eine Microsoft-365-Copilot-Lizenz und eine in Microsoft Entra
-registrierte App: Fügen Sie die Work-IQ-Berechtigung des Servers hinzu (für Mail
-`WorkIQ-MailServer`) und die Redirect-URL dieser Konsole, die der Verbindungsdialog
-zeigt, und geben Sie beim Verbinden die Client-ID der App ein.
+Zwei Katalogeinträge führen zu Microsoft 365, und sie haben verschiedene Aufgaben.
 
-Entra registriert
-keinen Client vor Ort, die Client-ID ist also nicht optional. Microsoft führt die
-Server je Anwendung als für die Kompatibilität erhalten und verweist neue Projekte
-auf Work IQ.
+**Microsoft 365 (self-hosted)** ist
+[`softeria/ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server), ein
+Server, den Sie mit `--http` und einer in Microsoft Entra registrierten App
+betreiben. Er durchsucht und liest Outlook-Mail, legt Antwortentwürfe in einem
+Thread an, sendet sie und verwaltet Kalenderereignisse. Mit `--org-mode` erreicht er
+gemeinsame Postfächer und Teams. Geben Sie seine Adresse mit der Endung `/mcp` ein;
+jede Connection meldet sich als ein Microsoft-Konto an. Ein Host im eigenen Netzwerk
+braucht `OUTBOUND_PRIVATE_ALLOWLIST` oder `MCP_ALLOWED_HOSTS`, wie oben. Mit diesem
+Eintrag beantwortet ein Workflow Mails: siehe [E-Mails mit einem freigegebenen
+Entwurf beantworten](howto/answer-mail-with-approved-draft.md).
+
+**Microsoft Work IQ** ist Microsofts eigener gehosteter Server, um in einem Aufruf
+über Mail, Besprechungen, Chats und Dateien zu fragen. Er unterscheidet sich darin,
+was er erlaubt:
+
+- Er blockiert Änderungen - Anlegen, Aktualisieren, Senden -, bis ein
+  Tenant-Administrator sie per Richtlinie erlaubt.
+- Er wird in Copilot Credits abgerechnet und liefert standardmäßig 25 Ergebnisse.
+- Er meldet nur über Microsoft Entra an, als die Person, die verbindet: Registrieren
+  Sie eine App mit der Work-IQ-Berechtigung und der
+  Redirect-URL dieser Konsole, die der Verbindungsdialog zeigt, und geben Sie beim
+  Verbinden deren Client-ID ein. Entra registriert keinen Client vor Ort, die
+  Client-ID ist also nicht optional.
+
+Die Work-IQ-Server je Anwendung - Mail, Calendar, Teams, SharePoint, OneDrive und
+Word - stehen nicht mehr im Katalog, weil Microsoft sie nur für die Kompatibilität
+erhält. Eine bereits angelegte Connection zu einem von ihnen funktioniert weiter,
+über ihre Adresse. Ein Agent, der einen als persönlichen Dienst jeder Person
+bindet, wird bei der nächsten Veröffentlichung abgelehnt: Binden Sie stattdessen
+**Microsoft 365 (self-hosted)** oder **Microsoft Work IQ**.
+
+### Gmail und Google Workspace { #gmail-and-google-workspace }
+
+### Offizielle Remote-Server von Google { #official-google-remote-servers }
+
+Der Katalog enthält Googles gehostete Workspace-Server: Gmail, Calendar, Drive,
+Docs, Sheets, Slides, Chat, People, Classroom und Universal Search. Diese
+Developer-Preview-Dienste sind von der selbst gehosteten Workspace-Integration
+getrennt. Treten Sie Googles Vorschauprogramm bei, aktivieren Sie die Produkt-API
+und den MCP-Dienst und erstellen Sie einen Web-OAuth-Client für einen KI-Agenten.
+Registrieren Sie die genaue Callback-Adresse aus dem Verbindungsdialog und geben
+Sie dort Client-ID und Geheimnis ein. Chat benötigt zusätzlich eine konfigurierte
+Chat-App, Classroom eine Testklasse und einen Testschüler.
+Siehe [Googles Anleitung](https://developers.google.com/workspace/guides/configure-mcp-servers).
+
+Verbindungen zu Googles gehosteten MCP-Servern öffnen vor der Anmeldung die erforderliche Client-Einrichtung mit Weiterleitungs-URL und einem Link zu Googles Anleitung. Client-ID und Secret sind erforderlich; AgenticOS versucht keine automatische Client-Registrierung bei Google. Lehnen andere Anbieter die Registrierung ab, erscheinen Hinweise zur Behebung statt einer allgemeinen Ablehnung.
+
+Die Cloud-Einträge umfassen BigQuery, Cloud Storage, Cloud Run, Compute Engine,
+GKE, Firestore, Cloud SQL, Spanner, Logging, Monitoring und weitere Dienste.
+Aktivieren Sie deren APIs und gewähren Sie MCP Tool User sowie die erforderlichen
+produktspezifischen IAM-Rollen. Verfügbarkeit, Kosten und regionale Einschränkungen
+stehen in der verlinkten Anleitung. Secure Source Manager verwendet standardmäßig
+Code-Review in US Central, Gemini Enterprise Agent Platform das generate-Toolset.
+Für andere dokumentierte Regionen oder Toolsets ändern Sie den Endpunkt.
+[Googles Verzeichnis](https://docs.cloud.google.com/mcp/supported-products) enthält
+auch Dienste, deren Endpunkte oder Authentifizierung hier noch nicht angeboten werden.
+
+Google OAuth fordert Offline-Zugriff und erneute Zustimmung an, um ein
+Refresh-Token zu erhalten. Verbinden Sie bestehende Google-Konten ohne solches
+Token erneut. Öffentlicher Handshake und Werkzeuglisten bedeuten keinen anonymen
+Zugriff auf Kontodaten: Der Katalog-Audit prüft auch OAuth-Metadaten. Die Einträge
+erscheinen auf bestehenden Installationen nach Aktualisierung und Neustart.
+Konten werden ausdrücklich verbunden; gespeicherte Verbindungsadressen und
+Zugangsdaten bleiben erhalten.
+
+| Server | Offizieller Endpunkt |
+| --- | --- |
+| Gmail | `https://gmailmcp.googleapis.com/mcp/v1` |
+| Google Calendar | `https://calendarmcp.googleapis.com/mcp/v1` |
+| Google Chat | `https://chatmcp.googleapis.com/mcp/v1` |
+| Google Classroom | `https://classroommcp.googleapis.com/mcp/v1` |
+| Google Docs | `https://docsmcp.googleapis.com/mcp/v1` |
+| Google Drive | `https://drivemcp.googleapis.com/mcp/v1` |
+| Google People API | `https://people.googleapis.com/mcp/v1` |
+| Google Sheets | `https://sheetsmcp.googleapis.com/mcp/v1` |
+| Google Slides | `https://slidesmcp.googleapis.com/mcp/v1` |
+| Google Workspace Universal Search | `https://workspacemcp.googleapis.com/mcp/v1` |
+| Google API keys | `https://apikeys.googleapis.com/mcp` |
+| Google Agent Registry | `https://agentregistry.googleapis.com/mcp` |
+| Google Agent Search | `https://discoveryengine.googleapis.com/mcp` |
+| Google AlloyDB for PostgreSQL | `https://alloydb.googleapis.com/mcp` |
+| Google Android Management API | `https://androidmanagement.googleapis.com/mcp` |
+| Google Apigee API hub | `https://apihub.googleapis.com/mcp` |
+| Google App Lifecycle Manager | `https://saasservicemgmt.googleapis.com/mcp` |
+| Google App Topology | `https://apptopology.googleapis.com/mcp` |
+| Google Audit Manager | `https://auditmanager.googleapis.com/mcp` |
+| Google Backup and DR Service | `https://backupdr.googleapis.com/mcp` |
+| Google BigQuery Data Transfer Service | `https://bigquerydatatransfer.googleapis.com/mcp` |
+| Google BigQuery Migration Service | `https://bigquerymigration.googleapis.com/mcp` |
+| Google Bigtable | `https://bigtableadmin.googleapis.com/mcp` |
+| Google Capacity Planner | `https://capacityplanner.googleapis.com/mcp` |
+| Google Cloud Asset Inventory | `https://cloudasset.googleapis.com/mcp` |
+| Google Cloud CLI | `https://cloudcli.googleapis.com/mcp` |
+| Google Cloud Location Finder | `https://cloudlocationfinder.googleapis.com/mcp` |
+| Google Cloud Logging | `https://logging.googleapis.com/mcp` |
+| Google Cloud Monitoring | `https://monitoring.googleapis.com/mcp` |
+| Google Cloud NetApp Volumes | `https://netapp.googleapis.com/mcp` |
+| Google Cloud Quotas | `https://cloudquotas.googleapis.com/mcp` |
+| Google Cloud Run | `https://run.googleapis.com/mcp` |
+| Google Cloud SQL | `https://sqladmin.googleapis.com/mcp` |
+| Google Cloud Storage | `https://storage.googleapis.com/storage/mcp` |
+| Google Cloud Support API | `https://cloudsupport.googleapis.com/mcp` |
+| Google Cloud Trace | `https://cloudtrace.googleapis.com/mcp` |
+| Google Compute Engine | `https://compute.googleapis.com/mcp` |
+| Google Database Center | `https://databasecenter.googleapis.com/mcp` |
+| Google Database Migration Service | `https://datamigration.googleapis.com/mcp` |
+| Google Dataform | `https://dataform.googleapis.com/mcp` |
+| Google Datastream | `https://datastream.googleapis.com/mcp` |
+| Google Developer Connect | `https://developerconnect.googleapis.com/mcp` |
+| Google Developer Knowledge API | `https://developerknowledge.googleapis.com/mcp` |
+| Google Error Reporting | `https://clouderrorreporting.googleapis.com/mcp` |
+| Google Filestore | `https://file.googleapis.com/mcp` |
+| Google Firebase SQL Connect | `https://firebasedataconnect.googleapis.com/mcp` |
+| Google Firestore | `https://firestore.googleapis.com/mcp` |
+| Google GKE | `https://container.googleapis.com/mcp` |
+| Google Gemini Cloud Assist | `https://geminicloudassist.googleapis.com/mcp` |
+| Google Gemini Enterprise Agent Platform | `https://aiplatform.googleapis.com/mcp/generate` |
+| Google Home Developer | `https://homedevelopers.googleapis.com/mcp` |
+| Google Identity and Access Management | `https://iam.googleapis.com/mcp` |
+| Google Knowledge Catalog | `https://dataplex.googleapis.com/mcp` |
+| Google Managed Service for Apache Kafka | `https://managedkafka.googleapis.com/mcp` |
+| Google Managed Service for Apache Spark | `https://dataproc.googleapis.com/mcp` |
+| Google Maps Grounding Lite | `https://mapstools.googleapis.com/mcp` |
+| Google Memorystore | `https://redis.googleapis.com/mcp` |
+| Google Network Intelligence Center | `https://networkmanagement.googleapis.com/mcp` |
+| Google Oracle Database@Google Cloud | `https://oracledatabase.googleapis.com/mcp` |
+| Google Organization Policy Service | `https://orgpolicy.googleapis.com/mcp` |
+| Google Pay and Wallet | `https://paydeveloper.googleapis.com/mcp` |
+| Google Personalized Service Health | `https://servicehealth.googleapis.com/mcp` |
+| Google Policy Assist | `https://policyassist.googleapis.com/mcp` |
+| Google Policy Troubleshooter | `https://policytroubleshooter.googleapis.com/mcp` |
+| Google Pub/Sub | `https://pubsub.googleapis.com/mcp` |
+| Google Recommender | `https://recommender.googleapis.com/mcp` |
+| Google Resource Manager | `https://cloudresourcemanager.googleapis.com/mcp` |
+| Google Secure Source Manager | `https://securesourcemanager.us-central1.rep.googleapis.com/mcp/code_review` |
+| Google Security Command Center Management | `https://securitycentermanagement.googleapis.com/mcp/manage-services` |
+| Google Service Metadata API | `https://cloud.googleapis.com/mcp` |
+| Google Spanner | `https://spanner.googleapis.com/mcp` |
+| Google Stitch | `https://stitch.googleapis.com/mcp` |
+| Google Unified Maintenance | `https://maintenance.googleapis.com/mcp` |
+
+Katalogdienste verwenden mitgelieferte Markenlogos, einschließlich eigener Workspace-App-Symbole. Registereinträge ohne Logo erhalten ein Dienst- oder Kategoriesymbol, etwa einen Kalender für CalendarMCP. Private, nicht klassifizierte Verbindungen behalten ein Monogramm. Die Darstellung ruft keine Favicons von Drittanbietern ab.
+
+**Google Workspace (self-hosted)** ist
+[`taylorwilsdon/google_workspace_mcp`](https://github.com/taylorwilsdon/google_workspace_mcp),
+betrieben mit `--transport streamable-http` und `MCP_ENABLE_OAUTH21=true` und Ihrem
+eigenen Google-OAuth-Client. Er durchsucht und liest Gmail, legt Entwürfe an und
+sendet Mail in einem Thread und arbeitet mit Calendar, Drive und Sheets. Geben Sie
+seine Adresse mit der Endung `/mcp` ein; jede Connection meldet sich als ein
+Google-Konto an. [E-Mails mit einem freigegebenen Entwurf
+beantworten](howto/answer-mail-with-approved-draft.md) zeigt, wie er aus einem
+Workflow Mails beantwortet.
 
 Outlook ist auch über MCP-Dienste von Drittanbietern verfügbar. Die mitgelieferte
 Registry enthält MintMCP-Einträge für E-Mail und Kalender:
 
 | Registry-Eintrag | Server-URL |
-|---|---|
+| --- | --- |
 | `com.mintmcp/outlook-email` | `https://outlook-email.mintmcp.com/mcp` |
 | `com.mintmcp/outlook-calendar` | `https://outlook-calendar.mintmcp.com/mcp` |
 
@@ -1012,28 +1295,145 @@ innerhalb der Berechtigungen des Schlüssels. Jedes Tool ist ein Aufruf der
 begrenzt und auditiert wie dieselbe Anfrage über HTTP; eine Ablehnung kommt als
 Tool-Fehler zurück, der die fehlende Berechtigung nennt.
 
+Für das Genehmigen persönlicher Routinen und Watches ist der ausdrückliche Scope `personal:consent` nötig, ausgewählt unter **Custom** beim Ausstellen eines Schlüssels oder Autorisieren eines MCP-Clients. Er ist in keiner Voreinstellung enthalten, auch nicht in **Full access**. Die Bestätigung erlaubt dem Zugang, dauerhafte Routinen und Watches mit Ihren persönlichen Verbindungen und Daten zu genehmigen; die üblichen Scopes `agents:run` und `runs:view` erlauben das nicht. Bestehende Schlüssel und MCP-Autorisierungen erhalten diese persönliche Zustimmung nicht automatisch.
+
+Verbindungsprüfungen aktualisieren erkannte Tools und den Status. Deshalb wartet `test_my_connection` sowohl bei `writes` als auch bei `all` auf Genehmigung.
+
 | Tool | Braucht |
-|---|---|
+| --- | --- |
 | `whoami` | — |
-| `list_agents`, `get_agent`, `list_capabilities` | `agents:view` |
-| `create_agent_draft` | `agents:edit` |
+| `list_agents`, `get_agent`, `list_capabilities`, `get_capability`, `list_models`, `search_mcp_servers` | `agents:view` |
+| `create_agent_draft`, `update_agent_draft`, `test_agent_draft` | `agents:edit` |
+| `list_sandbox_connections`, `list_sandbox_runtimes`, `get_sandbox_policy` | `connections:view` |
+| `list_org_connections` | `mcp:manage` |
+| `list_mcp_connection_tools`, `get_mcp_connection_tool` | `mcp:manage` (Organisation); eigene persönliche Verbindungen (Schlüssel: `agents:run`) |
+| `publish_agent` | `agents:publish` auf diesem Agent |
 | `discard_agent_draft` | `agents:edit`, für Ihren eigenen, nie veröffentlichten Entwurf |
 | `run_agent` | `agents:run` |
-| `list_runs`, `get_run`, `get_spend` | `runs:view` |
+| `list_routines` | `agents:view` |
+| `create_routine`, `run_routine_now` | `agents:run` auf dem Agent |
+| `update_routine`, `delete_routine` | wer die Routine angelegt hat, oder `agents:edit` auf ihrem Agent |
+| `list_runs`, `get_run`, `read_run_transcript`, `read_run_tool_call`, `read_conversation`, `read_conversation_tool_call`, `list_conversations`, `get_spend` | `runs:view` |
+| `create_conversation` | `agents:run` |
+| `update_proactivity_settings` | `org:settings`, `budgets:manage` |
 | `list_knowledge_bases`, `search_knowledge` | `collections:view` |
 | `list_embedding_models` | — |
 | `create_knowledge_base`, `add_document` | `collections:edit` |
 | `list_skills` | `skills:view` |
+| `create_skill` | `skills:edit` |
+| `get_skill`, `list_skill_versions`, `get_skill_version` | `skills:view`; Agents, die der Aufrufer nicht sieht, werden nur gezählt |
+| `update_skill`, `add_skill_resource` | `skills:edit` |
+| `list_skill_improvements`, `get_skill_improvement` | `skills:view` und `runs:view` |
+| `estimate_skill_improvement`, `start_skill_improvement`, `estimate_next_skill_improvement_step`, `run_next_skill_improvement_step`, `retry_skill_improvement_step`, `accept_skill_improvement`, `end_skill_improvement` | Bearbeitungszugriff auf den Skill und `runs:view`; das Festsetzen der schlechteren Agents zusätzlich `agents:publish` auf jedem |
+| `change_skill_version` | Bearbeitungszugriff auf den Agent; live gehen zusätzlich `agents:publish` |
+| `list_skills_behind_main` | `skills:view` |
+| `estimate_skill_update_check`, `start_skill_update_check`, `estimate_skill_catch_up`, `start_skill_catch_up` | Bearbeitungszugriff auf den Skill und `runs:view`; eine Aktualisierungsprüfung zusätzlich Zugriff auf den Agent |
+| `return_skill_fork_to_main` | Bearbeitungszugriff auf jeden Agent; live gehen zusätzlich `agents:publish` |
+| `list_context_files`, `get_context_file` | `context:view` |
+| `create_context_file`, `update_context_file` | `context:edit` |
+| `list_projects` | `projects:view` |
+| `get_project` | Zugriff auf das Projekt |
+| `create_project` | `projects:edit` |
 | `list_members` | `members:view` |
 | `invite_member` | `members:manage` und `roles:manage` |
+| `list_my_connections`, `test_my_connection`, `set_my_language`, `set_my_profile` | — (die eigenen des Aufrufers; ein Schlüssel braucht `agents:run` für `test_my_connection`) |
+| `list_improvements`, `get_improvement` | Lesezugriff auf den Agenten; die Wissensthemen der Sitzung brauchen außerdem `runs:view`, ebenso die Liste aller offenen Sitzungen ohne Angabe eines Agenten |
+| `estimate_improvement`, `start_improvement`, `use_attempt`, `accept_improvement`, `estimate_next_improvement_step`, `run_next_improvement_step`, `estimate_improve_again`, `improve_again`, `end_improvement` | Bearbeitungszugriff auf den Agenten und `runs:view`; Starten zusätzlich `datasets:run`, Veröffentlichen `agents:publish` |
+| `list_datasets` | `datasets:view` |
+| `get_eval_run` | `runs:view` |
+| `estimate_knowledge_draft`, `draft_knowledge_topic` | `runs:view` und Bearbeitungszugriff auf die Wissensdatenbank des Themas |
+| `list_watches`, `delete_watch` | eigene Beobachtungen des Aufrufers |
+| `create_watch`, `update_watch` | die Person selbst - angemeldet, über einen von ihr ausgestellten Schlüssel oder ein MCP-Token oder in ihrem privaten Chat; `agents:run` bei der Agentenwahl |
 
-Bewusst fehlt: einen Agent veröffentlichen, Zugangsdaten anfassen und etwas
-löschen außer einem Agent-Entwurf, den der Aufrufer selbst angelegt und nie
-veröffentlicht hat - das Rückgängigmachen eines versehentlichen Entwurfs. Einen
-hier angelegten Entwurf veröffentlicht eine Person in der Konsole.
+Das Plattform-Tool `read_conversation` lässt durch Guardrails abgelehnte Züge
+und zitierte Antwortauszüge aus. `list_conversations` lässt Unterhaltungen mit
+abgelehnten Zügen aus, damit ein erzeugter Titel deren Text keinem Modell
+wiedergibt. Die Konsole behält das vollständige Transkript für berechtigte Leser.
+
+Die Verbessern- und Eval-Werkzeuge rufen Routen auf, die noch nicht zur
+öffentlichen API gehören: Sie antworten dem Architekten in der App und einem per
+OAuth angemeldeten MCP-Client und lehnen einen API-Schlüssel der Organisation ab
+wie eine Konsolenroute. Es sind die eigenen Aktionen des
+[Verbessern-Assistenten](authoring.md#the-improve-wizard), daher gelten seine
+Prüfungen, und der Architekt nutzt die ändernden nur auf Bitte. Auch ein
+MCP-Client kann Sitzungen starten, übernehmen, veröffentlichen und beenden; dort
+tritt die eigene Freigabeabfrage des Clients an die Stelle der Karte des Architekten.
+
+Die Suche mit `list_projects` liefert nur Projekt-IDs und Namen.
+`get_project` liest die Anweisungen und Konfiguration eines ausgewählten Projekts.
+Dieser Lesezugriff läuft unter `writes` ohne Freigabe; die bestehenden
+Zugriffsrechte des Aufrufers auf das Projekt gelten weiterhin.
+
+Ein Agent lässt sich hier von Anfang bis Ende bauen: entwerfen, bearbeiten, mit
+`test_agent_draft` als unveröffentlichter Entwurf ausprobieren - ein Test-Run,
+budgetiert und aufgezeichnet, mit Begründung abgelehnt, wenn der Entwurf nicht
+veröffentlicht werden könnte - und mit `publish_agent` veröffentlichen, das
+dieselben Prüfungen ausführt wie der Button **Publish** der Konsole. Der
+`cron_expression` einer Routine gilt in UTC. `set_my_language` stellt die Sprache
+der Konsole für den Aufrufer um (`en`, `pl` oder `de`), auf jedem Gerät, auf dem
+er sich anmeldet, und `set_my_profile` speichert seine Rolle und woran er
+arbeitet, was von da an jeder Agent erfährt. `create_skill` speichert ein
+Vorgehen, das funktioniert hat, als [Skill](skills.md) - für „mach daraus einen
+Skill“.
+
+Bewusst fehlt: Zugangsdaten anfassen und etwas löschen außer einem Agent-Entwurf,
+den der Aufrufer selbst angelegt und nie veröffentlicht hat - das Rückgängigmachen
+eines versehentlichen Entwurfs - oder einer Routine.
 Verbundene Anwendungen stehen unter **Einstellungen → MCP-Clients**, wo das
 Trennen ihren Zugriff samt jedem Token beendet. Aufrufe, die etwas ändern,
 warten auf eine Freigabe, wie [oben](#which-calls-wait-for-a-person) beschrieben.
+
+Die Entwurfswerkzeuge akzeptieren konfigurierte Fähigkeitenbindungen und reine IDs.
+Zum Beispiel gibt `capabilities: [{id: sandbox, config: {backend: service,
+include_execute: true}}]` einem Programmieragenten eine Shell auf dem Standardhost
+der Organisation. `list_capabilities` liefert das jeweilige `config_schema`;
+`list_sandbox_connections`, `list_sandbox_runtimes` und `get_sandbox_policy`
+zeigen verfügbare Hosts, Laufzeitaliasse und Hostlimits vor der Konfiguration.
+Eine reine Datei-Sandbox (`state`) führt keine Befehle aus.
+
+`update_agent_draft.add_capabilities` ergänzt oder aktualisiert Bindungen:
+ausgelassene Felder behalten ihren Wert, ein angegebenes `config` ersetzt die
+gesamte Konfiguration. Lesen Sie zuerst den Entwurf, um benötigte Einstellungen
+zu erhalten. Beide Werkzeuge akzeptieren `mcp_servers`: Organisationsverbindungs-IDs
+aus `list_org_connections` oder persönliche Katalogschlüssel aus
+`search_mcp_servers`. Persönliche Verbindungs-IDs gehören nie in eine gemeinsame
+Spezifikation. Die MCP-Bindungsliste wird vollständig ersetzt; `[]` trennt alle.
+Beim Erstellen sind auch `skill_ids` und `collection_ids` möglich. Tests und
+Veröffentlichung behalten dieselben Validierungs- und Freigaberegeln.
+
+### Ihn einem Agent geben { #giving-it-to-an-agent }
+
+Derselbe Server ist auch eine MCP-Bindung, die jeder Agent haben kann, sodass ein
+Agent „was ist gestern fehlgeschlagen“ oder „welche Agents nutzen diese
+Wissensbasis“ aus den eigenen Daten der Plattform beantwortet. Im Builder ist er
+die erste Karte unter **MCP-Server**, benannt nach dieser Installation; sie
+einzuschalten bindet ihn als `mcp_servers: [{account: platform, approval: writes}]`.
+
+- **Er handelt als die Person, für die der Agent läuft.** Ein Run erzeugt einen
+  kurzlebigen Schlüssel mit den Berechtigungen dieser Person, sodass der Agent
+  eines Viewers liest, was der Viewer lesen darf, und nichts anlegt. Nichts Neues
+  wird gewährt, und wo niemand hinter dem Run steht - ein öffentliches Widget, ein
+  Zeitplan im Namen von niemandem - fehlt die Bindung.
+- **Änderungen folgen der Genehmigungsrichtlinie der Bindung.** Das normale
+  `writes` hält Veröffentlichung, Einladung, Löschen, sofortiges Ausführen sowie
+  Erstellen und Bearbeiten persönlicher Routinen und Beobachtungen an; `all`
+  auch Lesezugriffe. Nur `set_my_language` umgeht dieses Tor. Menschliche Identität
+  im privaten Chat, Eigentum und Rechte bleiben erforderlich, ersetzen aber nicht
+  die Bestätigung eines dauerhaften Automatisierungsaufrufs. `set_my_profile`
+  wartet ebenfalls, weil sein Inhalt spätere Agentenläufe erreicht.
+
+- **Die Werkzeuge lassen sich einschränken** in den Einstellungen der Karte, die
+  jedes Werkzeug auflisten und die ändernden markieren.
+
+Die Vorlage **AgenticOS** bindet ihn genau so, ebenso jeder von Grund auf
+angelegte Agent, sodass ein Agent die Plattform sofort nachschlagen kann - und eine
+Routine einrichtet oder die Sprache der Konsole umstellt, wenn man ihn darum bittet.
+
+### Desktop, Mobile und lokale Umgebungen { #desktop-mobile-and-local-environments }
+
+Der MCP-Server erklärt dieselben Unterschiede wie Agentenläufe: Desktop kann einen genehmigten lokalen Ordner, Browser, ein Modell oder einen HTTP-MCP-Dienst für die Unterhaltung nutzen. Mobile bietet keine Desktop-Ausführung. Eine native Freigabe bleibt erforderlich; MCP wählt keinen Ordner und erteilt keinen Zugriff im Namen der Person.
+
+`create_project` akzeptiert `backend` (`auto`, `state`, `service`) und optional `sandbox_connection_id` für die gemeinsame Serverumgebung. Der zurückgegebene Backend-Wert beschreibt keine persönliche Computerauswahl. Lokale Ordner bleiben von gemeinsamen Uploads getrennt; gemeinsame Chatantworten können dennoch lokale Inhalte offenlegen. Der Architect-Leitfaden enthält Desktop-, Mobile- und Sandbox-Seiten; jeder Lauf erhält nach der Validierung Informationen über die tatsächlich ausgewählten lokalen Ressourcen.
 
 ## Was MCP Ihnen nicht bringt { #what-mcp-does-not-get-you }
 
@@ -1061,3 +1461,76 @@ warten auf eine Freigabe, wie [oben](#which-calls-wait-for-a-person) beschrieben
   keines heraus, und eine zu löschen meldet ab, was sie angemeldet hat.
 - Ein nicht erreichbarer Server wird **übersprungen**, nicht ausgelöst — der Zug
   antwortet ohne diese Tools.
+
+Jede geplante Prüfung umfasst höchstens 64 aktive Organisationsserver, beginnend mit der ältesten Prüfung, und führt höchstens acht Verbindungsprüfungen gleichzeitig aus. Auch unbrauchbare Zugangsdaten aktualisieren den Prüfzeitpunkt, ohne einen Ausfall zu melden. Größere Installationen prüfen dadurch alle Server über mehrere Durchläufe.
+
+Die OAuth-Erneuerung besitzt eine eigene kurze Transaktion: Sie sperrt und prüft das Konto erneut, rotiert die Zugangsdaten und bestätigt den Commit vor der Token-Rückgabe. Ein Abbruch wartet auf diesen Abschluss; ein späteres Run-Rollback macht ihn nicht rückgängig. Scheitert die Speicherung nach der Rotation beim Anbieter, schlägt die Anfrage ausdrücklich fehl und eine erneute Autorisierung kann nötig sein. Mailbox-Polling verwendet eine separate Advisory-Sperre pro Konto; Cursor und eingereihte Jobs werden gemeinsam bestätigt, und eine fehlerhafte Antwort rollt nur die Arbeit dieser Mailbox zurück.
+
+Die Warteschlange der Zustandsprüfung verwendet einen eigenen indizierten Zeitstempel. Weder die OAuth-Erneuerung noch das Mailbox-Polling verschieben die nächste Serverprüfung. Bestehende Server werden nach der Migration als noch nicht geprüft eingereiht.
+
+## Workflows und Tabellen erstellen { #workflow-and-table-tools }
+
+Der Plattform-MCP-Server bietet auch Werkzeuge für Workflows und Virtual Tables. Beginnen Sie mit `list_workflow_definitions`, `get_workflow_definition`, `list_workflow_nodes` und `get_workflow_node`. Erstellen und speichern Sie private Graphen mit `create_workflow_draft` und `update_workflow_draft` unter Beibehaltung von `expected_revision`. `test_workflow_draft` akzeptiert optional `entry_node_id`; prüfen Sie `get_workflow_execution` und `get_workflow_execution_steps`, bevor Sie Erfolg melden. Tests können echte APIs aufrufen und Daten schreiben. `publish_workflow` aktiviert konfigurierte Eingänge, erfordert die bestehenden Veröffentlichungsrechte und hält einmalige Signaturgeheimnisse vom Modell fern. Unbeaufsichtigte Veröffentlichung erfordert weiterhin eine menschliche Sitzung; ein API-Schlüssel darf deren Rechte nicht dauerhaft übernehmen.
+
+Verwende vor `run_workflow` das Werkzeug `get_workflow_input_schema`, um den
+veröffentlichten Eingabevertrag ohne Ausführung zu prüfen. Es nimmt `workflow_id`
+und optional `version_id` an und liefert dieselben `input_schema`-Verträge pro
+Eingang wie der [HTTP-Endpunkt zur Abfrage](api.md#running-a-workflow). Wähle die
+gewünschte `entry_node_id` und sende passende `fields`. Verträge nach JSON Schema
+Draft 2020-12, bisherige einfache Felder und untypisierte Eingaben verwenden dieses
+gemeinsame Abfrageformat; beim Annehmen eines Runs wird gegen den Vertrag der
+für den Run angenommenen Version geprüft.
+
+Das MCP-Werkzeug liefert nur Manual/API-Eingänge, die sein `run_workflow`
+starten kann. Verträge für Form und Called by a workflow bleiben über HTTP
+für ihre jeweiligen Startwege verfügbar.
+
+`get_workflow_input_schema` lehnt Antworten über 32 KiB kodiertem JSON ab,
+einschließlich aller zurückgegebenen Eingänge. Es liefert nie einen Teilvertrag.
+Prüfe größere Verträge über den HTTP-Endpunkt außerhalb des Modellkontexts.
+
+Für operative Datensätze dienen `list_virtual_tables`, `get_virtual_table`, `create_virtual_table`, `update_virtual_table_schema`, `query_virtual_table`, `add_virtual_table_record` und `update_virtual_table_record`. Schema- und Datensatzänderungen behalten Revisionsprüfungen bei. Alle Werkzeuge nutzen Organisation, Rechte und Ressourcenzugriffe des Aufrufenden; Schreibwerkzeuge behalten die Plattform-MCP-Freigabe bei. Die Architect-Skills workflow-builder und virtual-tables erklären Triggerauswahl, das Kapseln einer dokumentierten HTTP-API ohne passenden MCP-Katalogeintrag und das Anbinden veröffentlichter aufrufbarer Workflows als Agentenwerkzeuge. Zugangsdaten werden im Tresor eingerichtet, niemals in Graphen oder Modellausgaben.
+
+Workflows und Tables nutzen den AgenticOS-MCP-Server als gemeinsame Werkzeugschnittstelle. Erlaube einem Agenten nur die benötigten Werkzeuge. `run_workflow` startet einen veröffentlichten Workflow und gibt den angenommenen Lauf zurück; frage das Ergebnis über `get_workflow_execution` ab. Tabellen bieten `get_virtual_table_record`, `virtual_table_record_exists`, `upsert_virtual_table_record`, `delete_virtual_table_record` und `list_virtual_table_views`. Änderungen und Löschungen verwenden die gelesene Revision, Schreibvorgänge benötigen weiterhin Zustimmung. Gespeicherte Ansichten nutzen dieselbe authentifizierte öffentliche API und Tabellenzugriffsprüfung. Bestehende Workflows-Bindungen bleiben bearbeitbar. Die Tables-Capability entfällt: App-Freigaben wechseln zu `table_bindings`, und Tabellenoperationen benötigen eine ausdrücklich eingerichtete Plattform-MCP-Verbindung.
+
+Erwartete API-Ablehnungen liefern ein explizites `error`-Objekt mit HTTP-Status, Code, Meldung und sicheren Felddetails. Dies bedeutet eine abgelehnte Operation, keinen erfolgreichen Schreibvorgang. Das Objekt bleibt im Chatverlauf sichtbar; unerwartete Serverfehler bleiben maskiert. `prepare_workflow_draft` bündelt Tabelle und Graph für eine Freigabe; `check_workflow_draft` prüft ohne Aktionen. Beim Aktualisieren eines unveränderten Architect werden auch workflow-builder und virtual-tables installiert und eingebunden. Bestehende Bindungen bleiben erhalten; offene Entwurfsänderungen werden nicht überschrieben.
+
+Für bestehende angepasste Architects verwende `uv run agenticos cmd refresh-assistant --org <organization-id> --workflow-support`.
+
+## Context und Skills erstellen { #context-and-skill-authoring }
+
+Vor `update_skill` lesen Sie `get_skill`; ausgelassene Felder bleiben erhalten.
+`add_skill_resource` speichert eine Textvorlage oder Referenz und führt kein Skript
+aus. Entdecken Sie Context mit `list_context_files`, lesen Sie Inhalt und Modus
+mit `get_context_file` und speichern Sie über `create_context_file` oder
+`update_context_file`. `inject` liefert ständigen Prompt-Kontext, `link` Inhalt
+bei Bedarf. Beide Agentenentwurfs-Tools akzeptieren `context_ids`; die Liste
+ersetzt alle Context-Bindungen. Änderungen gebundener Dateien gelten beim
+nächsten Lauf; neue Entwurfsbindungen müssen veröffentlicht werden. Berechtigungen
+und Schreibfreigaben bleiben bestehen.
+
+### Herkunft und Berechtigung verbundener Konten { #connected-account-source-authority }
+
+Ein über den OAuth-Client einer Organisation verbundenes Google-Konto funktioniert nur dort. Persönliche Nutzung setzt aktuelle Mitgliedschaft voraus. Rotation oder Entfernung des Clients macht die kopierte Freigabe bis zur erneuten Verbindung ungültig. Verbindungen, erneute Verbindungen und Trennungen von Organisationskonten werden protokolliert. Persönliche Exporte enthalten Kontometadaten, niemals Token oder Client-Geheimnisse.
+
+Die Migration `0293_connected_account_sources.py` verlangt erneute Zustimmung für ältere persönliche Konten ohne überprüfbare Herkunft. Ein Downgrade entfernt persönliche Kontofreigaben, da ältere Versionen deren Herkunftsorganisation nicht durchsetzen können; gewöhnliche MCP-Verbindungen bleiben erhalten.
+
+Mirage-Freigabepausen binden Kontoidentitäten und Geheimnisgenerationen. Änderungen während der Pause erfordern einen neuen Lauf mit Freigabe. Routinenprüfungen binden dieselben Generationen; Terminalschreibvorgänge und Befehle brauchen die Zustimmung zu Routinenaktionen, auch wenn Schreibfreigaben des Mounts deaktiviert sind.
+
+Das Entfernen eines Mitglieds widerruft dessen persönliche Freigaben über diese Organisation dauerhaft; eine erneute Einladung erfordert eine neue Zustimmung.
+
+## Begrenzte Suche und Run-Analyse { #bounded-discovery }
+
+Das Plattform-MCP liefert zunächst Zusammenfassungen statt aller Verträge. `list_org_connections` und `list_my_connections` unterstützen `q`, `limit` (1–50, Standard 20) und `skip`; folgen Sie `next_skip` bis null. Gespeicherte Tool-Schemas und Agentenlisten werden ausgelassen. `tool_count: null` bedeutet, dass kein Katalog gespeichert wurde; null Tools als Zahl bedeutet einen gespeicherten leeren Katalog. `allowed_tool_count: null` bedeutet keine Tool-Zulassungsliste. `list_my_connections(include_tools=true)` bleibt für kleine Antworten verfügbar, lehnt aber Antworten über 64 KiB ab.
+
+`list_mcp_connection_tools(connection_id, account, q, limit, skip)` sucht Tools einer zugänglichen Verbindung. Es liefert Namen, begrenzte Beschreibungsauszüge, Zulassungsstatus und den expliziten `read_only_hint` des Servers. Null bedeutet keine Erklärung, keinen nachgewiesenen Schreibzugriff. `get_mcp_connection_tool` liefert einen vollständigen gespeicherten Vertrag einschließlich Eingabeschema. Ein null-Schema wurde nicht gespeichert und bedeutet nicht, dass keine Argumente existieren. Beide lesen den zuletzt gespeicherten Katalog ohne Tool-Ausführung oder Servertest; beachten Sie `last_checked_at` und `tools_cached`. Organisationszugriff erfordert `mcp:manage`, persönlicher Zugriff bleibt auf eigene Verbindungen beschränkt.
+
+`list_capabilities(q, limit, skip)` liefert Zusammenfassungen. Lesen Sie vor der Konfiguration mit `get_capability(capability_id)` Schema, Standardwerte und Tool-Verträge. `list_skills` liefert standardmäßig 20 Einträge, reicht `q` an die API weiter und lässt Inhaltsauszüge aus. `get_skill` liest den Inhalt; `include_usage=true` ergänzt nutzende Agenten. Diese Suchantworten haben ein Budget von 64 KiB und lehnen Überschreitungen mit einem Hinweis auf engere Anfragen ab. Erforderliche Schemafelder werden nicht still abgeschnitten. Bestehende MCP-Clients müssen Konfiguration über die Detail-Tools lesen und Seitenfortsetzungen beachten. Die REST-Antworten der Konsole bleiben unverändert.
+
+`list_runs` filtert nach Status, Kanal, eingefrorener Version und Datumswerten mit Zeitzone. Historische Fehler beweisen keinen Fehler der aktuellen Version. `read_conversation` bleibt auf eigene Chats beschränkt. `read_run_transcript` liest autorisierte Runs, auch von Kollegen oder Kanälen, nach der bestehenden `runs:view`-Regel. Durch Guardrails abgewiesene Nachrichten werden vor der Seitenauswahl entfernt, zitierte Antworten ausgelassen.
+
+Nachrichtenindizes beziehen sich auf dieses gefilterte Transkript. Zurückgegeben werden begrenzte Textfenster und Tool-Metadaten statt aller Argumente und Ergebnisse. Folgen Sie `next_skip`, `next_offset` und `next_tool_skip`; setzen Sie für weitere Teile einer langen Nachricht `limit=1`. `read_run_tool_call` liest ein Fenster von `args` oder `result` eines Aufrufs und prüft die Nachrichten-ID gegen die Seite; es führt nichts aus. Nicht verfügbare Ergebnisse sind null. Privater Gesprächszugriff wird nicht erweitert.
+
+Die Namenssuche für Improve prüft alle Agentenseiten, bevor sie einen Treffer auswählt oder Mehrdeutigkeit meldet; die ersten 100 Agenten gelten nicht als vollständiger Katalog.
+
+`read_conversation` verwendet dieselben begrenzten Nachrichten- und Tool-Metadatenfenster wie die Run-Analyse, standardmäßig mit 10 Nachrichten. `read_conversation_tool_call` liest eine ausgewählte gespeicherte Nutzlast, auch bei älteren Nachrichten ohne Run-ID, über die unverändert eigentümergebundene Gesprächs-API. MCP-Clients müssen den Fensterfortsetzungen folgen, statt vollständige Tool-Ergebnisse im Transkript zu erwarten.

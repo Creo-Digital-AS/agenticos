@@ -8,11 +8,13 @@ token never appears in any response (only `has_auth_token`).
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.agents.mcp_oauth import OAuthError
-from app.api.deps import CurrentUser, McpConnectionSvc
+from app.api.deps import CurrentUser, McpConnectionSvc, OptionalCurrentUser, key_needs
+from app.api.public_api import PUBLIC
 from app.core.exceptions import NotFoundError
+from app.core.permissions import Perm
 from app.schemas.mcp_connection import (
     McpConnectionCreate,
     McpConnectionList,
@@ -31,9 +33,19 @@ from app.schemas.mcp_connection import (
 router = APIRouter()
 
 
-@router.get("", response_model=McpConnectionList)
+@router.get(
+    "",
+    response_model=McpConnectionList,
+    dependencies=[PUBLIC, Depends(key_needs(Perm.AGENTS_RUN))],
+)
 async def list_mcp_connections(service: McpConnectionSvc, user: CurrentUser) -> Any:
-    """List the current user's MCP server connections."""
+    """List the current user's MCP server connections.
+
+    Public, the one route here that is: an agent suggesting what to connect
+    reads what its person already has through the platform's MCP server (#2301).
+    The tokens are never in it, and a key reads it only when issued for
+    `agents:run`.
+    """
     items, total = await service.list_for_user(user_id=user.id)
     return McpConnectionList(
         items=[McpConnectionRead.from_model(c) for c in items],
@@ -113,13 +125,23 @@ async def start_mcp_oauth(
 async def complete_mcp_oauth(
     data: McpOAuthCallback,
     service: McpConnectionSvc,
+    user: OptionalCurrentUser,
 ) -> Any:
     """Finish the OAuth flow. Authenticated by the `state` token (no session),
-    so the provider redirect can reach it without our auth cookie."""
+    except connected accounts, which also require the initiating session and nonce."""
     try:
-        connection = await service.oauth_callback(state=data.state, code=data.code)
+        connection = await service.oauth_callback(
+            state=data.state,
+            code=data.code,
+            browser_nonce=data.browser_nonce,
+            acting_user_id=user.id if user is not None else None,
+        )
     except (OAuthError, NotFoundError) as exc:
         return McpOAuthCallbackResult(ok=False, error=str(exc))
+    if connection.purpose == "account":
+        # A connected account is named by its address and bound by a terminal's
+        # mount, never added to an agent as a server - so no id to offer that with.
+        return McpOAuthCallbackResult(ok=True, connection_name=connection.label or connection.name)
     return McpOAuthCallbackResult(
         ok=True,
         connection_name=connection.name,
@@ -128,7 +150,11 @@ async def complete_mcp_oauth(
     )
 
 
-@router.post("/{connection_id}/test", response_model=McpConnectionTestResult)
+@router.post(
+    "/{connection_id}/test",
+    response_model=McpConnectionTestResult,
+    dependencies=[PUBLIC, Depends(key_needs(Perm.AGENTS_RUN))],
+)
 async def test_mcp_connection(
     connection_id: UUID,
     service: McpConnectionSvc,
@@ -139,5 +165,5 @@ async def test_mcp_connection(
     return McpConnectionTestResult(
         ok=error is None,
         error=error,
-        tools=[McpToolRead(name=t.name, description=t.description) for t in tools],
+        tools=[McpToolRead.model_validate(t, from_attributes=True) for t in tools],
     )

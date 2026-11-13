@@ -1,0 +1,232 @@
+"""Every job kind bound to the function that runs it, as a production worker loads them (#2219).
+
+A child process of the ingest pool loads these too (`app.worker.child`), so
+this module is where the heavy imports happen - once per process, at start-up,
+never per job.
+"""
+
+from collections.abc import Awaitable, Callable
+from functools import cache
+
+from pydantic import JsonValue
+
+from app.worker import jobs
+from app.worker.jobs import Payload, Task, Tick
+from app.worker.registry import Handler, Handlers, by_kind
+
+
+def _each_tick(sweep: Callable[[], Awaitable[object]]) -> Callable[[Tick], Awaitable[object]]:
+    """A sweep that looks at the current state, as a schedule's job: the occurrence is not its business."""
+
+    async def run(_tick: Tick) -> object:
+        return await sweep()
+
+    return run
+
+
+def ingest() -> Handlers:
+    """What an ingest child loads: its pool's three kinds, and nothing that runs an agent.
+
+    A child holds its imports for its whole life, once per child, so loading
+    only the parsing and embedding stack - not the agent runtime the other pools
+    need - is a quarter of its memory and half its start-up (#2229).
+    """
+    from app.worker.tasks import project_tasks, rag_tasks
+
+    return by_kind(
+        [
+            Handler(jobs.MOVE_PROJECT_WORKSPACE, project_tasks.move_project_workspace),
+            Handler(jobs.INGEST_DOCUMENT, rag_tasks.ingest_document),
+            Handler(jobs.SYNC_COLLECTION, rag_tasks.sync_collection),
+            Handler(jobs.SYNC_SOURCE, rag_tasks.sync_source),
+        ]
+    )
+
+
+def production() -> Handlers:
+    """Every kind, for a worker that runs the agent and system pools on its own loop."""
+    from app.services.sandbox_workspace import retry_pending_destroys
+    from app.worker.tasks import (
+        approval_tasks,
+        authoring_tasks,
+        case_generation_tasks,
+        channel_tasks,
+        conversation_tasks,
+        diagnostics_tasks,
+        eval_suite_tasks,
+        eval_tasks,
+        generated_media_tasks,
+        improvement_tasks,
+        invitation_tasks,
+        knowledge_gap_tasks,
+        mcp_tasks,
+        memory_tasks,
+        notification_tasks,
+        proactive_tasks,
+        rag_tasks,
+        report_tasks,
+        run_tasks,
+        skill_check_tasks,
+        task_tasks,
+        teardown_tasks,
+        trigger_tasks,
+        voice_tasks,
+        workflow_tasks,
+    )
+    from app.worker.tasks.background_tasks import sweep_background_jobs
+
+    return by_kind(
+        [
+            *ingest().values(),
+            Handler(jobs.PROCESS_CHANNEL_DELIVERY, channel_tasks.process_channel_delivery),
+            Handler(jobs.PROCESS_EMAIL_DELIVERY, channel_tasks.process_email_delivery),
+            Handler(jobs.DELIVER_CHANNEL_HANDBACK, channel_tasks.deliver_handback),
+            Handler(jobs.FIRE_TRIGGER, trigger_tasks.fire_trigger),
+            Handler(jobs.WAKE_TASK, task_tasks.wake_task),
+            Handler(jobs.DELIVER_ROUTINE_ANSWER, trigger_tasks.deliver_routine_answer),
+            Handler(jobs.RUN_AGENT, run_tasks.run_agent),
+            Handler(jobs.RUN_EVAL, eval_tasks.run_eval),
+            Handler(jobs.RUN_AUTHORING, authoring_tasks.run_authoring),
+            Handler(jobs.ADVANCE_IMPROVEMENT, improvement_tasks.advance_improvement),
+            Handler(jobs.SWEEP_IMPROVEMENTS, _each_tick(improvement_tasks.sweep_improvements)),
+            Handler(jobs.ADVANCE_SKILL_IMPROVEMENT, improvement_tasks.advance_skill_improvement),
+            Handler(
+                jobs.SWEEP_SKILL_IMPROVEMENTS,
+                _each_tick(improvement_tasks.sweep_skill_improvements),
+            ),
+            Handler(jobs.ADVANCE_SKILL_CHECK, skill_check_tasks.advance_skill_check),
+            Handler(jobs.SWEEP_SKILL_CHECKS, _each_tick(skill_check_tasks.sweep_skill_checks)),
+            Handler(jobs.CLASSIFY_GAPS, knowledge_gap_tasks.classify_knowledge_gaps),
+            Handler(jobs.DRAFT_TOPIC, knowledge_gap_tasks.draft_knowledge_gap),
+            Handler(jobs.GENERATE_CASES, case_generation_tasks.generate_cases),
+            Handler(jobs.RUN_CONVERSATION_TASK, conversation_tasks.run_task),
+            Handler(jobs.RETURN_CONVERSATION_TASK, conversation_tasks.return_task),
+            Handler(
+                jobs.RECONCILE_CONVERSATION_TASKS, _each_tick(conversation_tasks.reconcile_tasks)
+            ),
+            Handler(jobs.WORKFLOW_DISPATCH_NODE, workflow_tasks.dispatch_node),
+            Handler(jobs.THINK_FOR_PERSON, proactive_tasks.think_for_person),
+            Handler(jobs.LOOK_THROUGH_WATCH, proactive_tasks.look_through_watch),
+            Handler(jobs.BRIEF_PERSON, proactive_tasks.brief_person),
+            Handler(jobs.INSTALL_ROLE_PACK, proactive_tasks.install_role_pack),
+            Handler(jobs.WELCOME_MEMBER, proactive_tasks.welcome_member),
+            Handler(jobs.CLEANUP_EXTERNAL_STATE, teardown_tasks.run_external_state_cleanup),
+            Handler(jobs.DISCARD_VECTOR_DOCUMENT, teardown_tasks.discard_vector_document),
+            Handler(jobs.CHECK_AGENT_TRIGGERS, _each_tick(trigger_tasks.check_agent_triggers)),
+            Handler(jobs.POLL_PORTAL_GRANTS, _each_tick(trigger_tasks.poll_portal_grants)),
+            Handler(
+                jobs.DELIVER_NOTIFICATIONS, _each_tick(notification_tasks.deliver_due_notifications)
+            ),
+            Handler(jobs.DISPATCH_DUE_SYNCS, _each_tick(rag_tasks.dispatch_due_syncs)),
+            Handler(jobs.RETRY_SANDBOX_DESTROYS, _each_tick(retry_pending_destroys)),
+            Handler(
+                jobs.SWEEP_SANDBOX_OPERATIONS, _each_tick(trigger_tasks.sweep_sandbox_operations)
+            ),
+            Handler(jobs.SWEEP_MCP_CONNECTIONS, _each_tick(mcp_tasks.sweep_mcp_connections)),
+            Handler(jobs.SYNC_DISCORD_ROLES, _each_tick(channel_tasks.sync_discord_roles)),
+            Handler(jobs.EXPIRE_APPROVALS, _each_tick(approval_tasks.expire_approvals)),
+            Handler(jobs.EXPIRE_INVITATIONS, _each_tick(invitation_tasks.expire_invitations)),
+            Handler(jobs.REAP_STALE_RUNS, _each_tick(run_tasks.reap_stale_runs)),
+            Handler(
+                jobs.SWEEP_TEARDOWN_RESERVATIONS,
+                _each_tick(teardown_tasks.sweep_teardown_reservations),
+            ),
+            Handler(jobs.SWEEP_RAG_SCRATCH, _each_tick(teardown_tasks.sweep_rag_scratch)),
+            Handler(jobs.APPLY_RETENTION, _each_tick(rag_tasks.apply_retention)),
+            Handler(jobs.SWEEP_NOTIFICATIONS, _each_tick(notification_tasks.sweep_notifications)),
+            Handler(jobs.SWEEP_BACKGROUND_JOBS, _each_tick(sweep_background_jobs)),
+            Handler(jobs.CONSOLIDATE_MEMORY, _each_tick(memory_tasks.consolidate_memory)),
+            Handler(jobs.EXTRACT_MEMORY, memory_tasks.extract_memory),
+            Handler(jobs.DIAL_PHONE, voice_tasks.dial_phone),
+            Handler(jobs.END_PHONE, voice_tasks.end_phone),
+            Handler(jobs.REAP_VOICE_CALLS, _each_tick(voice_tasks.reap_voice_calls)),
+            Handler(jobs.CHECK_EVAL_SUITES, _each_tick(eval_suite_tasks.check_eval_suites)),
+            Handler(jobs.REAP_ABANDONED_EVALS, _each_tick(run_tasks.reap_abandoned_evals)),
+            Handler(
+                jobs.GROUP_KNOWLEDGE_GAPS, _each_tick(knowledge_gap_tasks.group_knowledge_gaps)
+            ),
+            Handler(jobs.WORKFLOW_DISPATCH_POLL, _each_tick(workflow_tasks.poll_due_dispatches)),
+            Handler(jobs.WORKFLOW_RECONCILE, _each_tick(workflow_tasks.reconcile)),
+            Handler(
+                jobs.WORKFLOW_SCHEDULES_CHECK, _each_tick(workflow_tasks.check_workflow_schedules)
+            ),
+            Handler(
+                jobs.WORKFLOW_TABLE_TRIGGERS, _each_tick(workflow_tasks.consume_table_triggers)
+            ),
+            Handler(jobs.WORKFLOW_LOG_ALERTS, _each_tick(workflow_tasks.check_workflow_log_alerts)),
+            Handler(
+                jobs.WORKFLOW_RUN_RETENTION,
+                _each_tick(workflow_tasks.sweep_workflow_run_retention),
+            ),
+            Handler(
+                jobs.SWEEP_GENERATED_MEDIA,
+                _each_tick(generated_media_tasks.sweep_generated_media),
+            ),
+            Handler(jobs.SEND_DIAGNOSTICS, diagnostics_tasks.send_diagnostics),
+            Handler(jobs.PROACTIVE_SWEEP, proactive_tasks.proactive_sweep),
+            Handler(jobs.WATCH_SWEEP, proactive_tasks.watch_sweep),
+            Handler(jobs.WEEKLY_USAGE_REPORT, report_tasks.weekly_usage_report),
+            Handler(jobs.MONTHLY_USAGE_REPORT, report_tasks.monthly_usage_report),
+        ]
+    )
+
+
+Settler = Callable[[dict[str, JsonValue], str], Awaitable[None]]
+
+
+def _settler[P: Payload](task: Task[P], settle: Callable[[P, str], Awaitable[None]]) -> Settler:
+    async def run(payload: dict[str, JsonValue], why: str) -> None:
+        await settle(task.load(payload), why)
+
+    return run
+
+
+@cache
+def _settlers() -> dict[str, Settler]:
+    from app.worker.tasks import (
+        authoring_tasks,
+        case_generation_tasks,
+        conversation_tasks,
+        eval_tasks,
+        project_tasks,
+        rag_tasks,
+    )
+
+    return {
+        jobs.RUN_CONVERSATION_TASK.kind: _settler(
+            jobs.RUN_CONVERSATION_TASK, conversation_tasks.settle_lost_task
+        ),
+        jobs.RETURN_CONVERSATION_TASK.kind: _settler(
+            jobs.RETURN_CONVERSATION_TASK, conversation_tasks.settle_lost_return
+        ),
+        jobs.GENERATE_CASES.kind: _settler(
+            jobs.GENERATE_CASES, case_generation_tasks.settle_lost_generation
+        ),
+        jobs.MOVE_PROJECT_WORKSPACE.kind: _settler(
+            jobs.MOVE_PROJECT_WORKSPACE, project_tasks.settle_project_copies
+        ),
+        jobs.INGEST_DOCUMENT.kind: _settler(jobs.INGEST_DOCUMENT, rag_tasks.settle_lost_ingest),
+        jobs.SYNC_COLLECTION.kind: _settler(
+            jobs.SYNC_COLLECTION, rag_tasks.settle_lost_collection_sync
+        ),
+        jobs.SYNC_SOURCE.kind: _settler(jobs.SYNC_SOURCE, rag_tasks.settle_lost_source_sync),
+        jobs.RUN_EVAL.kind: _settler(jobs.RUN_EVAL, eval_tasks.settle_lost_eval),
+        jobs.RUN_AUTHORING.kind: _settler(
+            jobs.RUN_AUTHORING, authoring_tasks.settle_lost_authoring
+        ),
+    }
+
+
+async def settle_ended(kind: str, payload: dict[str, JsonValue], why: str) -> None:
+    """Close what a job left outside the queue, now that no attempt of it is coming.
+
+    The ingestion kinds leave a document `processing` or a sync log `running`
+    when their process dies - the handler never reaches its own cleanup - and
+    nothing else would ever finish them (Codex, #2248); a case generation is
+    left `running` the same way. An eval run or an authoring request left live
+    would hold its suite, its gate and its eval slots until a sweep gave up on
+    it. Every other kind leaves nothing behind.
+    """
+    settle = _settlers().get(kind)
+    if settle is not None:
+        await settle(payload, why)

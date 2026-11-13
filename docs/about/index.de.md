@@ -1,5 +1,5 @@
 ---
-source_sha: "51103c7b1def"
+source_sha: "77658c876710"
 ---
 
 # Über AgenticOS { #about-agenticos }
@@ -52,7 +52,7 @@ alles an, womit Sie es vergleichen.
 | Prozesse | Runs sind erstklassig: Historie, Kosten, Status, und Mandantentrennung, die Datenbank-Constraints erzwingen statt Service-Code |
 | Ressourcengrenzen | [Monatsbudgets](../governance.md) pro Agent, geprüft vor jeder Modellanfrage. Ein Run, der fehlschlägt, verzeichnet trotzdem, was er gekostet hat, denn ein Budget, das Fehlschläge ignoriert, ist kein Budget |
 | Zugriffskontrolle | Ein [Permission-Katalog](../permissions.md) in Code, Rollen daraus zusammengesetzt, Grants pro Ressource, die ausweiten und nie einengen. `approval: required` ist das `sudo` — der Run parkt und wartet auf einen Menschen |
-| Treiber | [27 Modell-Provider](../models.md) hinter einem Modellprofil und [jeder MCP-Server per URL](../mcp.md). Ändern Sie das Profil, und jeder Agent, der es nutzt, zieht mit, ohne dass einer neu veröffentlicht wird |
+| Treiber | [28 Modell-Provider](../models.md) hinter einem Modellprofil und [jeder MCP-Server per URL](../mcp.md). Ändern Sie das Profil, und jeder Agent, der es nutzt, zieht mit, ohne dass einer neu veröffentlicht wird |
 | Dateisystem | [Collections, Skills und Context](../file-processing.md) in Ihrem eigenen Postgres, Embeddings mit einem Schlüssel pro Organisation |
 | Shell | Ein Runner hinter [Web-Chat, der API, Slack, Telegram, einem Widget, einer gehosteten Seite und einem Zeitplan](../channels.md) |
 | Audit-Log | Jeder Run, jede Approval-Entscheidung, jede Schlüsselrotation — mit Werten, nie mit Zeilen, und nie mit einem Schlüssel im Klartext |
@@ -103,9 +103,13 @@ getesteter Code in diesem Repository, und ein Connector, ein Channel oder eine
 Ingestion-Strategie ist dasselbe Muster. Der Unterschied ist, dass Sie das Tool
 einmal schreiben und danach alle damit zusammensetzen.
 
-**Es ist kein gehosteter Dienst.** Nichts telefoniert nach Hause. Modellpreise
-stammen aus einem Snapshot, der dem Release beiliegt, und die einzigen ausgehenden
-Anfragen sind die, die Ihre Agents stellen. Ein Betriebssystem installiert man auf
+**Es ist kein gehosteter Dienst.** Ihre Prompts, Konversationen und Dokumente
+bleiben in Ihrem eigenen Deployment, in dessen Datenbank und Speicher. Die einzigen
+ausgehenden Anfragen sind die, die Ihre Agents stellen, und die, die der Parser oder
+der Embedding-Provider einer Collection braucht, dazu die
+[Deployment-Diagnose](../configuration.md#diagnostics), die standardmäßig aktiv ist
+und sich abschalten lässt. Modellpreise stammen aus einem Snapshot, der dem Release
+beiliegt. Ein Betriebssystem installiert man auf
 der eigenen Maschine; niemand mietet einen Kernel pro Arbeitsplatz.
 
 **Es ist kein Ort, um Integrationen zu schreiben.** Eine Integration mit einem

@@ -12,8 +12,6 @@ the auth flow works, that the description is honest - and a mirrored registry
 cannot make that promise. Adding an entry is cheap; the URL is what varies.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -81,7 +79,8 @@ def matching(query: str, *, category: str = "") -> tuple[CatalogEntry, ...]:
     return tuple(
         entry
         for entry in found
-        if needle in entry.name.casefold()
+        if needle == entry.key.casefold()
+        or needle in entry.name.casefold()
         or needle in entry.description.casefold()
         or needle in entry.url.casefold()
         or needle in entry.category.casefold()

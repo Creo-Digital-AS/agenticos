@@ -2,7 +2,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ComposerSheet } from "./composer-sheet";
+import { Gauge } from "lucide-react";
+
+import { ComposerSheet, SheetRow } from "./composer-sheet";
 
 // Two triggers are drawn and CSS shows one: the menu's at a desk, the sheet's on a
 // phone. jsdom applies no CSS, so the tests pick them by order.
@@ -23,12 +25,48 @@ describe("the composer's `+` at a desk", () => {
     expect(onAttach).toHaveBeenCalledOnce();
   });
 
+  it("highlights whole action rows with pointer and keyboard without selecting them", async () => {
+    const user = userEvent.setup();
+    const onAttach = vi.fn();
+    const onVoice = vi.fn();
+    render(<ComposerSheet onAttach={onAttach} onVoice={onVoice} />);
+    await user.click(deskPlus());
+    const attach = await screen.findByRole("menuitem", { name: /Attach file/ });
+    const voice = screen.getByRole("menuitem", { name: /Voice input/ });
+    await user.hover(voice);
+    expect(voice).toHaveAttribute("data-highlighted");
+    expect(attach).not.toHaveAttribute("data-highlighted");
+    await user.keyboard("{ArrowUp}");
+    expect(attach).toHaveAttribute("data-highlighted");
+    expect(voice).not.toHaveAttribute("data-highlighted");
+    expect(onAttach).not.toHaveBeenCalled();
+    expect(onVoice).not.toHaveBeenCalled();
+  });
+
   it("offers no commands where the composer has none", async () => {
     render(<ComposerSheet onAttach={vi.fn()} onVoice={vi.fn()} />);
 
     await userEvent.click(deskPlus());
     await screen.findByRole("menuitem", { name: /Attach file/ });
     expect(screen.queryByRole("menuitem", { name: /Commands/ })).toBeNull();
+  });
+});
+
+describe("starting a chat in a project", () => {
+  it("is offered while the chat has not started, and only then", async () => {
+    const onProject = vi.fn();
+    const { unmount } = render(
+      <ComposerSheet onAttach={vi.fn()} onVoice={vi.fn()} onProject={onProject} />,
+    );
+    await userEvent.click(deskPlus());
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Work in a project/ }));
+    expect(onProject).toHaveBeenCalledOnce();
+    unmount();
+
+    render(<ComposerSheet onAttach={vi.fn()} onVoice={vi.fn()} />);
+    await userEvent.click(deskPlus());
+    await screen.findByRole("menuitem", { name: /Attach file/ });
+    expect(screen.queryByRole("menuitem", { name: /Work in a project/ })).toBeNull();
   });
 });
 
@@ -40,10 +78,17 @@ describe("the phone composer's sheet", () => {
     render(<ComposerSheet onAttach={onAttach} onVoice={onVoice} onCommand={onCommand} />);
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    fireEvent.click(phonePlus());
-    fireEvent.click(screen.getByRole("button", { name: /Attach file/ }));
-    expect(onAttach).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("dialog")).toBeNull();
+    // Where a file comes from, as three tiles.
+    for (const [tile, source] of [
+      ["Camera", "camera"],
+      ["Photos", "photos"],
+      ["Files", "files"],
+    ] as const) {
+      fireEvent.click(phonePlus());
+      fireEvent.click(screen.getByRole("button", { name: tile }));
+      expect(onAttach).toHaveBeenLastCalledWith(source);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
 
     fireEvent.click(phonePlus());
     fireEvent.click(screen.getByRole("button", { name: /Voice input/ }));
@@ -54,6 +99,25 @@ describe("the phone composer's sheet", () => {
     expect(onCommand).toHaveBeenCalledOnce();
   });
 
+  it("closes on its own button, and lists the composer's other controls as rows", () => {
+    render(
+      <ComposerSheet
+        onAttach={vi.fn()}
+        phoneRows={
+          <SheetRow icon={Gauge} label="Context used">
+            <span>1.2%</span>
+          </SheetRow>
+        }
+      />,
+    );
+
+    fireEvent.click(phonePlus());
+    expect(screen.getByText("Context used")).toBeInTheDocument();
+    expect(screen.getByText("1.2%")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("is a full-width sheet up from the bottom edge, clear of the home indicator", () => {
     render(<ComposerSheet onAttach={vi.fn()} onVoice={vi.fn()} />);
 
@@ -61,8 +125,8 @@ describe("the phone composer's sheet", () => {
 
     expect(screen.getByRole("dialog")).toHaveClass(
       "inset-x-0",
-      "bottom-0",
-      "pb-[env(safe-area-inset-bottom)]",
+      "bottom-[max(0px,calc(100dvh-var(--app-height,100dvh)))]",
+      "pb-[var(--safe-bottom)]",
     );
   });
 

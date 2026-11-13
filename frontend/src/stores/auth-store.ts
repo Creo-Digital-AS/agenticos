@@ -3,6 +3,12 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { User } from "@/types";
+import { clearNativeAccount } from "@/lib/desktop/account-cleanup";
+import { reportShellFailure } from "@/lib/desktop/shell";
+
+function clearNativeIdentity(): void {
+  void clearNativeAccount().catch((error: unknown) => reportShellFailure("session loss", error));
+}
 
 interface AuthState {
   user: User | null;
@@ -40,7 +46,7 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       user: null,
       isAuthenticated: false,
       isLoading: true,
@@ -49,12 +55,24 @@ export const useAuthStore = create<AuthState>()(
       sessionOwnerId: null,
       impersonationRevoked: false,
 
-      setUser: (user) =>
+      setUser: (user) => {
+        const previous = get().user;
+        // Profile writes return account fields, not session proof. Keep proof
+        // only for the same identity and address; /auth/me supplies it explicitly.
+        const next =
+          user && user.email_verified === undefined && previous?.id === user.id
+            ? {
+                ...user,
+                email_verified: previous.email === user.email && previous.email_verified === true,
+              }
+            : user;
         set({
-          user,
+          user: next,
           isAuthenticated: user !== null,
           isLoading: false,
-        }),
+        });
+        if (user === null) clearNativeIdentity();
+      },
 
       setSessionOwnerId: (id) => set({ sessionOwnerId: id }),
 
@@ -74,14 +92,14 @@ export const useAuthStore = create<AuthState>()(
             const user = await response.json();
             set({ user, isAuthenticated: true, isLoading: false });
           } else {
-            set({ user: null, isAuthenticated: false, isLoading: false });
+            get().setUser(null);
           }
         } catch {
-          set({ user: null, isAuthenticated: false, isLoading: false });
+          get().setUser(null);
         }
       },
 
-      logout: () =>
+      logout: () => {
         set({
           user: null,
           isAuthenticated: false,
@@ -89,7 +107,9 @@ export const useAuthStore = create<AuthState>()(
           accessToken: null,
           sessionOwnerId: null,
           impersonationRevoked: false,
-        }),
+        });
+        clearNativeIdentity();
+      },
     }),
     {
       name: "auth-storage",

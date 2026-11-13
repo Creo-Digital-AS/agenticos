@@ -26,7 +26,7 @@ export function RegisterForm() {
 
   const t = useTranslations("auth");
   const router = useRouter();
-  const { register } = useAuth();
+  const { register, login } = useAuth();
   const search = useSearchParams();
   const returnTo = search.get("returnTo");
   // Reached from an invitation when the landing it carries is the staged pending
@@ -83,8 +83,17 @@ export function RegisterForm() {
       toast.success(t("registerSuccess"));
       // The invitation is not accepted by registering - that needs a session - so a
       // person who arrived through one is sent back to it after signing in.
-      const next = returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : "";
-      router.push(`${ROUTES.LOGIN}?registered=true${next}`);
+      try {
+        await login(
+          { email, password },
+          returnTo || `${ROUTES.ONBOARDING}?welcome=1&entry=account`,
+        );
+      } catch {
+        // Account creation succeeded. A failed session must lead to sign-in,
+        // not invite the person to register the same account a second time.
+        const next = returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : "";
+        router.push(`${ROUTES.LOGIN}?registered=true${next}`);
+      }
     } catch (err) {
       const message =
         err instanceof ApiError ? getErrorMessage(err, tErrors) : t("registrationFailedPleaseTry");
@@ -112,7 +121,9 @@ export function RegisterForm() {
         <p className="text-foreground/65 text-sm">
           {t("hasAccount")}{" "}
           <Link
-            href={ROUTES.LOGIN}
+            href={
+              returnTo ? `${ROUTES.LOGIN}?returnTo=${encodeURIComponent(returnTo)}` : ROUTES.LOGIN
+            }
             className="text-foreground hover:text-foreground/80 font-medium underline-offset-4 hover:underline"
           >
             {t("login")}
@@ -135,7 +146,7 @@ export function RegisterForm() {
             onChange={(e) => setName(e.target.value)}
             disabled={isLoading}
             autoComplete="name"
-            className="h-11 rounded-lg text-[15px]"
+            className="h-11 rounded-lg text-base md:text-[15px]"
           />
         </div>
 
@@ -153,7 +164,7 @@ export function RegisterForm() {
             required
             disabled={isLoading}
             autoComplete="email"
-            className={`h-11 rounded-lg text-[15px] ${emailTouched && email && !emailValid ? "border-destructive" : ""}`}
+            className={`h-11 rounded-lg text-base md:text-[15px] ${emailTouched && email && !emailValid ? "border-destructive" : ""}`}
           />
           {emailTouched && email && !emailValid && (
             <p className="text-destructive text-xs">{t("emailRequired")}</p>
@@ -173,7 +184,7 @@ export function RegisterForm() {
             required
             disabled={isLoading}
             autoComplete="new-password"
-            className={`h-11 rounded-lg text-[15px] ${password && !passwordLongEnough ? "border-destructive" : ""}`}
+            className={`h-11 rounded-lg text-base md:text-[15px] ${password && !passwordLongEnough ? "border-destructive" : ""}`}
           />
           {password && (
             <div className="space-y-1.5 pt-1">
@@ -220,7 +231,7 @@ export function RegisterForm() {
             required
             disabled={isLoading}
             autoComplete="new-password"
-            className={`h-11 rounded-lg text-[15px] ${confirmPassword && !passwordsMatch ? "border-destructive" : ""}`}
+            className={`h-11 rounded-lg text-base md:text-[15px] ${confirmPassword && !passwordsMatch ? "border-destructive" : ""}`}
           />
           {confirmPassword && !passwordsMatch && (
             <p className="text-destructive inline-flex items-center gap-1 text-xs">

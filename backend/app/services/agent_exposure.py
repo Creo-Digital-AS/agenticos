@@ -21,8 +21,6 @@ the Builders who publish agents could not, and the section would be read-only fo
 exactly the people it is for.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Any
 from uuid import UUID
@@ -32,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.capabilities import CapabilityToolInfo
 from app.agents.capabilities import get as get_capability
 from app.agents.capabilities.channel_tools import CHANNEL_TOOLS_CAPABILITY_ID
+from app.agents.system_agents import refuse_system_agent
 from app.core.audit import record_audit
 from app.core.exceptions import AlreadyExistsError, BadRequestError, NotFoundError
 from app.core.permissions import AuthContext, Perm
@@ -51,7 +50,6 @@ from app.schemas.channel_bot import UsageReporting
 from app.services.agent_registry import AgentRegistryService
 from app.services.capability_contracts import ToolContract, tool_contracts
 from app.services.channels.directory import PLATFORM_TOOLS
-from app.services.channels.formatting import house_style
 from app.services.channels.prompt_variables import VARIABLES as PROMPT_VARIABLES
 
 # How many bots one organization can have bound before the picker stops being a
@@ -141,8 +139,14 @@ def _variables_for(surface: ExposureSurface) -> list[ExposureVariable]:
     """
     available = PLATFORM_TOOLS.get(surface.value, ())
     answered = {
-        "get_channel_info": {"channel_name", "channel_purpose", "channel_topic", "member_count"},
-        "list_channel_members": {"member_list"},
+        "get_channel_info": {
+            "channel_name",
+            "channel_purpose",
+            "channel_topic",
+            "member_count",
+            "channel_visibility",
+        },
+        "list_channel_members": {"member_list", "channel_members"},
     }
     fillable = {name for tool, names in answered.items() if tool in available for name in names}
     return [
@@ -286,6 +290,7 @@ class AgentExposureService:
                 would never learn the two requests were not both effective.
         """
         agent = await self.agents.get(ctx, agent_id, perm=Perm.AGENTS_PUBLISH)
+        refuse_system_agent(agent, action="a channel")
         bot = await channel_bot_repo.get_for_org(
             self.db, data.channel_bot_id, organization_id=ctx.organization_id
         )
@@ -331,12 +336,7 @@ class AgentExposureService:
             channel_bot_id=bot.id,
             created_by_user_id=ctx.user_id,
             environment_id=data.environment_id,
-            # The platform's own style, as the binding's starting text rather
-            # than something applied invisibly at run time. It is what the
-            # agent will be told, so it is what somebody editing it should see
-            # and be able to change. The cost is that it is a copy: improving
-            # the default later does not reach a binding that already exists.
-            prompt=house_style(surface.value),
+            prompt=None,
             session_scope=data.session_scope,
         )
         await record_audit(

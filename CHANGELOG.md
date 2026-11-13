@@ -2,11 +2,13 @@
 
 Notable changes to AgenticOS. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) with one exception:
+AgenticOS stays on major version 1, so a change a deployment has to act on ships
+in a MINOR release. Read a minor release's notes before upgrading.
 
 Two things are versioned separately from this file and worth knowing about:
 
-- **`SPEC_VERSION`** — the agent spec format, currently **11**. A published agent
+- **`SPEC_VERSION`** — the agent spec format, currently **15**. A published agent
   and a client's exported YAML both carry it, so it only ever moves forward with a
   migration that keeps old documents loading. See
   [the spec reference](docs/reference/spec.md).
@@ -16,6 +18,6498 @@ Two things are versioned separately from this file and worth knowing about:
   that still exists. Schema changes are listed here by what they do.
 
 ## [Unreleased]
+
+## [1.72.0] - 2026-11-13
+
+### Added
+
+- Choose and reset persistent table and workflow icons from their detail headers,
+  with matching neutral marks in catalogs and Dashboard table rows.
+
+### Fixed
+
+- **HTML selector security update (CVE-2026-126190).** Upgrade Soup Sieve to 4.1 while retaining process, time and memory limits. **Upgrade action:** `html.parse` document selectors and links exclude inert `<template>` contents and follow browser-aligned form selector rules. Review workflows relying on the old matching behavior. Selecting the `<template>` element itself still returns its HTML and text.
+- **Failed chat turns remain visibly failed.** A safe failure notice stays outside folded work and survives transcript reloads; partial answers remain separate from platform errors. Provider content-filter refusals get an explicit explanation without exposing raw provider payloads or unknown historical errors.
+- **Favicons for ordinary web links.** Unknown HTTP(S) sites use a hostname-only, credential-free icon proxy even without an MCP connection, with a globe if unavailable. Model-supplied links never make the reader’s browser contact the target site to load an icon. Inert transcript views make no remote icon requests, and a missing icon on one site does not suppress another site's icon.
+- Unify Vault keys and personal/organization connected accounts in one table,
+  preserving per-entry authority and removing separate empty cards/count strips.
+- Restore wheel scrolling in resource-sharing member/group pickers inside modals,
+  bound the list to the available viewport and correct project access descriptions.
+- Keep the Skill editor frame mounted across skeleton, metadata and module loading
+  to avoid a second opening animation; place full view beside Share in its footer.
+
+
+- Match skill/context editor loading to the real dialog and pane geometry on
+  desktop and phones. Keep dataset detail chrome and load Cases through its real
+  table columns; align catalog placeholders and remove invented panel/form grids.
+- Simplify the event-trigger service picker into compact branded disclosures,
+  with presets and connection requirements available after expansion.
+
+- Keep Briefing loading stable while onboarding and suggestion reads settle,
+  without blocking other Dashboard widgets or repeatedly retrying failed reads.
+- Align Datasets and skill/context improvement screens with the console's neutral
+  styling. Open skills in their instructions/files modal first, with an explicit
+  full Content view action; remove the Version tree while retaining History diffs.
+- Show the Agents status filter directly and reserve workspace fullscreen controls
+  for phones, restoring navigation and page scrolling on desktop resize.
+
+
+- The first chat message keeps its composer mounted when the server names the
+  new conversation, instead of briefly replacing it with an access-check notice.
+  Dashboard table rows now carry the table mark used by the catalog.
+
+- Profile identity and context forms keep their drafts after refused writes,
+  block overlapping changes and support keyboard submission. Portrait controls,
+  native colour choices and working hours fit phones. Notification events are
+  searchable and paginated with clear channel controls; unconnected platforms
+  stay folded. Failed preferences, destinations and chat-account reads offer
+  retry without inventing enabled switches or an empty account list.
+
+- API key settings put active credentials first and retain names, expiry and
+  usage details on phones. Keys and custom permissions are searchable. Creation supports keyboard submission,
+  locks fields and dismissal during writes, preserves refused drafts and clears
+  one-time state on close. Permission-catalog and revocation failures offer
+  retry. Clipboard refusals are reported without losing the copyable value;
+  MCP consent also freezes organization and scope choices during an answer.
+
+- Department cards keep descriptions and member counts visible on phones. Shared
+  resources lead the detail page; compact setup, membership and sharing forms
+  keep actions reachable, block conflicting writes and retain refused drafts.
+  Failed group reads and deletions offer retry without losing the current view.
+
+- Routine names wrap on phones, unmatched searches offer a reset action and
+  list failures can retry both data sources. Schedule and event editing keep
+  action footers visible in short windows. Routine and watch forms freeze
+  fields and dismissal during writes and preserve refused drafts. Wizard
+  navigation uses touch-sized controls and supports non-cancellable writes.
+
+- Context settings use compact file rows and a neutral injected-context note;
+  Availability identifies bot bindings with platform logos. App sharing puts
+  people and links first, with optional link settings collapsed, active
+  restrictions summarized and edits preserved when the options are closed.
+
+- Channel registration uses a compact platform selector on phones. Cancelling
+  channel and vault creation or key rotation clears entered credentials. These
+  forms freeze fields and dismissal while saving and preserve refused writes
+  for retry; channel editing and rotation keep their action footer reachable.
+
+- Project, context-file and dataset creation protect drafts before closing and
+  lock their fields while saving. Multi-file context imports keep their queue;
+  dataset details and cases retain refused writes and reachable save actions.
+  Phone context creation puts the editor before expandable description/access
+  details, with the effective audience kept visible.
+
+- Custom command controls fit touch phones, retain edited drafts on close and
+  failed saves, block conflicting writes and confirm removal in the console.
+  Command and MCP connection fields and dismissal stay locked during a save.
+  A refused MCP OAuth start keeps the connection draft available for retry.
+
+- Console skill names, environment names, MCP prefixes and custom slash commands
+  format human-entered titles automatically instead of rejecting capitals and
+  spaces. Typing stays intact until blur or submission; identifier fields turn
+  off mobile text correction, and name conflicts preserve the draft.
+
+- Keep document and member actions visible on phones, prevent organization
+  profile controls from overflowing, and align spending-limit saves. Retention
+  edits now guard navigation, validate periods and retain refused drafts.
+  Knowledge-base dialogs cannot disappear during writes, failed downloads show
+  an error, and member removal requires confirmation.
+
+- Align mobile table view controls, keep format and saved-view names readable,
+  and move the default-view action into View settings. Compact catalog filter
+  buttons leave more room for search without shrinking touch targets.
+
+- Center the public chat send control with its input on desktop and touch
+  screens, and keep populated table filters readable on narrow phones with
+  full-width fields and a reachable footer.
+
+- **Reliable CSV import, knowledge search and organization edits.** CSV imports
+  reject duplicate target columns instead of overwriting the first value.
+  Changing a knowledge-search question or scope cancels stale requests and
+  clears previous results. Leaving edited organization identity, spending
+  caps or voice defaults now asks before discarding the draft. Hosted chat
+  waits for its current WebSocket before enabling Send, so the first
+  question is not silently dropped during connection setup.
+- **Keep console edits when leaving or saving fails.** Project settings,
+  Skills and Context ask before discarding unsaved edits. Skill resources
+  retain a refused save and typing added while a save is in flight. Workflow
+  run status bars wrap on narrow screens so their actions remain reachable.
+- **Console navigation and accessibility.** Browser tabs identify the current
+  page and section, including after navigation, loading and a rename. Empty
+  catalog toolbars no longer leave invisible controls in the keyboard order.
+  Horizontal tab strips indicate content on either side and keep the selected
+  label outside the fade. Keyboard focus remains visible in Windows High
+  Contrast; organization tabs no longer expose extra hint buttons inside the
+  tablist, and the wide permission matrix can be scrolled with a keyboard.
+  The sidebar search shortcut also has sufficient contrast on its tinted badge.
+- **Small-screen and empty-state layout.** The agent Builder's loading state
+  fits a phone without horizontal page overflow. A standalone Briefing no
+  longer reserves space for a dismissed setup card, and an empty dataset
+  catalog omits its redundant count.
+- **Connected accounts in the Vault.** Listing and disconnecting personal and
+  organization accounts now reach the existing backend through the shared,
+  authenticated console proxy instead of returning a frontend 404.
+
+
+## [1.71.2] - 2026-11-12
+
+### Changed
+
+- **Economical default assistants.** Newly installed AgenticOS and Architect assistants defer capability schemas as well as MCP tools, keeping questions and workspace tools immediately available. Their local BM25 search favors exact tool identities, and instructions direct named-agent lookups to the agent list rather than unrelated run logs. Existing customized agents keep their configuration.
+- **Browser actions follow tab state.** Browser opening and session restoration stay discoverable from the start; switching and closing appear when tabs exist, and page actions appear with an active tab. Tool renames and approval metadata are preserved.
+
+## [1.71.1] - 2026-11-12
+
+
+### Fixed
+
+- **First messages to channel assistants.** Commit the admitted channel conversation before creating its platform MCP credential. A newly opened thread could otherwise fail before the model call with a conversation foreign-key violation, while its next message succeeded. Admission commit failures stop preparation.
+
+## [1.71.0] - 2026-11-12
+
+### Changed
+
+- **Workflow step search is grouped.** Searching the step picker lists matching categories first, then built-in steps, then actions from connected apps, each under its own heading. A matching category opens like it does when browsing.
+
+### Fixed
+
+- **Replacing a workflow's trigger.** Deleting the starting trigger now makes another trigger on the canvas the start, rather than the first step. Connecting a top-level trigger into the current start makes that trigger the start, repairing drafts that previously failed with "The starting step cannot be the target of a connection".
+
+## [1.70.0] - 2026-11-12
+
+### Upgrading
+
+Platform MCP clients must follow page and text-window continuations instead of expecting all cached schemas or recorded tool results inline. Use `get_mcp_connection_tool` and `get_capability` for selected full contracts, and the run or conversation tool-call readers for recorded payloads. New channel bots acknowledge incoming questions and leave answer ratings disabled; existing bots keep their saved settings.
+
+### Added
+
+- Focused platform MCP discovery for connection tools and capabilities, with search, pagination and explicit response budgets. Run inspection reads bounded message and tool-payload windows under existing run permissions; run history accepts diagnostic filters.
+
+### Changed
+
+- New channel bots acknowledge questions with 👀 on Slack, Telegram and Mattermost (the native emphasize tapback on iMessage), and answer ratings start disabled. Both settings remain configurable; existing bots keep their saved choices.
+
+- Platform MCP conversation reads return bounded text and tool-metadata windows. Use the selected tool-payload reader for recorded arguments and results.
+- Platform MCP connection and capability listings return summaries. Clients must follow `next_skip` and use the detail tools for configuration schemas. Skill discovery omits body excerpts and defaults to 20 items. Console REST responses are unchanged.
+
+### Fixed
+
+- Keep the caret aligned with highlighted text in scrolling Markdown editors by giving both layers the same scrollbar gutter and text rendering.
+
+- Open catalog skills in a modal again with an explicit full-view link. Size the version tree to its contents and give version previews usable space on desktop and phones.
+
+- Accept a Mattermost mention added by editing a recently observed, ignored post, while shared receipts prevent edits from replaying a previously handled request.
+
+- Present Mattermost questions and approvals as native cards with a settled status, and silently acknowledge repeated clicks on requests already answered instead of posting public duplicates.
+
+- Show the actual unverified channel sender instead of attributing an external request to the bot publisher in run history, including phone views.
+- Keep chat reports delivered before a question visible after the run resumes instead of folding them into tool history.
+- Find named agents beyond the first catalog page and reject cross-page ambiguities when reading Improve sessions.
+
+## [1.69.0] - 2026-11-12
+
+### Added
+
+- **OpenSandbox connections.** Connect an organization’s vault API key, server URL and image to the existing workspace file and shell tools. Docker and Kubernetes servers are supported; optional Secure Access requires the Kubernetes gateway and applies to new workspaces. Explicit tests create and remove a disposable sandbox. Missing workspaces are refused without silently replacing their files; cleanup uses the durable queue. Docker lifecycle and persistence are verified; live Kubernetes remains unverified.
+- **Routine attempt history.** Blocked and failed activations remain visible with safely redacted reasons even when no agent run could be created, including when a notification cannot be delivered.
+
+### Fixed
+
+- Routines with the built-in platform MCP server, including published delegates, require an explicit creator identity. Source review explains incompatible configuration before a run is admitted.
+- Corrections of organization and project memory always wait for a person, including under remembered approvals or Approve everything. Approval cards show the before and after; agent corrections retain provenance and a statement-free audit event.
+- Cancelling a workflow or stopping it at its budget limit withdraws questions and approvals in called runs, including live descendants behind a terminal intermediate run.
+- Signed webhook copies with different delivery IDs return the original run within 24 hours. Earlier delivery rows lack signed digests, so their original-ID protection remains but a new-ID copy cannot match them until a delivery is recorded by this version.
+- CSV batch imports preserve later edits, reject repeated external IDs and replay keyed batches without duplicate writes. Column type conversions record changed cells and provenance, preserve unchanged revisions and enforce storage quotas atomically.
+- Numbered SMS, email and iMessage confirmations expire per request and avoid reusing recently issued numbers, including in busy conversations.
+- Started work survives API-key expiry while honoring revocation, membership and scope limits; cleanup retains credentials needed by unfinished runs and background jobs. Expired keys still cannot start new requests.
+- Settling tasks leaves archived boards unchanged; restoring a board catches up settled tasks. Task writes use consistent board-before-record locking.
+- Bootstrap preserves personal landing organizations, refuses unsafe organization reuse and validates names before changes. Long organization slugs leave room for uniqueness suffixes.
+- Desktop readiness waits for a linked computer to reconnect instead of offering to replace its session. Quick Ask explains how to retry refused computer access.
+- Table write hints no longer recommend computed columns that cannot be written.
+
+### Upgrading
+
+- Migrations `0316_trigger_attempts.py`, `0317_opensandbox_connections.py`, `0318_wide_memory_approvals.py`, `0319_webhook_signed_digest.py` and `0320_record_batch_receipts.py` form one chain after the deployed skill/approval merge. They add attempt history, OpenSandbox settings, pending shared-correction protection, webhook digests and batch receipt support. Downgrading removes the new attempt history and batch receipts; remove OpenSandbox connections and long image names before downgrading its settings.
+
+
+## [1.68.0] - 2026-11-12
+
+### Upgrading
+
+- **Linked channel senders now honor existing Run freely settings.** If a deployment relied on the channel’s additional confirmation for writes or unannotated MCP tools, set those bindings or tools to Ask first before upgrading. Sender identity, access checks and the platform MCP minimum policy remain enforced.
+
+### Fixed
+
+- Linked channel senders now keep the agent’s MCP approval policy, including per-tool Run freely, just as in web chat. Unlinked senders still need approval. The tool picker distinguishes explicit read-only and possible-write declarations from missing annotations.
+- Channel metadata follows tool results in provider requests, so repeated approval resumptions and parallel tool results no longer violate Anthropic’s tool-result ordering.
+
+## [1.67.0] - 2026-11-12
+
+### Upgrading
+
+- The skill-usage backfill scans existing tool-call history while holding the agent-runs schema lock. Plan an upgrade window for a large deployment. `0315_merge_skills_and_approval_visibility.py` joins skill versioning with `0314_tool_approval_always_asks.py`; both changes are applied.
+- **Skills are versioned, and an agent's spec says which version it uses.**
+  Agent specs move to version 15: each bound skill names the line it follows
+  (main, a version pinned on main, or a fork). An existing agent is upgraded to
+  follow main's newest version, so it reads exactly what it read before.
+  Republish nothing; a YAML export carries the new field.
+- **Migrations `0305_run_skill_uses.py` to `0312_skill_check_reasons.py`** record
+  which skills a run loaded, turn every skill's current text into its first
+  version, and add skill forks, checks, merges and improvement sessions. A
+  downgrade drops versions, forks, checks and pending fork changes; each skill
+  keeps main's newest text, and every agent reads that again.
+
+### Added
+
+- **Skill versions and forks.** Every saved change to a skill is a new version,
+  and **Restore** brings an earlier one back. An agent follows main's newest
+  version, stays pinned on an older one, or uses a fork with its own changes;
+  **Change version** on the skill page moves it, after checking the version on
+  that agent. The skill page lists its agents, its content, its history and a
+  version tree.
+- **Skill checks.** A change to a skill is checked on every agent that uses the
+  line it changes, on the skill's own test questions and each agent's. It
+  passes when no agent is worse and at least one is better; an agent that could
+  not be checked shows why, and a person acknowledges it. A confirmed regression
+  goes to the review queue.
+- **Improve a skill.** The Improve wizard learns from answers where agents
+  loaded the skill and proposes a change, checks it, and offers to apply it, to
+  apply it with the agents it hurt pinned, to make a fork for the agents it
+  helped, or to discard it.
+- **Catch up and move to main.** A pinned agent or a fork behind main is
+  offered an update, checked first; a fork is merged with main's changes, with
+  the model proposing text where both sides changed the same part, and a fork
+  can move its changes to main through the full check.
+- **Skill test questions**, a dataset every agent using the skill is checked
+  on, written from the answers where agents loaded it.
+- The Architect reads skill versions, checks and sessions, and makes changes
+  only when the person asks, through approval cards. The dashboard shows
+  checks and proposed skill changes waiting on the reader.
+
+### Changed
+
+- Routine action consent supports grouped bulk selection, search, explicit reuse of prior choices and up to 1,000 actions, with explanations when a new review is required.
+
+- The Builder offers two capability approval choices and starts newly added capabilities with Always ask. Existing specs retain their policies, and individual tools can still inherit or override them.
+
+### Fixed
+
+- Desktop pages show one clear browser fallback, unlinking a computer requires confirmation, and setup text matches the operating system and notification privacy settings. Quick Ask explains refused computer access and clears that notice for a new conversation.
+
+- Bootstrap honors the requested organization and validates its name before converting a new owner’s personal organization. Setup diagnostics explain vault fallback and publish refusals; demo seeds create their missing agents.
+- Docker console deployments accept a session cookie namespace, and table record validation explains that values are keyed by column IDs.
+
+- Browser Back closes an optimistic URL overlay even when the router has not yet rendered its open state, fixing the intermittent mobile Improve dialog failure.
+
+- Tools that require a decision for every call cannot use standing consent. Private memory approval content is withheld from unauthorized readers, and sharing is decided only where its full approval card can be read.
+
+- Project chats and conversations shared for editing no longer inject, recall, write or extract personal memory. Queued extraction rechecks current sharing before writing.
+
+- Knowledge base details now report the same document counts, indexing progress, agent usage and shared groups as the listing, while preserving effective write access.
+
+## [1.66.0] - 2026-11-11
+
+### Added
+
+- **Code-mode scripts can wait for tool approval.** A gated call parks the
+  interpreter and resumes on any worker after the decision, without another
+  model turn or replaying completed operations. Started parallel calls drain
+  before the checkpoint is saved. Rejections become catchable script errors;
+  quotas, guardrails, permissions and approved arguments still apply per call.
+  The manifest keeps one script with its approval/execution status. Damaged,
+  incompatible or changed-tool checkpoints fail before a pending handler runs.
+  Questions, delegations, visible UI tools and existing session/routine policies
+  keep their native-tool behaviour (#2876).
+
+### Fixed
+
+- **Monthly budgets stay consistent across resumes and background work.** A
+  run and every continuation use the calendar month it started in. Parked
+  routine fires refuse exhausted routine budgets, while budget stops do not
+  count as routine failures. Background model requests enforce their limits,
+  pinned agent versions use the current published cap, and failed workflow AI
+  steps retain their spend (#2916, #2920, #2918, #2914, #2915, #2917, #2919).
+- **Shared task boards and delegated automation keep their authority checks.**
+  Board management and default views require the scope's leader or an
+  administrator, while task editing stays available to the audience. Private
+  views, cancelled workflow retries, trigger publication and routines acting as
+  their creator keep their corresponding ownership and permission checks
+  (#2910, #2908, #2909, #2911, #2912, #2913).
+
+- **Saved forms become clean when the server reorders JSON or fills defaults.**
+  The agent Builder, remote edit notices and dataset grading compare JSON content
+  independently of object key order. Successful saves adopt the server's
+  normalized copy while preserving edits made in flight. Unchanged routine
+  folder permissions no longer ask for approval again. Structured workflow
+  expectations and paused terminal identities use canonical JSON too (#2892).
+
+- Routine and monitor action icons now show localized labels on hover or focus,
+  including the current pause/resume action and disabled Run now (#2924).
+
+- Context cards in the same row now have equal heights and aligned footers,
+  including cards with longer descriptions or agent usage indicators.
+
+## [1.65.1] - 2026-11-11
+
+### Fixed
+
+- **The Called by a workflow trigger shows a workflow, not a telephone.** Its
+  incoming-call icon suggested the workflow starts on a phone call. It now uses
+  the workflow icon, the same as the Run a workflow step that calls it (#2886).
+
+## [1.65.0] - 2026-11-11
+
+### Added
+
+- **Approval per MCP tool.** In a server's settings in the Builder, each tool
+  can run freely or ask first on its own, whatever its group and the server's
+  `readOnlyHint` say. A server that marks no tool read-only can let its reads
+  run while its writes ask, and one write can run unasked without `none`
+  releasing every other one. The spec keeps these in a new `tool_approval` on
+  organization and personal MCP bindings, keyed by the tool's name on the
+  server; a group whose tools differ reads **Per tool**. In a chat app a tool
+  without a read-only hint still asks, a watch leaves out a read its binding
+  asks before, and a routine's standing consent can cover a tool set to run
+  freely. Stored agents dump unchanged, so reviewed routine sources and eval
+  baselines stay valid (#2884).
+
+### Fixed
+
+- **A further account on an MCP server takes the server's settings.**
+  **Add another account** bound the new account with every tool and no
+  approval, while the settings showed, and applied to every account, the first
+  account's tools and approval. Under **Changes things: Ask first**, the second
+  account's writes ran unasked (#2884).
+
+## [1.64.2] - 2026-11-11
+
+### Fixed
+
+- **Two of an agent's tools can no longer share a name.** Pydantic AI aborts a
+  turn on a duplicate tool name, and two cases got through publish: an MCP tool
+  whose prefixed name is a capability's or the platform's own (a connection
+  `request` whose server offers `capability` presents `request_capability`,
+  which nearly every agent has), and a capability tool renamed onto another
+  capability's tool or one of the platform's. Publish now refuses both, the MCP
+  case on the tools the connection's last check listed, and checks renames in
+  the agent's specialists and in what it shares with its delegates. A clash
+  that still reaches a run leaves that whole server out of the turn and tells
+  the model why, instead of aborting it (#2891).
+
+## [1.64.1] - 2026-11-11
+
+### Fixed
+
+- **A switched-off workflow step with no connections no longer blocks publishing.**
+  Publishing refused it as not reachable from the trigger and, for a step with
+  required inputs, as unbound, so a step could only be put aside by deleting it.
+  A step that is off with no connection at all is now set aside: the editor and
+  the server no longer ask it to be reachable, at the top level and inside a
+  loop, and a run finishes without it and does not count it towards its step
+  limit. Any step can be set aside, including one that decides the way, such as
+  If, which the editor now lets you switch off while it has no connection; only
+  the trigger and a loop's Loop item and Loop result always stay on. A step that
+  is off, connected or not, is no longer checked for its inputs, its settings,
+  what its settings name or its retry policy, since it reads and calls none of
+  them; switching it back on is a change to publish, checked then. Nothing may
+  read a step set aside, and a set-aside step no longer counts towards the
+  organization's queued-step admission quota.
+- **A switched-off workflow step reads as switched off.** The editor no longer
+  offers it as an input to later steps - in the binding picker, the Input pane
+  or when a step is inserted - and a run's canvas and step list show it as
+  Switched off from the start, rather than as pending until the engine passes
+  it. The wire into one down a branch the run did not take still fades.
+
+## [1.64.0] - 2026-11-11
+
+### Added
+
+- Public app and shared conversation viewers show the AgenticOS logo and a GitHub link, with a responsive floating badge and an organization setting to hide it. Enabled by default; password-protected apps show it after unlocking.
+
+## [1.63.0] - 2026-11-10
+
+### Added
+
+- Maintain a Helm chart for the API, worker and console with external pgvector
+  PostgreSQL, Redis/Valkey and S3, blocking migration hooks, restricted container
+  settings, health probes and a reproducible Kubernetes smoke test. Include an
+  OpenShift configuration candidate without claiming cluster validation (#2872).
+
+### Fixed
+
+- Download S3-backed ingestion sources in the worker instead of requiring the
+  API's local scratch directory to be shared across pods (#2872). **Existing S3
+  deployments must drain ingestion and replace workers before upgrading the API,
+  or use a maintenance window:** new API processes no longer write the shared
+  scratch files old workers expect. Local file storage keeps its shared path.
+
+## [1.62.8] - 2026-11-10
+
+### Fixed
+
+- **A workflow run's steps are listed in the order they started.** The run
+  view listed steps in the order they were recorded, so a loop's item step
+  came after the steps it started. The list now holds only the steps that
+  started, sorted by start; a step still waiting or skipped shows on the
+  canvas only. Clicking a loop step's iteration now shows that iteration's
+  input and output, not the last iteration's; an iteration with no result yet
+  shows none. A step test still pins the last iteration's data. A long step
+  list now scrolls inside its panel instead of making the canvas taller. Start
+  order preserves sub-millisecond timestamp precision (#2866).
+
+## [1.62.7] - 2026-11-10
+
+### Fixed
+
+- **Keep the Architect's bundled guide links usable.** Resolve links to included
+  pages within the skill and send other documentation links to the published
+  site. Generate the same output from an empty directory and preserve external
+  links and Markdown code examples (#2862).
+
+## [1.62.6] - 2026-11-10
+
+### Changed
+
+- Remove an unused serialized channel access-policy default and its outdated
+  SQLite comment. Active channel-bot defaults and policies are unchanged (#2869).
+
+## [1.62.5] - 2026-11-10
+
+### Fixed
+
+- **Reclaim old release images before deployment pulls fill the host.** Retain
+  current and rollback images with local pins based on healthy containers, plus
+  two additional unused image IDs per release repository. Protect every running
+  or stopped container, other image aliases and repositories, sandbox runtimes
+  and volumes. Check for 5 GiB of storage headroom before pulling, and download
+  backend and frontend images before restarting either service (#2849).
+
+## [1.62.4] - 2026-11-10
+
+### Fixed
+
+- **Parent deletion no longer depends on foreign-key trigger order.** Deleting
+  a routine's creator clears its delivery chat, and deleting an agent preserves
+  its pages with their publisher and environment cleared. Defer the two
+  cross-link checks until transaction end so cascading deletes can finish first;
+  invalid references are still rejected. Existing deployments receive the same
+  fix through a data-preserving migration (#2841).
+- **Keep the CI checks independent of runner timing.** Successful artifact-read
+  tests use a controlled deadline clock, while the real timeout tests retain
+  their own clocks and PostgreSQL limits. Improve notification tests check every
+  event and duplicate without assuming an order for identical transaction
+  timestamps (#2868).
+
+## [1.62.3] - 2026-11-10
+
+### Fixed
+
+- **Refresh the AWS SDK and CLI dependencies.** Update boto3 to 1.43.126 and
+  Click to 8.5.1, with the third-party notices regenerated. Soup Sieve stays on
+  3.0.4 within the existing `<4` constraint: its 4.x template-selector change
+  breaks the established `html.parse` links and matches contract (#2857).
+
+## [1.62.2] - 2026-11-10
+
+### Fixed
+
+- **Password sign-ins no longer prompt everyone to check invitations.** The
+  generic mailbox-verification notice is removed, so deployments without email
+  delivery and accounts without a working mailbox are not repeatedly offered an
+  unusable sign-in link. Verified sessions still see actual addressed invitations;
+  original invitation links remain usable without an email provider (#2858).
+
+## [1.62.1] - 2026-11-10
+
+### Fixed
+
+- **Existing notifications survive the evaluation upgrade.** The early evaluation
+  migrations retain `capability_requested`, `suggestion` and `finding` while
+  rebuilding the notification and preference checks. Previously, upgrading a
+  populated 1.61 deployment could fail before the final merge revision restored
+  those values. No notification is deleted or rewritten. Deployments whose
+  1.62.0 upgrade rolled back can upgrade directly to this patch; deployments
+  already at the merged head need no additional migration.
+
+## [1.62.0] - 2026-11-10
+
+Agents can now be measured and improved from evidence: datasets of test
+questions, eval runs and suites, guarded promotions, knowledge gaps and the
+Improve wizard. Nothing in it changes an agent, a knowledge base or an
+environment without a person's decision.
+
+### Upgrading
+
+- **Serve the `eval` worker pool.** `WORKER_POOLS` now defaults to
+  `agent,eval,ingest,system,workflow`. A deployment that sets it explicitly must add
+  `eval` to one worker, or eval runs stay queued until they fail a day later.
+  `WORKER_EVAL_CONCURRENCY` (default `4`) sizes that pool, and
+  `agenticos cmd doctor` names a pool no live worker serves.
+- **Evaluation settings belong to datasets.** Choose the grading model and
+  instructions in **Settings**, alongside generation/improvement models and
+  instructions, using the Agent Builder's model picker and Markdown editor.
+  Code-defined helpers keep internal run identities, budgets and historical pins
+  without appearing in the agent catalog or consuming the user-agent allowance.
+  There is no organization-wide AI-assistance switch or grading-model override.
+  Queued tasks keep their admitted model and instructions.
+- **`GET /runs` lists every run.** Activity and the runs API now include eval
+  runs and the platform's own agents at work beside conversations. A client
+  that wants people's runs only passes `source=conversation`; the export takes
+  the same filter.
+- **Knowledge searches made during runs are recorded.** Each search an agent
+  makes in a run that answers a person is kept (the first 1,000 characters of
+  the query, what came back and how close it was) to find knowledge gaps. It is
+  deleted with its run and when the person is erased; data exports and erasure
+  also cover dataset cases, eval results and drafts taken from a person's
+  conversations. See [Data protection](docs/data-protection.md).
+- **New permissions.** `datasets:view`, `datasets:edit`, `datasets:run` and
+  `promotions:override` join the catalog with defaults for every built-in role.
+  Starting or estimating an eval also needs `runs:view`.
+- **Migrations `0160_datasets.py` to `0253_freeze_dataset_helper_settings.py`** add
+  the dataset, eval, suite, knowledge gap and improvement tables and new
+  columns on agents, agent runs, MCP connections, knowledge-base documents, API
+  keys and background jobs, and extend the agent kind and notification event
+  checks. Existing grader and queued-task settings are preserved; a downgrade drops these tables with
+  everything in them.
+- **`0304_merge_evals_platform.py`** joins evaluation previews with the released
+  platform history. Upgrade either branch normally; existing revisions keep
+  their identities and apply only once.
+- **New settings**, all optional: the `EVAL_*` settings in
+  [Eval runs](docs/evals.md#settings), `KNOWLEDGE_GAP_MIN_SIMILARITY`,
+  `KNOWLEDGE_GAP_TOPIC_SIMILARITY` and `DATASET_MAX_VERSION_ROWS_PER_ORG`.
+
+### Added
+
+- **Datasets.** Versioned test questions with expected tool calls, checks, a
+  reference answer and tags. Cases are written in the console, imported from
+  CSV or JSONL, added from a rated chat answer with **Add to dataset**, or
+  drafted by the case generator from the agent, its knowledge, real chats and
+  red teaming and accepted under **Generated**. Each agent can build its own
+  test set from its rated answers. Every edit makes a new version, and a
+  warning appears before a second case asks the same question. Leaving a
+  dataset with an unsaved case, grading or details edit asks to save, discard
+  or stay, and an unsaved case or grading edit is kept in the browser and
+  offered back on return. The dataset list counts each dataset at one version,
+  so its figures stay consistent while cases are being added.
+- **Grading.** A dataset is graded by checks, expected tool calls and a judge
+  with criteria, a scale and a pass mark. A dataset can have a judge of its
+  own; criteria can be scoped to case tags. The judge quotes the answer for
+  every grade, and unverified quotes are kept apart. **Review** lets a person
+  confirm or overrule a score, with notes that can become judge criteria, and
+  shows how often people agree with each judge.
+- **Eval runs.** An agent's published version or draft answers every case of a
+  dataset version, optionally on several models and beside a baseline version
+  in the same run. The estimate comes first and the run starts on a second
+  click. Flipped cases are re-asked before a regression counts, and results
+  are compared on quality first, then cost, tokens and latency. Each answer,
+  criterion and flip reads as one pass, fail or undecided badge, and a check
+  reads as a rule. **Evals** lists every run in the organization.
+- **Isolated runs and test connections.** An eval runs the agent without
+  touching the outside world: tools that write are held and answered from
+  recorded calls, and capabilities declare which tools only read. A named
+  environment can swap an organization MCP server or a capability's vault key
+  for a test one, or switch a binding off, for every run in it.
+- **Eval suites.** A dataset an agent is held to, run on a schedule, on
+  publish, on promotion, when a skill, context file or knowledge base it uses
+  changes, or by hand, with a threshold each result must meet. The owner is
+  notified when a result fails, is inconclusive or does not run.
+- **Guarded promotions.** An environment can name suites that must pass on a
+  version before it takes it; a promotion that has not passed is refused and
+  names each guard. A guard is pinned to its dataset version, grading and judge
+  publication until **Move the pin**. **Override**, with
+  `promotions:override` and a reason, promotes past the guards and is audited.
+- **Knowledge gaps.** Questions a knowledge base could not answer, grouped into
+  topics on the knowledge base's and the agent's **Knowledge gaps** tab. The
+  classifier sorts rated-down answers by cause; the drafter writes the missing
+  passage with its sources and `{{what to fill in}}` placeholders. A person
+  reviews and adds every document, and can turn a topic into dataset cases.
+- **Authoring assistant.** **Improve** suggests changes to an agent's
+  instructions, tool descriptions, configuration, skills and context files from
+  rated-down and failed runs; **Verify** reviews your own draft. Each
+  suggestion is accepted, edited or dismissed on its own and lands in the draft.
+  A suggestion that widens access is marked **Adds access** and keeps writing
+  tools behind approval, and a model change is accepted only after a check with
+  evals. The assistant can also propose a new skill from repeated answers.
+- **Text changes read as a diff.** A changed text (instructions, a tool
+  description, a field or a context file) shows removed and added lines with the
+  changed words marked, unchanged lines folded, unified or side by side.
+  **Edit** on an instructions suggestion opens the whole instructions, current
+  beside proposed, with the diff redrawn as you type. The assistant's reasons
+  cite numbered conversations rather than run ids.
+- **Create skill** from a skill idea the assistant did not add because fewer
+  than three answers back it. Whoever holds `skills:edit` and may edit the
+  agent previews and edits it, and creating it adds the skill to the library
+  and binds it to the agent's draft only. No model is called. Anyone who may
+  edit the agent can dismiss the idea instead, and undo that.
+- **To review and Decided.** The assistant's card on the Build tab splits
+  suggestions into what still needs a decision, shown whole, and what was
+  accepted, edited or dismissed, each folded to its kind, decision and a
+  one-line summary. Both tabs group changes by kind. Publishing the agent ends
+  the cycle: the card stops showing suggestions and findings from before the
+  publication, which stay stored with their decisions.
+- **The Improve wizard.** A resumable session at `/agents/<agent>/improve/<session>`
+  that analyses evidence, proposes changes, tests them on held-out questions,
+  and stops at a result for a person to accept and publish. It shows the
+  estimate and expected time before anything is spent, separates problems with
+  the agent from missing knowledge (a person can leave an example out with
+  **Ignore this**), makes up to three rounds within a spending
+  limit, can test a knowledge draft in context or through search, and offers
+  more test questions when too few remain. Each step opens on figures and
+  charts, with full answers, quotes and reasons folded into cards. **Improve**,
+  an outline button with a trending-up icon in the agent header, on the Build
+  tab's assistant strip, the **Needs attention** badge, the dashboard and the
+  **Knowledge gaps** tab, opens the agent's session still in progress or
+  waiting for a decision, stopped and failed ones included, and a new one once
+  that session is kept as a draft, published, discarded, cancelled or outdated;
+  a dot on it says when the agent
+  needs attention. The agent's **History** tab lists every session as an
+  **Improvement history**; a finished one opens read-only, its last step saying
+  what was decided, by whom, with which changes and knowledge documents. A
+  first improvement has a guided tour. Background sessions and a one-off Improve request are
+  also available through the API.
+- **Evaluation workspace.** All dataset tabs share full-screen controls and
+  console tables. Case and review details open in side panels; case forms put
+  input and answers first and optional checks behind expandable sections.
+  Import explains CSV and JSONL and downloads ready-to-use examples. Creation,
+  import, generation and Activity actions sit beside the cases table.
+- **Verify my edits** saves the draft and opens the standard eval comparison
+  against the published version, with an estimate before starting.
+
+- **Activity shows whose work a run was.** A **Source** filter narrows to
+  conversations, Improve and evals, or system agents, and each platform run
+  names its agent and links the eval run, Improve session, gap topic or
+  dataset it worked on.
+- **Notifications** for a failed or re-evaluated suite, an override, an applied
+  shared change, a finished improvement session, eval run and case generation,
+  each with a preference under **Settings → Notifications**.
+- **Dashboard.** Widgets for datasets, eval runs, eval suites, the review
+  queue, knowledge gaps, suggestions waiting by agent, skill and file, and the
+  agents that need attention, with **Improve**. An agent needs attention for
+  answers rated down and failed runs on the version it serves now, so
+  publishing a fix clears its badge until the new version earns its own. The
+  greeting counts everything waiting on the reader, and spend on improvements
+  is shown apart from evals.
+
+### Changed
+
+- The agent page's tabs are reordered, with an **Evals** tab that shows results
+  first.
+- A publish refusal offers the one-click fixes it names beside it.
+- Open eval, dataset, suite and improvement pages refresh from live change
+  events instead of polling.
+
+### Fixed
+
+- Preserve trusted MCP account identity alongside evaluation isolation metadata.
+- Hide private datasets from unauthorized sharing-route callers, matching other resources.
+- Keep initial background schedule times distinct when short intervals cap their startup delay.
+
+- Give isolated evaluation attempts disposable run-scoped workspaces, so agents
+  configured with conversation workspaces can run without a chat and never reuse
+  persistent files. Clarify setup failures and refresh the evaluation results UI.
+- Avoid a duplicate sandbox binding when recognizing a legacy Architect agent,
+  which could prevent the console's assistant from loading.
+
+- Simplify dataset navigation to Cases, Results and Settings, keep grading cards
+  equally tall, and choose saved pipeline models through a searchable selector.
+  Show all scored answers together in a table, without review-state segments, a review-policy
+  card or the dataset journey banner.
+
+- Guide dataset setup from cases through grading, evals and review, with direct
+  writing/import/generation actions, contextual next steps, coloured option
+  chips and a cases table matching Virtual Tables.
+
+- Make evaluation workspaces easier to use: split case editing into conversation
+  and expectations, keep save actions visible, choose saved pipeline models first,
+  fold default instructions, and lay out grading, helper settings and knowledge
+  gaps side by side on wide screens. Evaluation targets support keyboard arrows.
+
+- Align datasets, evals and Improve with the current console cards, dialogs,
+  status text and chart tooltips. Preserve routine approval policies and join
+  both published migration histories when upgrading from the preview or main.
+
+- Match eval trends to dashboard charts with the shared accent, gradient and axis typography, and distinguish runs within a past day by their start times.
+
+- Present dataset cases with the chat message layout, labelled Markdown reference answers, expandable context and tool arguments, and editing in the fixed panel header.
+
+- Simplify Agent Builder by keeping Improve and suggestions in Evals, and make dataset cases and eval histories easier to scan with grouped creation actions, separate model and result columns, case counts and a compact trend above the run history. Keep creation buttons visible but disabled on historical dataset versions so switching snapshots preserves the toolbar layout.
+
+- Join the eval-helper and RAG-index migration histories so installations on
+  either branch upgrade to one head without rewriting applied revisions.
+
+- Keep incomparable eval runs and improvement rounds from presenting score
+  differences as confirmed regressions or fixes, including knowledge checks and
+  acceptance summaries. Exclude invalid comparisons from measurement noise;
+  retain their individual answers and grading results.
+- Preserve assistant replies with file origins in chat history by serializing
+  their UUID references before writing JSONB.
+- Show an exceeded eval budget explicitly instead of describing a negative
+  amount as money left after the run.
+
+- Clearing the Architect's uploaded avatar restores its generated face, just as
+  it does for other agents. The special mark no longer overrides an empty avatar.
+
+- Recognize OpenRouter's dated Mistral embedding identifier when pricing RAG
+  searches and improvement sessions, using the existing upstream price snapshot.
+- Serialize grading edits, source erasure and promotion guard changes, and refuse
+  queue-level retries of an eval that has already ended.
+
+- Match the new dataset, evaluation, authoring and Improve views to the console:
+  use the available page width, keep editor actions reachable, stack comparison
+  metrics and case fields on phones, and offer the shared full-window editor
+  for proposed instructions. All dataset tabs and knowledge gaps expand in
+  place, and opening an agent from its card keeps the normal builder entry.
+  A walkthrough still selects a tab after its
+  spotlight adds disclosure attributes.
+- Price embedding models OpenRouter serves by their bare OpenAI names, so
+  knowledge searches through OpenRouter are no longer booked at $0.
+- Recommend a workspace the organization can publish when creating an agent,
+  and ask again when sandbox connections change.
+- Keep a tour's Back and Next live while a tab or popover opens, skip optional
+  stops missing from the page at once, and offer the page's help on the Improve
+  wizard and an eval run.
+- Show an agent page's controls from the reader's access to that agent,
+  including edit grants, and stop an agent page of another organization from
+  loading forever.
+
+### Security
+
+- Reading or deciding assistant-generated proposals requires `runs:view` as well
+  as target access. Summaries and proposed text can contain conversation content
+  even when explicit evidence quotes are hidden.
+- Recognised secrets are redacted from dataset cases, eval answers, tool-call
+  evidence and errors before they are stored.
+- A dataset case copied from a conversation shows its text only to readers who
+  may read runs or that conversation; review answers and evidence need
+  `runs:view` and access to the agent.
+- Queued case generation and improvement work runs with the original API key
+  and rechecks its current scopes and membership before each paid step.
+- A system agent never reads anyone's memory, even from a version published
+  with memory before that was refused, and reads only the context files and
+  skills shared with the whole organization. Case generation removes the
+  personal data the detectors find from people's questions and comments before
+  the generator reads them.
+- A suite and a promotion override can be set up only by a person signed in as
+  themselves, not through an API key or impersonation.
+
+
+## [1.61.5] - 2026-11-09
+
+### Changed
+
+- Update the backend runtime, development and documentation dependencies from
+  #2836. Keep Soup Sieve below 4 to preserve HTML parsing inside templates, and
+  refresh the distributed third-party notices.
+
+## [1.61.4] - 2026-11-09
+
+### Fixed
+
+- Refuse paused sync sources at the shared service boundary, disable their console
+  sync button, and reject ambiguous collection-name assignments. Resolve tied
+  knowledge bases consistently regardless of candidate order (#2744).
+
+## [1.61.3] - 2026-11-09
+
+### Fixed
+
+- Float invitation and onboarding notices in one overlay without reserving a blank
+  strip or shortening the application. Keep mobile navigation reachable and stack
+  simultaneous notices.
+
+## [1.61.2] - 2026-11-09
+
+### Fixed
+
+- Tool failures now keep actionable structured details through model continuation,
+  approval resume and saved transcripts: named missing fields, allowed values,
+  numeric and collection bounds, safe compiler diagnostics, correction examples,
+  execution disposition, recovery guidance and an error ID that identifies the
+  detailed server log. Unknown tool names report
+  unavailable registration rather than missing permission, and agents check uncertain
+  execution outcomes before retrying. Budgets, guardrails, loop stops and usage limits
+  retain their terminal behavior through code mode. Only calls that pass complete
+  validation count as successful argument repairs.
+- MCP schema checks run in isolated processes with bounded concurrency and a deadline,
+  so server-controlled regular expressions cannot block the application's event loop.
+
+## [1.61.1] - 2026-11-09
+
+### Fixed
+
+- **A step stays in the loop it belongs to (#2770).** A For each body was
+  whatever the loop's **Each item** port's wires reached, so deleting a wire
+  inside a body moved the steps after it out of the loop, and a second wire from
+  that port, which no view drew, made publishing fail with "A loop's body must
+  start at exactly one loop item step". Each step now names its loop
+  (`scope_id`), the loop has no **Each item** port, and a body starts at its
+  **Loop item**. A new loop comes with its **Loop item** and **Loop result**,
+  which go only with the loop; a step added or pasted in a body stays there; and
+  deleting a loop deletes its body. Publishing refuses a body step **Loop item**
+  never reaches. Migration `0301_workflow_loop_scope` rewrites stored drafts,
+  versions and test-run snapshots, moving an extra wire from the old port onto
+  the body's **Loop item**; a graph sent or imported in the old shape is read the
+  same way. See [Workflows](docs/workflows.md#connections-and-foreach-scope).
+
+## [1.61.0] - 2026-11-09
+
+### Added
+
+- A shared first-task hub for web, invitations and desktop, with editable fictional
+  examples, clearly labelled demonstrations without a model, membership-scoped
+  goals and real completed-chat progress. Authorized builders can explicitly
+  prepare a text-only starter without a sandbox.
+
+### Changed
+
+- Require session-bound mailbox proof for received invitations and their logos, paginate older offers, preserve onboarding position across language changes, and use the server clock for snooze expiry. Reject a zero monthly budget before submission.
+
+- Let members enter the trusted AgenticOS setup chat from onboarding without requiring model-management permissions or treating a draft as a runnable agent.
+- Default new maps to bundled SVG country outlines and routes without tile-server setup; keep optional street-map configuration and hide its unconfigured dashboard check.
+- Preserve focus outlines in onboarding profile cards and spacing below form labels.
+- Show organization logos and fallback colors in received invitations before joining.
+- Align chat activity rails and keep them outside expanded tool details.
+- Reveal new AgenticOS and Architect setup replies progressively before showing the model setup card.
+- Select and display onboarding monthly budgets in whole dollars.
+- Show optional deployment settings as cards with immediately visible links.
+- Prefill the onboarding welcome announcement with an editable message and live preview.
+- Place optional onboarding skip actions beside Save and continue in profile cards.
+
+- Match onboarding loading states to workspace cards, profile forms, guided settings, budgets and the first-task canvas.
+
+- Simplify the onboarding budget step to presets and a slider, without a separate numeric input.
+
+- Show pending email invitations after sign-in, with explicit acceptance and organization welcome without needing the emailed link.
+
+- Give Architect the shared model-setup card and a normal chat before model setup, including persisted setup replies in its widget and full chat.
+
+- Guide setup through one decision at a time with a scripted AgenticOS companion,
+  a monthly-budget slider and announcement previews. Separate administrator, new
+  member and returning-member journeys; keep operational credentials optional.
+  Respect legacy completion for existing memberships without hiding a later join.
+
+- Select the shipped AgenticOS before publication and answer first-use chat messages
+  with a persistent model-setup card. Guide builders to configuration and members
+  to their administrator without executing a draft or charging a model call.
+
+- Snooze dismissed start offers for 24 hours. Record walkthrough completion
+  separately after the final step, without requiring optional settings or an AI run.
+
+- Make product tours opt-in, continue accepted invitations into the joined
+  workspace's start, and sign in new password accounts without repeating the login
+  form when possible. Keep the invitation destination if sign-in needs a retry.
+- Localize native desktop setup in English, Polish, German and Turkish, reduce
+  required workspace fields, and keep system permissions optional. Explain local
+  data versus remote AI processing and warn about loopback invitation links.
+- Start administrator onboarding with company workspace creation and immediate
+  team invitations, followed by the existing deployment and organization settings
+  forms. A sequential wizard replaces the settings sidebar, with separate company
+  logo, user identity and agent-context questions, Back and save-and-continue actions.
+  Use actual workspace avatars, equal-height adjacent cards, directional transitions
+  and transient field highlights that respect Motion preferences. Give the chat
+  start notice role-aware guidance, blobby, a clear primary action and a dismiss
+  control that fits desktop and phone layouts. Float it over the desktop console
+  with a translucent surface, preserving both sidebars at full viewport height. Keep personal workspaces optional and enforce
+  effective permissions.
+- Give onboarding the console's controls, animated blobby and violet workspace
+  preview that follows the entered name. Present member examples in a split view
+  with source and result tabs; motion respects reduced-motion preferences.
+
+### Fixed
+
+- Recognize existing agents and personal chat activity, including legacy and
+  failed chats, so automatic welcome links and start offers do not repeat setup.
+  Keep manually opened setup available without resetting existing data.
+- Keep example navigation on the start page and AI setup in a dismissible dialog
+  with Escape support and focus restoration. Separate demonstration material
+  from its recorded result.
+- Keep recorded examples available while a preference save is pending or fails,
+  restore keyboard focus on return, and avoid late chat navigation after leaving
+  the start. Scope pending start operations to their initiating membership.
+- Reserve the dashboard start panel during loading and offer an explicit retry
+  after failed checks, without shifting the adjacent briefing on successful load.
+
+## [1.60.3] - 2026-11-09
+
+### Fixed
+
+- Include shared resource visibility helpers in the platform coverage and type-checking gates, and guard against their accidental removal (#2143).
+
+## [1.60.2] - 2026-11-09
+
+### Changed
+
+- Update Pydantic AI, its harness and skills integration, pricing data and
+  Logfire to the versions locked by the agent-framework dependency update.
+  Normalize wrapped question answers before saving a parked run so the
+  durable answer remains JSON data.
+
+## [1.60.1] - 2026-11-09
+
+### Fixed
+
+- Probe the readiness endpoint after production deploys; the old health URL returned 404 despite a healthy deployment.
+
+- Paused knowledge sources refuse manual API synchronization, and workers
+  recheck the pause before downloading or indexing queued or CLI runs.
+  Knowledge-base collection-name lookups break creation-date ties by ID,
+  keeping the selected base stable (#2744).
+
+## [1.60.0] - 2026-11-09
+
+### Added
+
+- **Fork a conversation at an answer (#2762).** **Fork into a new conversation**
+  under an agent's answer opens a new conversation of your own, in the same
+  project, holding the history up to and including that answer, so you can try
+  another approach or take a side question elsewhere without changing the
+  original. Only the owner can fork, up to ten a minute, within 2,000 messages,
+  10,000 tool calls and 20 MiB; concurrent transcript updates are fenced before
+  copying. Retained copies have a 100 MiB member and 1 GiB organization
+  allowance, including fixed row reservations, freed when a fork is deleted.
+  Drawings with stored image files are refused before copying. The fork copies
+  messages, tool calls and a long conversation's summary, including its
+  externalized text and media within the copy limits, not attachment or
+  workspace files, generated images, cost or runs. Conversations with a saved
+  checklist fork only at the latest answer and retain its tasks and dependencies.
+  Its **Forked from** line
+  is shown only to you. `POST /conversations/{id}/fork` does the same over the
+  API. See [the console guide](docs/console.md#forking).
+- **Conversations shared with you, in the chat sidebar.** They sit under
+  **Shared with you**, below your favourites, for the organization you are in,
+  with their agents, unread dots and running state; until now a conversation shared
+  with you could only be opened by its link. Renaming, sharing, archiving and
+  deleting stay the owner's; their menu holds **Remove from my chats**, which
+  ends your own access (`DELETE /conversations/{id}/shared-with-me`).
+- **A conversation shared with you to read has no message box.** It used to
+  offer one, and the message failed with "Conversation not found".
+  `GET /conversations/shared-with-me` now says each share's `share_permission`.
+- **Change a person's access to a conversation in place.** Each person in the
+  Share dialog has a View/Edit picker, so turning a reader into an editor no
+  longer means revoking and sharing again. The owner only; a share link stays
+  view-only (`PATCH /conversations/{id}/shares/{share_id}`).
+- **A notification when a conversation is shared with you.** It opens the
+  conversation, and follows your preference for "Shared with you or your
+  group" (in the inbox, by email or by push), which the "Shared with your
+  group" preference is now called.
+
+### Fixed
+
+- Shared conversation favourites and read receipts update immediately, including
+  new answers arriving in an open shared thread. Channel participants' direct
+  share permissions are checked even when their thread is already listed.
+- Shared sidebar refreshes read only listing columns. Direct-share notification
+  fanout is rate-limited across conversations by organization, sender, recipient
+  and pair, retaining a local floor when Redis is unavailable.
+
+## [1.59.1] - 2026-11-09
+
+### Fixed
+
+- Knowledge sync failures now show their error on the dashboard. Knowledge-base
+  write controls follow effective access to that base, including edit grants,
+  instead of the member's organization-wide permission (#2772).
+
+## [1.59.0] - 2026-11-09
+
+### Changed
+
+- **Breaking: global unfiled knowledge needs operator provenance.** App-scoped
+  bases no longer publish or clear ambiguous legacy chunks merely by claiming a
+  retained collection name. New CLI imports record operator origin; tracked
+  ingestions retain document origin after their owner or base is deleted.
+  Migration `0300_unfiled_writer_provenance.py` preserves certain document
+  ownership and quarantines unknown data. Operators must audit retained imports
+  with `agenticos cmd rag-unfiled-provenance <name>` and, only after inspecting
+  their source, explicitly use `--confirm-operator` to share unknown operator
+  imports with every organization. Known document data is never promoted by
+  that command. Re-ingest private data into its authorized base instead (#2773).
+
+## [1.58.3] - 2026-11-08
+
+### Fixed
+
+- Desktop and mobile native dependencies use an immutable GTK-compatible backport of the GLib string iterator soundness fix (RUSTSEC-2024-0429). The mobile build no longer enables the legacy HTML path that pulled vulnerable `rand` 0.7.3 (RUSTSEC-2026-0097).
+
+## [1.58.2] - 2026-11-08
+
+### Fixed
+
+- Concurrent first ingests into the same new collection no longer fail on PostgreSQL catalog uniqueness. Table and index creation is serialized per collection, and a rolled-back creator releases waiting writes (#2774).
+
+## [1.58.1] - 2026-11-08
+
+### Fixed
+
+- Nightly proactivity uses its own look attempts rather than watches to decide when someone is due. Successful looks remember which prompts they read, so deferred prompts survive intervening watches and a settled approval or question wait does not cause an extra model call. Watches still count toward personal spending limits. Existing recent messages may receive one catch-up look after upgrading (#2777).
+
+## [1.58.0] - 2026-11-08
+
+### Added
+
+- Workflow agent steps can use the existing Ask Question tool to wait for a user and resume the same conversation. Questions remain available in the originating chat and workflow run view after reload; answers are saved before the workflow worker continues under its current budget. Question cards honor current workflow grants and retain newer questions when polling overlaps a delayed answer response. Completed answers remain in agent context after chat compaction, and question waits do not stall shared mailbox polling.
+
+## [1.57.0] - 2026-11-08
+
+### Added
+
+- Workflow Manual, API and Called by a workflow triggers can declare an optional
+  JSON Schema Draft 2020-12 input contract, including nested objects, arrays,
+  enums, required fields, length limits, additional-property restrictions and
+  local `$defs`/`$ref` references. Published versions freeze the contract; invalid
+  input is rejected before a run starts with field paths. API and MCP discovery
+  expose the effective schema, preserving existing simple-field and untyped inputs.
+  Raw-schema validation runs in an isolated process with bounded resources and
+  diagnostics, with Linux address-space limits and native macOS support. Step tests use the contract of the entry that reaches the tested step.
+  Publication rejects negations that exclude every object; discovered legacy
+  date fields retain calendar validation without requiring format assertions.
+  Discovery marks the additional integer-token requirement of legacy simple fields.
+  Validator memory exhaustion returns a controlled input refusal rather than
+  a retryable server failure.
+
+### Changed
+
+- **Breaking:** agent `list_workflows` discovery refuses encoded responses above
+  32 KiB. Narrow the agent's workflow binding or input contracts, or inspect
+  contracts through the HTTP input-schema endpoint outside the agent context.
+
+## [1.56.4] - 2026-11-08
+
+### Changed
+
+- Add optional CodeRabbit review preferences and document installation and review triggers; the GitHub App must be installed separately (#2812).
+
+## [1.56.3] - 2026-11-08
+
+### Fixed
+
+- Keep guardrail-refused prompts out of later models through queued workflow branches, retries and calls, routine retention, conversation search, platform MCP readers, cached summaries, parked continuations, voice reconnects and transcript titles (#2767). Existing cached summaries are rebuilt once after upgrading.
+
+## [1.56.2] - 2026-11-07
+
+### Fixed
+
+- Keep renamed tools’ chat views, drawings, drafts and run steps through streaming, reloads and shared links; prevent external tools from claiming built-in renderers by name (#2740).
+- Cancel clipboard feedback timers when a copied card closes, including copies that finish after the card unmounts.
+
+## [1.56.1] - 2026-11-07
+
+### Fixed
+
+- **Skills use skill-specific names.** Models open a skill with `read_skill`
+  from an “available skills” catalog; `read_skill_resource` still reads its
+  supporting files. Native deferred loading, approval policies and saved
+  conversation histories remain compatible, including existing `load_capability`
+  approval keys and histories.
+
+## [1.56.0] - 2026-11-07
+
+### Added
+
+- Local routines ask once: the desktop app lets all your routines in an organization work in a folder (or your home folder, for the whole computer), and every later routine there is saved without another dialog. The permission survives app updates and signing in again; a routine follows your current desktop session. Approving another folder or stronger operations keeps earlier grants. On Windows, routine folders must use local drives rather than UNC or device paths.
+- The public API lists, opens and renames your conversations (`GET`/`POST /api/v1/conversations`, `PATCH /api/v1/conversations/{id}`), checks one of your own MCP connections (`POST /api/v1/me/mcp-connections/{id}/test`), and the platform MCP server gains `list_conversations`, `create_conversation`, `test_my_connection` and `update_proactivity_settings`, so a routine's topic chat and the organization's watch cadence and briefing can be set up without the console.
+
+### Fixed
+
+- A replacement desktop that does not hold a routine’s grant leaves its incoming events waiting for the approved computer and warns the owner; it does not disable the routine or discard those events. Delegates retain a shared local-workspace requirement before computer access has been granted, so they can ask for access too.
+- Routine permissions are verified against the current store fingerprint in the OS keychain, so editing the JSON or replaying a revoked store cannot extend consent. **Upgrade:** explicitly unlink and relink the computer, then approve existing local routines again; older grants have no trusted fingerprint. A missing keychain or interrupted permission write fails closed and requires the same reset.
+- Routine folder admission refuses symbolic links in the root path, including a replaced grant root, instead of resolving them before checking access. Local folder commands retain the approved directory through Linux sandbox startup, preventing a concurrent folder rename or symlink replacement from changing what is mounted. Linux needs bubblewrap with `--bind-fd` support. On Linux, task environment variables are applied inside the sandbox and passed privately through a descriptor.
+- An agent whose workspace is your computer no longer refuses a message, or asks where it may work before you send one, when no folder is chosen. It answers what needs no files and asks for your computer only when a request needs your files; the chat continues with them once you choose.
+- An API key you issued, or an MCP client you authorized, with the explicitly selected `personal:consent` scope can now create and change your own routines that act as you and your watches, review a routine's sources, and publish an agent without withdrawing your routines' consent. This scope is excluded from all presets, including Full access, and existing credentials gain no consent automatically. It used to be refused as if it were somebody else; an agent's run credential outside your private chat and an administrator impersonating you are still refused.
+- A routine its agent cannot run - for example one whose agent works on your computer and that names no folder - no longer leaves a run that the stale-run sweep later reports as a crash; it stops with a notification that says why.
+- A watch check is bounded: at most 30 model requests, with long tool results trimmed and an overgrown history summarized. A first check of a whole Notion workspace had made about 40 requests and cost $2.
+- Connecting an MCP server in the desktop app opens the provider's sign-in in your own browser instead of inside the app window, so saved passwords, passkeys and existing sign-ins work there. Finish signing in and return to the app; the server appears once it is authorised.
+
+## [1.55.0] - 2026-11-07
+
+### Changed
+
+- The organization switcher now sits at the top of the sidebar, showing the active organization's name and avatar without opening the account menu. It remains available in the collapsed sidebar and phone menu, with organization management and creation in the same dropdown.
+
+## [1.54.1] - 2026-11-07
+
+### Fixed
+
+- Chat questions are saved before their answer card appears. Switching chats or reopening the conversation restores the unanswered card and answering continues the same run, instead of leaving the agent waiting on a connection with no visible form. Chat answers retain the live question channel so delegates can ask follow-up questions during the continuation.
+
+## [1.54.0] - 2026-11-07
+
+### Added
+
+- Tool search can defer eligible tools from enabled capabilities as well as bound
+  MCP servers. Choose either group or both, and keep whole capabilities, MCP
+  server namespaces or individual exposed tools visible from the first request.
+  Existing configurations keep their MCP-only deferral behavior.
+
+## [1.53.0] - 2026-11-07
+
+### Fixed
+
+- Public embed messages now spend a per-connection allowance before attachment parsing, reject lists above three file IDs before inspecting them, and aggregate invalid IDs into one bounded log entry without their values. Malformed frames cannot spend the allowance shared with other anonymous visitors. This prevents malformed frames from amplifying the newly enabled application logs.
+
+- API, worker, ingestion children and CLI now emit timestamped, redacted application logs to stderr, with `LOG_LEVEL=INFO` by default. SQL queries and HTTP transport chatter stay quiet; Logfire console spans are opt-in with `LOGFIRE_CONSOLE=true` in every environment. (#2771)
+
+## [1.52.0] - 2026-11-06
+
+### Fixed
+
+- Opening chat on a phone no longer focuses the editor automatically. The keyboard stays closed, and the welcome screen reserves matching space for loading placeholders and agent details so the attachment action stays in place while being tapped.
+- Creating a knowledge base or claiming a collection name now waits at most one second for a name held by an unfiled chunk write, then answers 409 with a request to retry. Previously an unbounded wait could occupy the database connection pool and delay or refuse unrelated requests. The timeout rolls back only its savepoint, leaving the caller's transaction usable. Teardown and ingestion locks remain transaction-scoped and keep their existing behavior. (#2781)
+
+### Added
+
+- A coding agent runs several named sessions at once. `run_coding_agent` takes a `session` name: the same name continues that session, a new one opens another, and `main` keeps the session conversations used before. On the person's computer a session may also choose its `harness` (Claude Code or Codex, on that computer's sign-in) and a `folder` inside the chat's folder, so two projects or both harnesses work side by side. Local sessions run concurrently; sandbox tasks in the same toolset queue to keep their workspace diffs separate. Chat corrections can target a named local session with `[session:name]`; unaddressed corrections stay with the parent when several sessions are active. The desktop app runs up to eight local sessions and lets one start in a folder inside a full-access grant; revoking a folder stops the sessions inside it too.
+
+### Changed
+
+- An agent whose workspace is **Computer** no longer fails a new desktop chat with "This agent uses your computer". The first message asks once where it may work - the whole computer or a folder - and the answer is remembered for that agent, so its later chats start there. **Work on** offers no Cloud for such an agent. Whole-computer consent given this way belongs to the agent in the desktop app rather than to one conversation; consent given in **Work on** for other agents still belongs to that chat. A local coding agent can now work under whole-computer consent, in the home folder or a folder inside it. Device operations under whole-computer consent carry the run's agent, and the agent listing gains `local_workspace`. The desktop app must be updated for agent consent; an older app keeps asking per conversation.
+
+## [1.51.0] - 2026-11-06
+
+### Fixed
+
+- A local instance created by the desktop app can be set up with a provider key again. The app wrote a `SANDBOXD_TOKEN` for a sandbox service it never starts, so new agents kept container workspaces publish refused, and bootstrap stopped at the Architect's publish. The instance no longer gets a token, and its agents get the files-only workspace. A publish refusal now leaves the Architect waiting for a model instead of failing every console load. An instance created earlier keeps its token: delete the `SANDBOXD_TOKEN` line from its `.env` and restart it.
+- Finished synchronous delegations no longer repeat below the answer. Their byline keeps the exchange, reasoning, actions, token usage and run link; nested specialists remain promotable. (#2782)
+- Quick Ask and blobby refresh a previously signed-out session when shown or when the console signs in. Blobby waits for a fresh session check before its first signed-out greeting. (#2784)
+
+### Changed
+
+- Chat controls split into three tabs: **Model** holds only the model, **Tools & files** holds the coding agent, Work on, browser, computer use and skills, and **Preferences** is unchanged. The chat no longer lists both coding accounts under the model: where an agent codes as a private cloud task on the person's account, Tools & files offers that account to connect. Agents with subagents retain both account connections for delegated coding tasks. The agent listing gains `personal_coding_harness`.
+- The default AgenticOS agent no longer has the Architect pinned as a delegate. It answered platform questions by asking the Architect, which took a minute and a second model's cost for what its own platform tools and guide already cover. Organizations pick the change up on the next console load; a starter whose delegates somebody changed keeps them.
+
+## [1.50.2] - 2026-11-06
+
+### Security
+
+- A sync, a local-directory sync or `rag-ingest` now clears earlier failed attempts at a file only in the new row's own scope: the knowledge base it is filed under, or, for a row with no base, rows of the same organization. Until now it cleared every failed row at that path under the collection name, so one organization's sync deleted another organization's failed rows (their error and retry) when both used the same collection name and path. The same applied to two knowledge bases of one organization that share a name. (#2747)
+- Creating a knowledge base or collection (`POST /kb`, `POST /rag/collections/{name}`) now refuses a name that no knowledge base holds while it holds content of another tenant, for example a collection written by `rag-ingest`. Until now a member with `collections:edit` could create a base on such a name and then delete it, which dropped the operator's vector table. An app admin can still adopt such a name. A name held only by bases the caller may write is not affected. (#2747)
+- Deleting the last knowledge base on a name (`DELETE /kb/{id}`, `DELETE /rag/collections/{name}`) now keeps the vector table while it holds unfiled chunks the base does not take: an operator's `rag-ingest` or `rag-sync-gdrive`/`rag-sync-s3` into the held name, or another organization's. Only the chunks the base takes are purged, and the other rows under the name stay as they are. Until now the table went with those chunks, so a member with `collections:edit` could destroy content written after their base claimed the name. `rag-drop` still drops the whole table. A chunk write with no base now holds the name until it commits, so the table is asked only after such a write in flight has finished, and one that reaches the name while it is reserved is refused. The cleanup job now drops only a reserved name, so a rerun leaves what was written after its first drop. (#2747)
+- **Sync source settings and run logs stay with their audience (#2745).** The
+  knowledge base wizard's list of existing integrations
+  (`GET /kb/{kb_id}/sync-sources/org-integrations`) and `GET /rag/sync/sources`
+  returned every source of the organization, with its configuration, vault
+  secret id and last error, to anyone who could read one base. The wizard's list
+  now needs `connections:manage`, like `/org/integrations`, and the wizard leaves
+  out the offer without it. `GET /rag/sync/sources` returns the whole list only
+  with `connections:manage`, and otherwise the sources that feed a base the
+  caller reads, so its `collection_name` filter answers 404 for a collection the
+  caller cannot read, where it answered 200. A member of one organization who read an app-scoped base could
+  read the run logs of another organization's source that fed it. A source's run
+  log and `GET /rag/sync/logs` now list only the caller organization's sources,
+  unless the caller is a platform admin. Runs with no source, such as those of a
+  deleted source, are still listed by their collection name. `PATCH`, `DELETE` and `POST .../trigger` on
+  `/rag/sync/sources/{id}` checked the organization and, on a move, the new base.
+  So a member could detach (`collection_name: null`), reconfigure, delete or run
+  the source of a base they cannot write. They now also need write access to the
+  base the source feeds. An unassigned source still needs only the organization.
+  That check and the change it allows now run under a lock on the source, on
+  these routes and on their `/kb/{kb_id}/sync-sources/{id}` counterparts, so a
+  move that commits between them can no longer leave a caller changing, or
+  queueing a run of, a source that feeds a base they cannot write. A run already
+  queued when a move lands still runs into the new base. The wizard also stops
+  offering integrations it already fetched when the member loses
+  `connections:manage`, and leaves clone mode if none remain to pick. A run that
+  finishes while its source is deleted keeps its outcome.
+  See [Configure sync sources](docs/howto/configure-sync-sources.md#api-reference).
+
+## [1.50.1] - 2026-11-06
+
+### Security
+
+- The nightly proactive job now reads only a prompt that passed the input guardrail of the agent it was sent to. It read every message a person sent in the last week and passed them to the organization's proactivity model, which runs with no guardrails, so a prompt the input edge had stopped, or never reached, still reached a model once a night and could come back in a suggestion or a first message. Left out: a refused prompt, a prompt no run took (an archived agent, a refusal before the run opened, a chat prompt passed to a workflow) and a prompt whose run stopped before its first model request and that the run's own input guardrail blocks when the job asks it. A prompt whose run is still going waits, and a later look reads it once the run has ended. A prompt that lost its run to retention is read only if a model's answer follows it, so `POST /conversations/{id}/messages` no longer stores `model_name` on a turn a person writes. A refused prompt no longer counts as new activity that wakes the look. Prompts a guardrail redacted rather than refused are stored unredacted and still reach it; that is #2655. (#2746)
+
+## [1.50.0] - 2026-11-06
+
+### Fixed
+
+- Fence personal coding result publication against account and membership revocation;
+  restrict telephone controls to the call owner and serialize SMS bot deactivation
+  with call admission.
+- Purge project memories and their derived shares and deregister provider webhooks
+  before deleting a project. Revalidate credential generations during tracker setup.
+- Keep channel conversations separate from private console history, and bound retained
+  inbound email bodies and delivery receipts before queue admission.
+- Require fresh approval for gated skill loads, retain answered questions in their
+  original timeline order, and bind system-agent cache mutations to the initiating tenant.
+- Preserve approval continuation segments and overlapping run activity in chat;
+  hide task creation on archived boards and refresh legacy Architect instructions
+  without reattaching optional skills.
+
+### Fixed
+
+- Preserve question-card answers and successful skill loads between conversation turns, without replaying full tool outputs. Join streamed thinking chunks exactly, including chunks split inside words.
+- Return actual question cards from synchronous API and MCP draft tests; answer them through `answer_agent_questions`. Support renaming an agent draft through MCP, clarify table column IDs, private sharing and draft starter fields, and prevent resolved approval cards from reappearing after stream replay.
+
+- Stream web-chat continuations after tool approvals and answers, including after navigation. Reuse the live turn trace, avoid duplicate HTTP answers, and clear completed sidebar activity.
+
+- Reduce default-agent prompt overhead and duplicate skill manuals; retain focused procedures and load detailed design recipes on demand. Match the Routines loading placeholder to its row layout.
+
+- Rearm planned human reminders when their task board is restored, and serialize private coding-result publication against edit sharing.
+
+- Acknowledge saved partial replies after Stop, discard buffered model frames, and clear the stopped conversation’s sidebar activity immediately.
+
+- Filter managed task reviewers by current board access, keep agent placeholders as skeletons during chat loading, and let project editors manage ownerless scheduled project conversations. Other members’ private conversation ownership remains unchanged.
+
+- Reconcile HTTP continuation answers with their stored text and tool-call identities, preventing duplicate final replies before a reload. Show animated tool activity while calls run, then restore the operation's object icon.
+
+- Always show Google sign-in and registration; disable the button with an explanation when the deployment has no Google credentials.
+
+- Keep the mobile chat welcome visible when an empty composer receives focus; collapse it only after writing starts.
+
+- Revoke unattended routine and telephone consent when a member leaves; stop personal coding tasks when their source conversation becomes editable by collaborators, and serialize descendant memory sharing with personal erasure.
+
+- Include private task records, retained history, column schemas and routine action consents in bounded personal-data exports. Serialize shared memory corrections with sharing and durably end superseded routine telephone calls.
+
+- Cancel important-case telephone calls when their notification is read or the case is settled, including calls already starting or active; serialize admission and queue provider cleanup. Reject abandoned Google consent after membership removal, block inaccessible reminders for review, and preserve native drafts on embedded and background streams.
+
+- Bind Google account grants to their OAuth client’s organization and current credential generation; preserve that authority across terminal approval pauses and routine source reviews. Include safe account metadata in personal exports and audit organization account changes. Older unverifiable personal grants need reconnecting after migration 0293.
+- Preserve renamed draft cards with server-owned presentation provenance (migration `0294_tool_presentation.py`); provider-controlled tool results cannot mark arbitrary arguments as public drafts.
+- Cancel parked approvals when task execution ends, block reminders whose creator has left, require actionable reviewer access, fence agent deletion against task assignment, and recheck delegate instructions and account authority after pauses. Removing a member revokes their tenant-bound Google grants permanently.
+- Refuse deleting an agent while a managed task still depends on its scheduled execution; reassign or settle the task first.
+
+### Added
+
+- Remember a tool approval for this conversation or this agent version and account, scoped to the consenting person. Recheck organization policy and current membership on use; revoke remembered choices from Chat controls. Apply `0295_tool_approval_consent.py` and update API and workers together.
+
+- Official Google Workspace and Cloud remote MCP catalog entries, including Calendar, Gmail, Drive, Docs, Sheets, Slides, Chat, People and Universal Search; Google OAuth offline consent and visible connection prerequisites.
+
+- Promote personal coding accounts directly in Chat controls, with shared profile
+  connections, inline setup and Claude Code/Codex branding.
+
+- Connect personal Claude Code/Codex accounts in Profile with explicit organization consent, user-sealed credentials and serialized ChatGPT refresh. Private cloud tasks use disposable containers and return a redacted report, diff and ZIP without changing shared project files automatically. Apply `0290_personal_coding_accounts.py` and update API/workers together; schedules, channels, API keys and impersonation cannot use personal accounts. Existing organization-key and desktop-local modes remain available.
+
+- Import PR #2728: show bounded per-task coding diffs, changed files and Copy patch in chat, with conversation-scoped access and cascading deletion. Apply `0289_coding_task_changes.py`; desktop-local tasks do not yet record a diff. Reverting a task is not offered.
+
+- Show pulsing setup indicators on organization tabs and configuration cards, with permission-aware explanations for missing Voice, memory, Architect and iPhone-push setup or disabled nightly suggestions.
+- Nine built-in platform and production skills, automatically delivered to existing organizations with edit/deletion protection; AgenticOS, Architect and new default agents bind them alongside presentation skills. Stronger completion, questions, delegation and document-quality guidance; Architect gains Apps and Charts.
+- Platform MCP operations for standing Context, agent context bindings, skill editing and text resources.
+
+- Choose a shared saved view as the table default, with explicit URL overrides; start task boards in Kanban and use rich-text notes plus linked Person/Agent references and an explicit next-step actor.
+
+- Durable tasks share one Virtual Table record across scoped boards, working chats and Inbox. Provision personal, project, group and organization boards on first use; schedule model-free reminders or one-shot agent work with existing routine authority, retain review state, and settle the same commitment from Tables or Inbox.
+
+- Manage scheduled tasks, event tasks and read-only monitoring in one Routines list. Choose reports on every run or quiet Inbox cases with full drafts in private working chats; deduplicate source revisions, reopen the same case on new replies, and settle it from chat through AgenticOS MCP. Monitoring no longer requires a nightly-suggestions model.
+
+- Choose icons and short titles for an agent's first-message suggestions in the Builder, persist them in published specs and YAML, and display equal-height suggestion cards in chat.
+
+- Equip shipped and new console agents with command monitors, background work, bounded conversation search, portable BM25 tool discovery and dynamic specialists. Pin Architect on AgenticOS, add optional access-checked delegation discovery, and include approved-desktop coding/computer capabilities on AgenticOS.
+
+- Offer Discord private chats as opt-in notification destinations alongside the other supported chat channels.
+
+- Important-case telephone consent for selected agents, explicit criteria and optional delay after an unacknowledged notification; shared case settlement cancels pending calls and event deduplication survives receipt expiry.
+
+- Twilio telephone conversations and spoken reports, opt-in verified contacts, quiet hours, bounded rates/budgets, permitted transfers, call cards and private transcripts.
+
+- Optional follow-up drafting in Await reply: explicitly selected model/cost ceiling, tool-free drafting after a verified deadline and a saved result for human review.
+
+- Structured, scoped decision episodes with alternatives, expected/observed outcomes and append-only corrections; explicitly reviewed JSONL handoff to Improve datasets.
+
+- Project tracking preset: explicitly review a published agent's sources, then create a private tracker, task table, saved views and a project-bound routine. Recheck project access for tools and queued notifications.
+
+
+- Bind routine execution, parked runs and queued events to reviewed source and account ceilings. Add owner-only source review in the console. **Upgrade:** apply `0276_routine_sources.py`, update API/workers together and explicitly review existing routines; migration grants no legacy consent.
+
+### Changed
+
+- Open answer sources directly in a responsive side panel alongside chat, coordinate it with the Files panel, and use site favicons with a fallback instead of generic web marks.
+
+- Keep batched chat approvals in one full-width scrolling list, with the scrollbar at the card edge and decision buttons outside the scrolling area.
+
+- Give the page-help walkthrough action a distinct neutral fill and a compass icon.
+
+- Preserve shared layouts across console navigation, wait for saved dashboard layouts and permissions before rendering their contents, and reserve asynchronous filter and Inbox metadata slots. Avoid an empty user-list flash and repair Inbox links to working conversations.
+
+- Stabilize chat opening: load saved transcripts independently from the sidebar, reserve starter space until personalized prompts resolve, and place quiet suggestions beneath the composer. Remove workspace previews and keyboard hints from chat home, greet by local time and soften shared overlays and explicit-send scrolling with reduced-motion support.
+
+- Keep quoted replies inside the user message, with a matching compact composer preview, keyboard cancellation and reduced-motion navigation.
+
+- Collapse chat activity after agent messages by default, grouping adjacent thinking and tool steps while keeping actionable approvals beside the composer.
+
+- Keep chat approvals as a simple inline card with readable nested task subjects, optional details and adjacent decisions. Give platform objects distinct icons, keep operation marks stable while tools run, and distinguish finished, waiting and active activity without animating every tool row.
+
+- Keep chat outcome notices beside the composer instead of at the top of the transcript, and suppress approval notices whenever the chat already shows its approval decision panel.
+
+- Complete the coding-task diff integration from PR #2728: bound rendering to 2,000 lines across a change set, retry transient fetch failures once, keep sandbox stderr out of snapshot failure logs, and preserve UUIDs in refusal details.
+
+- Remove the standalone Tables capability and its UI and toolset. Table operations use AgenticOS MCP. Stored specs migrate to version 14: existing app table grants are retained as `table_bindings`, and project trackers connect MCP instead of adding Tables. Operators must explicitly connect platform MCP on old agents that do not already have it; existing connection restrictions and approvals are preserved.
+
+- Recover every pending approval batch after worker continuations and refresh parked chat turns on run updates without replacing live drafts. Keep live activity grouping stable, avoid marking pending steps Done, and update elapsed labels once per second. Page long skill references, prioritize exact tool names over nested schemas, and avoid requesting duplicate Tables tools when AgenticOS MCP already provides record operations.
+
+- Use muted, theme-aware table option colors with readable ink in explicit Light mode even on a dark OS, and place Kanban grouping alongside filters and sorting in the view toolbar.
+
+- Route approval notifications to real decisions, hide duplicate chat notices when their run already has an approval panel, and refresh outcomes when approvals change.
+
+- Group chat reasoning and routine actions into one collapsed activity section, keep tool details closed until selected, restore unanswered questions after leaving a chat, announce new conversations before live-room setup, and show waiting states separately from active work.
+
+- **Breaking:** inbound email relays must attest to an aligned DMARC pass for the exact From address in `sender_authentication`. Upgrade relays to supply the trusted receiver verdict before updating the API; signed messages without it are ignored.
+
+- Refresh shipped AgenticOS and Architect defaults on console open while preserving custom prompts, tool settings, models, budgets and unpublished edits. New console agents retain the same AgenticOS baseline; apply `0284_shipped_agent_defaults.py` before starting the updated API.
+
+- Offer watch setup cards in chat, show confirmed claim writes and corrections, and group routine/watch execution and delivery settings under advanced options.
+
+- Make personal memory browsable with separate memories and notes, whole-store search, type and scope filters, decision details, shared file previews and confirmed note deletion.
+
+- **Breaking:** routines and watches now pause after three consecutive unsuccessful executions by default. Owners can choose 1–20 or disable this limit; waiting and delivery errors do not count. Acknowledgement does not reset health. Resume after correcting the issue to start a fresh window. Migration `0275_routine_health.py` requires API/workers to be updated together.
+
+- **Breaking:** local routines require native grants bound to their routine, owner, organization, device, folder and operation limits. Create paused, confirm on the desktop and then activate. Offline activations wait durably without model calls; changed authority cancels old work and three failed pre-admission dispatches stop the routine. Update API, workers and desktop together and review legacy local routines.
+
+- **Breaking:** private notification routes now support Slack, Telegram, Mattermost, Microsoft Teams and SMS alongside email/push. Explicit personal opt-in is required per organization; account relinking or bot credential/server replacement invalidates the route. Unconfirmed chat sends use one durable attempt; explicit Slack HTTP 429 refusals may retry after the requested delay with a five-claim bound. Slack notifications use plain-text blocks linked to the shared case. Drain workers and update API/workers together before using new channel selections.
+
+- **Breaking:** resumed routines and delegates retain their admitted MCP accounts and original tool aliases. New defaults, credential replacements and renamed accounts cannot retarget existing approvals. Start a new run for old parked routines without account-admission state.
+
+- **Breaking:** watch source consent now binds the MCP authorization generation. Review existing watches after migration `0270_mcp_authorization_generation.py`; OAuth re-consent and explicit token/endpoint replacements require another review, while ordinary token refresh preserves consent. Drain old workers and upgrade API/workers together.
+
+- **Breaking:** unattended routines now require approval for actions, local file
+  mutations and delegation. Owners can authorize individual capability actions
+  for one published version and routine configuration in the console; required
+  agent approvals remain required. Existing routines get no exceptions. Drain
+  old workers and upgrade API and workers together before resuming duties.
+
+### Added
+
+- **Await a reply** workflow template: explicitly select the connected mailbox, publish a private draft and enter thread/sender/timestamps in the Run form. A verified reply completes one branch; the deadline branch writes one review reminder through the existing notification center. No follow-up email is sent automatically.
+
+- Workflow **Notify members** can select push, Slack, Telegram, Mattermost, Microsoft Teams, SMS and iMessage alongside in-app/email delivery. The shared notification queue still requires each recipient’s own preferences, permissions and explicit private-channel route; choosing a channel never opts somebody in.
+
+- Durable **Await email reply** workflow step for explicitly selected Gmail/Outlook mailboxes, including shared Outlook mailboxes: exact authenticated thread/sender matching, separate reply/deadline branches, restart-safe timers and run-page pause/correction controls. Metadata-only scans fail explicitly on unreadable mailboxes; no follow-up is sent by this step.
+
+- iMessage through an explicitly configured company BlueBubbles Mac: authenticated webhook, text/files, separate group context, numbered approvals, optional tapbacks and explicit private notification routes. Configure the bridge in Channels and register its webhook after saving. API/workers must be updated together for migration `0274_imessage_notifications.py`.
+
+- Routine owners can select individual MCP action exceptions on a concrete account together with capability actions. Version, intent, endpoint and authorization generation remain bound; explicit agent/binding approvals cannot be waived. The console shows account identity, unavailable tool inventories and refreshed reviews after rejected saves.
+
+- Unattended routines honor granted internal Virtual Table writes without a routine exception; explicit agent approval policies still apply.
+- Routine and watch end-time cleanup now runs independently of activation cadence, including paused work, closes obsolete blockers and cancels pending notifications after restart.
+
+- Resumed routine answers use durable, retryable console delivery with one
+  receipt per run. Restarts and concurrent retries cannot duplicate messages
+  or repeat model calls. Archived chats and lost current access block delivery.
+
+- Routine and watch failures share a recoverable owner incident. Continuing
+  errors stay quiet, retries cannot undo decisions, and terminal callbacks cover
+  resumed runs. Current source readings and delivery recover their own blockers;
+  expiry or removal closes them. Agent-budget incidents reuse the owner’s alert; organization and department
+  budget alerts remain independent financial notices.
+
+- Routine and watch budget pauses notify their owner once per monthly limit
+  and open a shared case. Available budget or removal resolves the case and
+  cancels pending sends; existing budget preferences and routine channels apply.
+
+- Routine rows show when the last answer could not reach its console conversation.
+  Delivery rechecks current access and isolates message-write failures from the
+  completed run; completion notices link to a chat only after delivery.
+
+- Watch findings share one case across the Inbox, source chat and notifications.
+  Resolving or dismissing stops pending deliveries; acknowledging keeps the
+  finding actionable without repeating it in the daily briefing. Explicit restore
+  reopens the same case without resending old messages.
+
+- Routines can narrow inherited notification channels, including app-only
+  delivery, and pending sends recheck those limits. Watches can send requested
+  no-change reports with durable activation deduplication.
+
+- SMS bots send explicit files and charts through Twilio MMS using expiring
+  media handoffs, with file-type, count and size limits checked before sending.
+
+- Watches run through a selected published agent, follow or pin its version,
+  retain approved account and knowledge/context boundaries, and return new
+  findings to the source chat. The same controls work in chat and Routines.
+
+- Incoming Twilio MMS files use the existing channel attachment pipeline, including media-only messages. Downloads are restricted to the bot’s own account and incoming message, reject redirects and enforce upload size and transfer-time limits. A number with media is retained as a message rather than settling a numbered prompt.
+
+- **Set and remove a routine's end in its form.** The end-time field names the device time zone it uses and sends an offset-aware timestamp. Invalid or past edits are refused; changing another field preserves the exact existing end rather than rounding it to the input's minute precision.
+
+- **Automatic memory capture keeps each turn's audience.** Completed linked channel turns and personally authorized scheduled/workflow work can be read by memory maintenance alongside private web chat. A group turn writes only to its source room, never a personal profile. Jobs retain the runner's admitted audience and recheck terminal state, membership and erasure; embeds, API keys, impersonation and outsider events remain excluded.
+
+- **Pin a routine to one published version.** The routine form and MCP tools can select an immutable agent version or follow the default environment again. Pins are checked against the same agent and organization, cannot coexist with a named environment, and prevent deletion of the selected version. They keep using the shared runner with current access, budgets and approvals. Migration `0259_trigger_version_pin`.
+
+- **Manage a routine from the chat that requested it.** Private chat runs retain their source conversation on internal platform credentials, so a newly created routine answers there by default. The chat shows a card with its current authorized state, next activation, edit, pause and removal controls. The platform MCP tools expose end times, delivery destinations and monthly budgets, including explicit removal of limits. Ordinary API keys cannot acquire personal standing authority through this provenance. Migration `0257_run_conversation_provenance`.
+
+- **SMS through Twilio is a channel platform.** Add an SMS bot under Channels with `ACCOUNT_SID:AUTH_TOKEN:+NUMBER` and paste its webhook URL into the number. A text reaches the agent through the same router, linked identity, access policy and budgets as any direct message; every request is verified with Twilio's signature, a number is only a claim until it is linked to an account, and a reply is plain text cut at about 1,500 characters. An approval or question is sent as numbered lines and answered by texting the number. A phone number's link to an account lapses after `SMS_LINK_MAX_AGE_DAYS` (90 by default) because a number can be reassigned or taken over, and the bot's page shows the webhook URL to paste into the number. Migration `0252` lets an agent be exposed on SMS.(#2082).
+
+- **A routine answers where its person reads.** `answer_to` on a trigger delivers each completed fire's answer to the creator's own conversation with the agent (`primary`, the new default) or to one of their chats (`conversation`), beside the run log that always records it. `ends_at` stops a routine by itself: the first fire due after it pauses the trigger instead. The trigger form has an "Also answer in" choice. Migration `0255_trigger_delivery`.
+
+- **A routine can carry its own monthly budget.** `monthly_budget_usd` limits what the runs a routine started may cost in a calendar month. Once spent its fires are skipped before a run opens, the routine shows "Paused - budget", and it starts again on the first with nothing to resume. It only narrows the agent's and the organization's limits. Migration `0256_trigger_budget`.
+
+- **One outcome, settled once.** An approval waiting, a failed run and a watch's finding open an outcome: one item per person and cause, however many places tell them. The card above the chat it came from, the bell's row, the push and the e-mail are deliveries of it. Acknowledge, resolve or mute it from the chat or the bell (`POST /outcomes/{id}/settle`) and every place follows: the push and mail still waiting to go out are cancelled, a delivery a worker already holds is re-checked before it is sent, and deciding a run's last pending approval resolves the outcome that asked. A muted cause stays muted. `GET /outcomes` lists the caller's own. Migration `0254_outcomes`.
+
+- **E-mail is a channel platform.** Add an e-mail bot under Channels with the address it answers from and a signing secret, then point your mail relay (a Cloudflare Email Worker, a Postmark or Mailgun inbound route) at the webhook shown for it. The relay POSTs one signed JSON document per message; the agent answers by mail as a reply in the same thread, with files attached, through the deployment's e-mail provider. Approvals and questions are answered by replying with the number. Quoted history is cut before the agent reads a reply, a retried delivery runs once, and a deployment on the `log` provider refuses to answer rather than pretend. `EmailMessage` gains `headers` and `attachments`. Migration `0253_exposure_surface_email` allows the new surface.
+
+- **One stable private conversation per person and agent.** `POST /agents/{agent_id}/primary-conversation` returns the caller's own conversation with that agent, creating it the first time; the same person, organization and agent always get the same one, a colleague gets theirs, and clearing it opens a fresh one next time. Project, group and task conversations are never this one. The agent page's **Continue my conversation** opens it in the chat; **Open in chat** still starts a fresh thread. A linked person's first direct message to a bot with an agent - on any platform, SMS included - lands in it too, so what was said on the web is there when they text, and `/new` still starts over; rooms, unlinked senders and routines are unchanged (#2575).
+
+- **System agents give the platform's own background work an owner.** Organizations → Members → System agents lists each role with its model, this month's spend and its recent executions. Memory maintenance has a profile of its own (a switch, a model chosen rather than defaulted, a monthly budget); the daily briefing is shown read-only because it is the Proactivity setting, so there is still one model and one limit for it. Background runs now carry the role that did them, and Activity names it, instead of reading as the starter agent's, and a role's spend is not counted against a person's proactivity limit. Memory maintenance reads a finished web chat once and records the durable facts, preferences and decisions in it, in the conversation's own scope only; it never runs where memory does not, and never without a model somebody chose (#2575, #2090).
+
+- **Memory records what an agent was told, with where it came from.** An agent can `remember` a fact, preference or decision, `recall` what is relevant without reading everything, `correct_memory` on a person's word and `share_memory` into a project or the organization when an authorized person asks and approves it - that tool always waits for a person, whatever the agent's approval settings say. A claim lives in a person profile (shared by every agent acting for them), a person-agent relationship, a group chat, a project or the organization; automatic writes stay in the conversation's own scope and only an explicit share widens one. A correction supersedes and keeps what it corrects, a person's word outranks an inference, and a scheduled pass folds agreement and flags disagreement without a model call, only where a scope changed. Settings → Memory shows what is on record about you with its source and lets you correct or retract it. Erasing a person removes their claims and the copies shared out of them (#2090).
+
+### Changed
+
+- Existing watches require an explicit published agent and source approval
+  after migration `0262_watch_agent_sources.py`; their IDs and findings remain.
+
+- **Planning cache and history migration:** Harness 0.64 returns framed plans with tool metadata and records a missing or changed visible plan as user-channel run history. It no longer inserts a planning cache breakpoint. Existing `planning.cache_ttl` values still load but are ignored: move custom retention to `cache` in the agent or model profile's model settings, for example `cache: "1h"`. Platform prompt caching remains enabled by default.
+
+### Fixed
+
+- Refine neutral surface levels and control contrast across Standard, Glass, Graphite, Midnight and Paper in light and dark modes. Keep full system-dark look palettes aligned with the selected theme to prevent first-paint colour shifts.
+
+- Distinguish New chat and Search from sidebar navigation with primary and subtle search surfaces shared by desktop and mobile.
+
+- Position global search lower in the viewport and bound its result list to keep the palette comfortable on smaller screens.
+
+- Refine the Memory settings tab with a unified search/filter toolbar, lighter memory and note rows, and a responsive detail panel with clearer metadata and actions.
+
+- Google MCP sign-in now opens required OAuth client setup before connecting, and client registration errors explain how to recover.
+
+- Constrain dialog grid columns to their viewport width and keep the project picker searchable on small screens, with wrapped descriptions and an independently scrolling list.
+
+- Let the default agents finish one-off requests without blocking the completed answer on an optional automation question. Ask setup questions only after the person requests or accepts recurring work.
+
+- Keep sent messages and user portraits below the floating mobile chat controls, using the same top clearance when reserving space for the reply.
+
+- Keep progress messages and tool groups chronological while agents work; collapse the complete run history only after the final answer, including approval continuations.
+
+- Show the three most recently active projects in navigation and mark projects with unread chat answers for the current reader.
+
+- Give the conversation sidebar an intermediate surface shade between navigation and chat in every theme.
+
+- Resolve resumed tool results in their original chat segment and share the persisted run clock between the transcript and conversation sidebar.
+
+- Run read-only AgenticOS MCP tools automatically under `writes`, including project and conversation reads; keep approvals for state changes and the explicit `all` policy.
+
+- Combine page explanations and onboarding in one information menu beside the title, on mobile and desktop.
+
+- Reduce the shared page bottom clearance from 64px to 16px on desktop, keeping mobile safe-area spacing.
+
+- List OpenAI, OpenAI subscription, Anthropic and OpenRouter first in provider pickers,
+  preserving the order of all remaining providers.
+
+- Refresh background chat answers in place; sidebar run updates no longer clear
+  and reload the open transcript between queued messages.
+
+- Link Inbox task titles to their tables instead of displaying a separate Open table button.
+
+- Keep queued chat turns from moving the reader to each new question, and keep
+  sidebar clocks and completed statuses consistent with the local conversation.
+
+- Persist accepted SMS/iMessage deliveries before acknowledging their webhooks; enforce table-edit authority on project tasks, purge managed boards with deleted scopes, and recover the task selector after access loss.
+
+- Refuse personal cloud coding accounts on shared source workspaces before credential loading, including project snapshots and conversations shared for editing.
+
+- Persist accepted inbound emails and their attachments in transactional background jobs before acknowledging the relay, and require API-key scope plus personal consent when deleting watches.
+
+- Release inbound email attachment capacity when files are consumed, expire or processing fails; store delivery batches atomically and bound file counts.
+
+- Preserve reminders after reviewer access loss, keep project task chats in their project, and deliver Inbox findings when optional task boards hit quotas. Require edit authority on group boards, revoke personal coding grants on membership removal, and include coding patches in bounded personal-data exports.
+
+- Give agent test comparisons a full workspace, preserve chats and unsent text when returning to the Builder, separate version selection from test actions, and switch between preserved comparison chats on phones.
+
+- Fit the agent configuration map into its canvas, keep large groups compact with complete details on demand, and restore the workflow minimap’s graph coordinates.
+
+- Limit expanded chat activity to a keyboard-accessible scrolling region instead of stretching long tool histories across the transcript.
+
+- Keep live chat activity in one truncated status row instead of a changing tool or reasoning preview beneath it; detailed steps remain available in the disclosure.
+
+- Flatten Agents, Tables, Workflows, Apps and Routines catalogs, soften shared buttons, fields, select menus and dialogs, and use an opaque chat composer without a focus beam. Keep received chat text readable while its Markdown renderer loads.
+
+- Quiet the console navigation with borderless sidebar sections, understated search and filter controls, and soft selected-row fills while retaining keyboard focus indicators.
+
+- Keep completed and nested agent exchanges visible, show the latest live step, combine activity-only chat segments and use the actual run start time. Render confirmed MCP writes as linked resource cards, anchor newly sent messages near the top, and restore scrolling in record Person/Agent pickers.
+- Preserve question support after HTTP approval continuations and allow project task creation from a private source chat without linking its transcript; guide agents toward managed task tools and stable console links.
+
+- Focus the chat composer after every New chat action, including when the editor is reused or the preceding draft is already empty.
+
+- Allow chat approval waivers by default in new organizations while preserving existing organization choices and per-conversation consent.
+
+- Remove scratch planning tools from AgenticOS, Architect and new-agent defaults; keep progress guidance in messages and durable commitments in managed Tasks.
+
+- Restore approvals and questions for delegated tools from the parent run pause even when the parent timeline only contains a task call; show paused delegates as working during an approved HTTP continuation and reconcile finished published delegates independently when the parent pauses again.
+
+- Keep approved chat turns visibly working while their HTTP continuation runs, preserve their live state during transcript refreshes and queue follow-up messages until the continuation returns.
+
+- Mount the console task API proxy so project Tasks buttons and task lists reach the backend instead of returning a frontend 404.
+
+- Prevent already-approved chat requests from reappearing during HTTP continuations, and submit each in-flight approval batch only once.
+
+- Prevent duplicate chat answers and setup cards when stored history arrives before the live message receives its saved ID. Collapse answered questions by default and give approval details full-width nested sections and readable descriptions.
+
+- Mark installed shipped gallery skills, including starter-agent skills such as `agent-budgets`, as built-in on existing installations without changing their content.
+
+- Persist Kanban grouping changes automatically and keep the chosen default table format consistent when switching between saved views.
+
+- Focus the writable chat composer after navigation even when its opener retains focus during connection; increase shared secondary-button and filter contrast across the console.
+
+- Show saved browser sign-ins in a compact settings panel with service logos and site favicons instead of a stretched placeholder card.
+
+- Unify personal settings panels with visible descriptions and compact forms while retaining the horizontal tabs. Move active sessions into Account and place password submission below its fields.
+
+- Rebalance organization tabs: combine profile and voice settings in Workspace, and move background services beside the Architect under AI & services. Preserve drafts, permission gates and existing Voice links.
+
+- Organize deployment settings into focused sections with persistent drafts, a visible save/discard toolbar, and responsive form layouts.
+
+- Show the Inbox and background-work overview in every agent’s empty chat, while retaining agent-specific greetings and opening messages.
+
+- Apply the same visible hover and keyboard selection to model, member, sharing and workflow command pickers; retain readable destructive-action colors in agent menus.
+
+- Keep highlighted dropdown, context-menu and select rows visible against dark popover surfaces, including action descriptions and keyboard focus. The chat composer menu now clearly indicates the full action under the pointer.
+
+- Reorganize organization Proactivity into independent feature cards, shared budget and delivery settings, explicit draft-save controls and collapsible background-service configuration. Clarify the minimum monitoring interval and retain visible usage and run history.
+
+- Allow the schedule time-zone list to scroll inside a dialog, with its own nested scroll lock and a list height constrained to the available space.
+
+- Give single-select and multi-select toolbar filters the same surface, dimensions and focus treatment. Compact selects show consistent icons, with specific marks for sorting, accounts and approval controls.
+
+- Wrap Skills and Context cards in the shared full-height resource-list panel, keeping search, filters, loading and empty states inside the same frame as other console pages.
+
+- Restore contrast between dialog surfaces, gallery and template cards, audience choices and file editors. Skill and context editors now separate the file tree, toolbar and document from the surrounding form. Skill descriptions use single-line inputs in create and edit forms.
+
+- Unify scheduled, event and monitoring routine dialogs with one form frame, shared navigation and message editor. Creating a watch now uses three steps, preserves the draft when going back and groups advanced settings in one panel. Agent pickers display their avatars.
+
+- Keep chart axes, legends and tooltip text readable in both themes across dashboard charts, sparklines and charts made by agents.
+- Simplify the Builder's default sections, distinguish voice modes, align catalog search and filters, and refine table, list and kanban surfaces.
+
+- Soften text-field and select edges and keyboard focus, and align search boxes and toolbar filters at the same height.
+
+- Give console modules a shared set of product icons, consistent optical weight and quieter icon surfaces across navigation, chat and resource cards.
+
+- Persist telephone cleanup before provider requests, immediately finish cancellations accepted during dialing, and retain SMS credentials until all calls finish.
+
+- Invalidate unattended action exceptions after bound instruction edits, preserve unfinished telephone calls during account/organization deletion, export all personal outcomes with full size accounting, and reject malformed email reply references.
+
+- Run memory maintenance using its explicitly configured role/model and originating agent, without depending on a published AgenticOS starter. Recheck memory sharing after the person-erasure lock so a stale read cannot republish an erased claim, and report mutation conflicts to the agent.
+
+- Keep persistent routine/watch creation and updates behind the platform MCP binding's configured write approval.
+
+- Serialize watches and nightly work sharing a member budget; drain proactive jobs and apply `0285_member_proactivity.py` before updating API/workers together. Prevent deleting SMS bots with unfinished telephone calls, rotate private bot sessions after agent rebinding, reject overlapping future memory corrections, and expose removable unavailable phone agents/transfer targets.
+
+- Deliver routines created from a chat turn or setup proposal back to that originating conversation by default, with an explicit choice to use the primary chat or run log. Expired approval runs also resolve their shared case and cancel pending notifications.
+
+- Show failed chat attention reads with retry and report rejected actions, retain retriable email deliveries when inbound state cannot be saved, accept numeric replies above mail signatures, serialize concurrent memory writes/corrections, disable maintenance after model removal, and refresh reopened cases to their current conversation.
+
+- Keep concurrent email replies and approval prompts in their originating mail thread, give inbound files unique handles, bound aggregate attachment admission before caching, and remove consumed file blobs.
+
+- Reject timezone-less memory corrections, allow disabling a watch failure limit, extract facts from the newest conversation turns, rotate parked device work fairly, and announce committed conversation updates across chat, workflows, watches and phone calls.
+
+- Reject malformed or nonpositive routine budgets instead of silently removing their spending limit.
+
+- Deduplicate signed webhook retries before charging routine run allowances, and return throttled delivery claims so provider retries can be admitted later.
+
+- Show an explicit access/organization error and retry action when the agent Builder cannot load, instead of leaving its loading skeleton indefinitely.
+
+- Document native-memory and routine-continuity upgrade/rollback steps. Correct the mem0 retirement guidance: removing agent bindings does not delete encrypted vault credentials or import/erase memories at the old provider.
+
+- Creating or changing a private-account watch requires the person's own signed-in session or trusted private-chat credential. Ordinary API keys, publisher/background contexts and impersonation cannot establish or expand standing account access.
+
+- Watches show unavailable sources, lost access and incomplete model checks separately from successful no-change readings. Failed attempts no longer advance the successful-reading timestamp. Workers recheck that the connection still belongs to the watch owner before resolving credentials. Migration `0261_watch_attempt_status.py`.
+
+- **Private-chat authority is not transferable to background work.** Routine/workflow runs, public or group audiences, API keys and impersonation cannot mint the private source hint that permits a routine to act as a person. Approval continuations retain the original audience, so resuming a group turn never turns it into private standing consent.
+
+- **Routine authorization is checked before every tool.** Root runs, delegates and approval continuations refuse subsequent tools after pause, deletion, expiry, personal-consent withdrawal, role changes or revoked run grants. The actor remains the original creator. Immutable run provenance survives deletion so a parked routine cannot lose its guard when its reporting FK clears; unverifiable old parked schedules are refused. Migration `0260_routine_run_origin`.
+
+- **Platform model calls no longer claim to have executed the starter agent's version.** Their role remains recorded and the run manifest contains the actual platform instructions; the unrelated agent version is left empty.
+
+- **An erasure wins over extraction waiting to write.** Memory maintenance obtains the personal-data lock before its final erasure check, so a concurrent forget request cannot be followed by a recreated claim.
+
+- **Existing private channel history is adopted once.** Migration `0258_primary_channel_history` seeds missing primary conversations only when provider identifiers prove a direct chat and recorded runs prove the selected agent. Existing choices win; groups, project threads and uncertain history stay separate. Opening a conversation after clearing it still starts fresh. New channel sessions now retain their actual chat type.
+
+- The current memory inventory excludes expired claims and future-dated replacements until they take effect; history retains both.
+
+- SMS and e-mail prompts reserve reply numbers atomically before delivery and retain unused numbers after settlement, preventing concurrent sends and delayed replies from deciding another approval.
+
+- Memory corrections require organization-wide edit authority for organization claims; expired claims cannot be corrected or shared. Same-scope sharing is refused, and person-memory erasure waits for concurrent claim writes.
+
+- Declare the Harness tool argument repair extra so dependency upgrades retain `json-repair` and agent startup does not fail when importing `RepairToolArguments`. Update Harness and its matching Pydantic AI and graph packages to the compatible releases, preserve plan metadata and step IDs in structured tool returns, and keep goal reminders from repeating user text. Dependency freshness runs the whole suite with the same bounded parallel runner as CI so validation finishes within its job limit.
+
+### Removed
+
+- **mem0 is gone; native memory is the only store.** The `memory_mem0` capability, its secret kind, `MEM0_ALLOWED_HOSTS` and `mem0ai` are removed (#2090). **Upgrade:** `0248_drop_memory_mem0.py` stops while any legacy binding remains. Inventory endpoints and vault mappings, verify external erasure, then explicitly remove bindings from drafts and published versions before retrying; follow the [upgrade checklist](docs/deploy.md#native-memory-upgrade). No remote data is imported or erased by the migration. Recover mappings from the pre-upgrade backup if an earlier development build already stripped them. Native erasure reports `claims_deleted` and reaches native stores only. Agents now use the Memory capability.
+
+
+### Fixed
+
+- Show the same Architect avatar in the assistant widget and agent list after its stored picture is cleared, including its selected colour.
+
+### Fixed
+
+- Restore visible, horizontally scrollable settings tabs on desktop and mobile instead of the section dropdown.
+
+
+## [1.49.0] - 2026-11-05
+
+### Added
+
+- **A virtual terminal over the services an author mounts (#2191).** The new
+  `mirage` capability gives an agent the seven sandbox tools, prefixed
+  `mirage_`, over folders that are a Google Drive, a GitHub repository, Notion,
+  a database, an SSH server or a mailbox, through
+  [Mirage](https://github.com/strukto-ai/mirage) and with no container. Each
+  folder is read only or writable, and a writable one can ask a person to
+  approve each write, including a write inside a shell command. A folder signs
+  in with vault keys, an Entra app, or a Google account. A Google account is
+  the organization's or each person's own, connected on the vault page. Typed
+  hosts must be on the new `MIRAGE_ALLOWED_HOSTS`. The terminal is the optional
+  `mirage` extra (`EXTRAS="--extra mirage"`). See
+  [Virtual terminal](docs/reference/capabilities.md#mirage). Box service accounts use Client Credentials;
+  LanceDB Cloud/Enterprise mounts require a vault key and an allowlisted HTTPS
+  endpoint. Local LanceDB storage and rotating Box grants are refused.
+
+## [1.48.1] - 2026-11-05
+
+### Fixed
+
+- Authenticate the GitHub metadata lookup used to publish the Homebrew cask, so a refusal of anonymous API access does not stop tap publication. SSH host-key checking and deploy-key cleanup remain enforced.
+
+### Security
+
+- **Skills** → **Changes** (`GET /skill-changes` and `GET /skill-changes/{id}`) now lists and opens an agent's proposed change only for a person who may edit the skill it targets, including through a grant. A proposal for a new skill is still shown to anyone holding `skills:edit`. Until now anyone with `skills:edit` at any scope could list and read the full proposed body for every skill in the organization, including private skills of other people, and could discard those proposals. A proposal for a skill the caller cannot edit now answers 404, the same as an id that does not exist. (#2422)
+
+## [1.48.0] - 2026-11-05
+
+### Added
+
+- A new Drafts capability: when the web chat is asked for text to send or paste elsewhere, such as an e-mail, a reply or a post, the agent shows it as a card with one segment per part, a plain-text copy icon on each, versions as tabs and a small type hint. Reopening a conversation or opening it by shared link shows the same card. Details the agent leaves for the person to fill in, written in square brackets such as `[Your Name]`, show in red so a draft is not sent unfilled. A markdown part has a Preview button that shows it rendered, with images not loaded; copy always gives the source. New agents, every template and the agents the Architect creates have it on; existing agents are unchanged until their author switches it on and publishes. (#2737)
+- A `.zip` or `.tar.gz` (`.tgz`) can be attached to a chat. For an agent with a workspace it is unpacked into `uploads/<id>-<name>/` with its folders kept, so a repository goes in as a tree the coding agent can run its tests in; an agent without a workspace says it cannot open it. Each archive is read whole at upload and refused with a 400 before it is stored if a member leads outside it (`../`, an absolute path), is a link or a device file, is encrypted, or the archive passes `WORKSPACE_ARCHIVE_MAX_ENTRIES` (5000), `WORKSPACE_ARCHIVE_MAX_BYTES` (200 MiB unpacked) or `WORKSPACE_ARCHIVE_MAX_RATIO` (100x its compressed size), or one file in it passes `WORKSPACE_ARCHIVE_MAX_MEMBER_BYTES` (50 MiB). Archives sent through Slack, Telegram, Mattermost or Teams take the same path, and a refused one is named in the bot's reply. A workflow started by an email still skips archive attachments. (#2479)
+- **Download as .zip** in a chat's **Files** panel, for one folder or the whole workspace, from the new `GET /api/v1/conversations/{id}/workspace/archive?path=`. It is authorised as `/workspace/raw` is, streamed one file at a time, keeps folders as entries so an empty one comes back out (downloaded on its own, an empty folder is a zip of that folder), leaves out the tooling folders the panel hides (`.git`, `node_modules`, `.venv`, ...), and refuses a folder past the same entry and byte limits with a 413 before anything is sent. A file the host will not serve once the download has started, such as one over its 8 MiB read limit, is left out and named in a `NOT-INCLUDED.txt` in the zip. (#2479)
+- Workflow trigger input fields support **List of text**: validated JSON arrays of strings through the API, one item per line in run and public forms, and typed array bindings for downstream steps.
+
+### Fixed
+
+- With code mode on, charts and drawings were run from scripts and never appeared; they now stay ordinary calls.
+- Web chat now warns when an assistant reply cannot be saved, including partial replies from interrupted runs, while keeping the streamed text visible. (#2732)
+- Keep PDF chat uploads working when extracted text contains NUL characters.
+- Book Stav's billed request cost from response bodies or headers, including
+  streamed Chat Completions and Responses, so models absent from the price
+  snapshot count towards budget caps. USD is used directly; **operators using
+  NOK billing must set `STAV_NOK_PER_USD`** (NOK per dollar) in the backend
+  environment. No rate is guessed or fetched; without conversion and without a
+  catalog price, costs remain visibly partial. (#2729)
+
+### Security
+
+- The sharing routes (`/{type}/{id}/sharing`) now answer a resource the caller cannot view with the same 404, message and `details` as an id that does not exist, for reading the share list and for changing grants or visibility alike. Until now a change on a hidden resource answered 403 and reading answered a different 404 than for a missing id, so a member could tell that a private resource existed. A caller who can view the resource but not edit it still gets 403, and an API key issued for edit without view can still change the sharing of a resource it may edit. (#2619)
+
+## [1.47.3] - 2026-11-04
+
+### Fixed
+
+- Show the same Architect avatar in the assistant widget and agent list after its stored picture is cleared, including its selected colour.
+
+## [1.47.2] - 2026-11-04
+
+### Security
+
+- An uploaded document's parse copy under `MEDIA_DIR/_rag_tmp` is now removed: by its ingest job when it ends (indexed, refused, its document gone, or failed on its last attempt - kept while a retry is still to come), after the commit that deletes the document, and by a new hourly `sweep-rag-scratch` job once its document is gone or no longer processing. Until now every copy stayed on the media volume for good, so the content of a deleted document, knowledge base or account was still on disk. **Operators:** nothing to run - the first sweep after the upgrade removes the copies earlier releases left, except those of documents still processing and any written in the last hour. A job queued for a document that is gone now ends at once instead of failing into a retry, and **Retry** on a dead document ingest in Background jobs is refused: retry the document from its knowledge base instead, which parses its stored file again. (#2681)
+
+## [1.47.1] - 2026-11-04
+
+### Fixed
+
+- Deleting an account no longer fails with 500 when the person writes in their personal organization at the same moment, for example creates a knowledge base, or when a failed ingest of their document is being recorded. While the account's rows stay busy the deletion keeps trying for about 10 seconds, then returns 409 and deletes nothing. (#2682)
+
+## [1.47.0] - 2026-11-04
+
+### Added
+
+- Add Turkish console translations, account language selection and Turkish voice previews.
+- Search the web through Keenable without an account, or select an optional vault key for account-backed requests. The Builder and vault show the official logo; query-relevant snippets are normalized into the existing cited search results.
+
+### Fixed
+
+- MCP connections with **Include instructions** enabled no longer abort agent
+  turns while Pydantic AI collects their instructions. Toolset IDs use the
+  connection’s safe tool prefix. (#2713)
+- Save assistant message parts containing local or conversation file origins without UUID serialization errors in JSONB, preserving their order and omitting unset fields. (#2709)
+
+## [1.46.0] - 2026-11-04
+
+### Added
+
+- Select Otari as an LLM provider with a vault API key, hosted or self-hosted endpoint, authenticated model discovery and model-family profiles from `pydantic-ai-otari`.
+
+## [1.45.1] - 2026-11-04
+
+### Fixed
+
+- The MCP servers Connected filter includes accessible organization and personal
+  accounts across catalog pages, including custom servers, with one card per
+  service and consistent filtering, result counts and pagination.
+- Saved MCP server links reopen accounts whose registry checks failed. URL grouping
+  preserves case-sensitive paths and query values, and reauthorization uses each
+  account's saved endpoint.
+
+## [1.45.0] - 2026-11-04
+
+### Added
+
+- Map a role in a Discord bot's server to a group of the organization, from the bot's row on **Channels** (#2569). A linked member who holds the role joins the group before each message to the bot and by a `sync-discord-roles` job every 15 minutes, and leaves it when the role is taken away. A mapping can also name an organization role, which admits linked holders who are not members yet. The sync changes only memberships it made, marked **Discord**: group memberships added by hand, directory memberships and owners are left alone, and Discord users who have not linked an account get nothing. Migration `0256_discord_role_mappings` adds the `discord_role_mappings` table and the `discord` membership source.
+
+### Fixed
+
+- Directory and Discord grants hand over the same organization membership instead of revoking API keys, connected-app consent and unrelated groups while the other source still grants access. The directory takes priority at sign-in; an unreadable Discord grant preserves the current membership. (#2674)
+
+## [1.44.0] - 2026-11-04
+
+### Added
+
+- A decision or an answer made in the console, the web chat or over a session API now continues a run asked in a chat, as the person who made it, and posts the answer in that chat. A key's decision is recorded and does not continue the run. (#2656)
+- `continues_in_chat` on approvals, on a run's single read and on the result of a resume or an answer. It is true when the server continues the run in its chat. (#2656)
+- A console **Stop**, an expiry and a decided run that nothing continued each tell the chat once, in one fixed message. (#2656)
+
+### Changed
+
+- **A session API client that decides a chat run no longer resumes it.** Read `continues_in_chat` and skip `POST /runs/{id}/resume` when it is true; a late resume answers 400 with the run's status. (#2656)
+- Chat runs whose approvals were all decided but never continued are now ended about an hour after the last decision. (#2656)
+- On the first sweep after upgrading, such runs decided more than 7 days ago are ended without a chat message. (#2656)
+- Schema: `agent_runs` gains a nullable `chat_notice_sent_at`, which records that a chat was told its run could not continue. No backfill. (#2656)
+
+### Fixed
+
+- Chat buttons answered elsewhere no longer act on a stale question. (#2656)
+- A Discord run parked before its server was removed from the bot's approved servers is no longer continued by a console decision; the server is read from Discord again and one that cannot be confirmed is refused. (#2656)
+- A chat button pressed at the moment the request is decided elsewhere is now closed instead of staying open. (#2656)
+- The question sweep no longer overwrites an answer pressed at the last moment. (#2656)
+- The approvals queue, the dashboard widget, the CSV export, the approval email and the in-app approval notification name the chat account instead of the publisher for an unlinked asker, and filtering the queue by the publisher no longer lists those calls. Who receives the email is unchanged. (#2656)
+
+## [1.43.0] - 2026-11-04
+
+### Added
+
+- Browse a live fullscreen graph of Markdown notes in project, sandbox and Desktop folder
+  file explorers. Wiki links, inline Markdown links and frontmatter relationships
+  supply the graph and backlinks, refreshed without an agent-generated App. Coloured
+  points, thin links and optional arrows fill the canvas, with floating panels,
+  folder/tag groups and the shared file tree for notes and attachments.
+
+## [1.42.0] - 2026-11-04
+
+### Added
+
+- Support manual Podman deployments through Docker Compose, add a sandbox override for socket and SELinux workspace access, and direct quickstart users to that path. Document the reproduced migration dependency failure in podman-compose 1.6.0.
+
+## [1.41.0] - 2026-11-04
+
+### Added
+
+- Connect Stav models with a vault API key and an EU (default), EEA or global region. Region restrictions remain enforced when request settings include custom headers; existing profiles retain their settings. Model catalogs choose Chat Completions or Responses from the model’s advertised surfaces. Custom Stav catalogs use the selected visible vault key, with credential-isolated caching.
+
+## [1.40.0] - 2026-11-03
+
+### Added
+
+- Delegate explicit work to durable background topics in the same project, keep talking in the source conversation, inspect or stop each task, and receive one source-bound result turn. Tasks retain pinned agent versions, ordinary budgets and approvals, the selected main model and exact local device; interrupted external actions are not automatically replayed.
+- Choose a local Claude Code/Codex model and reasoning level per conversation from the installed harness's reported choices, including resumed coding sessions. Reference recent accessible conversations in the `@` menu through the existing Past conversations capability.
+
+## [1.39.2] - 2026-11-03
+
+### Fixed
+
+- Deleting an account no longer deadlocks with an ingest that is recording the embedding spend of a document in that account's personal knowledge base. The deletion now locks the personal organization before it deletes the documents under it. An ingest whose organization is deleted while it runs no longer fails when it records its spend. In the rare case that a knowledge collection is created during the deletion and is busy, the deletion now returns 409 and deletes nothing, so it can be retried.
+
+## [1.39.1] - 2026-11-03
+
+### Changed
+
+- Deleting a document, reading its chunks and expanding a search hit to its neighbouring chunks no longer scan the collection. Each knowledge-base collection table now has an index on the document id: new collections get it when they are created, and migration `0252_index_rag_parent_doc_id` adds it to existing ones. On a 300k-chunk collection these operations went from 40–100 ms to under 1 ms.
+
+  **Upgrade action (optional, large deployments):** The migration builds the index inside the upgrade transaction. Searches keep working, but ingestion and deletes into a collection wait until the upgrade commits (the build takes about 0.2 s per 300k chunks). To avoid that pause, build the indexes online before you upgrade. Run this in `psql` connected to the application database:
+
+  ```sql
+  SELECT format('CREATE INDEX CONCURRENTLY IF NOT EXISTS %I ON %I (parent_doc_id)',
+                table_name || '_parent_idx', table_name)
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND column_name = 'metadata'
+    AND data_type = 'jsonb' AND table_name LIKE 'rag\_%' ESCAPE '\'
+  \gexec
+  ```
+
+  The migration then finds the indexes valid and leaves those collections alone. Let the statement finish before you upgrade: if the migration finds a build still running, it stops with an error, and you run the upgrade again after the build ends. If a concurrent build fails, it leaves an invalid index. Drop it with `DROP INDEX CONCURRENTLY <name>` and run the statement again. If you upgrade with an invalid index in place, the migration drops and rebuilds it, and searches in that collection also wait until the upgrade commits.
+
+
+## [1.39.0] - 2026-11-03
+
+### Added
+
+- Prepare private, checksummed coding runtimes and pinned Claude Code/Codex adapters without host developer tools. Coding-agent setup and browser sign-in are available in desktop settings.
+- Install the verified local runtime on Windows and supported Linux desktops, resume Windows setup after a required restart, show download progress and retry the same workspace. Pin new local instances to the packaged platform release and back up database, media and deployment keys before updates.
+
+### Fixed
+
+- Keep existing workspaces visible after starting the local runtime, repair incomplete macOS runtime installations and verify Docker Inc's signing identity before requesting installer elevation.
+- Remember native coding-agent startup consent per agent, folder, adapter version and connection; revoke it with folder/account access and stop affected agents. Preserve local grants on reconnect, avoid repeated credential probes on focus, hide background Windows console windows, wait for HTTP readiness and refuse remote Docker contexts or platform downgrades during local setup.
+
+- Prepare the local runtime from the macOS setup wizard and restart saved local workspaces when the desktop app opens. Pull public product images with a private anonymous configuration to avoid credential-helper and keychain prompts, and pass Docker helper paths to subprocesses launched from Finder.
+
+
+## [1.38.4] - 2026-11-03
+
+### Fixed
+
+- Deleting the last knowledge base on a collection name deletes the same rows on every path (`DELETE /kb/{id}`, `DELETE /rag/collections/{name}` and `rag-drop`): the base's own document rows and its tenant's unfiled rows, with their files, before the vector table is dropped. A tenant is the base's organization, or, for an app-scoped base, the rows with no organization that `rag-ingest` writes. `DELETE /kb/{id}` used to leave the tenant's unfiled rows and files behind the dropped table, for its next base on the name to list again; for an app-scoped base it now deletes the `rag-ingest` rows under the name. The collection drop used to delete every row under the name whichever tenant it belonged to, including another organization's unfiled rows and files, which the caller had no authority over. Another tenant's rows now stay, marked as failed because their chunks went with the table: an upload has to be uploaded again, and a sync indexes a synced document again. `POST /rag/documents/{id}/retry` refuses an organization's document filed under no knowledge base, whose retry would index it where its base does not read. After a drop by an organization's base, `rag-drop` of the same name, which no base then holds, removes the `rag-ingest` rows left under it. The three paths run one teardown.
+
+## [1.38.3] - 2026-11-03
+
+### Fixed
+
+- Background-job audit and table-retention integration tests no longer depend on
+  PostgreSQL returning rows in insertion order.
+- Clearing the Architect's uploaded avatar restores its generated face, just as
+  it does for other agents. The special mark no longer overrides an empty avatar.
+
+## [1.38.2] - 2026-11-03
+
+### Fixed
+
+- Initialize the desktop TLS crypto provider before plugins and background connections start. Paired computers can connect to the server again instead of leaving local Claude Code or Codex chats waiting for the computer.
+
+## [1.38.1] - 2026-11-03
+
+### Fixed
+
+- Keep dashboard bar lists at their natural height so ranked agents and provider costs do not overlap idle-agent chips, monthly spend or other card content. Small cards scroll instead of compressing rows.
+
+## [1.38.0] - 2026-11-03
+
+### Added
+
+- Desktop chat controls can select local Claude Code or Codex for one conversation even when Coding agent is disabled or absent from the published agent. Existing approval and read-only rules remain active; a full-access folder and native task confirmation are still required.
+- Local coding tasks resume their conversation's harness session across process restarts. Mid-task corrections interrupt and continue the same session, with applied updates recorded in the transcript and report. Resume identifiers stay outside the repository and are isolated by account, agent, conversation, folder and access policy.
+- Local project instructions support both `AGENTS.md` and `CLAUDE.md`, with a tool to read the hierarchy inside the approved folder. Sign-in opens a native terminal on macOS, Windows and Linux.
+
+- The desktop app finds Claude Code and Codex on the computer, shows their version and whether they are signed in under Settings → Desktop app, and opens each agent's own sign-in in Terminal. AgenticOS never reads or copies the files an agent keeps its credentials in.
+- The `coding_agent` capability can run Claude Code or Codex on the person's own computer (**Where it runs: On this computer**), in a folder granted full access, over the Agent Client Protocol. The agent signs in with its own command, so no key is needed. Each start is confirmed in a native dialog; permission requests inside a task are answered from the binding's access, and the capability's approval stays once per task.
+- Chat controls → Work on → **My skills and instructions** lets a chat use the skills in `~/.agents`, `~/.claude` and `~/.codex` and your `AGENTS.md` (the newer of `~/.codex` and `~/.claude`, then the working folder's), read in place on the desktop and never copied. Off for every new chat and chosen per folder; a name clash goes to `.agents`, then `.claude`, then `.codex`.
+- Help → **Export Diagnostics…** in the desktop app writes one JSON file, to a place you choose, to attach to a bug report: version, operating system, permissions, coding agents installed and signed in, the server's origin and the last crashes - no credentials, tokens, conversations or home-folder paths, and nothing is sent. A panic is saved to `crash.log` as it happens.
+- A **Watch a command** capability (`monitor`): the agent starts a long-running command - a test watcher, a log tail, a CI poll - in its workspace and is told about its new output on its following steps, filtered by an optional pattern, without polling. At most four watches run at once and they all stop when the turn ends.
+- The composer shows which coding agent will work in which folder (`Claude Code · agenticos · can edit`) when the chosen agent runs one on this computer, or what is missing.
+- A world map in visuals and apps that needs no tile server or extra container: `AOWorldMap` draws countries shaded by a value, pins and routes as SVG from outlines the deployment serves itself.
+- Three bundled skills for building a slide deck as an app: `presentation-decks` (with a ready deck template), `deck-storyline` and `deck-review`.
+- A Homebrew tap, `vstorm-co/homebrew-agenticos`, published by the release workflow when `HOMEBREW_TAP_TOKEN` is set; `scripts/install_macos.sh` installs a release after checking its SHA-256.
+
+### Changed
+
+- **The first desktop window opens at 80% of the screen**, centred, until a size has been saved.
+- Releases are signed on macOS with one self-signed certificate when `MACOS_SELF_SIGNED_P12` is configured (`scripts/create_macos_signing_cert.sh` makes it), so macOS keeps Screen Recording and Microphone grants across updates. With the committed publisher pin, missing signing material stops the release; neither signing mode is notarized.
+- `GET /conversations` leaves out threads a bot answers in (Slack, Mattermost, Telegram, Teams) by default, so `/chat` no longer fills with them. Pass `hide_channels=false` to list them again; they stay reachable from Runs and the channel's page.
+
+### Fixed
+
+- Table, Kanban and List share one content background; local file-link origins use opaque identifiers with private desktop folder mappings.
+
+- Homebrew publication authenticates both Mac disk images against the pinned publisher before generating trusted tap checksums.
+
+- Bound the entire local ACP stream and close adapters on output overflow. Refuse monitors on desktop shells that cannot retain background processes. Require signing material when the publisher certificate is pinned. File links retain their original turn workspace, and HTML previews resolve nested CSS assets through that same authorized source.
+
+- The egress inventory includes per-chat local coding overrides; local launches recheck revoked grants after confirmation. Coding folder choices exclude incompatible grants, and file trees normalize current-directory path components.
+
+- Monitor starts reserve their limit before waiting, unfinished output stays bounded while matching full lines, and shutdown escalates unresponsive processes. Cancelled local coding-agent starts also reap sessions whose open replies were not observed; switching to local execution clears a sandbox-only model.
+
+- Coding-agent instructions remain fully readable, execution locations use icon cards, desktop readiness refreshes on native focus with guidance for macOS grants, and Tables uses consistent empty states across views without a large-screen catalog expansion button.
+
+- Conversation lists identify Claude Code and Codex used in a thread alongside its main agent, based on saved task reports and retained after refresh.
+
+- File viewers keep clear of macOS window controls, load directly linked workspace stylesheets and preserve original HTML in Source. Chat files retain their folder hierarchy, and files changed by a turn can be opened below its answer.
+
+- Live chat progress folds into an expandable line on small screens while answers and requests for attention stay visible.
+
+- Chat controls opens above the composer with direct coding-agent choices, compact tool switches and expandable folder and approval settings.
+
+- Tables and Workflows cards have the same default height on the dashboard.
+- Desktop chat settings open in a larger dialog with Tools & files and Preferences tabs. Selecting a local coding agent prepares an approved full-access folder automatically; cancelling preserves the previous choice. Finished coding tasks no longer leave a duplicate status panel below the answer.
+- The desktop console can list local coding agents and skills and open coding-agent sign-in. Their native commands are declared and granted to the main console, fixing the `Command not found` refusal.
+- Local Claude Code read-only tasks disable bypass permissions and expose reading tools only. Local Codex read-only is available in the Builder and selects its native read-only mode. Launch consent has a five-minute interaction timeout, and local skill counts follow the enabled sources.
+- Homebrew publishing supports a deploy key restricted to the tap repository, with temporary key cleanup on success and failure. The stable macOS publisher fingerprint is pinned for installer verification.
+
+- The desktop app can be allowed to use the microphone: the bundle now declares the audio-input and Apple Events entitlements it needs under the hardened runtime, and the setup wizard offers the microphone next to Screen Recording and Accessibility.
+- The cask attached to a release clears the download quarantine flag from the installed app, so Gatekeeper does not refuse an unnotarized build installed through Homebrew.
+## [1.37.0] - 2026-11-02
+
+### Added
+
+- Discord bots (#2079). A bot connects over Discord's Gateway, so a deployment
+  needs no public address for it. It answers direct messages, @mentions and
+  replies in a thread it opens on the question. It also answers `/ask` and
+  **Apps → Ask the agent** on any message. Answers stream by editing the
+  message in place, with text the guardrails have already screened.
+  Approvals and questions are buttons, or selects for more than 25 options.
+  `/link`, `/unlink`, `/agents`, `/new` and `/help` work as on the other
+  platforms. A thread the bot is brought into partway is read for its earlier
+  messages and files before it answers, and `read_channel_history` works there. Register one under **Channels → Add channel** with the bot token
+  and the Message Content Intent switched on. Explicitly approve server IDs in
+  the add/edit form, or pass `--discord-guild` to the CLI; an empty list permits
+  DMs only. Existing installations and removal/re-adds do not approve a server.
+  Console transcript access also requires Read Message History. `/ask` first
+  acknowledges privately, admits against the parent/thread key, rate-limits
+  link invitations and only then publishes the question. Signed attachment URL
+  queries are redacted from failure logs. A public bot, one anyone can add
+  to their own server, is refused until **Public Bot** is switched off; its
+  commands are offered only in servers it was added to. A Discord bot takes no
+  webhook, and setting one is refused. A bot in more than 2,500 servers stops and says
+  Discord requires sharding, which is not supported yet.
+
+### Fixed
+
+- A Microsoft Teams bot's form no longer offers a reaction to a question.
+  Teams never drew it, so the reaction chosen there was saved and ignored.
+
+## [1.36.1] - 2026-11-02
+
+### Fixed
+
+- Hide message action rows on phones until the More button beside the user or agent is tapped, saving room in the transcript. Keep desktop hover actions. Release the full-screen file reader when its listing fails and move focus into an auto-opened reader, restoring it to the file on return.
+
+- Move the phone Architect launcher into the header and reclaim its bottom clearance for lists and tables. Align the compact chat editor and actions to equal touch heights.
+
+- Make phone chat more comfortable while writing: keep attach, message and send in a compact row, offer agent selection and voice under the plus menu, hide welcome suggestions while composing and bound completion menus to the visible height. Preserve draft text and stable send targets as focus moves. Do not automatically focus touch-keyboard input on arrival or when a reply finishes.
+
+- Give agent and project instructions one compact toolbar, fold unused prompt variables, preserve preview when expanding Markdown, and align expanded-editor phone gutters. Keep phone text fields legible across authentication, files, integrations, tables and workflow forms while preserving desktop sizing. Keep floating App controls clear of the native status bar.
+
+- Reduce oversized desktop and phone spacing across headers, cards, settings, navigation, template categories and empty states. Capability cards open settings through one target, with explanations available on demand. Enable profile saving only for changed values and reset the email field after staging verification.
+
+- Keep phone dialog gutters consistent on all four edges, compact shared navigation and page headers, and move Context descriptions into the editor toolbar to leave more room for text.
+
+- Allow development assets from the hostname configured by `PUBLIC_SITE_URL`, so a console opened over Wi-Fi can initialize its login form.
+- Simplify phone navigation and editing: Inbox filters and MCP clients use selects, long settings navigation uses a section menu, secondary page commands fold away, project files open full screen and workflow step panels switch without losing edits. Keep administrative row actions visible on narrow screens and reduce dialog footer and run-summary height.
+- Improve phone layouts across page actions, app controls, skill and context editors, and file readers. Mobile editors fold descriptions and file management away while writing; project and workspace files have a dedicated reader. Source/preview controls use one button. Apps use floating back and options buttons, keeping more space for their content. Expanded editors preserve drafts and variable completion. Reduce the chat composer's height, align painted source text with its input, and open navigation without focusing its close button.
+
+## [1.36.0] - 2026-11-02
+
+### Security
+
+- The message of a turn a guardrail stopped is no longer replayed to the model in later turns' history. Each check reads only what is new in its own turn, so the message of a `guardrail_blocked` run was read back as history on the next turn, with the text that was typed and the head of each attached file (or the whole file for an agent without a workspace). A harmless follow-up could then get refused content past the input check. The history that web chat, the API, channels, the widget, workflows and a voice call's seed build now shows the model a short note in place of that message, whichever check stopped the turn, and a reply that quotes it quotes the note. A stopped turn also no longer keeps what its files added to the prompt. The person's own transcript still shows what they typed. The filter also applies to conversations from before the upgrade: migration `0248_drop_refused_turn_summaries` drops each stored conversation summary that reaches past such a message, so the next turn rebuilds its history from the transcript and pays for one new summary if it needs one; turns beyond the recent window that only the dropped summary recalled are no longer read back. The mark is kept on the message itself (`messages.guardrail_refused`, added by migration `0249_message_guardrail_refused`), so it holds after run retention deletes the run. The migration marks the messages of every `guardrail_blocked` run still stored; a message whose run retention deleted before the upgrade cannot be identified and stays unmarked. Search over past conversations (`conversation_search`) does not filter these messages yet.
+
+## [1.35.5] - 2026-11-02
+
+### Fixed
+
+- A document deleted while it was still being indexed no longer leaves its chunks searchable. The delete removed nothing because the document had no vector id yet: its chunks were written, or still being written, and the ingest had not recorded them. The ingest now queues a retried job that removes the chunks it wrote when it finds the document deleted, and a delete that discovers the newly recorded vector id queues the same durable removal. Recording the embedding spend of such a document no longer fails the ingest on the deleted row, which had left the chunks in place and retried the job until it died: the spend is kept against no document. A sync no longer counts such a document as ingested. Clearing a default knowledge base mid-ingest was already covered ([#2565](https://github.com/vstorm-co/agenticos/issues/2565)).
+
+## [1.35.4] - 2026-11-02
+
+### Fixed
+
+- The input guardrail no longer reads an attached picture's bytes. On a prompt with a picture it screened the prompt's whole representation, image data included, so PII redaction refused most pictures, a blocked keyword such as `png` matched the data, and a redaction ended the turn as `failed`. The edge now screens the prompt's text alone (a text file sent inline as text, and a link, where a match blocks because a link cannot be rewritten), a redaction rewrites that text and keeps the picture, and the check that runs before an attachment is written now predicts the edge for a turn with a picture too, so a blocked one no longer leaves its picture in the workspace. An inline text file is screened as the UTF-8 a model is sent, and one that declares another character set or is not valid UTF-8 blocks the turn instead of being screened as different text. The size limits of a resumed request count the text of all its prompt parts together (#2566).
+
+## [1.35.3] - 2026-11-02
+
+### Security
+
+- A link in an agent's answer that leads to another site now opens in a new tab, whatever its address looks like. A link written without `https://` - `//evil.example`, `https:evil.example`, `HTTPS:/evil.example` - was rendered as an in-page link, so a click took the console's own tab to that site. The chat decides a link is off-site by where the browser resolves it against the console, and opens it in a new tab with `rel="noopener noreferrer"`. Console links, including the Architect's links that point at a control, still open in place.
+
+## [1.35.2] - 2026-11-02
+
+### Changed
+
+- Run backend coverage once, shard frontend and E2E tests, reuse the production frontend build, and cache native builds. Build desktop release platforms in parallel and publish updater metadata only after every signed target is available.
+
+- Reuse successful checks for proven release-only cuts, prepare release train PRs from the CLI, reuse unchanged browser images, and retain scans and SBOMs when images are retagged. Offer production deployment only after a stable release is published, while keeping manual deployments and rollback.
+
+## [1.35.1] - 2026-11-02
+
+### Fixed
+
+- PyMuPDF ingestion skips embedded images when image description is off. With
+  descriptions on, shared images are extracted and described once per document,
+  while every referencing page keeps its description. Chunks no longer copy
+  embedded images, avoiding memory growth from repeated logos and diagrams in
+  large PDFs ([#2584](https://github.com/vstorm-co/agenticos/issues/2584)).
+
+## [1.35.0] - 2026-11-02
+
+### Changed
+
+- **Planning cache and history migration:** Harness 0.64 returns framed plans with tool metadata and records a missing or changed visible plan as user-channel run history. It no longer inserts a planning cache breakpoint. Existing `planning.cache_ttl` values still load but are ignored: move custom retention to `cache` in the agent or model profile's model settings, for example `cache: "1h"`. Platform prompt caching remains enabled by default.
+
+### Fixed
+
+- Declare the Harness tool argument repair extra so dependency upgrades retain `json-repair` and agent startup does not fail when importing `RepairToolArguments`. Update Harness and its matching Pydantic AI and graph packages to the compatible releases, preserve plan metadata and step IDs in structured tool returns, and keep goal reminders from repeating user text. Dependency freshness runs the whole suite with the same bounded parallel runner as CI so validation finishes within its job limit.
+
+## [1.34.3] - 2026-11-02
+
+### Fixed
+
+- CI, load tests and dependency freshness checks disable deployment diagnostics so ephemeral test installations and browser activity do not enter the live analytics collector.
+- Parallel integration tests synchronize quota audit pool exhaustion and scope listener probes and connection termination to their own database, avoiding load-dependent pool timeouts and interference between pytest workers.
+
+## [1.34.2] - 2026-11-01
+
+### Fixed
+
+- Documentation and `llms.txt` no longer say that nothing phones home or that a fresh install sends nothing anywhere. Deployment diagnostics are on by default, so the docs now state that prompts, conversations and documents stay in the deployment's own database, that diagnostics send the version, health, coarse usage counts and a pseudonymous activity signal, that the default collector is remote (`https://analytics-agenticos.testapp.ovh`), and how to turn them off with `DIAGNOSTICS_ENABLED=false`. The diagnostics collector is added to the lists of what leaves a deployment in the data protection and security pages, and the Polish, German and Spanish translations are updated to match.
+
+## [1.34.1] - 2026-11-01
+
+### Changed
+
+- Update the GitHub Actions the workflows use: `tauri-apps/tauri-action` to 1.0.0, `actions/download-artifact` to 8.0.2 and `actions/upload-artifact` to 7.0.2, among others. CI and release behaviour are unchanged.
+
+## [1.34.0] - 2026-11-01
+
+### Added
+
+- Workflow creation starts with a name, audience, trigger and optional description and tags, matching agent creation. A separate category gallery opens templates for review before creating their resources.
+
+- Workflow forms have configurable appearance, an authenticated draft preview and direct test and public links. Test draft opens the form or chat surface for those triggers.
+
+- **Review an automation once.** Prepare a private workflow and its table atomically with one MCP approval, then check its graph without executing actions. Run pages state the scope of test verification.
+
+- **People, agents and document libraries in Tables.** Reference one or many organization members or accessible AI agents, choosing names with avatars. Save named Markdown templates per column, customize and reuse them, and choose an automatic default for new records.
+
+- **Document blocks and pasted images.** Markdown table documents offer a searchable `/` block menu and accept clipboard images at the cursor. Images inherit table access, survive archiving and share the table storage quota, with a 5 MiB limit per image.
+
+- **HTTP authentication from Vault.** Request, upload and download steps share a method-aware authentication form for Bearer, Basic Auth, header and query API keys. Create origin-bound credentials in place with the API origin prefilled, keep only their IDs in workflows, and configure custom authorization prefixes such as `Token`.
+
+- **SMTP accounts for workflow email.** Add your own server, sender and login directly from the email step. Credentials stay encrypted together in Vault; workflows reference only the account ID. STARTTLS and implicit TLS verify certificates, access is checked at publication and runtime, and revoked accounts never fall back to another sender.
+
+- **Sort records from every table view.** Add an explicit column/direction picker beside filters, including hidden sortable columns and system dates. The selected server-side order is shared by Table, Kanban and List and can be saved with the view.
+
+- **Saved table presentation.** Reorder and hide columns, including system fields, choose compact or wrapped text and configure date and time formats independently for each saved view. These controls change presentation without changing table schemas or stored values.
+
+- **One MCP interface for automations and records.** AgenticOS MCP now starts published workflows and reads, upserts or deletes table records against their revisions. Agents use the same approved tools as other MCP clients; existing capability grants remain compatible. Steps expose their primary HTTP, file, AI and filter controls and connect channel bots in place. New record writes preserve the actual person, agent, API key or workflow origin and show its avatar or icon separately from the authorizing member.
+
+- **Workflow panes, app discovery and document media.** Configure steps between their input and output in a window-sized editor. Discover unconnected MCP catalog apps and use their individual tools, connect a mailbox from the email step, and set model temperature and reasoning effort directly. Kanban uses pointer previews and immediate lane moves with rollback on refusal. Markdown documents offer formatting controls, images and direct video playback.
+
+- **Column defaults, choice colors and system properties.** Configure typed defaults and select colors in the console. New select defaults may name labels before option IDs exist. Every table shows immutable creation/update dates and actors from its record metadata, also included in console CSV exports.
+
+- **Document templates and properties.** Rich-text columns offer editable default templates for notes, meetings and project briefs. New records apply the template automatically; existing documents can apply it after confirmation. Dates and author are shown above Markdown from authoritative record metadata, and custom frontmatter properties have their own controls.
+
+- **Full-screen workspaces and ready templates.** Expand a table, an entire record or workflow run history without remounting editors. Catalogs fill the workspace and expand over the shell, cards align their metadata and actions, tables lose redundant frames and workflow import accepts a dropped file. Public API and Markdown notebook templates provision a private table and a valid draft automatically; later runs reuse it and upsert the example record.
+
+- **Independent workflow starts.** Add different triggers to the same canvas, choose a start for a test, and run only its reachable branch. Publication retains each webhook or schedule registration; Active controls all of them. Existing single-entry workflows remain compatible.
+- **Architect builds automations and tables.** Platform tools discover step schemas, create and revise drafts, test and inspect runs, publish reviewed workflows and manage typed table records. Bundled skills explain API integrations beyond the MCP gallery and callable workflow tools. Signing secrets are withheld from model results.
+- **Simpler workflow editing.** Step configuration and data use compact cards, record fields follow table columns, and setup messages stay folded. Workflow metadata moves into Settings; notes gain an expanded editor, size presets and larger resize handles. Canvas menus have clear icon spacing.
+
+- **Rich text columns in Tables.** Choose Markdown for notes with headings, task lists, tables, links and code, with source highlighting, preview and an expanded editor. Optional YAML frontmatter is preserved with the document and shown separately in preview. API writes, text queries, CSV round-trips and conversions to and from plain text keep the source intact.
+
+- **A published page can show a workflow's log live.** `publish_artifact` takes a
+  second kind of binding, `"kind": "workflow_log"`: a workflow (id or exact name), an
+  optional step, outcomes, run and `include_test`, and either `lines` (the newest N, at
+  most 500) or `per_day` (7, 30 or 90 days in an IANA time zone) - the filters and limits
+  of `GET /workflows/{id}/logs` and `/logs/summary`. It is resolved at publish and frozen,
+  read with the page owner's access to the workflow after the owner's consent, worded in
+  the publish result, the consent dialog and the data change review (any change to it is a
+  widening), and `unavailable` when the owner can no longer view the workflow or the step
+  is gone. A page that reads a log cannot have a public link. Bindings published before
+  this are tables and need no change.
+- **Read a workflow's log with an organization API key.** `GET /workflows/{id}/logs`,
+  `GET /workflows/{id}/logs/summary`, `GET /workflow-runs/{id}/logs` and
+  `GET /workflow-logs` are part of the public API, in `/public/openapi.json`, for building
+  a dashboard in Grafana, Metabase or a script. A key needs `workflows:view` and reads the
+  lines of public-origin runs, as the runs list does: runs started by keys or from outside
+  (webhook, form, channel, mail, GitHub), not those a member, schedule, table record, chat
+  or agent started. The alert rule routes stay session-only.
+- **Alert people when a workflow's log crosses a threshold.** A rule on a workflow counts
+  the real-run lines its Quick Logs wrote that match chosen outcomes, optionally one step
+  and some message text, and tells its audience when at least N appear within 5, 15, 30 or
+  60 minutes, 4 or 24 hours - at most once per window, never for a test run. The audience
+  is `admins` (owners, admins and the deployment's app admins), the workflow's `owner` and
+  `chosen` members who still belong, delivered at the bell and by email per each person's
+  notification preferences (the new `workflow_log_alert` event) with a link to the Logs
+  page filtered to the rule's step and outcomes. A workflow's Logs page has an Alerts card
+  to add, pause and delete the rules; the list and summary take `outcome` repeated. `GET`/`POST /workflows/{id}/log-alerts`
+  and `PATCH`/`DELETE /workflows/{id}/log-alerts/{rule_id}` manage the rules: listed for
+  whoever may view the workflow, changed by whoever may edit it, with outcomes and step
+  checked against the workflow's logging steps. A per-minute worker job evaluates them.
+- **A Workflow logs dashboard card.** It sits in the add-a-widget catalog, for whoever may
+  view workflows, and shows the newest lines the Quick Logs of the workflows they may view
+  wrote (real runs only) with how many lines the last 24 hours added and how many were
+  errors. A line links to its run and the workflow's name to its Logs page.
+  `GET /workflow-logs` serves it, gated on `workflows:view`; a key may call it too.
+- **A workflow's log counted per day.** `GET /workflows/{id}/logs/summary` answers how many
+  lines the log gained each day over the last 7, 30 or 90 days, split by outcome, with days
+  counted in a given time zone, for building a dashboard on the log. It is gated like the
+  list, and a key may call it (`days` of 7, 30 or 90; `tz`, an IANA name, UTC by default;
+  step, outcome, run, search and test runs as in the list).
+- **A mail action added below its trigger starts bound to it.** Adding Gmail **Create draft**
+  or **Send message** under a Gmail trigger binds `thread_id`, `in_reply_to` (from
+  `rfc_message_id`) and, for a send, `to` (from `sender`); Outlook's reply drafts bind
+  `messageId`, and the shared-mailbox reply draft and send bind `userId`, from the Outlook
+  trigger. They are
+  ordinary bindings, changeable, and one undo takes the step and them back together.
+  Nothing is bound without that trigger upstream.
+- **A workflow editor can pick an organization MCP connection without `mcp:manage`.**
+  `GET /workflows/{id}/mcp-connections`, open to whoever may edit that workflow (by role
+  or by a grant on it), lists the organization's own servers, disabled ones included,
+  with only their name, label, catalog entry, tools and test time - never the URL,
+  credential or consent. The `mcp.call` panel and the step picker's Gmail and Outlook
+  actions read it, so publishing and choosing a step need the same right; adding or
+  testing a server still needs `mcp:manage`. The list is read again on focus. The
+  service icon beside a server in that picker now matches by catalog key or name only,
+  not by URL, which an editor does not see.
+- **The step picker groups a service's trigger and MCP tools by app.** **Gmail** and
+  **Outlook** are groups under **Apps and the web**: the app's trigger, then one entry
+  per tool of each organization MCP connection to Google Workspace or Microsoft 365,
+  named **Create draft**, **Send message** and so on, or by the tool's own name for
+  the rest. Picking one adds an `mcp.call` set to that connection and tool; stored
+  workflows are untouched. Nothing is hidden: entries and cards carry an **MCP** badge
+  and the connection and tool name, search finds either name, and the step's settings
+  say it is an MCP tool call and link to the connection. With no connection the group
+  offers to connect the server. No API change.
+- **A step can log its outcome with a Quick Log.** A step's `quick_log` setting
+  (`message`, and `outputs` for the ports that log; unset means all) writes one line
+  to the workflow's own log each time the step settles: its time, name, the port it
+  left by or `error`, status and a message that can read `{{step}}`, `{{outcome}}`,
+  the step's output fields and `{{error.code}}` / `{{error.message}}`. A reference
+  with no value renders empty and never changes the run; `error.details` is refused
+  at publish. Nothing is written for a skipped or switched-off step or one a retry
+  reuses. `GET /api/v1/workflows/{id}/logs` lists a workflow's lines (filters,
+  paging; test runs only with `include_test`) and
+  `GET /api/v1/workflow-runs/{id}/logs` a run's. Both routes are
+  part of the public API. The Logs page also filters by run: paste a run
+  id or type its first characters into **Run** (the route's `run`: 4 or more
+  characters of the id, anything else a 422), fill it from **Show only this run** on
+  a line, or open it from **See in Logs** on a run's page. Lines go with their run when retention removes it.
+  Migration `0238_workflow_log_entries.py` adds `workflow_log_entries`.
+- **`human.approval` can offer the approver several ways to approve.** List up to
+  five **Ways to approve**, each an `id` and a button label, such as keep a draft or
+  send it now. The Approvals queue shows one button per choice in place of
+  **Approve**, with **Reject** beside them, and the step has an output port per
+  choice, in order, then `rejected`, and no `approved` port. The chosen `id` is
+  `choice` in the step's output, and the decided row shows its label.
+  `POST /api/v1/workflow-approvals/{id}` takes `choice`, which an approval of a step
+  with choices needs and any other decision refuses with `422`. A step with no
+  choices is unchanged. Migration `0236_workflow_approval_choices.py` adds
+  `choices` and `choice` to `workflow_approvals`, with nothing to backfill.
+- **A connected mailbox is checked as often as you choose.** **Check for new mail
+  every** - 1, 5, 15, 30 or 60 minutes, a minute by default - is a setting of the
+  connected Gmail or Outlook mailbox, on its card in Triggers and on the Gmail and
+  Outlook trigger steps. It applies to every trigger and workflow on that mailbox,
+  because one read of the mailbox serves them all. Changing it needs `mcp:manage`:
+  `PUT /api/v1/mcp-connections/portals/{connection_id}/poll-interval`, which refuses
+  any other value with `422`. The portal catalog carries it as `poll_interval_minutes`.
+  Migration `0237_mailbox_poll_interval.py` adds the column; every existing mailbox
+  keeps its minute.
+- Draw workflow steps by family: Start, AI, Flow, Data, Apps and Error each get
+  their own tile and a "Family · Kind" label, steps that can park the run say so in
+  a band, the minimap follows the families, and a step waiting for a person is rose
+  with an hourglass. **Simple** (Settings → Profile → Appearance, or the canvas
+  toolbar) keeps the neutral look, per browser. A selected step can be resized
+  by its right edge, bottom edge or corner, its text wrapping into the space, and
+  **Reset size** in its right-click menu undoes it.
+- **Removed steps stay out of a workflow's Stats card.** A step taken out of the
+  workflow keeps its past runs, but its rows in **By step** and **Approvals** are
+  hidden until **Show removed steps** in **By step** brings them back.
+- **Approval outcomes on a workflow's Stats card.** An **Approvals** section sums
+  up how people decided what the workflow asked them: approved as proposed, edited
+  with the median change (each edit's `edit_ratio` is measured once when it is
+  decided, by the `text.compare` scorer), rejected, expired and the time to decide,
+  per step and per day, over the same days as the run figures. The stats API carries
+  them in `approvals`. `GET /api/v1/workflow-approvals/stats` adds the totals and
+  the five workflows with the most requests across those you may view, and the
+  **Approval outcomes** dashboard card, in the catalog, shows them. No text and no
+  per-approver figure leaves an approval. Requests decided before this release have
+  no edit ratio and are shown as not measured.
+
+- **`text.compare` scores how alike two texts are.** A data step that gives a score
+  from 0 to 1 by character edit ratio, word overlap or changed lines, with switches
+  to ignore case, whitespace, punctuation, and quoted mail and signatures.
+  Deterministic, no model and no cost; each text is at most 100,000 characters.
+
+- **`html.parse` reads HTML into its text, links and CSS-selector matches.** A data
+  step for a mail body, an `http.request` body or a stored page: the readable text
+  as Markdown, every link once (script and `data:` links left out) and the elements
+  a selector picks, from HTML text or a file. Everything is bounded, the parse is
+  stopped after 20 seconds, and nothing is fetched or executed.
+
+- **`ai.classify` can leave by `unsure` below a confidence.** With a
+  `min_confidence`, the model also states how sure it is of the category, from 0
+  to 1 (its own report, not a calibrated probability), and the step leaves by an
+  `unsure` port below it, as `decide.*` does. Steps without a minimum are
+  unchanged: same prompt, same ports, `confidence: null`.
+
+- **Two self-hosted mail servers in the MCP catalog.** `google-workspace` is
+  `taylorwilsdon/google_workspace_mcp` (Gmail, Calendar, Drive and Sheets, over
+  Streamable HTTP with `MCP_ENABLE_OAUTH21`, using your own Google OAuth client);
+  `ms-365` is `softeria/ms-365-mcp-server --http` (Outlook mail and calendar, with
+  `--org-mode` for shared mailboxes and Teams). Each connection signs in as one
+  account.
+- **A how-to, [answer mail with an approved draft](docs/howto/answer-mail-with-approved-draft.md).**
+  A mail trigger, a drafting step, an editable approval and an `mcp.call` that
+  leaves the approved text as a draft in the thread or sends it.
+- **`mcp.call` can send an idempotency key.** **Idempotency key argument** names a
+  tool argument that the step fills with its stable operation key, the same on
+  every retry. The tool must declare it as text: publishing refuses an argument the
+  recorded schema lacks, and a run fails with `MCP_IDEMPOTENCY_ARGUMENT_UNDECLARED`
+  without calling. A keyed step counts as idempotent.
+- **Workflows started from Outlook.** An **Outlook** trigger starts a run for each
+  new message in a folder of the organization's connected Microsoft 365 mailbox, or
+  of a shared mailbox, that fits its filter. The poll reads the folders the
+  workflows name and starts a new folder from when the workflow was published. A
+  workflow whose folder cannot be read is switched off, with
+  `mailbox_folder_unreadable` in the audit log. Migration
+  `0234_workflow_outlook_trigger.py`; its downgrade refuses while any `outlook`
+  exposure (switched off ones too) or a run it started exists, so unpublish the
+  workflow and delete its runs first. Both mail triggers take outside input.
+- **Mail threads, HTML and attachments on both mail triggers.** A Gmail or Outlook
+  run gets `thread_id`, `rfc_message_id`, `in_reply_to`, `references`,
+  `received_at` and `html` (up to 20,000 characters), and the message's attachments
+  (a mailbox lists at most 20) stored as files of the run: the first 10 listed and
+  25 MiB per message, within the chat-upload size limit and
+  type allowlist and the storage quota. One left out carries a reason, a test run
+  fetches nothing, and a provider failure fails the step with
+  `MAIL_ATTACHMENT_UNREACHABLE`, retried.
+
+- **`human.approval` can let the approver edit a proposal before approving it.**
+  Bind text such as a drafted reply to the step's new `proposal` input and turn on
+  `editable`; the Approvals tab shows an editor (`text` or `markdown`, under a
+  `proposal_label`) with **Restore original** and **Show changes**, and a decider the
+  step does not name sees it read-only. The approved step outputs `final`,
+  `original` and `edited`; a step that is not editable hands its proposal on as
+  `final` unchanged. `POST /api/v1/workflow-approvals/{id}` takes an optional
+  `final`, refused with `422` on a step that is not editable or with a rejection.
+  An edited `final` is stored without leading and trailing whitespace, and
+  `edited` ignores line endings, trailing spaces and blank space around the text. The audit entry records `editable`, `edited`
+  and the two lengths, never the text. A workflow that sends `final` through
+  `mcp.call` sets that step's `approval` to `none`. See
+  [the node reference](docs/reference/workflow-nodes.md#human-approval).
+- **`OUTBOUND_PRIVATE_ALLOWLIST` lets an operator open hosts on the
+  deployment's own network.** An entry is an exact host, a `.suffix` (which does
+  not match the apex), an IP address or a CIDR range. Workflow `http.request`,
+  `http.download` and `http.upload` steps, the `git`, `web` and S3 sources,
+  the A2A client and MCP connections honour it, and only for a request chain whose
+  first URL needs it, so a public site's redirect, OAuth metadata, A2A card or
+  crawl cannot reach a listed host. A source on the private network, for example a
+  self-hosted MinIO, needs its host listed. Loopback, link-local, multicast and cloud
+  metadata addresses stay refused whatever is listed, including a listed name
+  that answers one wherever the name is resolved, an MCP connection's own URL
+  included (a listed name that does not resolve yet can still be saved), and a name
+  with one unlisted private answer. Startup refuses a malformed entry, one that reaches
+  those addresses and one that names the database, Redis or the API itself, by
+  name or address; `doctor` catches a range that covers a store's resolved
+  address. Every account of every organization can
+  reach every port on an admitted host, so list only services that check their own
+  credential. `agenticos cmd doctor` gains a `private network` line and the HIPAA
+  sheet a `private-network` control. `MCP_ALLOWED_HOSTS` is not an alias and
+  keeps its MCP-only reach, but it now goes through the same parser: suffix and
+  CIDR entries work there, one trailing dot is dropped, and a listed name that
+  answers a loopback or metadata address is refused where the name is resolved.
+  The HIPAA `private-network` control counts both lists. See
+  [the configuration reference](docs/configuration.md#project-settings).
+- Bound cumulative inline workflow results per run and organization, including
+  loop-generated outputs, with compact counters and retained-history backfill.
+  Preserve fees and stop automatic retry when a result cannot be stored.
+- Import pinned nested file references safely across retention, charge each eval
+  case against run limits, and narrow resumed agents to current workflow funds.
+- Preserve canvas notes during paste, apply mixed note/step changes together and
+  retain newer test examples when older responses arrive later.
+
+- Reserve workflow email deliveries against shared issuer, organization and
+  deployment allowances before sending; refuse delivery when Redis is unavailable.
+  Preserve webhook delivery tombstones after run retention, enforce public-link
+  expiry on existing content tokens and return typed datetime overflow failures.
+
+- Require member consent when publishing or enabling unattended workflow triggers;
+  enforce current MCP visibility and tool allowlists at publish and dispatch.
+- Bound public form request streams and DOCX XML extraction before materialization.
+  Keep private views usable after column retyping, save Kanban grouping, load more
+  cards per lane and timestamp table events against trigger activation's wall clock.
+
+- Load complete skill/context choices for inline workflow agents, reject unusable
+  eval inputs and clean up partial PDF/sandbox file batches after failure.
+
+- Preserve organization-key scopes on workflow sockets, including worker admission
+  and stream reauthorization; refuse keys accessing private runs or personal chats.
+
+- Bound inline workflow outcomes to a configurable 10 MiB total and refuse Split out
+  expansion above 10,000 items or projected bytes before copying repeated fields.
+  Oversized terminal outcomes preserve fees and never automatically replay effects.
+
+- **Organization-key access to Virtual Tables and workflow runs.** External
+  clients use the shared table routes with scoped organization keys, including
+  receipt-backed writes, revision checks and bounded column selection. Workflow
+  workers retain the key's admitted scopes, recheck its current authority before
+  every step and stop after revocation, expiry or deletion; key-started chains
+  cannot reach the issuer's personal state. Workflow authoring remains session-only.
+- **A page can start a workflow, as the person viewing it, after they confirm.**
+  An agent declares up to five actions when it publishes - workflows its Workflows
+  capability binds that start from Manual or API request and that the person behind
+  the run may run - and the page's buttons call `agenticos.run` (`AO.run` in the page
+  kit). The console accepts the request only from the page's own frame and under its
+  nonce, lists only the actions the viewer may run on the version they are served, and
+  asks every time in a dialog titled with the workflow's own name that quotes the page's
+  label and shows each input value, with a delayed Run; one question is open at a time
+  and three declines stop the questions until the page is reopened. The run is the
+  viewer's - their access, budget and runs page - with a new `app` trigger and the page and version recorded on
+  it; the page reads back only its status, answer text, structured answer without files
+  and a short error. Public links, embeds, previews, history and impersonated sessions
+  get no actions. New `artifact_versions.actions`, `workflow_runs.source_artifact_id`
+  and `source_version_number` (migration `0221_artifact_actions`), the setting
+  `RATE_LIMIT_ARTIFACT_ACTIONS_PER_MINUTE` and the audit entry `artifact.action_started`.
+  (#1976) [Artifacts](docs/artifacts.md#actions) has the rules.
+
+- **A page's public link and embeds can show live table data, behind two confirmations.**
+  An Owner or Admin turns on **Public pages with live data** in the organization's
+  settings (off by default, as themselves, audited); then the page's owner, or an Owner or
+  Admin for them, confirms its data for the link after a screen that names the queries and
+  who can reach them - anyone with the link, its password and expiry, each embedding site.
+  The confirmation is bound to the queries and that audience, and turning the link off,
+  removing its password, adding an embedding site, a new owner, a withdrawn member consent
+  or archiving clears it; replacing the key, changing the expiry or pin, and switching the
+  organization off do not. Every load re-checks the link's key, expiry, password, switch and
+  consents before reading: a replaced or removed key is a 404 at once, anything else renders the page
+  without data and without a reason. Visitors get the records as of load, with no refresh.
+  Reads are shared for 30 seconds in a byte-bounded cache in the API process, never in
+  Redis, and each page's real reads are capped per minute. Editors see why a consented
+  page shows nothing. New `organizations.public_live_data` and public data columns on
+  `artifacts` (migrations `0219_org_public_live_data`, `0220_artifact_public_data`), settings
+  `RATE_LIMIT_ARTIFACT_PUBLIC_DATA_PER_MINUTE` and `ARTIFACT_PUBLIC_DATA_CACHE_BYTES`, and
+  audit entries `organization.public_live_data_changed`, `artifact.public_data_consented`,
+  `artifact.public_data_withdrawn` and `artifact.public_data_voided`. No agent tool reaches
+  any of it. (#1975) [Artifacts](docs/artifacts.md#live-data-on-a-public-link) has the rules.
+
+- **A published page can show live table data, shared on its owner's consent.**
+  An agent binds a page to **page queries** - a table, or a saved view whose filters
+  and sort are copied, with fields, filters, a sort and a limit - and the page's
+  `agenticos.onData` is handed the records, already in the page on load and again
+  on every refresh. Everyone who opens the page reads the same records with its
+  **owner's** access, so the data reaches anyone beyond the owner and the roles that
+  open every page only after the owner confirms it: **Confirm data** shows the queries in
+  words, every linked table they reach and who will read them, and the page's audience
+  keeps the last version that was consented to, or sees "This page isn't available yet",
+  until then. Anyone who can edit the page can stop sharing its data; the owner can
+  turn on **Share new versions automatically** for their own republishes, and give
+  a person or group **Can edit, including data**. A binding goes unavailable when the
+  owner leaves or loses access, or when a column it reads changes meaning: columns now
+  carry a read-only `revision`. The owner hands a page to another member with **Change
+  owner**, which asks the new owner to confirm its data again. Widening who opens a page
+  that reads data is the owner's call; anyone else files a request, answered in a
+  **Requests** section of the Share dialog, and an editor's republish that reads more
+  waits as a request with a **Review data change** panel. A member who opens a page they
+  cannot see can **Request access**. Agents get `share_artifact`, which only asks. New
+  `artifact_share_requests`, consent columns on `artifact_versions`, `artifacts.auto_consent`,
+  the `edit_data` grant level, the `artifact_share_requested` and `artifact_owner_changed`
+  notifications (migrations `0215_artifact_consent`, `0216_artifact_owner_changed`,
+  `0217_artifact_share_requests`, `0218_grant_edit_data`) and audit entries
+  `artifact.data_consented`, `artifact.data_withdrawn`, `artifact.auto_consent_changed`,
+  `artifact.owner_changed`, `artifact.share_requested`, `artifact.share_request_approved`,
+  `artifact.share_request_declined` and `artifact.edit_data_granted`. A public link or an
+  embed carries data only under the separate switch and consent described above. A page
+  takes up to 5 bindings, 1,000 records each and 4 MiB,
+  a 5 s deadline and 30 loads a minute per viewer, and a bound page is changed only by a run
+  acting for a member (a signed-in member, a linked channel sender or a schedule's creator).
+  The viewer's strip has Refresh and an auto-refresh each viewer chooses; cards, the
+  dashboard and the viewer mark live pages. `list_views` finds a view to start a query from.
+  (#1974) [Artifacts](docs/artifacts.md#live-data) has the rules.
+
+- **A workflow run reads on the canvas.** Each step carries a pill on its
+  corner - Pending, Starting, Running with a ticking time, Waiting, Failed,
+  Needs attention, Skipped, Not reached, or the time a step that succeeded took -
+  the wire into a running step moves, a branch the run did not take fades,
+  and a failed step shows its error under its card. The editor gets a Stop
+  beside **Run**, and **Test step** a Stop of its own and a warning when the
+  tested step did not run. A run's page draws the same, still once the run
+  has ended.
+
+- **Workflow editor additions.** Typing `{{` in a text parameter suggests
+  values from earlier steps, including the fields a test run saw inside a
+  payload, and placeholders are coloured, red once the box is left when one
+  names nothing. The **Input** pane picks any earlier step to read from.
+  Hovering a step's problem mark lists its first problems and clicking it
+  opens the step, whose dialog lists every problem, a field's leading to the
+  field. **View only** shows an editor the read-only editor, whose dialogs
+  now show every setting. `Delete` deletes the selection, and a dragged field
+  scrolls the form at its edge.
+
+- **Archiving and restoring a published page.** Someone who may edit an
+  artifact archives it from **More actions** above it, after a dialog says that
+  the page, its versions and its link are kept, nobody can open it and its
+  public link is turned off. An archived page serves nothing: its view, its
+  live data, signed addresses minted earlier, the public link and the embed all
+  answer as for a missing page, and the agent's tools treat it as absent -
+  `publish_artifact` refuses the name with a message naming the archive. Its
+  editor sees when it was archived, with **Restore**; a reader is told it is not
+  available. Restoring leaves the public link off. New
+  `POST /api/v1/artifacts/{id}/archive` and `/unarchive` (audited as
+  `artifact.archived` and `artifact.unarchived`), `include_archived` on the
+  list, an **Archived included** filter and an **Archived** badge in the
+  console, and `artifacts.archived_at` (migration `0211_artifact_archive`).
+
+- **A restored page version says what it was restored from.** Restoring a
+  kept version of an artifact still adds a new version with its bytes; that
+  version now records the number it came from, and the console's version list
+  shows it as `v4 · restored from v2`. A publish leaves it empty. New
+  `restored_from` on the version read and `artifact_versions.restored_from`
+  (migration `0212_artifact_restored_from`).
+
+- **Tool-call approvals say what they will do in names.** A gated table
+  write is parked with its ids resolved, as the run's person, to the table and
+  record names that person may see, and the chat's approval card and the
+  Approvals page lead with a sentence naming them above the arguments. A capability declares the describers with `describers=` on
+  `register(...)`; one that fails or is slow parks the call without a sentence.
+  New `context` on `GET /approvals` rows, `GET /runs/{id}/parked` and the
+  `tool_approval_required` frame, and `tool_approvals.context` (migration
+  `0213_tool_approval_context`).
+
+- **Archiving and restoring a table from the console.** A member who can edit
+  a Virtual Table archives it from **More actions** on its page, after a
+  dialog says that its records stay readable, nothing can change them and it
+  can be restored; what still uses the table is listed when that refuses the
+  archive. An archived table's page says so, with **Restore** for whoever may
+  edit it, through the new `POST /api/v1/tables/{id}/unarchive`.
+  `TableRead.can_restore` says who may. The catalog can list archived tables
+  too. A restore is refused while a live table holds the archived one's name.
+
+- **A page kit an agent follows, and warnings when it does not.** Library
+  version 3 (`lib/agenticos-3.css`, `lib/agenticos-3.js`) keeps every class and
+  call of version 2 and forgives loose markup: a header's parts placed directly
+  in it, a table with no `<thead>`, text written straight into a table's wrap.
+  It adds loading, note, live, list and toolbar classes, draws icons a script
+  adds later, and `AO.records` draws bound records as a finished table. Every
+  Artifacts agent gets a short page contract in its instructions; the first
+  whole HTML page of a run offering an unloaded `artifact-pages` skill is sent
+  back once to load it; and each published HTML page is checked, with what looks
+  wrong listed in the result's `warning`. A warning never stops a publish.
+
+- **Agents can list and preview their pages.** `list_artifacts` names this
+  agent's pages that the run's person may open, newest first, with each one's
+  version, bindings, visibility and whether this run may republish it; in a
+  group chat their private pages are left out. `preview_artifact` draws a page
+  as a viewer would, with its data read as that person, and returns a picture
+  and a report of its errors, console messages, policy refusals and the publish
+  warnings. The picture needs a browser the operator runs, named by the new
+  `ARTIFACT_RENDER_CDP_URL` and shipped as the opt-in `artifact-render` compose
+  profile on a network with no egress, and the `browser` extra; without them the
+  report comes alone. `agenticos cmd doctor` checks the renderer.
+
+- **A Workflows card on the dashboard.** Real runs, failures and cost over the
+  dashboard's period across every workflow the reader can see, the five
+  busiest, and how many runs wait for a person now -
+  `GET /api/v1/workflows/summary`. The "?" on a workflow's runs page explains
+  its figures and its run list.
+
+- **Evals for a model step.** A step a model answers has an **Evals** tab:
+  cases written from the input it was last tested with, each saying where in
+  the answer to look and whether it should contain, not contain or equal a
+  value. **Try** starts a test run of the step per case and marks each passed
+  or failed as its run ends, with what the answer said and what it cost.
+  Migration `0208_workflow_step_evals`.
+
+- **Limits and figures for a workflow's runs.** A workflow's settings take how
+  many real runs may be under way at once (a start past it is refused with
+  `429`), the most one run may spend (the tighter of it and the version's
+  budget) and the most its runs may spend a calendar month, test runs included
+  (past it no run starts, with `402`). Its runs page leads with **How it ran**:
+  runs, success rate, typical and 95th-percentile time and cost over 7, 30 or
+  90 days, this month's spend against the budget, and cost and failures by
+  step - `GET /api/v1/workflows/{id}/stats`.
+
+- **Workflows started from an email.** A **Gmail** trigger starts a run for
+  each new message in the organization's connected Gmail mailbox that fits its
+  subject, sender and label filters, read by the poll that already fires
+  agents' Gmail triggers. A message read twice runs once, and one the
+  organization had no room for is read again a minute later. The step shows
+  whether a mailbox is connected and connects one; a GitHub step shows the
+  same for its account. Migration `0207_workflow_gmail_trigger`. The sender
+  filter reads the address only (`@acme.com` is that domain, not its
+  subdomains), needs mail the sender's domain authenticated, and sent mail,
+  drafts, spam and the bin start nothing.
+
+- **Workflows started from GitHub.** A **GitHub** trigger starts a run for
+  the issues, comments, pull requests, reviews, pushes, releases or Actions
+  runs of one repository it names, optionally only for some actions. With the
+  organization's GitHub account connected, publishing registers the hook on
+  the repository for those events and keeps it in step on every publish;
+  otherwise it shows the address and secret once, to paste. Deliveries are
+  checked against GitHub's signature, a redelivery answers with its first run,
+  and a `ping` or anything not named is skipped. Migration
+  `0206_workflow_github_trigger`.
+
+- **Workflows started from a channel message.** A **Channel message** trigger
+  hands a Slack, Mattermost or Telegram bot's messages to a workflow: each one
+  the bot's agent would have answered, and that fits the trigger's chats and
+  words, starts a run as its publisher with the text, the sender and where to
+  answer. The rest still reach the bot's agent, and a bot's messages start one
+  workflow at most. Migration `0205_workflow_channel_trigger`.
+
+- **Workflows started from a form.** A **Form** trigger gives a workflow a
+  public page with the fields it declares, its own title, description, button
+  and thanks. Anyone with the link fills it in without signing in, and each
+  answer that fits starts a run as the member who published it. **Trigger**
+  shows the link, **New link** replaces it, and pausing closes the page; each
+  form takes at most `RATE_LIMIT_FORM_SUBMISSIONS_PER_MINUTE` answers a minute,
+  and a hidden field turns scripts away. Migration `0204_workflow_form_trigger`.
+
+- **Agents start workflows.** The **Workflows** capability gives an agent the
+  published workflows its spec names as tools: it reads the input each one
+  asks for, starts a run as the member it acts for and waits for the answer,
+  up to a limit set in the Builder. Each start is the API's own, so access,
+  input checks, budgets and quotas hold, and the runs page says **An agent**
+  started it. An agent running as a workflow's own step starts none. A run
+  with no member behind it (a widget, embed or hosted-page visitor, an unlinked
+  channel sender, an agent event trigger's delivery) starts none.
+  Migration `0203_workflow_run_from_agent`.
+
+- **Import a CSV file again to update a table.** With an external id column mapped,
+  **Update records already here** changes the cells a row names on the record
+  holding its external id instead of refusing it, and the import counts what it
+  added and what it updated (`update_existing` on `POST .../records/batch`).
+
+- **Table triggers on a record's change and deletion.** A workflow's **Table
+  record** trigger (formerly **New table record**) can start on records added,
+  changed or deleted, and a change only when one of the columns chosen for the
+  table changed. The run gets the record with its `event`, its values `before`
+  and the `changed` columns. Changes and deletions are queued only for a table a
+  trigger listens to. Migration `0202_table_trigger_events`.
+
+- **Formula columns.** A table column can work a value out from the record's
+  other columns - `{Price} * {Quantity}`, `IF({Total} > 100, "large", "small")`,
+  `DAYS({Due}, TODAY())` - with arithmetic, comparisons and a dozen functions,
+  including what a rollup worked out. Renaming a column rewrites the formulas
+  that read it, and saving one checks it and says what is wrong. Formulas run in
+  a closed interpreter of their own: nothing in one is evaluated as Python.
+
+- **Links, lookups and rollups between tables.** A `link` column holds records of
+  another table, picked by searching that table, and a record reads them back
+  named. A `lookup` shows one column of the linked records and a `rollup` counts
+  them or works out a sum, average, minimum or maximum - both worked out when the
+  record is read, so they always say what the linked records say now, and never
+  past what the reader may see. Writing a link checks every record exists in a
+  table the writer can see.
+
+- **Email, link, phone and rating columns.** A table column can hold an email
+  address, an `http(s)` link, a phone number or a 1-5 rating, each checked as it
+  is written, typed into the field a phone keyboard expects and rated with
+  stars. Text converts to each when every value reads as one, and an import
+  reads and infers them. `contains` and `starts_with` take a piece of a value,
+  so `@example.com` finds the addresses at a domain.
+
+- **MCP tool and email steps in workflows.** **Call an MCP tool** calls one tool
+  on one of the organization's MCP servers, picked with its service's mark and
+  then from the tools the server listed; by default a person approves any tool
+  the server does not mark read-only before it runs, through the same Approvals
+  inbox as **Ask for approval**. **Send an email** mails up to ten addresses, a
+  copy each, from the deployment's sender, and says when the provider only logs
+  mail rather than delivering it. A tool's arguments are one field each, from the
+  schema the server listed, since a binding can now fill one key of an open
+  object (`arguments/email`).
+
+- **Model steps and a knowledge write.** **Ask a model** answers a prompt under
+  the step's instructions, as text or an object; **Classify** puts a text in one
+  of the step's categories and branches on it; **Extract data** pulls the fields
+  a schema names out of a text; **Summarize or translate** summarizes, translates
+  or rewrites one. Each runs as the step's own agent, so the step's cost cap, the
+  workflow's budget and the organization's limit apply and the run is in
+  Activity. **Add to knowledge** puts a text or a run file into collections
+  through the same upload a collection's page uses.
+
+- **Configure an agent inside a workflow step.** An Agent step pins a catalog
+  agent or, with **Configure here**, defines its own - model, instructions,
+  capabilities with their knowledge, and MCP servers - in the Builder's own
+  editors. The agent is the workflow's: versioned with the graph, created on the
+  step's first run, republished when its spec changes, kept out of the catalog and
+  reached through the workflow's access. **Copy its configuration into this step**
+  and **Save as an agent** move between the two. `max_cost_usd` caps one execution
+  of the step. Migration `0201_workflow_agents`.
+
+- **A workflow note can be tinted** grey, yellow, green, blue, purple or red
+  from the swatches a selected note shows; the graph keeps the colour.
+- **A table column's type can change** to one its values read as: anything to
+  text, text to a number, a yes/no, a date or a single select (an option per
+  distinct value), a whole number to a number and back, a date to a date and
+  time, one choice to several and back. Saving rewrites every record's value
+  in the same change; a value that does not convert refuses it, naming how
+  many and one example, and something that uses the column refuses it as an
+  archive does. **Columns** offers only the types a column converts to.
+- **Try a chat-triggered draft in a chat panel.** Open chat in the editor
+  runs the draft as a test with each message, opens the run on the canvas and
+  shows its answer; nothing said there reaches a real conversation (#1955).
+- **Compare a version with the draft.** A version's preview draws both on one
+  canvas with every added, changed and removed step marked, and lists what
+  changed in each changed step (#1954).
+- **Export and import a workflow, and automation templates.** The editor
+  downloads a draft as a `.workflow.json` file with no ids of the deployment and
+  no secret values; Import on the list makes a new draft from one and lists
+  every step and field to choose again. New workflows can start from Lead
+  intake, Slack alert on failure or Daily summary (#1953).
+- **A code editor for the Python and JavaScript steps.** Highlighting in both
+  themes, Tab indentation, Enter that keeps the indentation, closing brackets
+  and quotes, and the keys of the bound `args` offered as they are typed; Esc
+  then Tab leaves it. It reuses highlight.js, already a dependency (#1952).
+- **Import cURL, query authentication and paging on the HTTP request step.**
+  A pasted cURL fills the method, URL, headers and JSON body; a credential in
+  it is lifted out and offered to the vault, never kept in the step. A token can
+  go in a URL parameter, on every HTTP step. A `GET` pages by next URL, cursor or
+  page number, collecting each page's items, and stops at `max_pages` (#1951).
+- **A new secret from a workflow step.** A step's secret field offers New
+  secret: the vault's form fixed to the kind the field takes, choosing the new
+  secret on save, so an HTTP credential or a decision key is added without
+  leaving the editor. Only the id reaches the graph (#1950).
+- **A webhook's test URL, and a Respond to webhook step.** Listen for test event
+  on a draft's webhook trigger opens a test URL for two minutes; the one call to
+  it is pinned as the trigger's output and never starts a run. A graph holding
+  Respond to webhook answers its sender with that step's status, headers and
+  JSON body, waited for up to `WORKFLOW_WEBHOOK_RESPONSE_TIMEOUT_SECONDS`; a
+  graph without one answers `202` as before (#1949).
+- **Transform steps for lists of objects.** Edit fields, Sort, Limit, Remove
+  duplicates, Aggregate, Split out, Summarize, Date & time and Crypto reshape data
+  without a code step. Each is pure and typed, most take and hand on `items`, and
+  an item missing a field is handled the same way by all of them (#1948).
+- **Switch, Wait, Filter a list and Combine lists steps.** **Switch** takes the first
+  of many named rules that holds, or `otherwise`, and rejoins at a Merge. **Wait**
+  holds a run for a number of seconds or until a bound time on a durable timer that
+  survives a restart. **Filter a list** keeps the items a condition holds for, and
+  **Combine lists** appends two lists or merges them by position or by a key. Waits
+  park with the new `timer` reason (#1947).
+- **Call another workflow as a step.** A **Called by a workflow** trigger with
+  typed fields makes a workflow others run, and the **Run a workflow** step starts
+  its published version with the bound input, waits for it and hands on its output
+  or error - or goes on at once. The called run is linked to the step; a call that
+  loops back into the chain or goes more than five deep is refused. Runs gain
+  `parent_node_run_id` and can be `triggered_by` `workflow_call` (#1946).
+- **Workflow settings and error workflows.** A workflow's **Settings** name the
+  timezone its schedule's cron expression is read in, a default run deadline, an
+  error workflow, and how long runs and their files are kept, swept daily. A new
+  **On failure of a workflow** trigger makes an error workflow, started once for
+  each failed real run with the run, the failing step and the error, as the member
+  who chose it; its own failures start nothing. `PUT /workflows/{id}/settings` is
+  new, workflows gain `settings`, and runs can be `triggered_by`
+  `workflow_failed` (#1944, #1945).
+- **A run history you can debug.** Runs filter by status, draft or published
+  version and what started them, a page at a time on the server, and a new
+  **Runs** page lists every workflow's. A run's page shows each step's Input and
+  Output from that run. **Retry from failed step** starts a run in which every
+  step that succeeded hands on its earlier output, so no write is made twice, and
+  **Debug in editor** pins a run's step data onto the draft. `POST
+  /workflow-runs/{id}/retry` is new, and runs gain `retry_of_run_id` (#1943).
+- **Template fields that mix text with values from earlier steps.** A text field's
+  **Template** mode takes text such as `New lead: {{Form.payload.name}}`, with
+  **Insert a value…**, drops from the Input pane and a preview from the last test
+  run. Each placeholder is checked at publish like a binding and rendered when the
+  step runs, JSON for a list or an object; one with nothing behind it fails the
+  step with `INVALID_BINDING` naming it. Bindings gain a `template` source (#1938).
+- **Map a workflow step's field by dragging it.** A column or a field of the step
+  dialog's Input pane dropped on a setting binds it to that field, and one that
+  does not fit is refused with the reason. Inside a free-form value the type the
+  run showed decides, and the source picker now offers free-form values to any
+  setting, with the path typed beneath (#1937).
+- **See a workflow step's data, pin it and test the step alone.** The step dialog
+  shows what the step read and what it handed on in the last test run, as a table,
+  as JSON or as its fields with their types. Pinned data, typed in or kept from a
+  run, stands in for the step in test runs and is stripped at publish. **Test step**
+  runs only the step and what leads to it, the steps with known output handing it on
+  instead of running, and asks first for a step that writes. A node run read gains
+  `output`, `NodeInstance` gains `pinned_output`, and `POST /workflow-runs` takes
+  `step` (#1934, #1935, #1936).
+- **Notes on the workflow canvas, and a canvas that is quicker to work.** A note
+  of markdown sits beside the steps, moved and resized freely and kept by versions
+  and copies. A selected connection's **+** puts a step into its middle, wired on
+  both sides; **Tidy up** arranges the steps left to right in one undoable edit; a
+  minimap, **Tab** for the step picker and a **?** shortcut sheet, none of which
+  fire while typing. The graph gains `notes` (#1940, #1941).
+- **Name a workflow step, note it and switch it off.** A step's own name shows on
+  its card and in every binding list and problem, and must be unique in the graph; a
+  note is marked on the card; a switched-off step stays on the canvas, dimmed, and is
+  skipped when a run reaches it. Publishing refuses switching off the trigger or a
+  deciding step, and reading a step that is off. `NodeInstance` gains `label`,
+  `notes` and `disabled` (#1939).
+- **Find, rename, switch and retire workflows from the console.** The list
+  searches by name, description and tag, filters by tag and sorts by last edit,
+  name or age, all kept in the address. The editor renames a workflow in place and
+  tags it, and a published one with a webhook, schedule or table trigger gets an
+  **Active** switch, shown on its card too. A card's menu archives (pausing the
+  trigger), restores and deletes. New `PATCH /workflows/{id}`,
+  `PUT .../active`, `POST .../archive`, `POST .../unarchive` and
+  `DELETE /workflows/{id}`; a workflow now has `tags` (#1942, #1956).
+- **Import a CSV file into a table, and export one.** **Import** maps the file's
+  columns to the table's, reads each value in its column's type and sends the rows
+  200 at a time to a new `POST /tables/{id}/records/batch`, listing every row that
+  failed with its line and reason. **Export** saves the records on screen, in their
+  order and columns, from a new streaming `POST /tables/{id}/records/export` (#1961).
+- **A table grid that scrolls through thousands of records, and says how many.**
+  The grid loads a hundred records at a time as it scrolls and draws only the rows
+  in view; the count of matching records shows beside the view tabs, from a new
+  `POST /tables/{id}/records/count` that counts up to 100,000 (#1964).
+- **Manage a table's columns from its grid.** Each header opens a menu to sort by
+  the column, hide it in the view, rename it or archive it, and a **+** after the
+  last column adds one; a rename, an archive and an add each write the schema
+  version the Columns dialog would (#1963).
+- **Search and filter a table's records, and keep it in a view.** A search box
+  finds text in any text column or select option label, **Filter** builds
+  conditions from the operators each column type supports, and **Save view** keeps
+  both, with the sort, in the view on screen. `RecordQuery` and a view's `config`
+  take the same `search` (#1962).
+- **Add, edit and delete table records in the console.** **Add record** asks for
+  each live column in its own type and marks the ones that need a value; a cell
+  edits in place on a click, saving on Enter and leaving on Escape; ticked rows
+  delete together, each against its own revision, and the record panel deletes one.
+  A refused edit opens the record with the value kept beside a retry (#1958, #1959,
+  #1960).
+- **Run a workflow from its editor, and watch it happen.** **Run** in the editor's
+  header, or `Ctrl`/`Cmd` + `Enter`, tests the draft at once - asking first for
+  the fields its trigger declares - and the run shows on the canvas as it goes:
+  each step's status, tries and error, with a bar that opens the run's page. The
+  trigger a person starts is now **Manual**, separate from **API request** (the
+  former Manual or API, whose graphs keep starting from the API); both take
+  typed input fields (#1932, #1933).
+- **A workflow step that asks a person.** **Ask for approval** stops a run
+  until someone approves or rejects what it is about to do, then goes on by the
+  answer. The request shows its title and the details bound to it in the
+  Approvals tab, above the tool calls; named approvers are notified and are the
+  only ones who may decide it. A decision is final and audited, a request can
+  expire after a set time, and cancelling the run cancels it.
+- **A JavaScript step.** **JavaScript in a sandbox** runs a script on Node as
+  the same durable job the Python sandbox step runs, on the organization's
+  sandbox host: it reads the bound values as `args`, reads and writes the run's
+  files, may `await`, and what it returns is the step's result.
+- **Typed input for a workflow started by hand.** The **Manual or API** trigger
+  can declare **Input fields** - text, number, whole number, yes or no, date or
+  choice, each required or not. **Start a run** then asks for each by name in a
+  form, a run whose input does not fit is refused before it starts with the
+  fields that are wrong, and a binding to one is type-checked at publish.
+- **Workflow steps that read what a table is.** **List tables**, **Describe a
+  table**, **Table exists?** and **Record exists?** let a workflow find a table,
+  read its columns, create one only the first time it runs, or branch on whether
+  a matching record is already there. The two questions leave by `yes` or `no`.
+- **Workflow steps that talk in Slack, Mattermost and Telegram.** **Send a
+  message**, **Read messages**, **List people** and **Find channels** act as one
+  of the organization's channel bots, through the adapter its replies use, so a
+  workflow can post an alert, read a thread, look up who is in a channel or find
+  one by name. Acting as a bot needs `channels:manage`, checked at publish and on
+  every run, and the editor picks the bot from the organization's own.
+- **Workflow steps that decide with TypeSafe's Jev.** **Yes or no**, **Choose
+  one** (of up to 255 options) and **Score** (against a rubric of 2 to 10
+  described levels) ask Jev a typed question about a bound text with a
+  TypeSafe key from the vault, and answer in one request with a confidence.
+  The answer can only be one the step allows, and below the step's confidence
+  floor it leaves by an **Unsure** port instead, so a doubtful case goes where
+  the workflow says. A merge may rejoin a decision's branches.
+- **An agent can answer with data rather than prose.** The Builder's **Answer
+  format** turns an agent's answer into an object of named, typed fields - or
+  any JSON Schema, edited as JSON - stored as `output_schema` in the spec. The
+  model is asked for that shape through Pydantic AI's structured output, and an
+  answer that breaks the schema is sent back to be fixed before the run ends.
+  The run API returns the object as `structured`, the chat and the channels
+  show it as a JSON block, and an `agent.run` step hands it on or asks for a
+  shape of its own; a run parked on an approval resumes asking for the same
+  shape.
+- **Building a workflow is a run of clicks.** Clicking a step in the palette
+  adds it after the selected step, or at the end of the flow in view, wired in
+  when the ports fit and clear of every other step; a starting step goes before
+  the current start and becomes it. A **+** beside each output searches the
+  steps that can come next and adds one there. The new step is selected and
+  scrolled into view, a trackpad or wheel pans the canvas while a pinch zooms,
+  and steps added inside a loop now show in its body at once instead of only
+  after a reload.
+- **A table can run a workflow for every record added to it.** A workflow
+  that starts from a **New table record** trigger runs, once published, for
+  every record added to its table that matches the trigger's filters as it was
+  created - in the console, over the API, by an agent or by another workflow -
+  as the member who published it, with the whole record as its input. Only
+  records added while it is on start it. Each record is decided once per
+  trigger, and the table's **Triggers** pauses each one and shows every
+  decision without the record's values. A chain of runs writing into each
+  other's tables stops at the first trigger it already passed, and a column a
+  trigger filters on cannot be archived out from under it (#1785).
+- **Workflows can fetch, read, convert and hand on files, and run Python.** A
+  file a step makes is stored as a file of its run and passed on as a `FileRef`,
+  and a step reads one only if its own run made it or was started with it, so an
+  id alone grants nothing. `http.download` and `http.upload` stream files over
+  HTTP under the same SSRF and credential rules as `http.request`, with the type
+  read from the bytes. `file.read`, `file.write`, `text.extract` (which names the
+  pages of a scan rather than returning them empty) and four `convert.*` steps
+  handle text, JSON, CSV, PDF and DOCX. `image.transform` crops, resizes and
+  converts images within the pixel limit, with their metadata removed.
+  `code.python.simple` runs a script in the Monty sandbox, and
+  `code.python.sandbox` runs full Python with files as a durable job on the
+  organization's sandbox host, reconnecting instead of restarting. `agent.run`
+  shows bound images to the agent as pictures, and a run's page lists its files
+  for download (#1791).
+- **A workflow starts from a trigger on its canvas, and can answer in the
+  chat.** The palette's **Triggers** - **Manual or API**, **Chat message**,
+  **Webhook**, **Schedule** and **New table record** - are the first node of a
+  workflow, one per workflow, and **New workflow** starts from the one picked.
+  Publishing switches the trigger on and runs it as the publisher; the next
+  publish takes it over. A **webhook** gets an address and a signing secret,
+  shown once at that publish, and names each delivery with an `X-Delivery-Id`
+  so a retry never runs it twice; a **schedule** runs every so often, daily at
+  a time or on a cron expression, in UTC. The editor's **Trigger** sheet shows
+  the live one, pauses it and rotates a secret. `/api/v1/ws/workflow-runs`
+  starts or follows a run, resuming from a cursor after a dropped connection.
+  The chat's picker lists the workflows that start from a chat message: a
+  message starts a run, and its status card and answer land in the thread, even
+  if the chat was closed meanwhile (#1792).
+- **The workflow editor, its runs and the tables pages look and work like the
+  rest of the console.** The editor fills the window: a palette grouped the way
+  a workflow reads, with loop steps offered only inside a loop and the debug
+  nodes gone; nodes drawn as cards that say what each step is set to do and
+  label every port (**true**/**false**, **Each item**/**Done**, a red **Error**);
+  and a properties panel with a policy section for retries, a time limit and
+  error routing, a real table picker, a path box for values with no fixed shape
+  and a JSON editor for free-form literals. History moved into a sheet. A
+  workflow's **Runs** page lists its runs and starts one by hand, and a run shows
+  its figures, its error, its output, every step it took and its graph coloured
+  by what each step did, loop iterations included - read from two new routes,
+  `GET /workflow-runs/{id}/nodes` and `GET /workflow-runs/{id}/graph`. Workflows
+  and tables list as cards, and a table's select values show as chips. The
+  editor, runs and tables are on the [screens page](docs/screens.md) in both
+  themes (#1790).
+- **Workflows can loop over a list and handle their own errors.**
+  `control.foreach` runs its body once per item, in order and one at a time,
+  from `loop.item` to `loop.yield`, and hands on every result in input order.
+  The list is frozen when the loop starts, each iteration runs in its own
+  scope, and the next one is scheduled in the transaction that ends the last,
+  so a restart resumes the right iteration without repeating a confirmed
+  write; an approval inside an iteration resumes that iteration.
+  `item_error_policy` chooses between stopping at the first failed item and
+  collecting its error in place. Every node takes a `policy` with a timeout, a
+  retry schedule and `on_error: route`, which sends a failure out of the
+  node's `error` port to `error.handle`, whose branches match on error code.
+  `error.raise` fails a branch with an error the author defines. Revoked
+  access, a spent budget, a cancelled run and an uncertain effect are never
+  routed. Loops are bounded in items, stored size, nesting and total node runs
+  (`WORKFLOW_FOREACH_MAX_ITEMS`, `WORKFLOW_FOREACH_MAX_MANIFEST_BYTES`,
+  `WORKFLOW_FOREACH_MAX_DEPTH`, `WORKFLOW_RUN_MAX_NODE_RUNS`). Cancelling a run
+  now ends every node still live in it (#1790).
+- **Agents and workflows can read and write Virtual Tables.** A new **Tables**
+  capability gives an agent eleven tools over the tables its binding grants,
+  with read, add, update and delete chosen per table in the Builder, and
+  `create_table` only when **Allow create** is on and the member holds
+  `tables:create`. A table or operation outside the grant is refused before
+  anything is read, and each call runs as the member's current membership.
+  Seven workflow nodes, `table.record.create`, `.upsert`, `.update`,
+  `.delete`, `.get`, `.query` and `table.create`, write through the same
+  service. A retried step or tool call replays its first write, and a table
+  or pinned column a live workflow uses cannot be archived. Creating a table
+  is now idempotent under an operation key; migration
+  `0188_table_create_receipts.py` (#1784).
+- **Workflows can do real work: agents, knowledge, data, branches, HTTP and
+  notifications.** Nine nodes join the palette. `core.input` and `core.output`
+  carry a run's `input` and `output` (`POST /workflow-runs` takes `input`, and
+  the run returns what the graph answered). `agent.run` asks a published agent
+  at the exact version the step pins, parks on its approvals and resumes the
+  same run, and can require a JSON answer that matches a schema before
+  anything downstream runs. `knowledge.search` returns typed sources an agent
+  can cite. `data.map` and `logic.if` evaluate JMESPath limited to pure
+  functions, so a graph never executes code. `logic.if` sends a run down one
+  branch and skips the other, node by node, to the `logic.merge` that rejoins
+  them. `http.request` calls APIs through the SSRF-pinned client, and
+  `notification.send` notifies members who can see the workflow. Every node
+  is in the new [node reference](docs/reference/workflow-nodes.md).
+  Migrations `0186_workflow_run_io.py` and `0187_workflow_notification.py`
+  (#1789).
+- **Restore a published workflow version to the draft.** **Restore to draft** in
+  a version's preview replaces the draft with that version's graph, after a
+  confirmation that unpublished draft changes are discarded. The version is not
+  changed and none is created until the draft is published. The restore is
+  guarded by `expected_revision` like a draft save, so it answers a conflict
+  rather than discarding someone else's edit, stops a queued autosave from
+  writing the old graph back, is refused for an archived workflow and without
+  `workflows:edit`, and is audited as `workflow.version_restored`.
+  `POST /api/v1/workflows/{id}/versions/{version_id}/restore` (#1915).
+- **Workflow runs execute durably.** `POST /workflow-runs` starts a run of a
+  workflow's published version, or of its draft in `test` mode, and the nodes
+  run on Prefect workers one attempt at a time: each attempt commits `in_flight`
+  before its handler runs, its result commits together with the next node's
+  dispatch, a worker that dies mid-call is recovered without assuming either
+  outcome, and a node parked on an approval is woken when the approval is
+  decided or expires. Nodes report cost into the run, and a run whose version
+  carries a budget cap ends once it is spent - though publishing does not set a
+  version's cap yet, so no run has one today. A run can carry a deadline, is
+  rate-limited on start, and re-checks the person it acts as at every node.
+  Runs, their events and cancel have routes of their own; see
+  [the HTTP API](docs/api.md#running-a-workflow) and
+  [Permissions](docs/permissions.md#workflow-runs). Migration
+  `0184_workflow_runs.py`. (#1788)
+- **Virtual Tables: typed records behind one service and an HTTP API.** A table is
+  metadata plus JSONB, never a physical SQL table, with immutable schema versions,
+  stable table, column and option ids, and nine column types (text, long text,
+  number, integer, boolean, date, datetime, single and multi select). Records carry
+  a revision: an update or delete must send `expected_revision` and a stale one is
+  a typed `REVISION_CONFLICT`. Upsert by external id is atomic, so concurrent
+  upserts create one record. Every record write commits its history row, its
+  created-event outbox row and its idempotency receipt with the change, and an
+  `Idempotency-Key` header makes a retry return the first answer. Access is
+  visibility plus grants like context files, with new `tables:view`, `tables:edit`
+  and `tables:create` permissions, and every route answers refusals in one typed
+  error envelope. Migration `0179_virtual_tables.py`; see
+  [Virtual Tables](docs/virtual-tables.md). (#1782)
+- **Virtual Tables in the console: a catalog, table/kanban/list views, and saved
+  views.** `/tables` lists, searches and creates tables. A table's page edits its
+  columns and its sharing, and shows its records as a table, a kanban board
+  grouped by a single-select column, or a list. One record sheet edits a record
+  field by field. A write refused for a stale revision keeps the typed value
+  beside a "Reload and reapply" action, and writes to one record are sent one at
+  a time, each against the revision the last one returned. Saved views keep a
+  filter, sort and grouping per kind, private or shared, under
+  `/tables/{id}/views` (paged, per kind). Archiving a column is refused only by a
+  view the caller can both see and change; any other view drops the column when
+  read instead. Also a Tables dashboard card, a sidebar entry and onboarding stops.
+  Migration `0182_table_views.py`; see
+  [saved views](docs/virtual-tables.md#saved-views). (#1783)
+- **Outlook mail can start an agent** (#1984). A Microsoft 365 mailbox connects
+  as a trigger the way Gmail does - an app registration stored in Vault as a
+  Microsoft OAuth app, a consent screen, nothing to paste - and is read once a
+  minute. A trigger watches a folder (the inbox, a folder a mail rule files into,
+  or a shared mailbox) and narrows by sender, subject, attachments, importance or
+  category; the run gets the message as text with its attachments listed. A
+  message read twice fires once, and Outlook variants of the email templates come
+  with it.
+- **More of GitHub can start an agent.** Beside a new issue, a GitHub trigger now
+  fires on a pull request opened, ready or awaiting review, a comment that
+  mentions a phrase such as `@agent`, a failed workflow run, a published release
+  or a push, each a preset on both GitHub portals and narrowed by branch where it
+  applies. Issues, pull requests and comments fire only for the repository's own
+  members by default (`authors: anyone` lets everybody through), and never for a
+  bot or the account the trigger was connected with.
+- **HubSpot and Zendesk webhooks fire agents.** Two new signed sources, each
+  verified by its provider's own scheme against the secret the provider issues:
+  HubSpot's v3 signature (and its v1 one for CRM subscriptions), narrowed by
+  event type and property, and Zendesk's, narrowed by event type.
+- **Files and calendars start agents.** Four new portals, each its own consent
+  on the organization's existing Google or Microsoft app: Google Drive and
+  OneDrive & SharePoint fire on new or changed files (a file being edited at most
+  once in half an hour, the account's own edits never), and Google Calendar and
+  Outlook Calendar fire a set time before a meeting with somebody else on it -
+  15 minutes by default, 5 to 120, optionally only with outsiders - so an agent
+  can prepare a brief.
+- **A schedule has a time zone.** A schedule set to a time of day is read in an
+  IANA zone and keeps its hour through daylight saving; a new one takes the
+  maker's account zone. The form picks it beside the time, the cadence line and
+  the dashboard's next fire name it, and the assistant's routine tools take it.
+  A schedule saved before is still read in UTC.
+- **A generic webhook may sign the time.** With `X-Signature-Timestamp` the
+  signature covers `{timestamp}.{body}` and a delivery more than five minutes
+  off is refused, so a captured one cannot be replayed.
+- **Workflow steps run in parallel branches.** Any step may send one port to several
+  steps, and those steps run at once; the new **Split** step (`logic.split`) names
+  its branches and takes them all. A step with several incoming connections runs
+  once every step leading to it has settled, if one connection is live, with no
+  Merge. **Merge** gains **Wait for**: `wait_for: one` (the branch that ran, the
+  default, so a stored empty config is unchanged) or `all`, which hands each branch
+  on under `branches` by its `branch_keys` name. A branch that fails with no error
+  route fails the run and withdraws its siblings' approvals, timers and parked
+  agent runs. A step that finishes after that is recorded as finished after the run
+  stopped, and a retry reuses it. There is no per-run cap: one run's branches may
+  use every workflow slot of a worker (`WORKER_WORKFLOW_CONCURRENCY`). (#1800)
+  [Workflows](docs/workflows.md#parallel-branches) has the rules.
+- **A step that needs attention can be resolved on its run.** `POST
+  /workflow-runs/{id}/steps/{node_run_id}/rerun` takes `run_again`,
+  `use_error_route`, `fail_run` or `use_late_result`; the run page offers it as
+  **Resolve** to the person who started the run or an editor, and the choice is
+  audited. Treating a step as failed ends it with `STEP_MARKED_FAILED`. Migration
+  `0241_attempt_reservations.py` adds `node_attempts.reserved_usd` and `late_result`. (#1800)
+- **Parallel steps share the run's budget.** A step that spends is handed what the cap
+  leaves after spend and what other steps in flight and called workflows hold, never
+  more than its own cap; a step whose siblings hold the rest waits and asks again
+  with a growing delay. (#1800)
+
+### Changed
+
+- **Document properties use table columns.** Remove the Markdown YAML-property editor and stop generating frontmatter in the notebook template. Keep automatic record metadata and preserve existing imported headers during body edits.
+
+### Fixed
+
+- Workers keep the internal AgenticOS MCP server available until agent and workflow jobs finish, so platform-bound agents can run outside the web API process.
+
+- Workflow agent steps retain private conversation history and sandbox workspaces, including isolated test chats, without duplicating intermediate responses in the user chat.
+- Bound public form proxy reads, release abandoned image uploads, retain archived agent identities and enforce principal and notification-channel limits.
+
+- Workflow prompt visibility, agent picker width, catalog version pins, model creation permissions, notification channel labels and shared file inputs. New Run an agent steps use catalog agents; existing inline configurations remain executable.
+
+- **Architect workflow construction.** Refreshing shipped Architects binds workflow and table skills, runtime guidance removes the obsolete workflow denial, required columns work when creating empty tables, schedule tests prepare their trigger input, planning returns step IDs immediately, and expected MCP refusals retain safe field errors in chat history.
+
+- **Stable record navigation.** Selecting rows shows a floating action bar without shifting data. The record opener stays pinned at the start of wide tables. Every record panel shows creation and update times and authors, while full-page documents start in Write mode.
+
+- **Run and document hierarchy.** Run statistics share aligned rows, with the start time beside the status. Watched runs trace moving pulses between active steps and highlight their borders. Record properties stay together above Markdown documents, even when new columns were appended later.
+
+- **Canvas selection and shortcuts.** Left drag selects objects; Shift + left drag pans. Select all works within the current scope, and notes travel with copied, cut and pasted steps.
+
+- **Workspace-aligned scrolling and fields.** Kanban fills the available workspace so horizontal scrolling stays at its bottom. JSON parameter editors place Data actions beside their labels, keeping Values, Sources and Artifacts full width.
+
+- **Quieter canvas notes.** A single hover/focus menu groups editing, expanded view, color and size. Subtle rounded edges and one corner resize grip replace the full selection frame and scattered buttons.
+
+- **Readable workflow overview.** The minimap draws connected miniature cards with family accents, rounded starts, selection outlines and a clear viewport boundary in both themes. Pan and zoom remain available.
+
+- **MCP service logos in workflows.** The step picker, canvas and editor share the MCP catalog icon resolver, including baked logos and custom deployment icons. Unknown services use their own name monogram.
+
+- Give Kanban lanes room below the toolbar and draw the drop highlight inside the lane so its top edge stays visible while dragging.
+
+- Keep workflow step titles, rename fields and descriptions aligned without clipped focus borders or narrow placeholder-only name inputs.
+
+- Align table-card footers, put quick add immediately after table rows and pin run-history pagination to the panel bottom. Keep run history and detail clear of floating controls using the standard page clearance. Remove the table workspace expansion toggle, simplify run details and give pasted JSON a dedicated import editor.
+
+- Workflow run history fills the available workspace by default, without a separate expansion toggle.
+
+- **Calmer workflow setup and roomier table forms.** Incomplete steps show one
+  expandable setup checklist; error styling appears after a test or publish,
+  while field messages still appear after leaving an empty required field.
+  Workflow parameters have more space and come first on small screens. Accounts,
+  API keys and missing trigger OAuth credentials can be added above the workflow,
+  using the existing account and vault forms. New tables lead with name and
+  columns, with description and visibility under More options. Table creation,
+  schema editing, records and CSV mapping keep their actions visible while their
+  fields scroll, with room for focus rings and stacked controls on narrow screens.
+  Table, Kanban and List use the console’s shared tabs without clipped labels.
+
+- Align the Workflows and Tables catalogs with the console's shared grid layout,
+  neutral surfaces and responsive controls. Keep public page data settings reachable
+  from the organization's Budget and approvals tab, including for members whose
+  only settings grant is `org:settings`.
+- Offer Push preferences for workflow notifications, log alerts, page ownership
+  changes and page requests, alongside their existing in-app and email controls.
+
+## [1.33.2] - 2026-11-01
+
+### Security
+
+- Update the desktop app's `tauri-plugin-updater` to 2.14.1, which moves its `zip` dependency from 4.6.1 to 9.2.0 and closes three Dependabot alerts (one critical, one high, one medium). Two low and medium alerts on the mobile app's `rand` 0.7 and `glib` 0.18 remain: both are transitive through Tauri, have no compatible fix yet, and neither is compiled into the iOS or Android builds that ship.
+
+## [1.33.1] - 2026-11-01
+
+### Fixed
+
+- Publish ready-to-install desktop packages without requiring Apple Developer credentials. macOS packages use ad-hoc signing by default; first launch requires approval in Privacy & Security. Developer ID signing and notarization remain opt-in, and updater signatures stay mandatory.
+
+## [1.33.0] - 2026-10-31
+
+### Added
+
+- Optional host-owned Compose updater: administrators can prepare a published release, inspect backup and readiness progress, update immediately or schedule within seven days. The helper drains work, takes a final PostgreSQL/media/configuration backup, applies migrations and checks readiness before reopening admission. Single-host Linux/systemd deployments only; larger deployments can link their existing update pipeline.
+
+- Deployment diagnostics with an hourly signed heartbeat, installation-scoped
+  user pseudonyms, foreground web/desktop/mobile presence and a read-only admin
+  status card. Reporting defaults to enabled even when an older `.env` omits
+  `DIAGNOSTICS_ENABLED`; set it to `false` to opt out. Reporting uses the Vstorm collector by default; operators can override its origins. No
+  prompts, conversations, files, keys, account names or emails are sent.
+
+### Fixed
+
+- Opening an action menu on a touchscreen no longer selects an item underneath
+  the opening gesture. Mouse and keyboard behavior stay unchanged.
+
+## [1.32.0] - 2026-10-31
+
+### Added
+
+- `refresh-assistant [--org <id>] [--dry-run] [--replace-edited]` reports and
+  refreshes installed Architect instructions and its AgenticOS guide. New
+  instructions publish as a new agent version, preserving configuration and
+  history. Organization edits are skipped unless explicitly replaced; unrelated
+  pending draft changes block the refresh. After upgrading, run the command to
+  adopt updated templates in existing organizations (#2520).
+
+### Fixed
+
+- Update the locked pyasn1 parser to 0.6.5 to fix four ASN.1 decoding denial-of-service advisories.
+
+- Refresh recognizes the stock desktop-era Architect from 1.31.x while preserving organization edits.
+
+- Channel messages store only the sender's text. Author context is assembled
+  from erasable channel identities at dispatch, so the console,
+  copy, pin and shortcut actions do not expose JSON envelopes or platform IDs.
+  Account deletion removes those author labels from future model history while
+  preserving shared message bodies. Manifests omit request-only channel parts;
+  paused runs retain opaque author references instead of platform labels.
+- Replay saved channel user turns through the current agent's input guardrails before model dispatch, preserving stored messages while withholding blocked values and redacting protected text.
+- Editable channel reference values follow the configured input guardrails.
+  Protected values are redacted or withheld without treating fixed metadata
+  syntax or platform identifiers as the user's question.
+
+- Rolling back the channel prompt migration restores the preceding release's
+  defaults while retaining custom additions, including bindings created after
+  upgrade.
+- Bulk `refresh-assistant` runs skip organizations without an owner and continue
+  refreshing the remaining organizations. A targeted run still fails explicitly.
+
+- Explicit `@slug` channel invocations retain saved conversation history, just
+  like default bot replies, so follow-up requests keep earlier results and App
+  references after the initial thread backfill.
+- Channel replies retain each message's author, answer the current request without
+  reviving unrelated tasks, and explain how to revise a published App when its
+  original sandbox is unavailable. Channel defaults now come from the current deployment; a one-time
+  migration removes recognized stored copies while preserving custom additions.
+  Author metadata stays outside the actual prompt screened by input guardrails.
+- Read-only MCP tools no longer require approval solely because a linked
+  member's run is in Mattermost, Slack, Teams or Telegram. Unlinked senders still
+  require approval for every MCP call. Writes and tools without a read-only hint
+  still require approval; an explicit all-tools policy continues to include reads.
+
+## [1.31.3] - 2026-10-30
+
+### Fixed
+
+- A long document indexes against a local Ollama server. Its chunks now go to
+  `/embeddings` in requests of at most 64 instead of one oversized request.
+
+## [1.31.2] - 2026-10-30
+
+### Fixed
+
+- Give frontend CI 45 minutes to complete coverage and its production build; align the operational timeout table in all four documentation languages with the current jobs.
+
+## [1.31.1] - 2026-10-30
+
+### Fixed
+
+- Keep frontend test files out of the production Docker build context so desktop UI regression imports do not break the standalone console image. CI still checks and runs those tests in the full repository.
+- Stop release preparation immediately when either updater signing key is missing.
+
+## [1.31.0] - 2026-10-30
+
+### Fixed
+
+- Refuse oversized local writes before encoding, preserve pending native sign-ins across unrelated deep links, hide mobile task previews before background snapshots and serialize desktop updater-manifest publishing. Clear native notification bindings on automatic session loss as well as explicit sign-out.
+
+- Revoke desktop local grants and screen control when changing connections or accounts; preview pairing before consuming codes, and stop command process trees on cancellation. Clear native phone notification previews on sign-out.
+
+- Route local calls to one connection, select devices by connection recency, reject oversized local file reads, isolate folder commands from unrelated personal files and clear mobile notification/shortcut remnants when switching accounts or servers.
+
+- Preserve accepted push deliveries when fan-out times out, bound APNs previews by encoded payload size, retain device registrations on configuration mismatches and include the iOS push entitlement in generated builds.
+
+- Pin signed app release builds to the verified commit SHA instead of re-resolving a mutable release tag.
+
+- Chain the desktop/mobile migrations after the latest channel-history migration so fresh installs and upgrades resolve a single Alembic head.
+
+- Keep mobile CI builds active while requiring explicit opt-in for mobile release publishing; document self-build and self-installation until public distribution is available.
+
+- Remember native browser consent across tabs in the same conversation and domain policy until the person closes its last tab or disconnects the device.
+- Use explicit environment cards for Computer use and Web browser, with E2B’s official mark and clearer sandbox host configuration. Existing automatic computer configurations remain readable.
+
+- Simplify Quick Ask to one new-chat action and compact inline history; show sidebar files as full-width rows and offer a dismissible desktop download reminder in browser navigation.
+
+### Security
+
+- Refuse cross-site pairing confirmation and require in-app review before an activity link can lead to an approval decision. Native presence alone never approves a tool.
+
+- Bind native OAuth code redemption to an app-held S256 verifier so intercepting a custom-scheme callback cannot redeem its session.
+
+- Require explicit account confirmation before a scanned pairing link replaces a device session. Previewing the account neither redeems nor extends the code.
+- Anchor local file operations to an approved directory handle so concurrent symlink substitutions cannot redirect writes or previews outside the grant.
+
+### Added
+
+- Branded desktop installers: a guided macOS disk image and localized Windows setup for the current user. The macOS app bundles small and medium launcher widgets for Quick Ask, Chat, Inbox and Activity.
+
+- Add direct dictation and live agent voice calls to Quick Ask, with shared captions, approvals and conversation history.
+
+- Give Quick Ask independent conversation tabs, searchable recent chats with agent avatars and panel pinning.
+
+- Show installed-version GitHub release notes after login, once per account on a device.
+- Remember chat model, approval and local-tool preferences per account and organization; keep whole-computer consent per conversation.
+- Highlight the sidebar console version with an update dot and release details when a newer stable AgenticOS version is available.
+
+- Let desktop chats opt into local Computer use independently of agent capabilities and file access.
+
+- Quick Ask accepts picked, pasted and dropped attachments, supports file-only
+  messages and can stay pinned above other applications.
+
+- Mobile connection readiness for existing accounts, configurable biometric app
+  lock, named saved servers with session-preserving switching, and server-side
+  push preview privacy, conversation muting and expiring active-chat
+  suppression.
+
+- Multiple named local desktop instances with separate Compose projects, ports,
+  volumes, networks, deployment keys and login cookies; interrupted setup can
+  resume without replacing its data. The local list starts and connects instances,
+  while menu controls target the connected managed installation.
+- Docker Desktop installer downloads with progress on macOS, an explicit launch
+  action and detection of per-user Docker CLI installations. Setup focus is neutral
+  and choice buttons no longer receive an automatic focus outline.
+
+- Centered desktop connection setup with a persistent native glass surface,
+  local-computer status card and immediate feedback while connecting or opening
+  the workspace. Readiness preloads the dashboard and respects reduced motion.
+
+- Desktop defaults to the system theme and Glass look when no preference has
+  been saved; explicit user choices take precedence.
+
+- Desktop connection readiness for new and existing accounts, with explicit macOS
+  permission requests, contextual repair links and a persistent status panel.
+  Notification preferences include hidden previews, per-conversation mute and
+  suppression for the focused conversation. A native Activity & Access menu opens
+  active work, stops app-owned conversations and revokes local access grants.
+- Quick Ask resource mentions with keyboard selection and removal tracking, a
+  visible new-chat action that resets the conversation, and a bottom composer
+  with send, dismiss and console controls.
+
+- **Computer** in the Builder’s workspace settings selects a paired desktop without
+  embedding personal paths or permissions in the spec. Project creation offers a
+  personal **Computer** folder alongside shared workspace choices.
+
+- Desktop chat can opt into local browser and file tools without changing the agent
+  in the Builder. Whole-computer access asks once in a native dialog per conversation,
+  persists across restarts, and can be revoked in chat settings. It permits paths
+  outside a selected folder and does not automatically crawl or collect home files.
+
+- A `launch` action in `computer_act` opens an application by name instead of
+  hunting for its icon, and a new `computer_apps` tool lists the names it takes.
+  A launch matches a name or id exactly and returns once the application's
+  window is up, or fails if none comes within ten seconds. It works on Linux
+  desktops: a sandbox's, E2B's and the computerd container, which opens it as
+  the desktop's account, never the one holding the token. Through the desktop
+  app the agent is told to use the computer's own launcher, and through another
+  computerd to fall back to it when `computer_apps` is refused. The
+  agent is also told to wait after a shortcut that opens a window before typing
+  into it.
+
+- Browser connection cards with icons, independent per-chat desktop browser
+  overrides, an automatically opened browser side panel, and tools for up to
+  eight tabs. Visited-page cards retain the site icon, domain and article title
+  in conversation history.
+  Remote private sessions retain a final preview and encrypted reload checkpoints
+  for one hour; browser processes close after each run.
+
+- Native desktop browser panels with conversation-scoped private tabs, exclusive
+  run leases and local takeover. Chromium remains available for vision and
+  language/time-zone emulation.
+
+- **Local project folders in the desktop app.** Connect an approved folder when
+  creating a project or from its Files tab. The connection stays private to the
+  current account and organization on that computer; disconnecting it leaves
+  other chats and native folder grants intact. Local files can be previewed in
+  place, and new project chats inherit the folder and access mode with a visible
+  composer shortcut. Each chat can override its location; a regular new chat
+  clears the previous project and folder.
+
+- **Local services and browser in the desktop app.** Approve loopback model and
+  MCP services, choose them per run and browse in a visible temporary Chromium
+  profile on the paired computer. Native folder grants bound local file previews.
+- **Native distribution workflows.** Cross-platform app checks, signed desktop
+  updater assets, Android APK signing and optional TestFlight upload accompany
+  existing stable platform releases. Signing accounts are configured through CI.
+
+- **An agent can use a computer.** The `computer_use` capability gives an
+  agent a whole desktop rather than a web page: `computer_screenshot` looks
+  and `computer_act` clicks, types, scrolls and drags; an agent's owner can
+  hold the actions alone for approval with `tool_approval`. The desktop is
+  either inside the agent's own sandbox, on the new `desktop` runtime (XFCE
+  and Firefox), so the shell, the files and the screen are one machine and
+  computer use needs no address or key of its own; or a `computerd` daemon
+  the operator runs on their own Linux desktop, a Mac's own screen or a
+  container (`deploy/computer/`, where the daemon and its token run as an
+  account the desktop cannot read), on a host that
+  `COMPUTER_DAEMON_ALLOWED_HOSTS` allows, reached with the daemon's token
+  from the organization's vault. The allowlist is checked at publish and
+  again whenever a run opens the daemon. Publish refuses a sandbox desktop on
+  an agent, an inline specialist or a pinned delegate without a sandbox
+  connection to run it in, or whose sandbox is on any runtime but `desktop`
+  or on Daytona. An approved
+  batch runs only on a screen still the shape it was approved against, and
+  `max_actions` counts across approvals; each run, and each delegation
+  to the same delegate, starts a session of its own, and a batch is refused
+  after a screenshot fails until one succeeds. The model's screenshots are not
+  kept: a parked run, its manifest and a compacted conversation hold a
+  sentence in their place, and the file each is taken through is removed from
+  the sandbox or the daemon's host once read. The chat draws the desktop live in a window under
+  the message, and `computer_save_screenshot` keeps a full-resolution
+  screenshot in the chat and the workspace, for a user who wants to see the
+  screen or a test that needs evidence (#2094).
+- **The desktop app looks and behaves like an application** (#2305). On macOS
+  the console's sidebar holds the traffic lights and drags the window, the
+  window remembers its size and place, closing it keeps the app in the menu
+  bar, and the menu bar has File, Edit, View, Go (⌘1-⌘5, ⌘[ and ⌘]) and Window
+  menus. A tray menu does the same on Windows and Linux.
+- **Styles for the console**: Glass, Graphite, Midnight and Paper beside the
+  standard look, each with a light and a dark side, under Profile, Appearance.
+  In the desktop app on macOS and Windows, Glass is drawn over the window's own
+  translucent material; in a browser it brings its own backdrop.
+- **Blobby replaces the pixel pets**: a creature in the agents' avatar style -
+  one of a cast of six, the face of one of your agents, or a face of your own -
+  that says when an approval is waiting, something new is in your inbox or your
+  runs are in progress, and opens it on a click. Configured on a new Blobby tab
+  in Settings, shown only in the desktop app beside Desktop app (open at login,
+  keep running, the badge) and Shortcuts.
+- **A first-run onboarding for the desktop app**: AgenticOS on this computer or
+  on your organization's server. On this computer the app checks for Docker,
+  sets up the published images with the console and the API on loopback only,
+  creates your organization and owner, and then starts, stops and updates the
+  stack from the menu bar. On a server it signs you in through the browser. A
+  short welcome in the console follows: blobby, the shortcuts, notifications.
+- **Blobby can be resized**: pinch it, scroll over it with ⌘ held, pick a size
+  from its menu, or use the slider in Settings.
+- **Pair a phone by QR** (#2097): Settings → Mobile app shows a code that
+  signs the AgenticOS app in as you. It works once, for a minute, and the
+  phone's session is opened only when it scans, under the phone's own name.
+  `POST /api/v1/auth/pairing-codes` and `/pairing-codes/redeem`.
+- **The AgenticOS phone app** (#2097), first part: an iOS and Android app
+  (`mobile/`, Tauri 2) that signs in by scanning the console's QR or by typing
+  the address, keeps the console's session across restarts, and locks behind
+  Face ID, Touch ID or the fingerprint after five minutes away. The console
+  lays itself out under the phone's status bar. Push and widgets follow.
+- **Live activities in the phone app** (#2097): on Android, your own running
+  runs sit in the notification shade with a running clock, and an approval
+  waiting for you comes up with Reject and Approve on it. A tap opens the run
+  or the queue. A decision made from the lock screen asks for Face ID or the
+  fingerprint first, then goes through the same request as the queue's buttons.
+  The iOS Dynamic Island half needs the Xcode project and follows.
+- **Phone shortcuts** (#2097): long-press the AgenticOS icon on Android for
+  Voice call, Dictate, Chat and Approvals, or add the "Ask AgenticOS" tile to
+  Quick Settings. A call or dictation starts once the agent's readiness is
+  known, and only after the app's lock.
+- **Share to AgenticOS** (#2097): on Android, any app's Share sheet offers
+  AgenticOS. Text, links, photos and files (up to 20 MB each) land in a new
+  message in the chat; what cannot be read is named in a notice. Nothing is
+  attached while the app is locked.
+- **A home-screen widget** (#2097) on Android: approvals waiting for you and
+  your runs in flight, with the time they were counted; a tap opens the queue
+  or the runs. The counts are the console's, so they refresh while the app is
+  open; push will refresh them while it is closed.
+- **Quick ask** (`⌥Space`, rebindable): a floating panel to ask any agent from
+  anywhere, with the answer streamed under the question and ⌘↩ to carry the
+  conversation into the console. On macOS it is a panel like Spotlight's: it
+  takes the keyboard without bringing the app, or the console window, forward.
+- **Voice shortcuts in the desktop app** (#2305): hold `⌥⇧Space` to dictate a
+  question into quick ask with the selected agent's dictation, and let go to
+  have it written in; a voice call shortcut, off until you pick a combination,
+  brings the chat forward and calls the selected agent. The app now declares
+  its use of the microphone, which macOS requires before the console's
+  dictation or calls can record.
+- **Quick ask knows what you were looking at** (#2305, macOS): the text
+  selected in the app in front, the files selected in Finder and the
+  clipboard sit under the question as chips. The selection and the files go
+  with the question unless you take them off; the clipboard only when you put
+  it on. Reading another app's selection needs the Accessibility permission,
+  which the panel offers to open.
+- **Your devices name the app** (#2305, #2097): a session signed in through the
+  AgenticOS desktop or phone app shows as "AgenticOS for macOS 0.2.0" in Active
+  sessions, and revoking it there signs that app out at once. The console marks
+  the session you are using. `PUT /api/v1/sessions/current/app`; migration
+  `0171_session_app` adds two nullable columns to `sessions`.
+- **Device management for the apps** (#2305, #2097): an organization can set
+  the server the desktop and Android apps connect to, lock it so the person
+  cannot point the app elsewhere, and on Android force the biometric lock on
+  or off. Keys `serverUrl`, `serverLocked` and (Android) `biometricLock` =
+  `person` | `on` | `off`: a configuration profile for the domain
+  `co.vstorm.agenticos` on macOS, `%ProgramData%\AgenticOS\managed.json` on
+  Windows, `/etc/agenticos/managed.json` on Linux, managed configurations on
+  Android. A policy that cannot be read is ignored rather than locking anybody
+  out.
+- **Photos into the phone chat, like a messenger** (#2097, Android): the
+  composer's "+" opens the app's own sheet - Camera, Photos, Files and a strip
+  of your latest photos to tick - and opening the chat offers a photo taken in
+  the last few minutes ("Add the photo you just took?"). The app draws both, so
+  the server never sees the gallery: only the photos you tap reach the message.
+  Recent photos are asked for from the sheet, the first time it is opened.
+- **A cleaner chat on the phone** (#2097): no bar over the conversation - the
+  menu, the conversation list and New chat float over it as round buttons, the
+  menu marked while the inbox has something unread. The composer's row keeps
+  `+`, the agent, the microphone and Send; `+` opens a sheet with Camera,
+  Photos and Files, then voice input and commands, then the call, the model and
+  approvals and the context used. In the Android app the page now keeps clear of
+  the status bar and the gesture bar as the phone measures them.
+- **Pinned agents** (#2305, #2097): an agent's page offers Pin to Dock (Pin
+  to tray on Windows and Linux) in the desktop app - a new chat with it from
+  the Dock icon's right-click menu and the tray's "New Chat With", up to eight,
+  listed and unpinned under Settings → Desktop app - and Add to home screen in
+  the Android app, a shortcut wearing the agent's face. Both open
+  `/chat?with=<agent id>`, a new chat addressed to that agent.
+- **Drop a file on blobby or the Dock icon** (#2305) to start a chat with it:
+  up to ten files of 20 MB each are attached to a new message in the console,
+  and any that cannot be carried over are named. Blobby says it will take a
+  file dragged over it. The app registers as an alternate viewer of any file,
+  so it is never what opens a file by default.
+- **Gestures on the phone** (#2097): swipe a waiting approval right to approve
+  it or left to reject it, and pull a page down to read it again - in the phone
+  app and in AgenticOS installed to a touch screen - with a haptic tap when
+  letting go would act and when it has.
+- **The apps work without a network** (#2097). The desktop and phone apps,
+  and AgenticOS added to a home screen, keep the conversation list, the 20
+  conversations opened last and the approvals queue on the device for seven
+  days, sealed with a key no script can read out and deleted on sign-out or a
+  switch of organization; a plain browser tab keeps nothing. Without a network
+  (or a server) the console shows that copy under a banner saying when it was
+  saved, and stays signed in. A message written offline waits above the
+  composer marked "Waiting for the network", survives closing the app, and
+  sends when the connection returns; one the server refuses comes back marked
+  "Not sent" with the reason, to send again or remove. The newest 20 files of
+  each kept conversation, up to 5 MB each, are kept too, so a photo in a thread
+  shows and an attachment opens without a network. The service worker now
+  also keeps the console's code, so the Android app and an installed PWA open
+  without a network (the iOS and macOS web views do not run it).
+- **Notifications while the Android app is closed** (#2097), through ntfy
+  rather than Google's servers: Settings → Notifications in the app turns them
+  on with the ntfy app on the phone (against ntfy.sh or a company's own ntfy
+  server), sends a test, or turns them off. The server pushes to it as to a
+  browser; a push endpoint may now be any public https address, checked
+  against the deployment's SSRF policy when stored and at every send.
+- **Push notifications in the browser** (#2097): Settings → Notifications turns
+  push on for this browser - or for AgenticOS added to a phone's home screen -
+  sends a test, and adds a Push column to the per-event choices, on by default
+  like email. Notifications arrive with AgenticOS closed. Nothing to configure:
+  the deployment's signing key is made on first use and kept in the vault.
+  `GET /api/v1/push/key`, `POST`/`DELETE /api/v1/push/subscriptions`,
+  `POST /api/v1/push/test`; migration `0172_web_push`; the console's CSP gains
+  `worker-src 'self'` for its service worker.
+- **Native notifications** for new approvals, with Approve and Reject on the
+  notification, and for new inbox rows, plus a count on the Dock icon and
+  beside the tray icon.
+- **The iPhone app** (#2097): the phone app now builds for iOS, with what an
+  iPhone draws outside the app. Live Activities show your running runs with a
+  clock and waiting approvals with Reject and Approve, on the lock screen and
+  in the Dynamic Island; a decision taken there waits for Face ID. Home- and
+  lock-screen widgets count approvals and runs, and a Pinned agents widget
+  opens a new chat with an agent pinned on its page (iOS lets no app place an
+  icon on the home screen). The app icon's long-press menu, Shortcuts, Siri,
+  the Action Button and Control Center start a voice call, dictation, a new
+  chat or the approvals. Share → AgenticOS takes text, links, photos and files
+  into a new message; the composer's Camera, Photos and Files open iOS's own
+  pickers, and opening the chat offers a photo taken a moment ago. Managed app
+  configuration (AppConfig) sets the same keys as on Android.
+- **Notifications on an iPhone** (#2097), through Apple's push service with
+  the organization's own APNs key: an administrator adds the key file, its key
+  ID, the team ID and the app's bundle ID under Admin, Settings; it is sealed
+  in the vault and never shown again. Settings → Notifications in the iPhone
+  app turns push on, sends a test or turns it off, and a notification opens
+  its page through the app's lock. `GET`/`PUT`/`DELETE /api/v1/push/apns`
+  (setting it needs an app admin), `POST`/`DELETE /api/v1/push/apns/devices`;
+  `POST /api/v1/push/test` now reaches iPhones too; migration `0173_apns`.
+- **Work on this computer** (#2305): in the desktop app a chat's settings
+  offer "Work on: Cloud / This computer". The person picks a folder in the
+  native dialog and how far a run may go there - read only, write in the
+  folder (sandboxed by Seatbelt on macOS and bubblewrap on Linux) or full
+  access, which asks before each command - and the agent's file and shell
+  tools work in it through the app, which refuses any folder or mode the
+  person did not grant. The choice is remembered per conversation. Link the
+  computer once under Settings → Desktop app; the tray says when an agent is
+  working there. A run waits up to ten minutes for the computer to connect,
+  saying so in the chat, and an operation that finds it gone mid-run waits up
+  to five minutes for it to come back.
+- **Triggers that work on your computer** (#2305): a trigger that acts as its
+  creator can name a folder on their computer (`local_target`); each fire
+  works there through the desktop app. Only the creator sets it, and turning
+  acting-as-creator off clears it.
+- **Computer use on your own screen** (#2305): the desktop `local` - and
+  `auto`, now the default - drives the person's own screen in a chat working on
+  this computer. The app asks before the first screenshot, frames the screen
+  while the agent holds it, and gives it back on Cmd/Ctrl+Alt+Esc. macOS asks
+  for Screen Recording and Accessibility.
+- **Watch and take over a desktop** (#2305): every desktop a run works is
+  published to the live view a browse uses, so the chat and the console offer
+  Take over; the agent waits while the person holds it and is told to look
+  again after.
+- **E2B** (#2305): a sandbox connection can be of kind `e2b`, on the
+  organization's own E2B key - never the process's `E2B_API_KEY` - with its
+  default runtime naming an E2B template. Computer use's desktop `e2b` opens an
+  E2B desktop of the run's own on the binding's key and kills it after; `auto`
+  takes it when a key is named.
+- **More on the phone** (#2097): live activities for a voice call (with its
+  clock, and when the agent asks something on it) and for a question an agent
+  is waiting on; a pinned-agents widget on Android; the share of the monthly
+  cap left on both glance widgets; the dashboard's spend, failures and recent
+  conversations in the offline copy; pages that slide in the direction of
+  travel. The Devices list says which sign-ins receive push. In a browser that
+  can install the console, a strip offers to (on an iPhone it says how).
+
+### Changed
+
+- **Workflows and Tables follow the console's shared panel layout.** Catalog search stays visible while secondary filters fold away. Workflow creation separates triggers from templates, settings group advanced controls, and run history precedes live statistics. Step forms leave more room for parameters and disclose expected outputs on demand. Table, List and Kanban share one workspace; Kanban uses a unique grouping column automatically. Record forms and filters adapt to phones, record panels use shared focus handling, and failed catalog or record requests offer retry.
+
+- Replace card Details sections with concise metadata and edit dates; move skill and context deletion into the editor menu beside Share.
+
+- Order conversation agents by latest use, with full-size overlapping avatars and hidden older participants in the collapsed chat rail.
+
+- **Breaking:** Remove the skill-level `enabled` switch and API field. Bound skills are available regardless of their former switch; remove unwanted bindings and publish affected agents before upgrading. Migration `0180_remove_skill_enabled` drops the retired state; downgrade restores all skills as enabled.
+
+- Separate shared project uploads from personal Desktop folders, retain the selected Computer view, and brief agents, Architect and MCP clients on Desktop, Mobile and selected local execution resources.
+
+- Simplify console headers, settings explanations, catalog filters and resource cards with progressive disclosure; add navigation icons and budget portraits, open desktop readiness from the account menu, and refine generated and starter-agent faces.
+
+- Browser model requests omit obsolete element tables while retaining article
+  text and full stored results. DOM actions use the independent preview stream
+  with one final capture; readiness ignores unrelated background changes and
+  retries an initially empty document once. MCP tool catalogs stay unchanged.
+
+- Browser panels open beside wide chats, resize by pointer or keyboard, and
+  expand to full screen without reopening their native tab. Narrow chats and
+  phones keep a full-screen view.
+
+- Remote browser previews coalesce pending images and disconnect stalled viewers;
+  live-view images are no longer duplicated in the resumable chat stream.
+
+- **Interactive browser navigation.** While holding a browser, edit its address,
+  move back or forward and reload within the agent's allowed domains. Direct
+  browser tools keep the preview streaming between calls. Input no longer waits
+  for a screenshot after every character, and navigation avoids duplicate fixed
+  pauses and URL-change timeouts when reopening the same address. Large-screen
+  resize requests stay within server limits so the first frame is not delayed.
+
+- **Styles in the account menu.** Appearance now offers Standard, Glass, Graphite,
+  Midnight and Paper beside Light, Dark and System, with previews and the active
+  style on the trigger. Settings use larger previews and a selection tick;
+  Graphite, Midnight and Paper have softer surface borders in both color modes.
+
+- **Desktop shortcuts in native menus.** Open AgenticOS has a configurable global
+  shortcut (`CmdOrCtrl+Shift+O`), and its menu entry, Quick Ask and Screenshot to
+  New Chat show their active bindings, including changes made in Settings.
+
+- **Clearer desktop work location controls.** Cloud and This computer share a
+  segmented selector; folder access has a labelled dropdown and explanation,
+  followed by a full-width folder picker.
+
+- **Switch servers from the console sidebar.** Change server opens the native
+  connection form directly, including when the sidebar is collapsed.
+- **Link a desktop from the chat.** Choosing This computer under Work on now
+  offers native pairing and folder selection without a detour through Settings.
+- **A more comfortable console on desktop and phone.** Search is labelled above
+  navigation, touch controls are larger, table headings and form feedback are
+  easier to read, and dashboard figures adapt to the widget's width. Dialogs fit
+  above the on-screen keyboard, side panels trap and restore focus, and Escape
+  clears a list search before dismissing its panel. Menus and notifications stay
+  within the available screen height. Streaming text and page/card entrances use
+  shorter motion without per-word blur.
+
+### Fixed
+
+- Reveal Quick Ask tab close buttons on hover or keyboard focus, keeping touch controls available and tab widths stable.
+
+- Show uploaded organization avatars and chosen-color initials in the administration directory.
+
+- Keep list pagination at the panel bottom and scroll paged administration table rows independently of headers and footer.
+
+- Explain why Approve everything is unavailable and link authorized users to organization approval settings.
+
+- Chat fills the desktop content area without the empty top strip; its list
+  header can drag the window. Browser and workspace choices appear before
+  Permissions, with conversation notifications kept below them.
+
+- Skills and Context show agent usage and portraits directly on their cards.
+  Stronger foreground text, form labels and action contrast keep the console
+  readable, including over glass surfaces. Native and browser chat layouts share
+  their top inset so the conversation header is no longer clipped on desktop.
+
+- Desktop project drops now reach the console instead of being consumed by the
+  native window. File rows target their containing folder; empty pane space
+  accepts root uploads and moves. Drop feedback no longer covers the file tree.
+
+- Opening the agent picker no longer gives its first row a clipped focus outline;
+  keyboard navigation retains a visible inset indicator.
+
+- Reduce the desktop heading gap while retaining a separate native drag strip. Keep file drag feedback within the project, preserve folder highlights across child rows, support uploading directly into folders and hover-to-expand, stabilize file actions, remove folder counters, and use distinct file-type icons across projects, chat, RAG and skill/context files.
+
+- Refine console control spacing, keyboard focus, touch targets and anchored overlay motion; preserve action labels during saving, keep skill creation busy through uploads, localize calendar labels, and expose form requirements and progress values to assistive technology.
+
+- Restore document previews and visible Add to an agent actions on Skills and Context cards; spread automatic avatar colors across a continuous clean hue range and preserve archived portrait colors.
+
+- Desktop startup keeps the system theme and Glass defaults through hydration,
+  without briefly sending the server-rendered standard look to the native window.
+
+- Desktop server switching lives in the account dropdown instead of a separate
+  sidebar button, including when the sidebar is collapsed.
+
+- Local instance creation has its own compact, grouped setup step with one action
+  bar. Cancelling restores the instance overview; Blobby stays out of setup screens.
+
+- Quick Ask renders the whole conversation, tool activity, approvals and queued
+  messages instead of only the last answer. Add stopping, attachment/source
+  previews and scrolling that lets the person read earlier turns.
+
+- Automatic desktop attachment snapshots no longer ask to run an internal shell command.
+
+- Preserve desktop sessions through temporary backend failures and window restarts
+  with a shared persistent console profile. Retry session checks on reconnect or
+  focus; revoked tokens still require sign-in. Keep private agent tabs isolated
+  and use app-scoped session cookie names when redeeming a pairing code.
+- Reserve macOS window controls in the sign-in header and give Glass's drag strip
+  the same background as its content. Smooth desktop keyboard scrolling and mouse
+  wheel notches while respecting reduced motion and native trackpad input.
+- Offer optional Screen Recording and Accessibility permissions in the initial
+  connection wizard, before choosing a server. Each is requested explicitly and
+  can be skipped; setup captures nothing and does not control the computer.
+
+- Browser transcript cards no longer duplicate after clicks, rereads or returning
+  to a page. Each answer keeps one updated card per actual browser tab, live
+  and after reopening the conversation.
+
+- **Notifications on phones.** Both bell controls open a full-width bottom sheet
+  with a visible close button and a scrollable inbox, keeping notifications
+  inside the screen when opened from the navigation drawer.
+
+- Align mobile project actions, group secondary folder actions in More and collapse agent discovery filters behind a selection-preserving control. Give app preview toolbars consistent vertical padding and touch targets, contain Activity CSV exports, and keep Skills/Context actions clear of card content.
+
+- Keep large chat file listings inside their own scrollable panel, with the title and close button visible and long filenames contained.
+
+- **Readable computer-use environments.** The capability picker uses short
+  names for Automatic, E2B, Docker / Sandbox, Local and Remote computer, with
+  localized requirements below the current selection instead of paragraphs
+  inside the dropdown. Existing agent settings retain their meaning.
+
+- **Activity controls stay still while opening a run.** Anchoring the transcript
+  scrolls only its own panel, keeping the close button in place on desktop and
+  phones instead of shifting the page during a click.
+
+- **Recover from stalled phone connections.** An initial server load or native
+  sign-in return that has not completed after 30 seconds returns to the server
+  form with its saved address. Successful cached offline pages remain open;
+  completed or superseded attempts cancel their recovery wait.
+
+- **Native sharing on phones.** The share inbox and attachment picker now use
+  separate native dispatchers, so opening the picker cannot replace the command
+  that receives content shared from another app.
+
+- **Phone controls and keyboard layout.** Chat, agent cards, dashboard controls,
+  settings, avatar colors and sort chips have larger touch targets. Copy and tip
+  actions remain visible without hover. Sign-in fits system insets and the
+  keyboard, without a browser cookie banner in native apps. Viewport updates
+  coalesce per frame and undo late iOS page pans after keyboard animations.
+
+- **Keep a native folder selection when chat settings close.** Pairing and folder
+  approval now finish for the original chat even if the settings panel closes
+  while a native dialog is open, instead of dropping the choice and using Cloud.
+
+- **Native controls above opened apps.** The macOS app viewer reserves a title-bar
+  row, keeping the traffic lights clear of the back button and app title while
+  leaving browser viewers edge to edge.
+
+- **Clickable desktop page actions and panel controls.** The window drag area
+  now has its own row outside the scrolling content, so it cannot cover New agent,
+  close buttons, tabs or other controls near the top of the window. The web
+  assistant stays at the desktop console’s edge instead of covering card actions.
+
+- **Start a fresh chat from Blobby.** New Chat in the desktop menus and the
+  Blobby button now reset the active conversation, even while `/chat` is open.
+
+- **Honor the chat's local workspace selection.** Choosing This computer opens
+  the native folder picker immediately. The access selector reflects the approved
+  mode, and local settings follow a new conversation even with its settings closed.
+
+- **Keep the desktop running when switching servers.** Blobby and Quick ask now
+  navigate their existing windows to the selected server instead of destroying
+  and immediately recreating native windows.
+
+- **One language across desktop windows.** Blobby and quick ask follow the
+  signed-in account on launch and when the console language changes.
+- Push subscriptions linked to a device session stop receiving deliveries when
+  that session is revoked, expired or belongs to a different account.
+
+- **Changing a sandbox's runtime opens a new workspace.** A container's image
+  is chosen when it is created, and the workspace's key did not include the
+  runtime, so an agent moved to another runtime kept attaching to its old
+  container. The key includes the runtime now. Naming no runtime and naming
+  `workbench`, the shipped default, keep the key they had. A workspace already
+  open on any other runtime starts empty once after the upgrade; the old one
+  stays listed and readable.
+- **The Android app shows the AgenticOS icon**, not Tauri's default: the
+  generated launcher icons had never been copied into the Android project.
+- **The desktop app opens on the console, not on the sign-in form.** It
+  opened the server's root, which sends everybody to the form, so a person
+  with a perfectly good session was asked to sign in on every launch.
+- **A tool whose arguments are models can be held for approval.** The gate
+  stored the validated arguments as they were, so a call carrying a Pydantic
+  model failed to park with a serialization error instead of asking. They
+  are stored as JSON now.
+- **A tool call's stored result no longer holds a picture's bytes.** A tool
+  that answered with an image, such as `web_fetch` on a picture, was
+  recorded as the image's Python representation, bytes and all, in the run's
+  history and the chat's tool row. The row says which kind of picture it
+  was instead.
+
+## [1.30.0] - 2026-10-30
+
+### Added
+
+- A new agent starts on the organization's model when the organization has
+  exactly one model an agent can run on: a chat model with a key, or a
+  self-hosted one saved without a key, that publish accepts (#2483). This
+  applies to **New agent**, `POST /agents` without a `model_profile_id`,
+  templates, copies and promoted specialists. The model is written into the
+  draft, so the agent publishes without opening **Model**, and the draft counts
+  as using the model. With no model or several, the draft has no model as
+  before. A model on a ChatGPT sign-in is never chosen for somebody, and
+  neither is a model that falls back to one; the Architect no longer chooses
+  either for its first publish (#2545). See
+  [The model a new agent starts on](docs/models.md#the-model-a-new-agent-starts-on).
+
+### Changed
+
+- Publish's refusal of an agent with no model now reads *No model selected -
+  pick one under Build > Model before publishing* and also marks
+  `model_profile_id` in `details.fields` (#2483). The Builder shows **Go to
+  Model** beside it, which opens the Model card on the Build tab.
+
+### Fixed
+
+- Architect highlighting follows locale-cookie redirects and skips controls
+  hidden by a responsive stylesheet.
+
+- Deleting a knowledge base detaches its selected sync sources instead of silently
+  moving them into a same-named base. Queued syncs recheck their assignment;
+  CLI ingestion refuses names reserved for a pending collection drop.
+- Interrupted attachments remain eligible after a completed turn without a
+  workspace or without using its sandbox. Only a turn that reaches attachment
+  setup in its workspace closes their restoration window.
+
+- Clearing a shared default knowledge base also removes chunks committed before
+  their tracking rows settle, including unfiled CLI ingestion. Stale writes
+  after the clear are rejected before table creation, without affecting uploads
+  started afterwards.
+
+- The Architect, the organization's assistant, is no longer published on a
+  model that runs on a ChatGPT sign-in (#2535). A sign-in is one person's
+  subscription: on the Architect, runs by members who could not see it in the
+  vault were refused, and runs by those who could, such as the organization's
+  owners and admins, spent it. The Architect now publishes on the first chat
+  model publish accepts that is not a sign-in, and with only a sign-in it waits
+  for another model, as a new agent does (#2483). A sign-in somebody picked in
+  its draft, or a model that falls back to one (#2545), stays there, but is
+  published only when somebody who may change the organization's settings
+  publishes it in the Builder. An Architect already published on a sign-in is
+  not changed: such a person moves it under **Build > Model** and publishes it.
+  See
+  [The model a new agent starts on](docs/models.md#the-model-a-new-agent-starts-on).
+- Knowledge bases that share a collection name and a vector tenant keep their
+  chunks apart. An app-scoped base and a personal base outside any organization,
+  or an organization's base and a member's personal base in it, no longer return,
+  count, replace or delete each other's chunks: every chunk records the knowledge
+  base it was ingested for, and every vector read and write is confined to the
+  base. An agent searches the bases it is bound to rather than whichever base of
+  that name resolves first; an agent bound to two bases that share a name
+  searches both without reaching unbound same-named bases. Resolving a collection name for an organization
+  with no base of its own falls back only to an app-scoped base, never to a
+  personal base outside any organization. A sync source writes into the
+  organization's oldest base of its collection name, as before; pointing one at
+  a collection now needs write access to that base, and adding one to another
+  base of the same name is refused. Deleting a base whose collection name another
+  base still holds - directly, by an organization purge or by an account deletion -
+  now also removes the chunks filed under it from the shared table, in the same
+  cleanup job that unlinks its files (#2537).
+  **Upgrade action:** migration `0180_stamp_rag_rows_by_base` files existing
+  chunks under their knowledge base from `rag_documents` and indexes the new key
+  on every `rag_<collection>` table. It rewrites every tracked chunk once, all in
+  one transaction, so on large deployments plan a maintenance window, keep free
+  disk for about the combined size of the `rag_<collection>` tables and their
+  indexes, and run `VACUUM ANALYZE` on them afterwards. A chunk it cannot
+  attribute to exactly one base - untracked, or tracked under no base or under
+  several - stays matched by its tenant as before, so a same-named app-scoped
+  base and personal base outside any organization still share those chunks.
+  `SELECT count(*) FROM rag_<collection> WHERE metadata->>'knowledge_base_id' IS
+  NULL` finds them; delete the documents they belong to and upload them again.
+  Where an organization has two bases of one name, a sync source shows and runs
+  only under the older one, which is where its documents have always been
+  written, and the newer base no longer finds that synced content in search.
+  Create the newer base under a name of its own to give it sources of its own.
+- When the Architect points at a control on a tab that is not open, the tab now
+  switches and the control is highlighted. This includes a control that the
+  page keeps hidden in the document while its tab is closed: the Approvals,
+  Runs and Spend tabs on the Activity page and every tab on the organization
+  page. A link to another page no longer switches a tab on the page being left,
+  a tab switch leaves keyboard focus in the Architect's panel, and the scroll
+  respects a reduced-motion preference (#2536).
+- A file attached to a chat turn that stopped before completing (failed,
+  cancelled, or stopped by a budget or the loop guard) is now written back to
+  `uploads/` by the same agent's next turn for that person in that
+  conversation, instead of staying missing until a new conversation and upload.
+  Only the person's own files are restored, until that agent completes a later
+  turn for them that looked for them. Files of a turn a guardrail blocked are
+  not restored, and on an agent with an input guardrail each file is screened
+  first: a file the guardrail refuses is not written back.
+- An agent with `allow_dynamic` no longer fails for a caller who may not use some
+  ChatGPT sign-in in the organization - every API-key and widget run, and members
+  it is not shared with. A model the caller may not use is left off the
+  specialist's list of models with a warning, as a model with no key already was
+  (#2546).
+- An upload or a sync still indexing a file for a knowledge base that is deleted
+  while another base keeps its collection name no longer writes chunks after the
+  cleanup job has removed the base's chunks. The write checks that the base
+  exists under a row lock that conflicts with the delete's, in the transaction
+  that inserts the chunks; the file fails at the index step, an upload is not
+  retried, and a connector sync continues with its other files. A local directory
+  sync queued for a base deleted before it runs now
+  ends with an error instead of writing its files into the deployment-wide
+  scope (#2561).
+- A file attached to a turn that the input guardrail blocks is no longer written
+  to the agent's workspace. The input edge now screens the message and each
+  file's opening lines before the file is copied to `uploads/`, so a later turn
+  in a `conversation`-, `user`- or `agent`-scoped workspace cannot open it. The
+  blocked turn still ends as `guardrail_blocked`. A picture sent inline is still
+  written when the edge blocks the turn because of the picture's bytes (#2559).
+- Dropping a collection (`DELETE /api/v1/rag/collections/{name}`) deletes only the
+  document rows and stored files of the knowledge base it resolved to. Before, it
+  deleted every document row under the collection name, with no organization or
+  base predicate, so a drop also removed the documents of another organization
+  whose base shared the name and queued their files for deletion. When another
+  base still holds the name, the shared vector table stays and the cleanup job
+  now removes the dropped base's chunks from it. A default base keeps its row and
+  takes uploads again, so the job removes only the chunks of the documents the
+  drop deleted; chunks with no document row are not removed from it. Document
+  rows filed under no base, from before documents recorded their base, go with
+  the drop too, with their files and chunks, when they are the dropped base's
+  organization's and no other base of that organization holds the name. Before,
+  a cleared default base kept listing and serving them (#2560).
+- Deleting a knowledge base (`DELETE /api/v1/kb/{id}`) while another base still
+  holds its collection name deletes the unfiled document rows of its organization
+  too, with their files and chunks, unless another base of that organization holds
+  the name. Before, they stayed, and the organization's next base on the name
+  listed and served them again (#2560).
+- `rag-drop` goes through the knowledge-base teardown. Before, it dropped the
+  vector table directly, with no reference check, lock or reservation, and left
+  the document rows behind, so it could destroy a table another knowledge base,
+  possibly another organization's, still used. It now clears the knowledge base
+  that holds the name, or drops a name no base holds with its document rows, and
+  a worker removes the table and the files after the command commits. A name
+  several knowledge bases hold is refused with their ids; pass
+  `--knowledge-base <id>` to clear one of them, and the table stays for the
+  others (#2560).
+
+### Security
+
+- Publishing or promoting a parent checks pinned delegates' reviewer, browser
+  step and follow-up sign-ins, even at the delegation depth bound and without
+  dynamic specialists.
+
+- Publishing an agent on somebody else's ChatGPT sign-in is refused. Publish,
+  rollback, the Builder's draft check and promoting a version to an environment
+  now refuse a model a run can reach - the agent's own, a reviewer's, an inline
+  specialist's, the one an enabled web browser or follow-ups capability runs
+  on, a pinned delegate's and what that delegate reaches in turn, or one of the
+  first three fallbacks of any of them - when it runs on a ChatGPT sign-in the
+  person doing it cannot see in the vault. The refusal names the model field,
+  or the pin. Before, a builder could publish on a colleague's private sign-in,
+  directly or by pinning a delegate on it, and its owner's and the admins' runs
+  then spent that subscription. The rule is the one runs already follow: the
+  sign-in's owner, owners and admins, and anybody it was shared with may, and
+  an API key may not, whatever its issuer can see. Agents already published on
+  such a sign-in keep running, but republishing, rolling back to or promoting
+  that version now takes somebody who can see it (#2546).
+- A specialist the model invents under `allow_dynamic` no longer runs on
+  somebody's ChatGPT sign-in the agent never named. Its list of models leaves out
+  a profile on a sign-in, and one whose first three fallbacks reach one, unless
+  the agent's spec names that exact profile. Before, the list offered every chat
+  model in the organization, so a run by the sign-in's owner, an owner or an
+  admin could spend that person's subscription on an agent nobody chose it for
+  (#2546).
+- A run resumed after an approval resolves its delegates' and specialists'
+  models for the person whose run it is, as it already did for the agent's own
+  model. Before, they were resolved for the approver, so a resumed run could
+  spend the approver's ChatGPT sign-in, or lose its owner's (#2546).
+- A link in an agent's answer that looks like a console page can no longer send
+  the console tab to another site. A path such as `/a/..//evil.example`
+  normalises to `//evil.example`, and the console opened that in place as if it
+  were one of its own pages. Such a link is now an ordinary link and stays on
+  the console. Answers can be shaped by content the agent reads, so this was a
+  phishing route.
+
+## [1.29.2] - 2026-10-30
+
+### Fixed
+
+- Upgrade the sandbox client and `sandboxd` image together to 0.2.39. Runtime
+  images using `run_as_uid` now build on Debian and Ubuntu Python installations
+  without `ensurepip`; the library's built-in Node runtimes use Node 24 and
+  build with current npm packages.
+
+## [1.29.1] - 2026-10-30
+
+### Fixed
+
+- Deliver model-generated photos on Mattermost, Slack, Teams and Telegram,
+  including after channel approval; report missing or invalid media instead of
+  silently posting only a success message. Ordinary workspace files still need
+  an explicit send action. Only media recorded as generated by the run can be
+  attached; a renamed MCP tool cannot forge that provenance.
+- Preserve original timestamps and authors in channel thread context so old
+  relative-time requests are not presented as current events. Existing threads
+  refresh text context once on the next turn after migration, without
+  downloading their earlier files again.
+
+## [1.29.0] - 2026-10-29
+
+### Added
+
+- Automatic channel context and conversation guidance across Mattermost, Slack,
+  Teams and Telegram: channel details, a bounded member snapshot, deployment
+  identity and precise organization versus personal MCP connection instructions.
+  Metadata is lower-trust conversation data, outside system instructions.
+  `{channel_members}` is the roster placeholder; `{member_list}` stays an alias.
+  Slack rosters use member IDs without per-person profile requests.
+- An opt-in group mention switch per bot. Existing bots default to direct
+  invocations; Teams packages request conversation-message consent only when
+  enabled. Telegram text aliases require message delivery and its bot identity
+  is resolved before deciding whether a group message addresses it.
+- Explicit `send_channel_file` actions on channel bot bindings. Grant the tool
+  per binding to let users request a workspace file; creating or editing a file
+  no longer posts it automatically. Existing bindings require enabling the new
+  action. The tool requires approval and reports platform failures.
+- A separate production `browser` profile with proxy-only public web access.
+  Keep the isolated visual renderer for drawing; configure interactive browsing
+  with `BROWSER_SIGN_IN_CDP_URL=http://browser:9222`,
+  `BROWSER_EGRESS_PROXY=http://browser-egress:3128` and allowed CDP hosts for both.
+  Point each agent's browser capability at `http://browser:9222` and republish.
+
+### Changed
+
+- All MCP calls in chat apps now require explicit approval, including reads
+  through personal, organization and platform connections. Linking an account does not authorize publishing its private results
+  into a conversation. This applies to resumed and delegated calls too.
+
+### Fixed
+
+- Slack roster entries use native user references without profile fan-out;
+  Telegram bot identity refreshes within five minutes after a username change.
+  Capped Teams rosters report an unknown count rather than an exact 500.
+- Channel history tools default to recent messages of the current channel and
+  support an explicit thread scope; automatic context backfill stays thread-only.
+- Channel pictures render at twice the CSS resolution and reflow very wide
+  horizontal Mermaid flowcharts for readable PNG labels.
+- Account connection instructions use plain `link` in a direct message, avoiding
+  native slash-command conflicts. Earlier thread files that require linking are
+  reported and retried after connection, rather than treated as absent forever.
+- Chromium network failures no longer appear as domain allowlist refusals.
+  Production browsing also receives the configured browser locale and time zone.
+- Approved channel file actions restore the original bot, channel and workspace
+  on resume, with current credentials and without borrowing the approver's account.
+  Exports apply workspace secret rules and check file size before reading bytes.
+  Attachment-attempt limits survive approval continuations.
+- Teams generated pictures fit its inline image dimensions and payload limit.
+  Unsupported image formats and larger explicit files require personal-chat
+  file consent instead of being reported as delivered inline.
+
+## [1.28.1] - 2026-10-28
+
+### Fixed
+
+- Channel visuals no longer disappear silently when their PNG cannot be rendered.
+  Replies name the missing attachment, and drawing tools no longer claim delivery
+  without confirmation. Published backend images include the rendering client;
+  production deployments can run the isolated `visual-render` service with
+  `VISUAL_RENDER_CDP_URL=http://visual-render:9222` and
+  `BROWSER_CDP_ALLOWED_HOSTS=["visual-render"]`.
+
+## [1.28.0] - 2026-10-28
+
+### Added
+
+- More OpenRouter embedding models for knowledge bases: the three its EU
+  endpoint serves (`mistralai/mistral-embed-2312`,
+  `mistralai/codestral-embed-2505`, `google/gemini-embedding-2`) and
+  `google/gemini-embedding-001`. The Mistral models are not in the bundled price
+  snapshot, so their spend is recorded as partially priced.
+
+### Fixed
+
+- A knowledge base on a custom OpenRouter endpoint is offered only the
+  embedding models that endpoint serves. The EU endpoint serves none of
+  OpenAI's, so a collection created on the default model failed every upload
+  with "No endpoints found supporting your data region". Creating a collection
+  on a model its endpoint does not serve, or moving one to such an endpoint, is
+  now refused, and the editor says so before saving.
+- An upload that fails because the embedding endpoint does not serve the model
+  says so, instead of pointing at the collection's key.
+- Model pickers sort versions as numbers and keep a variant such as
+  OpenRouter's `:batch` beside its model. Plain string order put
+  `openai/gpt-5:batch` below every `gpt-5.6` model.
+
+## [1.27.0] - 2026-10-27
+
+### Added
+
+- Show the running console build version in the sidebar footer, including the
+  collapsed rail and mobile navigation.
+
+- Projects can choose a sandbox connection or stored files when created. Settings
+  show the connection used by their shared workspace and explain sharing and code
+  execution. Existing projects can transfer files between connections or stored
+  files through a verified background copy, with progress and write protection.
+
+- Project file management: rename folders and files, move entries by drag and drop
+  or a folder picker, and edit UTF-8 text with revision and unsaved-change checks.
+
+- Create separate model profiles for the same provider and model on different
+  endpoints, with automatic endpoint labels and an explicit choice to update the
+  shared profile instead.
+
+- Configure custom OpenRouter endpoints for agent models and knowledge-base
+  embeddings, including the regional EU API. Native OpenRouter keys and cache
+  controls are retained. Model suggestions come from the chosen endpoint;
+  regional listing failures never fall back to the global catalog. Apply the
+  database migration for the optional embedding endpoint when upgrading. Upgrade
+  all API and worker processes before configuring regional endpoints; older
+  processes ignore the override.
+- Set Context file mode and availability separately for each agent in the
+  Builder. Shared library editors keep content and descriptions; existing
+  agent versions retain their prior usage until an override is published.
+
+- Let verified Mattermost participants rate answers and leave comments without
+  an AgenticOS account. Votes from unlinked participants use their channel identity; linking an
+  account merges its votes with web ratings so each person has one vote per
+  answer. Shared buttons stay available after the first vote. **API change:** a rating's
+  `user_id` can now be null for a channel participant. Apply the database migration
+  when upgrading; downgrading removes channel-authored votes.
+
+### Changed
+
+- Explain the sandbox’s POSIX shell, shared `/workspace` directory and per-command
+  process lifetime to agents, preventing Bash-only directory creation and writes
+  outside the shared project.
+
+- Refine empty states, metadata badges and mobile settings across the console.
+  Knowledge search offers a clear starting point and permission-aware creation;
+  narrow integration panels keep their controls visible. Approval history uses
+  a compact queue status, member actions fit small screens, and urgent Inbox
+  badges remain legible in dark mode. Password-reset failures stay retryable
+  instead of claiming an email was sent.
+- Keep chat model changes collapsed behind the current model summary. File-row
+  actions reveal on hover or keyboard focus without cutting filenames; long
+  project files scroll inside their preview. Inbox finding titles link to
+  their source and actions sit beside each finding.
+- Prevent delayed conversation refreshes and failed read requests from restoring
+  already-read badges.
+- Keep dashboard checklist loading in a stable slot. Resource lists fill the
+  page height; Routines drops the separate ideas panel. Chat keeps its animated
+  Files toggle visible, prefills model settings, enlarges agent portraits and
+  simplifies attachment cards.
+- Refine console headers, neutral action buttons and sidebar glyphs. Skills and
+  context galleries use compact, consistently sized cards without nested panels.
+  People use photos or initials; organizations keep round, cropped avatars.
+  Local server controls show Ollama and LlamaIndex marks in both themes.
+- Separate agent routines from personal connection watches in two Routines tabs.
+  Lead dashboard discovery with illustrated capabilities, show bucket values on
+  summary chart hover, and simplify project and agent widgets.
+- Unify dashboard list rows, status indicators, shared-resource counts and
+  loading states across the widget catalog. Summary columns follow card width
+  in custom layouts. Briefing failures now offer Retry instead of appearing empty.
+
+### Fixed
+
+- Include the installed AgenticOS version in deployment, worker and per-agent
+  Logfire traces so production incidents can be matched to their release.
+
+- Invalid metadata in agent-written skills no longer breaks turn completion.
+  Proposal writes use a savepoint and preserve the run’s status and spend (#2516).
+
+- Changing a knowledge base embedding endpoint now requires access to its retained
+  vault key, including when resetting the endpoint to the provider default.
+
+- Marking a chat as read preserves its initial conversation fetch, so the chosen
+  agent and a turn still running remain visible when reopening it.
+
+- Ignore empty channel prompts after removing the bot mention, while preserving
+  attachment-only messages, so Anthropic does not reject an empty turn as prefill.
+- Bound custom model catalog downloads, parsed fields and cached endpoints to
+  prevent an untrusted gateway from exhausting API process memory.
+
+## [1.26.0] - 2026-10-27
+
+### Added
+
+- Change a model's key, endpoint, API, settings or name in place with
+  `PATCH /providers/model-profiles/{id}` (#2478). The profile keeps its id, so
+  every agent on it uses the change from its next run, with no republish. The
+  Builder's model panel saves a key, endpoint or API change on the model in use
+  as this edit, under **Update model**, and says that every agent on the model
+  switches with it. **Add model** stays for another provider or model. The edit
+  is gated on `connections:manage`, which therefore moves every agent on the
+  model. A new key, or a new endpoint for the stored key, must be a key the
+  caller can see in the organization's vault for the profile's provider. The
+  edit is audited as `model_profile.updated` with the changed field names only.
+  See
+  [Changing a profile's key or endpoint](docs/models.md#changing-a-profiles-key-or-endpoint).
+
+### Changed
+
+- Deleting a model profile that agents use is refused with `409 IN_USE`
+  (#2478). `details.agents` names each agent the caller can see and marks the
+  archived ones, and `details.hidden_agents` counts the rest. A profile counts as in use when an
+  agent's draft, served version or an environment's pinned version names it
+  anywhere as a JSON value, including reviewers, specialists and capability
+  settings, and archived agents count too. The check and the delete hold off
+  concurrent draft saves, publishes and promotions in the organization. The Builder
+  shows the refusal with the agent names. **Upgrade action:** a script that
+  deletes profiles must move the agents on them first, or edit the profile
+  instead.
+- A model profile whose key was deleted from the vault is listed with
+  `missing_key: true` (#2478). Agent and chat model pickers no longer offer it,
+  the Builder marks it **no key** and says how to fix it, and publish refuses it
+  by name, and refuses a profile whose first three fallbacks include one. A
+  profile saved with no key on purpose (a self-hosted model, a gateway that
+  authenticates nothing) records that as `runs_without_key` and is not affected;
+  a gateway profile that had a key and lost it now reads as missing one. The
+  migration `0175_profile_runs_without_key` marks every existing keyless profile
+  with an endpoint as running without a key, so nothing that resolves today
+  stops.
+- Creating a model profile now also requires that the caller can see its key in
+  the vault, the same rule as a capability's secret (#2478).
+
+### Fixed
+
+- The Builder's Endpoint field no longer shows the local example
+  `http://localhost:11434/v1` for a model that has a key (#2478). OpenAI is
+  marked `keyless` because OpenAI-compatible servers exist, and the field showed
+  the Ollama example as grey placeholder text, which read as an endpoint filled
+  in after a key was switched. The example now shows only when the endpoint is
+  required. A self-hosted model is no longer badged **no key** either.
+- Document how to pin or roll back a release by hand without pairing its
+  backend with another release's sandbox service (#2484). The `sandboxd` image
+  is pinned in the compose file, so a host that sets `AGENTICOS_VERSION` by hand
+  checks out that release's tag as well; `scripts/deploy.sh` already does. An
+  install without a checkout, from `scripts/quickstart.sh`, downloads that
+  release's `docker-compose.yml` beside the pin.
+- An API key added from the coding agent's card for Codex is stored as an
+  OpenAI key, so the Builder no longer offers it to Claude Code after a harness
+  switch, where it published and then failed at run time (#2485). Keys added for
+  Claude Code, or behind a gateway, are still stored as custom.
+- An app-scoped collection and an organization's knowledge base with the same
+  name keep their documents apart. Through the app collection, members of
+  other organizations could list the organization's documents
+  (`GET /rag/documents`) and download, read or delete them (`/rag/documents/{id}`
+  and `/kb/{kb_id}/documents/{doc_id}`). The organization's sync sources were
+  also reachable through the app base's `/kb/{kb_id}/sync-sources/{source_id}`
+  routes. Those documents also counted toward the app collection in
+  `GET /rag/collections/{name}/info`, where they could hold `indexing_status`
+  at `indexing`. A document filed under the app base now belongs to the app
+  collection, whichever organization uploaded it. The organization's listing
+  and counts leave it out. The same held for a personal knowledge base outside
+  any organization that shares its name with an app collection: every member
+  of every organization could list and download its owner's documents through
+  the app collection. A document now belongs to the knowledge base it is filed
+  under, in listings, counts and per-document checks (#2486).
+  `GET /kb` counted documents by collection name, so each base reported the
+  other's `document_count`, `indexed_count` and `chunk_count`; each base now
+  counts its own. `GET /kb/{kb_id}/sync-sources` and `GET /rag/sync/logs`
+  listed a private base's sync sources and runs to a member who reads only the
+  app base of the same name, and `DELETE /rag/sync/{sync_id}` let a writer of
+  one base cancel a run feeding the other. A sync source and its runs now
+  belong to the base its sync writes under. A run with no sync source is still
+  matched by its collection name.
+
+## [1.25.0] - 2026-10-27
+
+### Changed
+
+- Upgrade the backend dependency snapshot, including Pydantic AI 2.61 and
+  harness 0.61, and adapt tool retries, streamed errors and cache reminders to
+  the new message parts (#2476). The Thinking capability also exposes the SDK’s
+  new `max` effort level. Existing retry histories and checkpoints still
+  load without a database migration or republishing agents. **Upgrade action:**
+  drain or stop the old API and workers before starting the upgraded processes;
+  do not mix versions. Once a history contains the new retry parts, a code-only
+  rollback to the previous SDK cannot read it. See the
+  [retry-history upgrade boundary](docs/deploy.md#retry-history-upgrade).
+
+## [1.24.0] - 2026-10-27
+
+### Added
+
+- Organization proactivity uses the Agent Builder's provider, model and vault-key
+  picker, including inline model-profile creation for members with
+  `connections:manage`. Budget managers can select existing profiles, and saving
+  the organization applies the choice to nightly suggestions and MCP watches.
+
+## [1.23.0] - 2026-10-27
+
+### Added
+
+- `GET /agents/ceiling`, for a caller with `agents:edit`: the deployment's
+  agents-per-organization limit (`limit`, null for none) and whether a create
+  would hit it (`at_limit`). The organization's count against it (`held`) is
+  given only to a caller whose `agents:view` reaches every agent, since it
+  includes agents others cannot see (#2488).
+
+- `GET /kb/{kb_id}/ingestion` says whether one knowledge base's documents are
+  still indexing, with `processing_count`, `indexed_count` and `failed_count`,
+  counted over the documents its page lists. It is part of the public API
+  (#2486).
+
+### Fixed
+
+- The coding agent's key picker offers only keys for the chosen harness - Anthropic
+  for Claude Code, OpenAI keys and ChatGPT sign-ins for Codex - plus `custom` keys
+  and the one already bound, and publish refuses a key stored for another
+  provider, naming the ones the harness takes. Claude Code behind `base_url` still
+  takes any key, the gateway's. Republishing an agent refused here means its key
+  was going to the wrong vendor and failing every task; rebind it, or store it as
+  `custom` if it is right. A capability can now map a config field's values to
+  the purposes its key may have (#2485). The picker respects endpoint defaults,
+  preserves sign-ins accepted by other capabilities and marks a retained key
+  that no longer fits after a harness change.
+
+- Knowledge citations name a page only for sources that have pages, such as PDF,
+  presentations and paginated office formats. Markdown, text, `.docx`, HTML,
+  spreadsheets and images name only the document; a stored structural page 1 or
+  a header-like code comment is not a location. The rule applies when results
+  are shown, so existing collections need no re-ingestion. Knowledge search in
+  the console follows the same rule (#2489).
+
+- Say an organization is at its agent limit before a create is attempted. At
+  the limit the Agents page disables **New agent** and template installs with
+  the reason, instead of refusing the create after the dialog is filled in, and
+  onboarding no longer offers to guide a create there. The server-side refusal
+  is unchanged (#2488).
+
+- Keep known realtime voice, text-to-speech, transcription, image, video and
+  embedding models out of agent and chat model pickers. Profiles and provider
+  suggestions report `chat_capable`; saved profiles also update when a provider
+  listing arrives later. Publish, rollback, draft checks and test runs reject
+  incompatible primary, reviewer, specialist and capability models, including
+  the first three fallbacks the runner can use. Runs reject incompatible
+  conversation overrides before starting, skip incompatible fallbacks and avoid
+  inventing specialists on them. Architect chooses a chat model. Provider
+  aliases share their vendor's classifications; unknown models and custom
+  endpoints remain allowed. Stored specs still load; a version on an incompatible
+  model must be corrected before republishing or restoring it (#2487).
+
+- Report a collection as `indexing` on `GET /rag/collections/{name}/info` while
+  any of its documents is still queued or being ingested, and `complete` only
+  once none is. The response adds `processing_count`, `indexed_count` and
+  `failed_count`; a failed document is counted there rather than holding the
+  collection at `indexing`. The knowledge base page shows its own state from
+  `GET /kb/{kb_id}/ingestion` and keeps refreshing until the whole batch has
+  settled (#2486).
+
+- Pin `sandboxd` to `ghcr.io/vstorm-co/sandboxd:0.2.37`, the version of the
+  backend's `pydantic-ai-backend` client, in every compose file. A cached
+  `sandboxd:0.2` older than the client answered every command with a 404 that the
+  platform reported as a lost session. A sandbox service that does not serve a
+  route the client needs now fails the tool call with a version mismatch that
+  names the image to run, including legacy conflicts when attaching saved session
+  references. The conversation reopens its session by name on the next turn.
+  `agenticos cmd doctor` checks each sandbox connection's routes. To
+  upgrade, redeploy with `scripts/deploy.sh` or `make dev`, which pull the pinned
+  tag. `make prod` does not start the `sandbox` profile, so on a stack started
+  with it, pull and recreate `sandboxd` with `--profile sandbox` (#2484).
+
+## [1.22.0] - 2026-10-26
+
+### Added
+
+- Architect recommends Projects for continuing research, writing, coding and
+  analysis, with a complete LLM wiki workflow for sources, linked notes, an index,
+  updates and verification. Platform MCP can find, inspect and create private
+  projects through the caller's existing permissions and approval flow. Architect runtime
+  guidance reaches existing installations without replacing customized instructions
+  or changing other agents and external MCP clients.
+
+## [1.21.0] - 2026-10-26
+
+### Added
+
+- Independent light and dark controls in signed-in and public app viewers.
+  Start app frames with a light preference instead of inheriting the console
+  theme; preserve authored colors, page state and stored versions.
+
+## [1.20.1] - 2026-10-26
+
+### Fixed
+
+- Explain why existing private provider keys or ChatGPT sign-ins cannot be
+  selected for organization speech to text, instead of implying the vault
+  has no credentials for the provider. Show provider icons and consistent masked
+  key hints in Voice calls and Dictation key selectors.
+
+## [1.20.0] - 2026-10-26
+
+### Added
+
+- Organize organization settings into permission-aware tabs, with shareable
+  tab URLs and form drafts preserved when switching sections.
+
+## [1.19.0] - 2026-10-26
+
+### Changed
+
+- Generate follow-up buttons only with an explicitly selected separate model,
+  after the answer is saved. Suggestions no longer block turn completion or the
+  next prompt; late results attach to their original answer. Channel buttons
+  are generated after the main reply is posted. Auxiliary requests retain
+  budget checks, privacy settings and independent cost accounting.
+  **Upgrade:** select **Model for next steps** in the Follow-ups capability to
+  enable suggestions. An empty profile now disables them; the main agent no
+  longer receives `suggest_next_steps`.
+
+## [1.18.1] - 2026-10-26
+
+### Fixed
+
+- Show proactive runs with their own icon and filter in Activity and Dashboard.
+  Record their model requests, tool results and final answer for inspection,
+  and explain the fixed AgenticOS attribution beside organization settings.
+
+## [1.18.0] - 2026-10-26
+
+### Fixed
+
+- A loop whose item fails, with parallel legs in its body, no longer starts the next
+  iteration while the legs of the failed one are still running: `collect` lets them
+  finish and `stop` cancels them. (#1800)
+- Send a message answers inside the bound thread on Slack and Mattermost and in the
+  forum topic on Telegram, instead of at the top level; a channel or thread id the
+  platform cannot address fails with `CHANNEL_TARGET_INVALID` before sending. (#1800)
+- The public form marks each answer the server refused (`details.problems` entries
+  carry `type`) and says when the form changed, could not be read, or was too long.
+  (#1800)
+- The editor accepts a merge of an error-routing step's branches, as publish does;
+  the merge copy no longer speaks of an If only. (#1800)
+- Renaming a Switch rule, classifier category, error branch, Split branch or approval
+  choice carries its wires, bindings, template references and quick log in one undoable
+  edit; a log alert on the old name is flagged. (#1800)
+- Send a message added after a Channel message trigger starts as the trigger's bot
+  with `channel_id` and `thread_id` bound when the platforms match. (#1800)
+- Google Workspace and Microsoft 365 tools are grouped by app (Calendar, Drive, Docs,
+  Sheets; Outlook Calendar, OneDrive, Excel); sign-in tools are not offered. (#1800)
+- The `mcp.call` reference lists every failure code. (#1800)
+- A branch, rule, category or choice named `error` on a step that routes its errors is
+  now refused, naming the clash and asking for another name, in the editor and at
+  publish; a saved workflow that already has one needs the rename before it
+  publishes again. The other clashes - `in`, `other`, `default`, `approved`,
+  `rejected`, `otherwise`, and `unsure` with a minimum confidence - were already
+  refused and now get the clearer message, on the entry. A `logic.merge` can also
+  take two ports of one branching step wired straight into it, such as
+  `ai.classify`'s `needs_reply` and `unsure`, which publish read as two edges from
+  one branch; it runs once, for the port taken. Two edges from the same port stay
+  refused.
+- A `logic.merge` can rejoin `ai.classify`'s branches - `unsure` with a category,
+  or two categories - where publish refused it, although the step always leaves by
+  exactly one port. A node now declares `exclusive_branches` when it registers,
+  the node catalog carries it, and both the server and the editor read it instead
+  of a list of node ids each kept by hand.
+- Reserve workflow inputs, test snapshots and Wait payloads before storing them;
+  authenticate resume links before reading bodies. Backfill retained byte counters
+  with migration `0232_workflow_input_bytes.py` while API and worker writers stop.
+- Protect files referenced by stored graphs and retained imports during cleanup
+  and workflow deletion, and unregister GitHub hooks on successful deletion.
+- Serialize eval-case creation, refuse structured Combine keys without retries,
+  refresh terminal files independently and include all workflows in dashboard totals.
+- Cover storage lifecycle locks and editor workflow changes in regression fixtures.
+
+- Bound foreach output collection before loading JSONB, validate terminal node
+  results without retrying completed effects, and keep summary group keys intact.
+- Preserve app-admin authority on workflow sockets and error workflows; page the
+  version history without fetching graphs, with incremental loading and retry in
+  the editor. Document the inherited deployment-wide storage quota gap.
+
+- Reject JSONB-incompatible workflow draft values after authorization and revision
+  checks, before persistence, using the same validation as run admission.
+
+- Stream table exports through one bounded cursor instead of rescanning byte-sized
+  pages. Concurrent edits cannot mix record snapshots; early close releases the cursor.
+
+- Bound table export pages by decoded JSON bytes, serialize exports per organization
+  and rate-limit their starts. Redact echoed MCP credentials, share one image-attachment
+  byte ceiling and normalize workflow filenames before persistence.
+- Preserve current app-admin authority for unattended workflow admissions; reject
+  JSONB-incompatible run inputs, keep missing join keys unmatched and support CSV
+  fields above Python's implicit parser limit with typed parsing failures.
+
+- Preserve numeric workflow settings, including exponent notation and sub-minute
+  deadlines; validate field limits before saving and support keyboard submission.
+
+- Preserve monthly workflow budget accounting when history retention removes paid
+  runs. Only amounts and admission times survive, with deletion and accounting
+  committed atomically; history cleanup no longer replenishes the budget.
+
+- Workflow retry refuses missing successful outputs, cyclic ancestry and deleted
+  called-run history instead of repeating effects. Called-run cancellation,
+  budget and revoked-principal failures retain their non-bypassable outcome.
+
+- Webhook test and live deliveries enforce body limits during streaming; bodyless
+  HTTP statuses send an empty response. PDF image conversion checks its page
+  ceiling before page enumeration. Rollups keep large averages finite and expose
+  overflowing sums as empty; malformed bracketed URLs produce cell errors.
+- Agent table grants and linked-column pickers load the complete visible catalog,
+  including tables beyond the first 100, with retryable catalog errors.
+
+- Workflow model steps now use the remaining run budget, called workflows inherit
+  budgets and deadlines, and descendant spend is included without double booking
+  repeated settlements. Workflow totals, daily charts and call-step statistics
+  include called-run fees consistently. Retrying calls preserves successful child effects and
+  imports their output files after rechecking access.
+- Decision and knowledge-search steps record model and embedding fees, including
+  fees incurred before a search fails, in the organization bill even after run
+  retention. Migration `0227_workflow_node_spend.py` retains these direct fees;
+  `0226_workflow_child_cost.py` rolls existing child spend up to callers.
+  Organization keys cannot inspect or import
+  files from personal workflow runs.
+- Deferred table deletion keeps the organization selected when it was requested;
+  version comparison fits narrow editor panels.
+
+- **Workflow review follow-ups.** Organization keys cannot consent to page data or
+  start human-only page actions. Named MCP approvers need decision permission both
+  at publish and when asked. Resume bodies stop at the workflow input cap while
+  streaming. Retries import reused file outputs; retention keeps their producers
+  and active retry sources. Table mutations atomically enforce a per-organization
+  aggregate JSONB storage ceiling across records, history, receipts and outbox.
+
+- **Workflow file processing stays within its limits before saving.** CSV
+  conversions cap dimensions and encoded output, PDF extraction stops at its
+  page and text limits, downloads classify only a prefix, and sandbox reads
+  stop while streaming past the remaining byte allowance. URL filenames cannot
+  carry NULs into storage, and HTTP credentials are removed after JSON decoding
+  as well as in URL-encoded echoes.
+- **Workflow references keep their authority and meaning.** Admission rechecks
+  access to literal files; named approvers must still be able to decide;
+  retention keeps called results while their caller is pending; exporting an
+  inline agent preserves application values that look like UUIDs.
+- **Workflow autosave reuses the saved graph.** Saving no longer fetches the
+  same detail again or invalidates immutable version graphs on every edit.
+
+- **Reloading and restoring workflow drafts keep their editor.** A response that
+  arrives after opening another workflow no longer replaces its graph or marks
+  it conflicted. A failed conflict reload keeps local changes, shows the error
+  beside the controls and lets the editor try again. A publish conflict also
+  marks a clean draft unsaved, so Overwrite saves the visible graph before
+  Run or Publish can use it.
+
+- **A Gmail portal card asked for GitHub credentials.** The card a portal
+  shows when its OAuth app is missing or stored twice named GitHub whatever the
+  portal; it names the portal now.
+
+- **Workflow approvals reach the console.** The Approvals tab's "Workflow steps
+  waiting on you" card read `/api/workflow-approvals`, which the console never
+  forwarded, so a waiting **Ask for approval** step showed as nothing waiting.
+
+- **An agent and a workflow name a select's choice by its label.** The
+  schema an agent reads lists a select's options by label, yet its table tools
+  wrote, filtered and read back option ids, so writing `Won` was refused and a
+  workflow condition on `fields.Stage` never matched. Agent tools, table steps
+  and the New table record trigger now take a label (or an id) and read
+  choices back as labels; a value naming no option is refused with the
+  options the column has.
+- **A Wait can wait for a call.** #1947 proposed a Wait until a resume
+  webhook, and only waits for a time shipped. With **Wait for a call to the
+  run's resume link**, the step goes on when the address a new **Resume
+  link** step hands on is called, taking the JSON sent as `body`, or when
+  its time runs out. `POST /api/v1/workflow-resume/{run_id}/{token}` needs
+  no sign-in - the link, a MAC of the run under `SECRET_KEY`, is the
+  credential - and answers `404` for a link that is not the run's and
+  `WORKFLOW_NOT_WAITING` (409) when nothing waits. Migration
+  `0200_node_run_resume_payload.py`.
+- **A test run on the canvas, and a step switched off, as proposed.** A
+  connection says how many items went along it when the step before handed
+  on a list, and an edit that ends the run's overlay leaves a bar with
+  **Open run** (#1933). A step switched off hands on what came into it, so a
+  later step may read a field arriving there; publishing refuses only a read
+  it could not answer (#1939). A step that waited and went on - a called
+  run, a timer - counts one try, where it showed two.
+- **The Transform reference shows the steps chained.** #1948 asked that they
+  compose without a code step in the reference's examples, which it had none
+  of: it now has three, and a test runs two of them end to end.
+- **What the workflow issues proposed and the first pass left out.** The
+  description is edited in the editor's header like the name (#1942). Run
+  history narrows by when a run started (#1943). A date step that names no
+  timezone writes in the workflow's, kept on the run from its start in
+  `workflow_runs.timezone` (migration `0199_workflow_run_timezone.py`, #1944).
+  A called run links back to its caller and the calling step to the run it
+  started (#1946). Before any run a step's panes list the fields it declares,
+  and a long table can show every row (#1934). The code editor boxes the
+  bracket beside the cursor with its match (#1952). A missing value is said
+  once its field is left, and a description that only repeats its label
+  becomes a hint on it (#1957).
+- **A table can be created from a CSV file.** #1961 asked for it and only
+  importing into an existing table shipped: **Start from a CSV file** in New
+  table reads the columns and their types from the file, and its rows are
+  imported, already mapped, once the table exists.
+- **Records written together keep their order.** A batch, an imported file
+  or a workflow's loop writes its records in one transaction, and each took
+  that transaction's start as its `created_at`, so the default listing's id
+  tiebreak shuffled them. A record is now stamped when it is written.
+- **Archiving a column says what still uses it.** A refused archive, from the
+  header menu or the Columns dialog, lists the workflows (linked), saved views
+  and triggers that use the column instead of a notice naming nothing - #1963
+  asked for it. `SCHEMA_DEPENDENCY` now gives each dependent's `name`, null for
+  a trigger in a workflow the caller cannot open.
+- **Arrow keys move between a table's cells.** #1959 asked for it; the grid
+  edited a cell in place but only the mouse or Tab moved between them.
+- **A record delete can be undone.** Deleting from the grid or the record panel
+  waits a few seconds with Undo in its notice before it is sent, the records
+  leaving every view at once - #1960 asked for it and it was missing.
+- **A table's grid adds records as you type.** The new-record line under the
+  rows, which #1958 asked for, was missing: what is typed goes into the first
+  text column and Enter creates the record, or opens Add record with it when
+  another column is required.
+- **A required setting left empty stops "Ready to publish".** An agent, a
+  table or the people to tell that a step still needs is now marked in the
+  editor, as publishing would refuse it, instead of the badge saying the draft
+  is ready.
+- **A secret for "Something else" can take any shape.** The vault form offers
+  every kind for it, but the server stored only an API key that way and refused
+  the rest - which left an HTTP step's credential, a kind no listed service
+  takes, impossible to add.
+- **Headers can be edited on a step.** A step's headers - an HTTP request's,
+  a download's, an upload's, a webhook answer's - showed as an empty text box
+  that could not hold them; each is now a row of a name and its value. The list
+  a Filter, Combine or Transform step works on is also a required input, shown
+  at once rather than folded under More options.
+
+- **Deleting every step of a workflow no longer fails its autosave.** A draft
+  with no steps is stored as no graph, the draft a new workflow starts with,
+  instead of being refused and retried behind "Save failed".
+- **The sandbox script steps run on a real sandbox host.** They asked for a
+  connection kind no host can be registered as, so every run failed with
+  `SANDBOX_UNAVAILABLE` and every publish was refused. They now run on a
+  `sandboxd` connection as it is registered, and the editor picks the host from
+  the organization's own instead of asking for its id.
+- **The workflow editor opens read-only for a workflow the caller cannot
+  edit.** It decided from the role alone, so a builder opening another
+  builder's private workflow got the full editor and an autosave that failed on
+  every write; the workflow's detail now carries `can_edit`, resolved for that
+  workflow (#1925).
+- **A run page shows every step of a long loop.** It read the first 500 steps
+  only, so later iterations and their failures were missing from the counts,
+  the canvas and the step list; it now reads every page (#1925).
+- **A trigger switched off while the consumer was judging a record starts
+  nothing**, because each trigger is re-read under its lock before it admits a
+  run. Two mapping keys that are the same once trimmed are refused instead of
+  one silently replacing the other (#1785).
+- **A `notification.send` three loops deep notifies instead of failing** on an
+  occurrence id longer than its column, and an `http.request` or
+  `http.upload` can no longer put its operation key in a header the transport
+  or the credential owns, such as `Authorization` or `Host` (#1925).
+- **A table step retried after its write committed replays it instead of
+  failing.** An update, upsert or delete with no revision bound read the record's
+  revision before writing, so a retry after the first write had moved it on sent a
+  different request under the same key and was refused as `IDEMPOTENCY_KEY_REUSED`
+  (or, for a delete, found no record). The revision is now read under the record's
+  lock and left out of the request the key is tied to, so the retry replays the
+  first write (#1793).
+- **A list binds to a tuple and back.** Publishing refused binding a
+  `table.record.query`'s `records` into a loop's `items`, because one is a tuple
+  and the other a list; both are one JSON array, so only their element types are
+  compared now. The editor also stopped flagging bindings through a value with
+  no declared shape, and routed error ports, that publishing accepts (#1790).
+- **Starting or reading a workflow run from the console reached nothing.** The
+  console never forwarded `/workflow-runs`, so nothing it asked about runs got an
+  answer; it does now (#1790).
+- **Virtual Tables: what a tenant can store is now bounded.** History, receipts and
+  the outbox had no ceiling, so one member could grow the shared database with tiny
+  requests (#1823). A record's values are capped at `TABLES_MAX_RECORD_BYTES`
+  (1 MB), which bounds the snapshots a create, a delete and a receipt keep, and an
+  update's history row keeps only the cells that changed. An organization is capped
+  at `TABLES_MAX_PER_ORGANIZATION` tables and a table at `TABLES_MAX_RECORDS_PER_TABLE`
+  records; a write over a limit is a `QUOTA_EXCEEDED` (402) naming the quota, audited
+  without the content. The daily retention sweep now removes receipts after 24
+  hours, dispatched outbox rows after 3 days and record history after 365 days
+  (`TABLES_RECEIPT_TTL_HOURS`, `TABLES_OUTBOX_RETENTION_DAYS`,
+  `TABLES_HISTORY_RETENTION_DAYS`), with one audit entry per organization naming the
+  class and count. Table writes, in the console as much as over the API, are limited
+  to `RATE_LIMIT_TABLE_WRITES_PER_MINUTE` (300) per member and organization. A
+  retried write whose receipt has expired now executes as a new write. A record
+  already over the size limit still deletes, keeping a byte-count marker in its
+  history row instead of the values; a duplicate external id on a full table
+  answers `ALREADY_EXISTS` rather than `QUOTA_EXCEEDED`; and the daily sweep's
+  budget for receipts, outbox rows and history now scales with
+  `RATE_LIMIT_TABLE_WRITES_PER_MINUTE`, so one pass keeps draining a member
+  writing at the limit instead of falling behind it. Migration
+  `0180_virtual_table_sweep_indexes.py`; see [Virtual Tables](docs/virtual-tables.md).
+- **Trigger integrations follow provider contracts.** Sender filters use the real
+  address, SharePoint site selection requires connection-management permission,
+  calendar reads paginate with the required scopes, and file watches resolve
+  folders outside delta responses and retain their creation boundary. Debounce
+  applies only after a trigger matches. Gmail retains overflow for later ticks
+  and reads separately stored MIME bodies. GitHub App installation binding and
+  repository selection work through their own grant. The console edits file and
+  calendar filters, own changes, mentions, branches and meeting leads, and hides
+  signing-secret rotation for polled triggers. Reconnect Microsoft Files and
+  Google Calendar accounts to approve their additional read scopes.
+
+- **A Gmail trigger no longer fires on the account's own mail.** Sent mail,
+  drafts, spam and the bin were read as arrivals, so an agent replying by email
+  set its own trigger off. They fire only a trigger whose label names them.
+- **A sender filter fires only on mail the sender signed.** `sender_contains`
+  read a `From` anybody can type. Gmail and Outlook triggers that filter on the
+  sender now fire only when DMARC passed or the sender's domain signed it with
+  DKIM, read from the provider's own `Authentication-Results`; Outlook counts
+  mail inside the tenant as signed. `authenticated_only` turns it on or off per
+  trigger.
+- **What an event carries is fenced off from the prompt.** An issue, an email or
+  a webhook body reaches the run inside a block marked as data, not appended to
+  the instructions where a sentence in it could read as an order.
+- **One trigger fires at most 60 times a minute.** A verified delivery past that
+  is a `429` with `Retry-After`, so a leaked secret or a relay in a loop cannot
+  spend the budget.
+
+- **A mailbox whose consent was withdrawn stops its triggers** (#1984). Gmail
+  and Outlook triggers were left on and retried every minute in silence; they
+  are now turned off with the reason in the audit log, and the card asks for a
+  reconnect. A refresh token the provider refuses as `invalid_grant` - or, from
+  Microsoft, `interaction_required` or `consent_required`, which a new MFA or
+  Conditional Access policy brings - is no longer spent again.
+- **Editing a mail trigger's subject or sender keeps the rest of its filter.**
+  Saving the two fields replaced the whole filter, dropping a Gmail label.
+
+- Read chat project metadata without downloading the transcript, and load model
+  summaries only for model-history reconstruction. Coalesce streamed text updates,
+  reuse unchanged Markdown and tool output, follow content size changes, and release
+  completed visual frames outside the viewport (#2469).
+
+### Security
+
+- **Workflow steps no longer hand back a Basic credential, unpack a DOCX
+  bomb, or fetch unbounded sandbox output.** A Basic-authenticated
+  `http.request` or `http.upload` whose far side echoed the `Authorization`
+  header returned the base64 `username:password` pair, because only the raw
+  password was scrubbed; both forms are now. `text.extract` expands a Word
+  document under the member and total bounds a chat upload has, failing
+  `DOCUMENT_TOO_LARGE` past them. `code.python.sandbox` measures what a job
+  left inside the sandbox and refuses more than 20 files, 100 MB or a 10 MB log
+  before fetching any of it into the worker.
+- **Starting a run over the workflow-run WebSocket spends the per-minute run
+  allowance** that `POST /workflow-runs` does. Before, one socket could start
+  runs past the limit.
+- **An HTTP credential only goes where its secret says.** A workflow's HTTP step
+  authenticates with a new `http_credential` vault kind: a token sealed with
+  the origins it may be sent to. The origin is checked on the URL about to be
+  dialled, after binding and on every redirect, so a URL typed by an editor or
+  taken from a run's input cannot aim the organization's credential at
+  another server. The response never carries it back (#1789).
+- **Workflow starts are bounded by node work, not just start count.** The
+  per-minute run limit charges one token per start, which let an authenticated
+  caller start many wide graphs below the limit and grow a persistent backlog on
+  the runner shared with ingestion, triggers, approvals and notifications -
+  starving other tenants. A run now reserves its graph's node count against a
+  ceiling on the queued and running node work one organization
+  (`WORKFLOW_MAX_ACTIVE_NODE_RUNS_PER_ORG`), and one caller across every
+  organization they run in (`…_PER_PRINCIPAL`), may hold at once - so a person
+  who can create organizations cannot multiply their allowance across them. Each
+  run reserves its whole graph node count on its row, and the ceiling is measured
+  against the sum of those over live runs, so a wide graph holds its reservation
+  from the instant it is admitted - not once its nodes fan out - and the check is
+  serialized per organization and per principal so it cannot be raced. A start
+  over the ceiling is refused with `429` `WORKFLOW_ADMISSION_QUOTA_EXCEEDED` until
+  running work drains. Migration `0185_workflow_run_node_count.py`. (#1907)
+
+### Changed
+
+- **Existing control-step fan-out now runs concurrently.** The steps a port is wired
+  to run at once. A graph that relied on one leg finishing before another starts must
+  order them with connections. (#1800)
+- **The If and Switch rules on joins changed.** A step several branches reach needs
+  no Merge, but may bind only to steps certain to have run before it. A
+  Merge waiting for **the branch that ran** is refused when two of its inputs can run
+  together, and one waiting for **all branches** when an input may not run. Two Output
+  or two Respond to webhook steps that can run together, and an error handler fed by
+  two steps able to fail in the same run, are refused at publish. (#1800)
+- **A step result that arrives late is recorded as finished.** A step that completes
+  after its run ended, or was cancelled, is `succeeded` with its output kept, nothing
+  follows from it, and a retry of the run reuses it. (#1800)
+- **A step that needs attention is closed when its run is cancelled or fails**,
+  instead of being left live. (#1800)
+- **A workflow can no longer listen to a Teams bot.** A Channel message trigger on a
+  Teams bot is refused at publish and on a test run; a Teams listener published
+  earlier hands its messages back to the bot's agent. (#1800)
+- **An If or Switch with nothing bound to `value` is refused** at publish and on a
+  test run; versions published before keep running and read null. (#1800)
+- **Send a message no longer quotes a message id on Telegram.** A graph that bound a
+  message id as `thread_id` to quote-reply now fails; bind the trigger's
+  `thread_id`. A channel or thread id containing `:` is refused. (#1800)
+- **`mcp.call` retries by what could have reached the server.** A failure before
+  the call - the server could not be reached, or did not answer the connection or
+  the tool listing - is a retried `MCP_CALL_FAILED`, for every call. A call that
+  breaks off after it was made is retried when it carries an idempotency key or
+  the tool is marked read-only; any other now ends **Uncertain** and waits for a
+  person, because the tool may have acted. `MCP_CALL_FAILED` used to fail the step
+  without a retry; a failure before the call is now retried.
+- **`work-iq`'s catalog entry states its limits:** changes (create, update, send)
+  are blocked until a tenant administrator allows them by policy, it is billed in
+  Copilot Credits, and it answers 25 results by default. The four watch
+  presets that used the Work IQ mail and Teams servers (`mail-needs-reply`,
+  `mail-invoices`, `mail-newsletters`, `teams-unanswered`) now point at `ms-365`;
+  `teams-unanswered` needs the server to run with `--org-mode`.
+- **A mail agent trigger's prompt names the message and its thread.** A Gmail or
+  Outlook trigger's prompt gains a `Message-ID:` and a `Thread:` line, each only when
+  the mail carried one; an id over 998 characters is left out. The Outlook poller
+  makes one more Graph request per message, to read the HTML body, for every
+  Outlook poll, agent triggers included. It also lists only file attachments, so
+  an attached email or a cloud link no longer appears on the prompt's
+  `Attachments:` line.
+
+- **BREAKING: startup refuses more `MCP_ALLOWED_HOSTS` entries.** An entry that
+  names `POSTGRES_HOST`, `REDIS_HOST` or the `PUBLIC_BASE_URL` host (which let an
+  MCP connection reach those services), a multicast address, a CIDR range or
+  suffix that covers a loopback, link-local or metadata address (such as
+  `127.0.0.0/8` or `.internal`), or anything that is not a host, a `.suffix`, an
+  IP address or a CIDR range (a port, a scheme or a glob such as `mcp:8080`,
+  `http://mcp` or `*`, which never matched anything) now stops startup. A listed
+  name that resolves to a loopback or metadata address, for example a sidecar
+  alias for `127.0.0.1`, is now refused when an MCP connection is saved. Remove or
+  fix such entries before upgrading; any other entry keeps working.
+- The agent version history shows "Too long to compare line by line." for a spec
+  over the diff's line limit, instead of two rows holding both whole texts.
+- **Workflow runs run on the Postgres job queue.** Every node attempt is a
+  `workflow-dispatch-node` job on the agent pool, queued in the same transaction as
+  its outbox row, so a run never starts without its job and a rolled-back start
+  leaves none; a timer or a retry's backoff is the same job with `run_after` set to
+  the time it is due. The row, not the job, still holds the run's position, and the
+  job runs once. Five sweeps - `workflow-dispatch-poll` and `workflow-schedules-check`
+  every minute, `workflow-reconcile` every 30 seconds, `workflow-table-triggers`
+  every 10 seconds and `workflow-run-retention` daily - are the backstop, and a run
+  someone is waiting on (a webhook answering, a chat, the API) goes ahead of one
+  that started itself. Node jobs share `WORKER_AGENT_CONCURRENCY` and the worker's
+  memory with agent runs. [Configuration](docs/configuration.md#workflow-runs) has
+  the job volume.
+- **A click selects a workflow step and a double click opens it**, so a step
+  can be picked out to move, copy or delete without its dialog opening.
+- **A workflow's save status no longer pushes the header around.** "Unsaved
+  changes" and "Saved" sit under the title after its tags, where a status that
+  changes length moves nothing, instead of beside the header's buttons.
+- **An agent step shows which agent it runs.** The picker lists each agent
+  with its face and description, and each version with the live one marked,
+  its date and release note; the step's card and dialog wear the agent's face,
+  and a card that pins an agent, a table or a workflow names it under its title.
+- **A Filter or If card reads its condition** - "score ≥ 80 and stage ≠ Won" -
+  rather than the expression, which shows only when the builder cannot read
+  it; and a workflow's description is edited as the text it is, not in a box.
+- **A table step's data reads as the table does.** Its records show in the
+  table's column order, which the stored run data cannot keep, with the
+  column's name ahead of its quieter `fields.` prefix; a table step's column
+  list names each type in words with its icon; a yes/no cell is a tick; a
+  filter's value field says so; and a run that waited a day reads "22 h 14
+  min" rather than "80,081.7 s".
+- **A table's layout and its saved view are one control.** Table, Kanban and
+  List are a segmented switch with icons, followed by the view picker and the
+  **+** that saves the screen as a new view; search and filters stay on the
+  right.
+- **A select's dropdown shows its choices tinted as the grid does**, in a cell,
+  the record panel and a multi-select's list, with the chosen one tinted too.
+- **A kanban card lists up to four of the screen's columns** under its title,
+  leaving out empty ones, and a table's record count sits under its name beside
+  who may reach it, not beside the view tabs.
+- **Tables say more and ask less.** A table's card reads "14 records · 6
+  columns" and when it changed, with who may reach it as an icon; the table
+  list returns `record_count` and `column_count`. The grid shows each column's
+  type by an icon, right-aligns numbers and writes dates the way the viewer's
+  locale does; the record panel is titled by the record's first column and says
+  when it was added and changed. A kanban board with no view asks which
+  single-select column makes its lanes instead of sending you to save a view
+  first. **Import** and **Export** moved under **…**, the unsaved screen reads
+  **All records**, **Columns** has a **Required** switch and an **Archived
+  columns** section with **Restore**, and **New table** starts with a **Name**
+  column and labelled fields.
+- **A workflow step's dialog works the way n8n's does.** **Parameters** holds
+  what the step works on and is set to do in one list, the list it works on
+  first, and **Settings** how it runs: **Run this step**, what it does when it
+  is slow or fails, and a note. A text parameter takes typed text and values
+  from earlier steps in one box, with **Data** to insert one; any other
+  parameter has **Data** beside it to read its value from a step, shown as
+  *Run an agent › text* with an x to type one again - no more **Value / From a
+  step / Template** switch. **Filter a list**, **If** and **Switch** build their
+  condition from rows - field, check, value, all or any - still stored as the
+  JMESPath expression, which stays editable as one. **Input** says **Not
+  connected yet** for a step nothing leads to, names each step it reads with its
+  icon, and fields read "text", "number", "list" rather than type tokens;
+  pinned data is **test data**, and **Test step** is the main button until
+  there is some. A problem shows under the step's name, a missing value only
+  once its field was left, and labels read "URL", "Header name". Connecting a
+  step that works on a list after one that hands on exactly one binds that
+  list.
+- **A right click on the workflow canvas opens the step picker.** The same
+  searchable list the "+" opens, where the click was, with **Add a note** and
+  **Paste** beneath it, instead of a menu three levels deep; a step's own
+  right-click menu is unchanged. Searching puts a step whose name matches
+  before one whose description only mentions it.
+- **A workflow run's page shows its answer, not the envelope around it.** The
+  Output card reads the run's text, its structured result, the passages it drew
+  on and how many files it made, with the JSON folded under **Raw output**; the
+  steps count reads "3 of 3", and the step list sits above the files. In the
+  runs list a test run's version reads **Draft (test)** and a real one's
+  **Published**, a run started from the console or the API **Console or API**,
+  and each filter says what it narrows nothing to - **Any status**, **Any
+  version**, **Any trigger**, **Any time**. A workflow's timezone setting says
+  what time it is there now and refuses a zone the browser does not know.
+- **A workflow's card on the list says what starts it and how it last ran.**
+  Beside the trigger's icon: "Schedule · 4 steps", one **Live** or **Draft**
+  status, and the last run's status and when - "Not run yet" until then, with
+  who may reach it as an icon beside it. The slug, the "No description yet." line and the edit button are gone, and
+  the status filter reads **Any status** and **Live**.
+- **The workflow editor's header says where the workflow stands.** Under the
+  name: **Draft, not published**, or **Live · version 3** with **Unpublished
+  changes** once the draft differs from it the way a publish would carry.
+  Runs, Versions, Run and Publish stay in the header; Trigger, Settings and
+  Export workflow moved under **More**. The canvas says **No problems** rather
+  than "Ready to publish", the version list marks the live one, and publishing
+  names the version it makes and says when nothing changed since the live one.
+  The editor and a run's page wait for the step catalog before drawing, so a
+  connection is not drawn before the card it attaches to.
+- **A workflow's steps say what they do.** A card now reads "First 3",
+  "By score ↓", "Sum of amount by region" or "Every day at 09:00" for the
+  Transform steps and a schedule, and a step with its own name shows what kind
+  of step it is under it. Its dialog is renamed in its header, switched off
+  with **Run this step** beside **Delete step**, and names its sections
+  **Settings** and **What it works on**. A list of records typed in as a value
+  shows as JSON instead of an empty box. On a run's page a step opens on its
+  Input and Output, with the settings it ran with folded underneath.
+- **A workflow step's settings stay short, and quiet until you act.** Optional
+  settings at their defaults fold under **More options**; the failure policy and the
+  note open on request or once set; a missing required value is flagged beside its
+  field only after a run or publish is tried - the canvas mark still shows it (#1957).
+- **The workflow editor gives the canvas the whole width.** The node palette and
+  the properties panel are gone: steps are added from a picker - a quiet **+** at
+  the canvas's corner, **Add step** on an empty canvas, the **+** beside an output,
+  or a right click where the step should go - that lists sections, then groups
+  such as Slack or Tables, then their steps. A step's settings open in a dialog
+  when it is clicked, and open by themselves when a step that has any is added.
+  Right-clicking a step duplicates or deletes it. Each field says beside its label
+  whether it holds a value or one from an earlier step. Every tile is neutral, and
+  a card shows its group under its name instead of a truncated description. The
+  editor's **History** is now **Versions**, so it is not mistaken for its runs.
+- **Slack, Mattermost and Telegram have steps of their own.** The generic channel
+  steps became one group per platform - Send a message, Read messages, List
+  members and Find channels where the platform allows them - each taking only a
+  bot of its platform, checked at publish and on every run.
+- **The workflow editor points at what stops a publish.** A step with a
+  problem is marked on the canvas, each problem names its step and field, and
+  choosing one selects the step and brings it into view; the publish dialog
+  lists them open. A step's name carries a short id only when two steps share
+  it, and a picker is labelled once, by its field.
+- **A stale revision on a workflow table step is no longer retried.**
+  `REVISION_CONFLICT` from `table.record.update`, `.upsert` or `.delete` fails
+  the step at once, because the same revision would conflict on every retry;
+  route it with `error.handle` to a fresh read instead (#1790).
+
+### Removed
+
+- **The six per-application Work IQ catalog entries** - `m365-mail`,
+  `m365-calendar`, `m365-teams`, `m365-sharepoint`, `m365-onedrive` and
+  `m365-word` - because Microsoft keeps those servers for compatibility only.
+  Connections already made keep working, by their address. An agent spec that binds
+  one as each person's own service still runs, but its next publish is refused with
+  a message naming the entry: bind `ms-365` (the self-hosted server, for mail and
+  calendar) or `work-iq` (to ask across Microsoft 365) instead. **BREAKING:** this
+  needs action only for a spec that binds one of them.
+
+## [1.17.0] - 2026-10-25
+
+### Added
+
+- Configure capability bindings and MCP services through AgenticOS MCP draft
+  tools, with sandbox connection, runtime and policy discovery. The Architect
+  can set up an executable sandbox and test it instead of handing configuration
+  back to the user.
+
+### Fixed
+
+- Reconcile persisted chat prompts by their submission id after a lost socket
+  acknowledgement, without merging repeated prompts or discarding live deltas.
+- Keep loading layouts aligned with forms, queue sections, dashboard placements,
+  editors, API reference, sharing controls, spend cards, file explorers and run
+  and artifact previews.
+
+- Do not enqueue pending approval requests when a workspace save failure ends
+  the run; retain standing-consent audit records for calls already authorized.
+
+- Select the service-backed sandbox when installing the Architect on a deployment
+  with a sandbox host, so its code tools are executable rather than files-only.
+
+- Recheck parked run state under the row lock before continuing after Stop. Keep
+  Stop available when restoring question or approval cards fails, and settle
+  waiting delegate panels when their run is cancelled.
+
+- Apply dashboard period, view, group and section filters when navigating to a
+  report without remounting the dashboard page.
+
+- Wait for chat session readiness before sending queued prompts, cancel pending
+  sends on context changes, and retain live or unsaved answers during transcript
+  refreshes. Reopen long conversations at their newest page, with earlier-message
+  pagination, and retain terminal trace metadata beyond the content budget.
+
+- Keep worker outage backoff bounded through prolonged database failures, and
+  retry lost LISTEN registrations and connection cleanup without stopping the
+  worker or swallowing cancellation.
+
+- Preserve database pool exhaustion as a retryable 503 during agent execution,
+  without masking it by reading a run expired by a failed transaction.
+
+- Enforce the state workspace cap after concurrent merges, preserve rejected snapshots as access-controlled recovery copies, cascade their deletion and report persistence failures to runs and project uploads.
+
+- Commit rotating OAuth credentials independently of agent preparation, drain cancellation through persistence, and serialize mailbox polls without holding credential row locks.
+
+- Bound scheduled MCP health checks to 64 oldest-first servers and eight simultaneous probes; advance unauthorized accounts so they cannot starve the queue; use a separate indexed health clock so OAuth renewal cannot postpone probes.
+
+- Serialize draft saves, publish/rollback version allocation and environment
+  changes per agent. Preserve edits waiting behind a publication, refresh
+  serving pointers after lock waits and allow new runs to start during
+  publication validation.
+
+- Use effective per-resource edit access for context, skill and vault controls.
+  Honor explicit edit grants and hide write actions on private resources
+  shared read-only, while keeping collection creation gated by its permission.
+
+- End console voice calls and pending microphone/setup/reconnect work on
+  tenant or account changes. Ignore stale media and transcript callbacks,
+  and keep late failures from ending a newer call. Public embeds retain
+  their separate visitor scope.
+
+- Show failed context-detail, retention-policy, environment and watch reads
+  with retry controls instead of endless loading or misleading empty states.
+
+- Serialize first-account bootstrap across password and OAuth signup so only
+  one account gets deployment-administrator authority. Grant that authority
+  to the first OAuth account and recheck the signup policy after contention.
+  Hash passwords before taking the bootstrap lock and send best-effort welcome
+  mail only after account creation commits.
+
+- Heartbeat proactive model runs while they execute, meter each response,
+  and durably settle consumed tokens on failure or cancellation, including
+  repeated cancellation during terminal persistence.
+
+- Batch knowledge-source audience reads by resource type so the Builder does
+  not make one grant query per private skill, context file or connection.
+
+- Prepare chat grouping, turn usage and request context in linear time per
+  stream update, and skip rendering unchanged message items between deltas.
+
+- Report truncated host workspace trees in the flat Documents listing.
+
+- Retain conversations with unfinished runs and purge one locked batch of
+  conversation rows and files. Commit durable file-cleanup jobs with retention
+  deletes, and isolate each retention class so a SQL failure cannot abort
+  the remaining classes or unlink files whose row deletion rolled back.
+
+- Erase mem0 memory using the SDK's supported user identifier. Include draft
+  and retained version destinations, clear all owners when clearing an agent,
+  and report unavailable credentials or incomplete erasure as failures.
+
+- Keep trigger histories in separate conversation-specific cache entries,
+  ignore stale admin-user search responses and own file-preview blob URLs
+  through committed subscriptions so Strict Mode cannot revoke a live preview.
+
+- Reap partially started worker pools on failure or cancellation. Keep job
+  deadlines and memory watchdogs active while writing to a child's stdin,
+  and stop a child that closes its pipes without exiting.
+
+- Run synchronous RAG embedding calls on the bounded I/O pool so retrieval
+  and ingestion leave the event loop responsive. Preserve the caller's spend
+  context and settle an in-flight response before propagating cancellation.
+
+- Keep voice-history summaries and image generation under the host agent's
+  tracing policy. Refuse new image requests after a run exhausts its budget,
+  meter image retries individually and price nested fallback requests using
+  the model that actually answered, including streamed responses.
+
+- Update FastMCP to 4.1.2, filelock to 4.2.1, virtualenv to 21.14.13 and
+  Pydantic AI harness to 0.59.0 to address the dependency audit advisories.
+  Pydantic AI and its graph package resolve to 2.59.0 for the harness and the
+  web-fetch security fix.
+  Update the frontend tooling lock to zod 4.6.6 and undici 8.12.2 for its
+  validation and HTTP decoding advisories.
+
+- **Session cookies no longer overwrite another app's login cookies on the same
+  hostname.** The console uses `agenticos_access_token` and
+  `agenticos_refresh_token` for sign-in, refresh and logout. **After upgrading,
+  sign in again once:** existing cookies with the generic names are ignored and
+  left untouched. Migration `0173_revoke_cookie_sessions.py` revokes
+  existing login sessions, including refresh chains and impersonations;
+  session-based API clients must also sign in again. API keys and HTTP API token
+  fields are unchanged. Downgrading does not reactivate sessions. Use separate hostnames
+  for unrelated apps to keep authentication cookies from reaching another app's
+  server; different ports and cookie names do not provide that isolation.
+
+- Sandbox launchers use Docker Desktop's VM socket group on macOS, retain the
+  socket group on Linux and respect explicit `DOCKER_GID` overrides (#2296).
+
+- Return to sign-in when refreshed session cookies are still refused, including
+  when another tab recently refreshed, instead of leaving agent pages loading (#2269).
+
+- Connect the worker wake-up listener with PostgreSQL TLS settings and cap its
+  reconnect delay without overflowing during a long database outage (#2453).
+
+- End live chat traces even when setup is cancelled before the model starts,
+  discard dead writers and show completed replayed answers from the transcript
+  without typing them out again when a conversation is reopened (#2454).
+
+- Organization usage reports open the organization Dashboard for the report
+  window and tenant; the shared email button accurately says Open console (#2455).
+
+- Keep Stop available while chat waits on a question, approval or account
+  connection, including reloaded parked runs. Cancelling a parked run closes
+  pending calls without continuing the model and preserves its recorded spend.
+
+- Treat OAuth grants with `expires_in=0` as already expired so they can be refreshed instead of reused indefinitely.
+
+## [1.16.0] - 2026-10-23
+
+### Added
+
+- **An agent can override its speech and video settings per clip.** The voice,
+  resolution, shape, length and sound an author sets are now defaults the
+  agent may change for one clip. The limits are the author's: a list of
+  allowed voices - from the provider's list, or ElevenLabs voice ids with a
+  note saying who each is - and a highest resolution, which prices a clip at
+  the resolution the agent chose. Left empty, the agent may use any voice or
+  resolution the model offers, and the Builder warns about it (#2259, #2260).
+- **Agents can make video.** The new `video_generation` capability gives an
+  agent a `generate_video` tool that makes a short clip through Google Gemini
+  Omni, ByteDance Seedance on BytePlus, xAI Grok Imagine or Alibaba Wan 3.0,
+  chosen per agent with a model, resolution and shape, and optionally starting
+  from an image the agent generated in the same run, or one in its workspace.
+  The clip plays in the conversation, where a generated image would be shown.
+  Its per-second price is checked against the budget before the job is
+  submitted, and a job past the agent's time limit is cancelled where the
+  provider allows. Google keeps the request it answers, because Gemini delivers
+  a clip by address only from a stored interaction. `GET
+/providers/video-models` lists each model's lengths, shapes, resolutions and
+  sound. A clip the provider took, or may have taken when its answer was lost, is
+  booked at its estimate if the run stops, or the clip cannot be fetched, before
+  it arrives. In a voice call a clip is handed to the agent's text model, since
+  a call cannot wait minutes in silence.
+  BytePlus keys are a new purpose in the vault (#2260). An Alibaba binding can
+  name its Model Studio workspace and region, which Wan 3.0 is called through
+  (#2350).
+- **Agents can speak.** The new `text_to_speech` capability gives an agent a
+  `generate_speech` tool that reads a text aloud through OpenAI, ElevenLabs or
+  Gemini, chosen per agent with a model and a voice. The clip plays in the
+  conversation, exactly where a generated image would be shown. Its cost is
+  checked against the budget before the call, from a dated per-character
+  price, and booked as each piece is spoken - Gemini's from the audio it
+  returned, at its token rates, so a slow delivery is billed as the provider
+  bills it (#2351). ElevenLabs voices are named by id, because they belong to
+  the account (#2259).
+- **A catalog of text-to-speech providers.** `GET
+/providers/text-to-speech-models` lists the providers that can speak a text
+  aloud - OpenAI, ElevenLabs and Gemini - with each model's voices, formats and
+  per-request limit, gated like the image catalog. ElevenLabs joins the vault
+  as a purpose (#2259).
+- **What agents generate is bounded: a per-organization quota and a
+  retention period.** Each generated image, speech clip and video is now
+  recorded in a new `generated_media` table and counted against
+  `GENERATED_MEDIA_QUOTA_MB` (default 5120) per organization, which a
+  generation tool checks before spending anything; past it, the tool answers
+  that the organization has used its storage. An admitted call holds an
+  estimate of its file against the quota until the file is stored, so calls
+  in flight at once cannot together run past it. A daily `sweep-generated-media`
+  job deletes files older than `GENERATED_MEDIA_RETENTION_DAYS` (default 90),
+  whether or not their conversation is still there, and a file made with no
+  conversation - a preview or test run, a channel `/btw` aside, an API run
+  that names no conversation - after 7 days whatever that setting is, since
+  no member could delete anything to free it. Generated files are also deleted with their
+  conversation, with the account whose conversations they were, and with
+  their organization, by a job queued in the same transaction. **Operators:**
+  both are on by default; set `GENERATED_MEDIA_RETENTION_DAYS=0` and
+  `GENERATED_MEDIA_QUOTA_MB=0` to keep the previous behaviour - no deletion by
+  age and no limit (a deleted conversation's files still go with it). Files
+  generated before this release have no record: they are still served, but
+  are neither counted nor swept, and go only with their organization.
+  **Operators:** an organization purge, and deleting a conversation or an
+  account that holds generated media, now queue a cleanup job that only this
+  release's worker can run, so upgrade the workers with the API hosts, and do
+  not roll back to an earlier worker while such a job is queued; every other
+  cleanup job stays readable by the previous worker (#2310).
+
+### Changed
+
+- **Audio and video play in the file viewer.** An MP3, WAV, Ogg, Opus, M4A,
+  MP4 or WebM file in a workspace, or generated by an agent, is now served for
+  playback rather than as a download, so opening one shows a player. Like an
+  image, it still downloads from the viewer's own control, and a generated
+  clip answers a player's byte-range requests, which Safari and the desktop
+  app need to play video. This is groundwork for speech and video generation,
+  which store their clips the same way as generated images (#2259).
+- **A tool can no longer be renamed onto `generate_image`, `generate_speech` or
+  `generate_video`.** Publishing refuses a rename that gives another tool the
+  name of the tool that stores generated media. An agent that has one is
+  refused at its next publish, or at a rollback to a version that has one,
+  and its draft shows the problem. A version already published keeps
+  running. To publish or roll back again, remove the rename or give that tool
+  another name in the draft, and publish it.
+
+### Fixed
+
+- **A generated image is no longer lost when the sandbox will not open.** An
+  agent with the sandbox capability also copies what it generates into its
+  workspace. When the sandbox service refused to open a session, that copy
+  failed the whole turn, although the image had been made, paid for and stored.
+  The image is now handed back without a workspace path, as it already was for
+  a full workspace, and the same holds for speech (#2259).
+- **Generated images, speech and video load on a hosted page.** A visitor
+  has no session, so the card for a file an agent generated asked an
+  authenticated route and showed a broken image or player. The page's socket
+  now adds a short-lived link to each result naming a file that run's own
+  tools stored, signed with the deployment's existing secret for that one file
+  on that page, and the page reads the file through
+  `/api/v1/embed/{public_key}/generated/{filename}`, byte ranges included. A
+  link opens no other file, conversation or organization, a bad or expired one
+  gets the same 404 as a missing file, and one link is fetched at most 120
+  times a minute (#2309).
+- **uvicorn's access and error logs are redacted.** The filter that scrubs
+  credentials from the application's logs now also covers the server's own
+  loggers, so a signed `?token=` in a request line is no longer written in
+  clear. The shipped `nginx/nginx.conf` now logs request paths without their
+  query string for the same reason; a deployment with its own copy of that file
+  should add the `without_query` log format to it.
+- **Generated media is streamed.** Reading a generated image, clip or video
+  loaded the whole file into the API and again into the console's server, a
+  player's range request included, so a member who knew a long clip's name
+  could make every request hold all of it. Both now stream, reading only the
+  range asked for - from disk, or by a ranged `GetObject` on S3 (#2310).
+- **A key for another provider is refused at publish.** Image generation's key
+  picker now offers only the chosen provider's keys, as speech and video do. Publish
+  refuses a capability key stored for a different service than the binding
+  names, which before was sent to the wrong provider at every call; a `custom`
+  key is still accepted (#2258).
+
+## [1.15.0] - 2026-10-23
+
+### Added
+
+- **The agents people meet first guide them (#2301).** The general-purpose
+  starter agent is now called **AgenticOS** and wears the product's logo. It leads
+  with the answer, asks one question with proposed answers when a request is
+  ambiguous, uses what it has without being asked, and after a task offers the one
+  next step that fits - often something the person has not used yet: a routine for
+  a request that will come back, an app to share, a service to connect. It
+  remembers preferences and what was declined, and switches the console's
+  language when asked. The **Architect** builds an agent with you from "what
+  should it do" to a tested, published agent, one decision at a time: it proposes
+  the capabilities, knowledge and model, explains each choice in a line, tries the
+  draft on your own questions and publishes it when you approve.
+- **A new agent starts as AgenticOS.** An agent made with **New agent** gets the
+  starter's instructions - opening with its own `{{agent_name}}` - and whatever of
+  its capabilities, skills, platform tools, first messages and budget the creator
+  left empty; `POST /agents` does the same with `"from_starter": true`, and
+  otherwise fills in only the instructions of a spec that has none.
+  `backend/app/agents/default_instructions.py` is gone; the template is the one
+  source.
+- **Every agent knows its own setup.** Each text run's instructions carry a
+  **Your setup** section assembled from the spec: the capabilities the agent has,
+  in the Toolbox's words, and the ones it has not, so "what can you do?" is
+  answered from what is switched on and a request needing something missing is
+  told what to switch on and where.
+- **The platform's MCP server builds and schedules.** New tools: `update_agent_draft`,
+  `test_agent_draft`, `publish_agent` (needs `agents:publish`, always waits for
+  approval, runs the Publish checks), `list_models`, `list_routines`,
+  `create_routine`, `update_routine`, `run_routine_now`, `delete_routine`,
+  `search_mcp_servers`, `list_my_connections` and `set_my_language`. The last is
+  the one write no binding holds for approval, and the Builder's platform card
+  says so.
+- **The console's language is kept on the account.** Chosen in the account menu or
+  through an agent, it holds on every device, and the open console switches the
+  moment an agent's `set_my_language` call answers. Every agent answers in it.
+- **What agents know about you.** The walkthrough's first card asks your role, and
+  **Settings → Profile** keeps it with what you work on and your time zone, which
+  is taken from the browser until you choose one. Every run is told them after its
+  instructions, so "every Monday at 9" is the person's 9 and nobody repeats their
+  role in a chat. Migration `0160_user_profile` adds nullable `users.locale`,
+  `time_zone`, `job_title` and `about`; nothing changes for anybody until they set
+  one.
+- **Next steps as buttons.** The new `follow_ups` capability's
+  `suggest_next_steps` puts up to three next steps under the latest answer, and a
+  click sends one. On in AgenticOS and the Architect; left out of voice calls.
+- **A capability an agent lacks, switched on from the chat.** When a request needs
+  one, the agent shows a card. Someone who may edit it switches it on -
+  published at once when the draft held nothing else, otherwise saved to it - and
+  anyone else asks the owner, who is notified
+  (`POST /agents/{id}/capabilities/{capability_id}/enable` and `/request`, console
+  only). Migration `0161_capability_requested` adds the `capability_requested`
+  event.
+- **Keeping a request that worked.** Under your own message, one click makes it a
+  weekly routine on the agent that answered, another asks the Architect to build
+  an agent that does it. A line under an answer says what the agent remembered or
+  forgot about you, with a link to manage it.
+- **A routine's finish says what it found.** Its creator's notification names the
+  routine and opens with the start of the answer, instead of the generic "run
+  completed" one. AgenticOS offers a **Weekly tips** routine once, from the new
+  `weekly_tips` template.
+- **Get started for everybody.** The dashboard's checklist now leads with your
+  own steps, ticked from what you have done - telling agents about yourself, a
+  first conversation, a service connected with your own account, a routine and an
+  agent of your own - and keeps the organization's after them for whoever builds
+  agents. The next step says what it is for.
+- **First messages.** `AgentSpec.starters`, up to four, set under the instructions
+  in the Builder, are the cards an empty chat offers; an agent with none shows the
+  chat's own, now including "What can you do?" and "Set up a routine". The
+  Architect ships with four. The spec stays at version 13: the field is optional.
+- **Public API.** `POST /agents/{id}/run` takes `"draft": true` to run the
+  unpublished draft as a test (not with `Prefer: respond-async`); the trigger
+  routes under `/agents/{id}/triggers` and `GET /triggers`,
+  `GET /providers/model-profiles`, `GET /me/mcp-connections` and the new
+  `PUT /users/me/locale` are reachable with an organization key.
+- **Microsoft Teams as a channel** (#1985). An agent answers in a personal chat,
+  in a group chat and in a team channel's thread when it is @mentioned, through a
+  single-tenant Azure Bot reached over the Bot Connector's own protocol. Every
+  activity's JWT is checked - signature, issuer, this bot's app ID, expiry and the
+  service it names - before anything runs. Approvals and questions are Adaptive
+  Cards decided by whoever pressed them; files reach a personal chat through
+  Teams' consent card; the console builds the Teams app package. Where the
+  deployment signs people in with Entra in the same tenant, a Teams account is
+  linked to its member without a link. A trigger can post each answer to a Teams
+  channel or group chat.
+- **AgenticOS gets to know you (#2301).** While your account says nothing about
+  your role, a greeting starts a three-question interview - what you do, what
+  fills your week, which tools you use - saved to your profile through the new
+  `set_my_profile` platform tool (`PATCH /users/me/agent-context` over the API;
+  held for your approval like every write, since every agent is told what it
+  saves) and ended with up to three setup cards from the new
+  `propose_setup` tool: a routine, a service to connect or an agent of your own,
+  each one click. It offers the **Morning briefing** routine once, links to the
+  console with `?highlight=` so the page opens pointing at the control, and saves
+  a procedure as a skill with the new `create_skill` tool. A link the agent writes
+  opens in the console without a reload.
+- **The platform's own initiative, as background jobs.** Once a night, early in
+  each person's morning, one model call per person reads what they asked recently
+  and proposes a routine for a request they keep repeating, a profile, the first
+  messages their empty chat offers, and a role pack of agents. Proposals wait as
+  cards in the empty AgenticOS chat and in the bell (the new `suggestion` event);
+  a dismissed one is never made again, and nothing runs when nothing new
+  happened. Each call is a run from the new `proactive` surface, capped per
+  person per month by the organization's `proactive_limit_usd` ($1 by default, 0
+  switches it off, set beside the spending limit). **Working hours** in
+  Settings → Profile are told to every agent. The first messages are kept per
+  organization, since they are drawn from one organization's week. Migrations
+  `0163_proactivity` and `0169_starters_per_membership` add `suggestions`,
+  `users.working_hours`, `organization_members.personal_starters` and the limit.
+- **A welcome in the chat apps.** A new member - invited, joining the default
+  organization or synced from the directory - gets one direct message from each
+  of the organization's Slack, Mattermost and Teams bots that finds them by email.
+  **The Slack manifest gains `users:read.email`: reinstall an existing Slack app
+  from the new manifest** for its welcome; it keeps working without.
+- **Next steps in Slack, Telegram, Mattermost and Teams.** The steps an answer
+  offers arrive as a message of buttons, and a press is the presser's next
+  message, held to the link, the access policy and the rate limit. Migration
+  `0164_channel_next_steps` adds `channel_prompts.chat_type` and the `follow_up`
+  kind.
+- **A model of their own for next steps.** The follow-ups capability takes a
+  **Model for next steps**: set, the agent is no longer offered
+  `suggest_next_steps`, and once its answer is in that model writes up to three
+  steps from the request and the answer - checked against the budgets and booked
+  on the run. They reach the console, the chat apps and the run history as the
+  agent's own call would.
+- **Make a skill of this.** A button under an answer hands the Architect your
+  request and the conversation's id, and the Architect reads the whole of it -
+  steps and tool calls included - with the new `read_conversation` platform tool
+  (`GET /conversations/{id}/transcript`, `runs:view`) before writing the skill.
+  Offered to whoever may write skills.
+  A chat link with `?agent=<slug>` opens the chat on that agent.
+
+- **Watches over your own connections (#2301).** A person can have the platform
+  keep an eye on one of their own MCP connections - pull requests waiting on
+  their review, an overdue invoice, mentions nobody answered - with a ready-made
+  watch for 15 catalog servers or their own words, on a cadence they choose.
+  Each look offers the model only the tools the server marks read-only, and what
+  is new arrives as a finding (a suggestion of kind `finding`) reported once,
+  with a link to open it; one the person asked to hear about at once and the
+  model judged urgent is also sent as a notification. Set up with **New watch**
+  under **Routines**, where a **Watches** card shows when each last looked and how
+  many of its findings wait, or with **Watch** beside an account's **Tools** on
+  the MCP servers page (`/me/watches`). Any server the person connected may be watched. Off until the
+  organization turns watches on, on the **Proactivity** card, which also sets the
+  most-often; they run on the proactive model and limit. Migration `0167_watches`.
+- **An inbox, and a morning briefing (#2301).** **Inbox**, under Chat in the
+  sidebar with a count of what waits, lists what watches found and what the
+  nightly look proposed like a mailbox - a row each, urgent first, its source and
+  time, the answers in the row - filtered by where it came from, with a **Done**
+  view to bring a declined one back. The dashboard's suggestions card is now
+  **Briefing**, the same rows at the top of the personal view. What a watch finds that
+  need not be heard at once goes out once, at the organization's proactive hour:
+  one notification and one direct message from each Slack, Teams and Mattermost
+  bot that knows the person. Migration `0168_finding_briefed`.
+
+### Changed
+
+- **Proactivity is an organization's choice, off until it turns it on.** The
+  organization page's **Proactivity** card turns on the nightly suggestions
+  with the model they run on (required, never defaulted), the limit per person,
+  the days and the hour - fixed, or an hour before each person's working hours
+  - and, apart, the welcome message in Slack, Teams and Mattermost with its own
+    words. A person can leave themselves out under **Settings → Assistant**, which
+    also lists every suggestion and brings a dismissed one back
+    (`GET /me/suggestions?decided=true`, `POST /me/suggestions/{id}/restore`), and
+    a new **Suggestions for you** dashboard card shows them beside the chat's.
+    Migration `0166_proactivity_settings`.
+- **A turn whose server died ends in two minutes, not six hours.** The process
+  executing a run stamps it alive every `RUN_HEARTBEAT_SECONDS` (new
+  `agent_runs.heartbeat_at`, migration `0165_run_heartbeat`), and the stale-run
+  sweep runs every minute and ends a run silent for
+  `STALE_RUN_REAPED_AFTER_SECONDS` (default 120), which replaces
+  `STALE_RUN_REAPED_AFTER_HOURS`. It tells open consoles, so a chat stops
+  saying "Working" over a turn nobody is answering and offers **Ask again**.
+  Voice calls are left to the voice reaper.
+- A fresh organization's starter agent is installed as **AgenticOS**
+  (`@agenticos`). An organization bootstrapped earlier keeps its
+  `@claude-code-like` agent as it is - an agent's handle never changes - and
+  rerunning bootstrap there installs AgenticOS beside it.
+- **Less under the chat's composer.** The "AI can make mistakes" line is gone,
+  the "?" that replays the chat's tips moved into the chat settings, the
+  composer takes a card's light shadow instead of a dark drop, and a lost
+  connection is said by the box itself - "Reconnecting…" where it asks for a
+  message - instead of a red "Offline" line under it.
+- **The call button stands in Send's place.** While the box is empty, every
+  agent offers the call where Send is, as a waveform - crossed out, saying why,
+  where it cannot take one; type something and Send comes back. Dictation stays
+  where it was. The Architect's window and the Builder's test panel offer it
+  too - the test panel's call runs the published version, and says so.
+- **A routine's schedule asks how often first.** The new-routine dialog is a
+  form's width with its steps as dots, and its schedule step opens on one row -
+  every 15 minutes, hourly, every 6 hours, daily, weekdays, weekly or custom -
+  with only what that choice needs under it, a sentence saying what it means,
+  and what happens when a run is still going under **More options**.
+- **A link to a console page wears its icon.** When an agent links to
+  Routines, MCP servers or any other section, the link carries the sidebar's
+  icon for it, as a link to a known service carries its logo.
+- **Connect a service from the chat.** When a request needs one of your
+  services you have not connected, the agent offers it as a card with the
+  service's logo and **Connect**, which goes straight to its sign-in and back to
+  the conversation (`propose_setup` takes the server's catalog key as
+  `server`).
+- **Map kit version 2, `lib/agenticos-map-2.js`.** An itinerary shows its whole
+  route on load and drops the pins one by one only on request (`autoplay: true`
+  plays them on load); the map is 16:9 of the page's width, never lower than its
+  `height`, so it grows in a wide window and in full screen; and a frame a page
+  draws around it no longer leaves everything touching its edge. The skills and
+  tools name version 2; `agenticos-map-1.js` stays served for the pages that
+  name it.
+- **A map drawn without tiles is explained.** The agent says in its answer that
+  no map server is connected and that an administrator turns real maps on with
+  `VISUAL_MAP_TILES`, instead of a note inside the drawing. Tiles stay off by
+  default.
+
+### Fixed
+
+- **A question an agent asked comes back after leaving the chat.** Leaving the
+  chat page while a turn was being written and coming back showed the turn from
+  memory: its timer kept running, and a question it had parked on never
+  returned as a card. The chat now reads the conversation again.
+- **The `+` in the Architect's window opens.** The window kept its presses from
+  a dialog behind it by stopping them before React saw them, so every control
+  opening on a press - the composer's `+` menu among them - did nothing there.
+
+## [1.14.0] - 2026-10-23
+
+### Added
+
+- **People can sign in with OAuth to an MCP server on `MCP_ALLOWED_HOSTS`.**
+  A server on the deployment's network, a VPN or a tailnet often runs its own
+  sign-in, so its metadata, client registration and token endpoints sit on the
+  same private host. Saving such a connection worked since 1.13.0, but every
+  OAuth step after it was refused, so the sign-in probe, Connect and token
+  refresh all failed. Now the OAuth requests of a connection whose own host is
+  listed may reach the listed hosts, still resolved and pinned, and a listed
+  name that answers a loopback, link-local or metadata address is refused. A
+  public server's sign-in reaches no listed host, even when its metadata names
+  one. Taking a host off the list stops its OAuth connections from renewing
+  their tokens. Carries the scoping from #2356 by @henfircreo.
+
+### Fixed
+
+- **A slow MCP server is no longer left out of every turn.** The probe before
+  a turn gave the whole session - `initialize`, `initialized` and
+  `tools/list` - 3 seconds. A server that checks each request's token at its
+  identity provider, such as an OAuth proxy in front of GitHub or Microsoft
+  Entra, spends about a second per request, so it timed out on every turn and
+  every connection check although it answered each request. A server now gets
+  3 seconds to accept the connection and 10 seconds for the whole handshake,
+  or the `--timeout` the catalog check is given. A host that is down still
+  fails within 3 seconds, and so does a run's own `initialize`.
+
+## [1.13.1] - 2026-10-23
+
+### Fixed
+
+- **A URL whose host name cannot be encoded is refused, not a 500 (#2352).** A
+  host with an empty label (`a..b`) or a label longer than 63 characters made
+  the resolver's IDNA codec raise an error the outbound guard did not catch, so
+  saving an MCP connection with such a URL answered 500 "An unexpected error
+  occurred". The guard now refuses it with "The URL's host name is not valid",
+  a 400 like every other refusal, for every caller. The MCP catalog audit and
+  the browser's endpoint lookup treat such a name as one that does not resolve.
+
+### Security
+
+- **OpenTelemetry moves to 1.45.1 (0.66b1 for the instrumentation packages).**
+  `opentelemetry-api` 1.44.0 is affected by CVE-2026-114603
+  (GHSA-xcq7-p3pf-p88h), which failed `make audit` and so the required Security
+  Scan on every pull request. Only the lockfile and the third-party notices
+  change; two Apache-2.0 packages, `opentelemetry-exporter-http-transport` and
+  `opentelemetry-exporter-otlp-common`, come in with the new exporters.
+
+## [1.13.0] - 2026-10-22
+
+### Added
+
+- **`MCP_ALLOWED_HOSTS` lets an MCP connection reach a server on the
+  deployment's own network (#2349).** Before, the SSRF check refused every
+  connection URL whose host resolves to a private or loopback address, such as a
+  compose service. There was no way past it. Now an operator can list such
+  hosts. A listed host skips only the address check, when a connection is saved.
+  The match is exact and ignores case, and OAuth sign-in to a listed host is
+  still refused. Every account can reach every port on a listed host, so list
+  only a server that checks a token. A cloud metadata, link-local or loopback
+  entry (`localhost` too) is refused at startup. Empty, the default, changes
+  nothing. See [a connection](docs/mcp.md#a-connection).
+
+## [1.12.3] - 2026-10-22
+
+### Fixed
+
+- **The image packages describe themselves on GHCR (#2299).** The pages for
+  `agenticos-backend`, `agenticos-frontend` and `agenticos-browser` said "No
+  description provided": GHCR reads a multi-architecture package's description
+  from the manifest list, and the labels sat only on the per-architecture
+  images. The publish job now annotates each list with what the image is and a
+  link to the docs. The pages update on the next publish; earlier tags keep
+  their lists as they were.
+
+## [1.12.2] - 2026-10-22
+
+### Fixed
+
+- **A dead job's ending is settled once (#2334).** When a job died for good,
+  the worker that saw it settled its ending - marking a document failed, closing
+  a sync log - right after committing the death, and a rescuer pass running in
+  that moment read the same end as still owed and settled it again. The settler
+  now runs under a lock on the job's row: a second caller skips it, one arriving
+  later finds it settled, and a settler that fails still leaves the end owed for
+  the next pass.
+
+## [1.12.1] - 2026-10-22
+
+### Security
+
+- **Dependency alerts match the backend's locked versions again.** Dependabot
+  cannot read a project that requires Python 3.15, so since 1.9.0 its graph kept
+  the versions locked before, and fourteen alerts for Pillow, certifi and
+  virtualenv stayed open although `backend/uv.lock` already held the fixed
+  releases. A new workflow, `.github/workflows/dependency-graph.yml`, submits
+  the graph from the lock on every push to `main` that moves it. See
+  [Dependency updates](docs/branching.md#dependency-updates).
+
+## [1.12.0] - 2026-10-22
+
+### Added
+
+- **Interactive answers in the chat (#2302).** An agent with Visuals chooses
+  the form of each answer - text, a Markdown table, a native chart, or a
+  drawing - and a drawing can be a tool: an explainer with controls, a
+  calculator, a map. A button in a drawing can continue the conversation with
+  what the person picked through `agenticos.followUp(text)`: the console shows
+  the exact text under the drawing and sends it only when the person clicks
+  Send, so a drawing can never speak for them. In a saved app the call does
+  nothing.
+- **Maps in visuals and apps.** `VISUAL_MAP_TILES` names one tile server -
+  `openstreetmap`, `usgs-topo`, or a https URL template with
+  `VISUAL_MAP_TILES_ATTRIBUTION`. The deployment fetches the tiles and serves
+  them from its own tile path, by three checked numbers and limited per address
+  (`RATE_LIMIT_MAP_TILES_PER_MINUTE`), so a page never sees the server's address
+  or key and can send it nothing. Off by default. Leaflet 1.9.4 and the map kit
+  `lib/agenticos-map-1.js` (`AOMap.itinerary`: numbered pins in order, pause,
+  replay, stop cards) join the library set; without tiles a map is drawn as an
+  outline of its stops. _Admin → System_ shows whether the tile server answers.
+- **Starters for an agent that draws**: an empty chat with Visuals on opens on
+  four - explain in 3D, compare then chart, make a calculator, plan a trip on a
+  map. Switching Visuals on in the Builder binds Charts too.
+
+### Changed
+
+- **Drawings sit in the conversation without a card around them**, from the
+  text's left edge, named by a quiet line underneath; a drawing holds the height
+  it declared while it streams, and shows nothing until its styles are written.
+  The `visual-design` skill says how to choose the form of an answer and how to
+  make a drawing look designed rather than generated, with templates for a 3D
+  explainer, a calculator and an itinerary. Messages in the chat sit a little
+  closer together, and a drawing and the answer after the steps a little
+  further apart.
+
+## [1.11.0] - 2026-10-21
+
+### Added
+
+- **A default organization for new accounts, and personal organizations made
+  optional** (#2156). Two settings under Admin → Deployment → New accounts: turn
+  personal organizations off, and name the organization every new account joins,
+  with a role other than owner - an account admitted only by another
+  organization's invitation does not join it. A session request naming no organization now acts
+  in the default organization first, then the personal one, then the only one,
+  and is refused with a `400` naming `X-Organization-Id` rather than guessing
+  between several. The console selects the default organization when nothing else
+  is selected, and switches to the organization an accepted invitation joined.
+
+## [1.10.2] - 2026-10-21
+
+### Added
+
+- **The background-job benchmark, as a docs page.** Why the job queue is rows
+  in Postgres: ten engines in seventeen configurations, from Prefect, Celery and
+  Taskiq to PgQueuer, DBOS and Hatchet, through four scenarios. One of them is a
+  job that runs its worker out of memory, which started three times on the
+  shipped queue and eight on PgQueuer. The page gives the tables, what shipped in
+  1.9.0, and what one run on one machine cannot show. See
+  [the background-job benchmark](docs/task-queue-benchmark.md).
+
+## [1.10.1] - 2026-10-21
+
+### Changed
+
+- **The comparison guides are checked again, on 21 October 2026, against
+  1.10.0.** Every vendor source but OpenAI Frontier's, checked on 14 October,
+  was reread, and OpenCode against v1.19.3. ChatGPT's workspace-agent trigger
+  now returns a conversation link and polls run status in beta, though the
+  answer still cannot be read back; ChatGPT Business and Claude Team sell
+  Premium seats; Copilot Studio's credit pack gave way to commit units; Google
+  no longer lists Gemini Enterprise prices; Viktor and OpenCode changed plans.
+  The guides also say what AgenticOS gained since 0.0.504: the coding agent
+  that hands work to Claude Code or Codex, the MCP server, A2A, projects, an
+  approval policy per MCP connection, 33 permissions, the scaling guide and,
+  with 1.10.0, voice calls in web chat, the widget and the hosted page.
+- **AgenticOS vs Sauna**, a new comparison with Sauna, a proactive AI
+  assistant per person: where it runs and processes data, models per plan,
+  sharing, autonomy and pricing, from its public pricing, security and privacy
+  pages.
+
+## [1.10.0] - 2026-10-21
+
+### Added
+
+- **A navigation shows it is on its way.** A click on a link inside the
+  console starts a thin bar along the top edge, shown after 120 ms and
+  finished when the page arrives, and the sidebar entry clicked turns its icon
+  into a spinner, so a slow page no longer looks like a click that did nothing.
+- **The composer offers the same controls for every agent.** The call button
+  shows for an agent with no voice too, saying calls are off and linking an
+  editor to the agent's Voice card in the Builder; browser dictation says when
+  the agent's Dictation switch is off and links there too; the files button and
+  the usage meter appear in a new chat, saying what will show once it runs.
+- **Voice conversations with agents (#54).** A member can call a published
+  agent and talk to it, with barge-in; the agent keeps its tools, knowledge,
+  in-call approvals (the exact arguments shown, 60 seconds to decide, only the
+  caller with `approvals:decide` deciding) and budgets, and every turn is saved
+  as text in the conversation with no audio stored. Calls are switched on in the
+  agent, not the organization: a published agent with a Voice section takes
+  them, for as long as its own longest call (10 minutes by default, 50 at most),
+  bounded by the budgets. An agent's spec gains an
+  optional `voice` block - provider, model or Azure deployment and base model,
+  key, voice, language, longest call, voice note - picked from a new realtime
+  catalog (`GET /api/v1/providers/realtime-models`) and refused at publish when
+  it cannot hold a call; no `SPEC_VERSION` bump. Calls run over
+  `/api/v1/ws/voice`: OpenAI over WebRTC with a server sideband (no data
+  channel, no client secret), Azure OpenAI, Gemini Live and xAI through a relay,
+  those three **not verified live**. Each call is a run (`agent_runs.modality`,
+  and a `voice_calls` row per connection, `0155_voice_calls.py`), hung up on
+  every exit, heartbeated every 15 seconds and swept every minute for a dead
+  worker's calls; one call per person (`VOICE_MAX_CALLS_PER_USER`); one
+  automatic reconnect within 10 seconds, seeded with text. Turns are messages
+  with a `turn_id` and an `interrupted` marker (`0156_message_voice_turns.py`).
+  `GET /api/v1/agents/{agent_id}/voice` says whether a call would start,
+  `GET /api/v1/voice/usage` reports call minutes, `GET /api/v1/runs` takes
+  `?modality=`, and Activity shows a call as one row with a microphone badge.
+  Widgets and hosted pages get their own Voice calls switch and
+  `/api/v1/embed/{public_key}/voice/ws`, with gated tools left out of visitors'
+  calls, `RATE_LIMIT_EMBED_VOICE_PER_MINUTE` (3) and
+  `RATE_LIMIT_EMBED_VOICE_PER_LINK_PER_MINUTE` (6), and at most
+  `VOICE_MAX_CALLS_PER_EMBED` (3) calls open per embed. The dashboard gains a
+  Voice minutes card and the walkthrough stops for both voice settings. In
+  `/chat` a call is a pill above a composer that does not change, its turns
+  drawn as the messages they become; the hosted page (without approval
+  controls) and the widget, whose `voice.js` loads only when calls are on, use
+  a call bar. A play button beside the Builder's voice picker plays the draft's
+  voice (`POST /api/v1/agents/{agent_id}/voice/preview`, cached, per person
+  `RATE_LIMIT_VOICE_PREVIEW_PER_MINUTE` (6)).
+  What a realtime session cannot carry - sandbox, browser use, subagents, work
+  while tools run - the call hands to the same agent on its own text model
+  through one `hand_off` tool: same workspace, same budget, its approvals on
+  the call's card, its steps shown live and saved on the turn. In `/chat` the
+  agent's `ask_user` questions appear on the call view's card and can be
+  answered by a tap or aloud. The capability catalog's `voice` field is now
+  `live`, `hand_off` or `never`, and readiness no longer lists unavailable
+  capabilities. See [Voice conversations](docs/voice.md).
+- **Dictation in `/chat` on the organization's own speech-to-text provider
+  (#1797).** With the agent's Dictation switch on (`speech_to_text.dictation`),
+  the composer records
+  in any browser, `POST /api/v1/agents/{agent_id}/dictation` transcribes the
+  recording, and the text lands at the caret for editing, never sent by itself.
+  Anyone who may run the agent may dictate to it. Refusals carry
+  `details.reason`, each dictation is one `ml_service_calls` row, and the audio
+  is not stored. A per-person `RATE_LIMIT_DICTATION_PER_MINUTE` (10) meters it on
+  its own counter. Every browser records 16 kHz mono 16-bit PCM WAV, the only
+  format accepted by default (see the Admin → Deployment switch below). An
+  upload that takes over a second shows its percentage before the transcribing
+  sweep, and the strip under the box says when a recording stopped at the
+  organization's limit and how many words it inserted - on a hosted page too.
+  See [Dictation in chat](docs/ml-services.md#dictation-in-chat).
+- **A Voice card on the organization's Members page.** For `org:settings`
+  holders: the default provider and model from the speech-to-text catalog, its
+  key, a language and the longest recording, stored in five new organization
+  columns (`0150_org_speech_settings.py`) - the default agents and channel bots
+  inherit. Without an agent's switch on, `/chat` dictates in the browser.
+- **An agent can transcribe on its own engine (#1797).** An optional
+  `speech_to_text` block on the agent spec (provider, model and key together,
+  the language on its own), set on a Voice card on the Build tab and live once
+  published. Speech resolves in one place: the pair from the bot, the agent,
+  then the organization; the language from the agent, then the organization.
+  `GET /api/v1/agents/{agent_id}/dictation` tells the composer whether
+  dictation to that agent is ready and on which provider, which decides the
+  recording format. See
+  [Which engine a recording reaches](docs/ml-services.md#which-engine-a-recording-reaches).
+- **Channel bots inherit, choose or switch off transcription.** A new
+  `transcribe_voice_notes` switch (`0151_bot_transcription_switch.py`): a bot
+  with no pair now inherits from its agent and organization, and off never
+  transcribes. Every bot that had no pair before the migration is switched off,
+  so none starts transcribing on upgrade. Slack audio clips are transcribed
+  whatever type Slack gives them, and an untyped Slack or Mattermost upload is
+  transcribed when its extension names audio; a Mattermost webhook-mode bot
+  looks its files up first, several at once, and keeps a file whose details come
+  back malformed as an ordinary attachment. `audio/opus` and `audio/x-ogg` are
+  read as Ogg and `audio/m4a` as MP4. The provider is sent `voice.<ext>` named
+  from the type, and a voice note posted in a thread before the bot joined is
+  named in the reply rather than transcribed. A bot whose agent is archived or
+  has nothing published transcribes nothing, since its turn is refused anyway. A
+  voice note longer than the organization's longest dictation, or whose length
+  neither its file (Ogg, WebM, MP4, WAV, MP3) nor its platform states, is
+  refused before any provider is paid. See
+  [the voice message notes](docs/channels.md#what-every-channel-shares).
+- **Every transcription is recorded with its length and attribution (#1797).**
+  `ml_service_calls` gains the provider and model, the key, the surface (`chat`,
+  `channel`, `api`), the agent and channel bot, and `audio_ms`
+  (`0152_ml_call_attribution.py`); a transcription now counts seconds of audio,
+  not characters. Channel voice notes write a row too, naming the linked
+  sender while they are still a member. The length comes from the recording
+  itself for dictation, then the provider (`whisper-1`, Groq, Mistral), the
+  platform (Telegram, Slack) or, for dictation, the browser's clamped figure.
+  `GET /api/v1/ml/calls` filters by agent, bot, surface and window - the first
+  three, and those columns, for `runs:view` only - and
+  `GET /api/v1/ml/calls/summary` (`runs:view`) adds up each row's own rounded
+  seconds, so it agrees with the listing; the organization's Voice card shows
+  it in one line. See
+  [Transcriptions](docs/ml-services.md#transcriptions).
+- **Dictation on a hosted page and in the website widget (#1797).** Each has a
+  `dictation` setting - Off, Browser or Server - and Server transcribes a
+  visitor's recording on the organization's own provider through the public
+  `POST /api/v1/embed/{public_key}/dictation`, admitted as the surface is (a
+  widget by its allow-list and token, a page by its visitor key). The page uses
+  the composer's recorder, hints and glow; the widget has a plain-JS recorder of
+  its own, WAV encoder and resampler included. Switching Server on is refused
+  while no provider and key resolve, and a page or widget whose provider
+  goes away offers no microphone. Rows record surface `hosted` or `widget` and
+  no person. Before the provider is called, the server counts the recording's
+  samples and refuses one over the organization's longest dictation as
+  `too_large`, so the link's limit times the longest dictation bounds the
+  spend exactly. `RATE_LIMIT_EMBED_DICTATION_PER_MINUTE` (6, per address and per
+  `jwt` visitor) and `RATE_LIMIT_EMBED_DICTATION_PER_LINK_PER_MINUTE` (10, per
+  link) bound the spend. The recording format is the server's to say, as
+  `format` on `GET /api/v1/agents/{agent_id}/dictation` with
+  `server_available` beside it, and as `dictation_format` in a page's or a
+  widget's public config. See
+  [Dictation on a widget or a hosted page](docs/channels.md#dictation-on-a-widget-or-a-hosted-page).
+- **Dictation is raw PCM unless the deployment accepts compressed audio
+  (#1797).** By default every dictation - composer, hosted page and widget - is
+  WAV holding 16 kHz mono 16-bit PCM, read strictly: any other WAV, and WebM,
+  Ogg or MP4, is refused as `unsupported_type`, with `details.accepted`. Its
+  length is its size, so the samples are counted, refused over the longest
+  dictation before the provider is called, recorded exactly, and sent behind a
+  header the server builds. A **Dictation audio** card on Admin → Deployment
+  turns on `dictation_compressed_audio`
+  (`0154_dictation_compressed_audio.py`, off), after a dialog naming the risk
+  and an acknowledgement: compressed formats are then accepted too, their
+  length read from the file's header, which a crafted file can understate up to
+  about forty times within the byte cap; a page or widget still refuses one
+  whose length it cannot read, and the composer accepts it under the byte cap.
+  Browsers record WebM only where it is on and the provider takes it - Mistral
+  stays on WAV. See
+  [What a dictation may be uploaded as](docs/deployment.md#what-a-dictation-may-be-uploaded-as).
+- **An Appearance card under Settings → Profile** with the theme, a **Voice
+  glow** preference - Vivid, Subtle (the default) or Off, per browser, and no
+  glow under reduced motion - and a per-browser **Motion** preference: System
+  follows the operating system, Reduce turns motion down without it, and Full
+  keeps it whatever the operating system says.
+
+### Changed
+
+- **A hosted page's `allow_voice` is now `dictation` (#1797).** `true` reads as
+  `browser` and `false` as `off`, both on stored rows
+  (`0153_embed_dictation.py`, reversible) and on any config still sent with the
+  old field, so no page loses its microphone.
+- **Speech to text is sent with a key named beside its pair (#1797).** At
+  every level - the organization's default (`speech_to_text_secret_id`), an
+  agent's `speech_to_text.secret_id`, a channel bot's own pair
+  (`speech_to_text_secret_id`) - the model is a catalog pick and the key a vault
+  API key whose purpose is the provider. Provider, model and key resolve
+  together from the first level naming a pair, so a key never reaches another
+  provider; an agent that sets only a language keeps the organization's pair and
+  key. The organization's and a bot's key must be organization-visible, checked
+  when saved and per recording; an agent's must be viewable by its publisher,
+  checked at publish. Nothing is looked up at run time: model profiles are no
+  longer read for transcription, and the vault is not searched for a key by
+  provider. Deleting a key empties the reference, and readiness says `no_key`
+  (`unavailable` on `GET /api/v1/agents/{agent_id}/dictation`) until another is
+  chosen. `POST /api/v1/ml/audio/transcriptions` takes a `secret_id`, and with
+  none uses the organization's default key for its own provider; with no
+  provider named it uses the organization's default pair. Each usage row
+  records the key it was sent with (`secret_id`, SET NULL). Existing bots with a
+  pair get the key their first keyed profile held, where it is an
+  organization-visible API key for the provider; the rest show "choose a key".
+  The speech-to-text catalog no longer returns `credentialed`. A pinned language
+  is passed to the provider. Channel bots still answer "could not be
+  transcribed" on any failure. A self-hosted speech-to-text server cannot be
+  named yet; a local service of kind `speech` is the planned follow-up.
+- **A null pair on a channel bot means inherit, not off.** `PATCH
+/channels/bots/{id}` turns transcription off with `transcribe_voice_notes:
+false`, which clears the pair, and refuses an explicit `null` for it. A pair
+  sent together with `false` is refused, on create as on update. A spec
+  carrying `speech_to_text` cannot be imported into a deployment older than it.
+
+## [1.9.1] - 2026-10-21
+
+### Fixed
+
+- **An MCP server that does not answer is named to the model, not left out in
+  silence.** A bound server whose probe fails is still skipped for that turn,
+  but the turn's instructions now say it did not answer or refused the
+  connection, that trying again may work, and that a failure that persists
+  means the connection needs checking. The same holds for a server that
+  answered within the last two minutes and fails when the turn connects. The
+  model used to see only the servers that answered, and reported a slow server
+  as "no data": a Semrush bridge that took ten seconds to list its tools read
+  to the agent as Semrush returning nothing. (Reported and first fixed by
+  Michał Sikorski in #2261.)
+
+## [1.9.0] - 2026-10-21
+
+### Added
+
+- **How to run past one host is written down.** [Scale beyond one
+  host](docs/scaling.md) covers an external Postgres, counting connections for
+  `max_connections`, PgBouncer, more API hosts and workers, and several
+  deployments side by side - and what the platform does not do yet: read
+  replicas, a vector database of its own, sharding, Redis Cluster.
+- **The Background jobs page charts what the queue did.** What finished over
+  the last 24 hours or 7 days, stacked by how it ended; the longest wait of a
+  job that is due now; and, per kind, its volume, deaths, run time at the median
+  and 95th percentile, and how long its jobs waited for a worker
+  (`GET /admin/background-jobs/activity`). The deployment's dashboard has the
+  same day as a card. Migration `0148_job_finished_idx` indexes when a job
+  finished, which the charts and the retention sweep both read.
+- **A sync source can be edited from its knowledge base.** The pencil on a
+  row of the **Sync** tab opens the connect wizard filled in from the source,
+  with its connector fixed, and saves only the fields that changed: renaming
+  a source, moving it to another folder or changing its schedule no longer
+  means deleting it and losing its sync history. It saves through a new
+  `PATCH /kb/{kb_id}/sync-sources/{source_id}`, which an `edit` grant on the
+  base is enough for, and which refuses a source of another base or of another
+  organization (404) and a move out of the base. A config key patched to
+  `null` is now removed rather than kept by the merge, so a field cleared in
+  the form is cleared on the source. Contributed by @henfircreo in #2199.
+- **An agent run over the API can answer at once and be polled.** Sent with
+  `Prefer: respond-async`, `POST /agents/{id}/run` answers `202` with a run
+  request and a `Location` of `GET /api/v1/run-requests/{id}`, and a worker
+  runs the agent through the same runner, budget and approvals. An
+  `Idempotency-Key` makes a retry safe: the same key and body answer the same
+  request, a different body is a `409`. The key's authority is checked again
+  when the run starts, so a key revoked while its run waited does not run it
+  (#2219).
+- **A schedule says what to do when its last run is still going.** _If the
+  previous run is still going_ - `overlap` in the API - is `skip` (the new
+  default), `queue` or `allow` (#2219).
+- **Admin → Background jobs**, for the deployment's owner: jobs by state and
+  pool with their attempts and last error, the workers alive, the schedules,
+  and Retry, Cancel and Resume, each audited (#2219).
+- **A kind of job that keeps killing its worker is paused, and the owners are
+  told.** After `WORKER_BREAKER_DEATHS` (5) deaths in a row, nothing claims
+  that kind until an owner resumes it; every app admin gets an in-app and an
+  email notification that cannot be switched off (#2219).
+
+- **The load suite runs in CI** (#2219). `make load-cold` takes an empty
+  database through the whole run - migrate, bootstrap, stub model, API, worker,
+  seed, scenario - with the thresholds as its exit status, and a `Load` workflow
+  runs it nightly on `main`, on demand and on a pull request labelled
+  `load-test`, publishing the report. Not a required check: a shared runner is
+  noisy. The seed now uploads through the API; `rag-ingest` wrote untagged
+  vectors into an organization's collection, which no tenant-scoped search finds
+  (#1684), so the suite had not been able to start.
+
+### Changed
+
+- **An empty chat opens on the agent who will answer.** Its face, its name and
+  what it does, instead of a sparkle and a line about streaming and tool calls;
+  the suggestions are filled cards with their whole prompt, in the chat, the
+  Architect's window and the Builder's test panel alike.
+- **Stepped dialogs say where you are in words you can read.** The steps of a
+  new schedule, a portal trigger or a sync source are a bar per step with its
+  number and name at the form's own size, instead of small icon circles joined
+  by hairlines and named in uppercase monospace. The sync-source steps lose
+  their faint uppercase field labels the same way.
+- **Knowledge-base connectors wear their own logos.** Google Drive, Git, S3 and
+  SharePoint are drawn in their colours on a white tile, as MCP servers are,
+  instead of grey glyphs in grey circles; a website is a globe rather than a
+  database.
+- **BREAKING: background work runs on a job queue in PostgreSQL instead of
+  Prefect** (#2219). A worker, `python -m app.worker` from the backend image,
+  replaces the `prefect-server` and `prefect-runner` services. A job's attempt
+  is counted when it is claimed, so a job that runs its process out of memory
+  cannot loop; ingestion runs in child processes under a memory watchdog
+  (`WORKER_INGEST_MEMORY_MB`), so one heavy document no longer takes the worker
+  with it. Uploads, syncs, trigger fires and a delete's cleanup are queued in
+  the request's own transaction. A deployment upgrading from 1.7 has to:
+  - replace its compose files, so the `worker` service exists and the two
+    Prefect services do not. Compose leaves a removed service's container
+    running, so `scripts/deploy.sh` removes `prefect-server` and
+    `prefect-runner` before the worker starts; a host upgraded by hand removes
+    them with `docker rm -f`, or Prefect keeps dispatching the old work;
+  - drop the `PREFECT_*` variables and `WORKER_MIN_INTERVAL_SECONDS`, and
+    size the worker with the `WORKER_*` settings in
+    [Configuration](docs/configuration.md#background-work);
+  - run the migrations, which add `background_jobs`, `background_schedules`,
+    `background_task_kinds`, `background_workers` and `agent_triggers.overlap`.
+    Runs Prefect still held queued are not carried over, so stop new uploads
+    while upgrading; the schedules pick up on their next occurrence.
+- **The backend runs on Python 3.15** (#2229): `backend/.python-version`,
+  `requires-python`, the image's base and CI. Seven packages move to the first
+  releases with 3.15 wheels - pydantic 2.14.1 (pydantic-core 2.50.1), uvloop
+  0.23.0, httptools 0.9.0, markupsafe 3.0.4, fastavro 1.13.1 and selectolax
+  1.0.1. PyYAML has no 3.15 wheel yet and installs as pure Python. aiogram 3.31 still caps pydantic
+  below 2.14, so a uv override lifts that cap until it does.
+  `from __future__ import annotations` is gone from the codebase, and ruff now
+  refuses it: annotations are lazy since 3.14.
+  One visible change: an HTTP 422 raised without a sentence of its own now
+  says `Unprocessable content`, Python 3.15's name for the status (RFC 9110).
+- **An ingestion child loads only ingestion** (#2229): it no longer imports the
+  agent runtime the other pools need, which halves its start-up (1.4 s to 0.8 s
+  on a laptop) and cuts its memory by a quarter (253 to 190 MB). The global
+  lazy-import mode of PEP 810 was measured and not adopted: it breaks protobuf
+  and SQLAlchemy, which register themselves at import, and limited to the
+  application's own modules it saved 0.2 s of a 2.4 s import, at higher memory.
+- **The backend image ships its own code compiled** (#2229). Only the
+  dependencies were; with `PYTHONDONTWRITEBYTECODE` set at run time, every
+  process compiled all of `app/` on start and threw it away. Importing the
+  application in a fresh container goes from about 4.8 s to 3.3 s on a laptop,
+  for each API worker, the worker, each ingest child and every migration.
+- **The chat sidebar no longer fetches each thread's summarised history.** The
+  conversation listing read every column, `summary_messages` included - 3.7 KB a
+  row on average in production and 522 KB on the longest thread - for thirty
+  rows on each refresh. It now loads only what the list shows. Postgres ran the
+  query in under a millisecond; the time was the transfer and the decoding on
+  the API's event loop.
+- **A console page no longer waits on the backend for the deployment's name.**
+  The root layout read `/api/v1/branding` on every render, uncached, so a
+  backend round trip - 2.3 s at p95 on the production host - stood in front of
+  every page. The answer is now kept in Next's data cache and expired by an
+  administrator's save under **Admin → Settings**, with a five-minute bound for
+  a change made another way.
+- **The chat sidebar polls every 30 s instead of every 4 s while the live-update
+  socket is connected.** A thread's running state already arrives over the
+  socket; the poll is the fallback for when it is down, and goes back to 4 s
+  then. Next.js 16.4.2.
+- **An API out of database connections answers `503` within five seconds.**
+  `DB_POOL_TIMEOUT` defaults to 5 instead of 30, and a request that waited it
+  out gets `503 SERVICE_BUSY` with `Retry-After: 5` instead of a 500 and a
+  logged traceback. Thirty seconds of waiting kept a queue of requests holding
+  the pool after a burst had passed: in the load suite at twice the burst rate,
+  65-78% of requests still failed in the recovery phase, and 5-20% do now.
+- **The production compose file gives Postgres `max_connections=200`.** The
+  default four API workers can open 120 connections between their two pools,
+  and the worker another 30; at the stock 100 Postgres refused them before any
+  pool could queue or shed the load.
+- **The channel stream keeper reads bot ids once a minute instead of full rows
+  every ten seconds.** Every API worker asked the database for every active
+  polling bot - sealed tokens included - on each ten-second pass, in a
+  transaction of its own: 28,778 of those reads and twice as many `BEGIN`s and
+  `COMMIT`s in production's last day, about four in five of all its statements.
+  The leases are still checked on every pass, so a bot whose worker died is
+  taken over as quickly as before.
+- **`POST /agents/{id}/run` refuses a prompt over 500,000 characters or more
+  than 20 files with a 422.** It took either without limit, and with
+  `Prefer: respond-async` the whole body went into a queued job; an asynchronous
+  run is now also refused at once for an agent the caller may not run, rather
+  than by the worker later.
+- **A chat turn costs the console 17 requests instead of 27.** The sidebar was
+  marked stale five times for one reply - the turn's own frames and the live
+  feed's echo of the same change - and each time it refetched every page it
+  held: ten `GET /conversations`, now four. Invalidations within 250 ms are sent
+  once. A page load also reads `/auth/me` once instead of twice: the auth
+  guard and the session check share one request, which on a cold load both
+  started before the stored session said anybody was signed in.
+- **The Documents page asks each sandbox host once, not once per workspace.**
+  It built a client and sent a `tree` request for every workspace it showed -
+  eighteen connections and requests for one page on the production host, which
+  took 2.3 s at the median - and now sends one `trees` request per host through
+  a client kept for the request, thumbnails included. The stored files of
+  every workspace a person can see are no longer read to list a page of 25, or
+  to check access to one. Needs sandboxd 0.2.37 (`pydantic-ai-backend` 0.2.37):
+  pull `ghcr.io/vstorm-co/sandboxd:0.2` again on a host that pinned it earlier.
+- **A turn that does not use its sandbox no longer starts one.** The agent's
+  skills were written into the sandbox, and its files listed, while the run was
+  prepared, so every turn opened the session before the model was asked: a
+  container start (about a second) on a conversation's first message, and a
+  round trip per skill file on every turn. They are now written just before the
+  first thing the turn does in the sandbox, and a turn that never touches it
+  neither opens nor lists it. The agent is still told where its skills are.
+- **The first chat turn after a restart no longer imports the MCP client.**
+  `pydantic_ai.mcp` and fastmcp's client load with the application instead of
+  inside the first turn each process served.
+- **A chat turn opens fewer database connections before its first token.**
+  The history, the attachments and the run share the turn's session, the
+  budget's spend reads take a pooled connection instead of a new one each (two
+  or three per run), and presence does not query to name the socket's own
+  person.
+- **The dashboard reuses its answers for half an hour.** Every card asked again
+  on each visit and each return to the tab, about thirty requests a time. What
+  moves - runs, approvals, agents, connections - arrives on the live feed and
+  refreshes at once; the usage and spend figures refresh after thirty minutes.
+  A feed that reconnects after a drop marks every cached answer stale, since it
+  missed the changes in between.
+- **The AI Architect's bubble costs one request on every page instead of
+  three.** To say whether approvals were waiting, the organization had no agent
+  yet, or the reader's run had failed, the widget fetched every agent, the
+  approval queue and the reader's failed runs. `GET /assistant/signals` answers
+  all three, each through the scope its own page uses.
+- **Every request in an organization reads the caller's membership once.**
+  The membership and the organization come in one query, and the
+  authorization context reuses that membership instead of reading it again:
+  two statements fewer on every console request, and one fewer on every
+  live-update and chat socket's handshake. The conversation list also
+  takes the projects a reader sees from that context, and names each thread's
+  agents in one query of five columns instead of two that carried every
+  agent's draft spec.
+- **A busy schedule now skips by default.** Before, a schedule whose run was
+  still going fired once as soon as it ended; existing schedules take `skip`.
+  Set `overlap` to `queue` for the old behaviour.
+- **`agenticos cmd doctor` and the health probe read the queue.** They fail
+  when no worker has beaten for two minutes, a minute schedule has not fired
+  for five intervals, or a kind of job is paused.
+
+### Removed
+
+- **Prefect.** The `prefect` dependency and the 39 Python distributions only it
+  needed, the Prefect UI on port 4200, the `prefect_data` volume and the
+  `PREFECT_*` settings are gone (#2219).
+- **`google-api-python-client` from the image.** Google Drive sources call the
+  four Drive endpoints they use over HTTPS, and `google-auth` still signs the
+  service account's token. The SDK and the six distributions only it needed were
+  about 112 MB of the image, nearly all of it discovery documents for other
+  Google APIs. Drive sources behave as before.
+
+### Fixed
+
+- **Pillow 13.0.0 and certifi 2026.10.19.** Pillow 12.3.0 had eight published
+  advisories (among them GHSA-p4wg-p73j-c528) and certifi 2026.7.22 one
+  (GHSA-6q48-6c7w-9gw2), which failed `make audit`. Both are lockfile updates
+  only; the image code paths are unchanged under Pillow 13. The frontend's
+  vite is pinned to 8.2.4 for GHSA-587h-7wmj-h5pm, which reaches only the test
+  and build tooling, not the console.
+- **The Codex review's third round on the job queue** (#2219):
+  - a job whose outcome the worker could not write is no longer renewed by the
+    heartbeat, so its lease runs out and the rescuer writes it off;
+  - an ingest child that cannot be replaced because the system refused a
+    process for a moment (EMFILE, EAGAIN) is tried again rather than leaving the
+    pool a slot short for good;
+  - an asynchronous run that loses the race for its `Idempotency-Key` takes back
+    the conversation it opened;
+  - weekly and monthly usage reports get three attempts, since the next one
+    covers another window;
+  - a DOCX in a knowledge base is unzipped under the same bounds as a chat
+    attachment, so a small upload cannot inflate to gigabytes in the parser;
+  - the circuit breaker counts deaths per organization: one tenant whose jobs
+    keep killing their worker pauses that kind for itself, not for every
+    organization (migration `0149_settled_at_org_breaker`). Background jobs
+    names the organization a pause is for, and resumes it alone;
+  - what a dead or cancelled job left - a document `processing`, a sync log
+    `running` - is closed again by the rescuer when the first close failed,
+    for a day (`background_jobs.settled_at`);
+  - a scheduled sync opens its log when it is queued, so a sync that dies
+    closes its own log and not a manual sync queued behind it.
+- **The composer's @-menu draws MCP servers as the MCP page does.** The
+  platform's own server wore a letter "A"; it now wears the deployment's mark,
+  and every other server its brand logo in colour, from the host it is reached
+  on (`host` on a mentionable - the host alone, never the address).
+- **A theme change in a background tab no longer raises an error.** The system
+  turning dark, or another tab changing the theme, while a tab was hidden made
+  the browser skip the sweep and reject it unhandled ("Skipped ViewTransition due
+  to document being hidden"). A hidden tab now changes without the sweep.
+- **A trigger card names the credential its own connection needs.** Every card
+  said it needed the organization's GitHub OAuth App, Gmail's included; each now
+  names the vault's client for its provider, such as the Google OAuth client.
+- **A chat shows the reader's face when their picture fails to load.** The
+  "You" beside a message was a bare image, an empty circle whenever the stored
+  file was missing; it now falls back to the generated face, as the sidebar does.
+- **Dropping files onto a knowledge base or a project uploads them in Firefox.**
+  Firefox delivers some drag events with no `dataTransfer`; the drop zone read
+  its types, threw, and never accepted the drop.
+- **`/onboarding` renders instead of failing.** The page called the client-side
+  branding hook from a server component, a 500, and handed the empty state its
+  icon across the server boundary, which ended in the error boundary.
+- **Signing out cannot be undone by a session check still on its way.** A
+  `/auth/me` that set out before the sign-out and answered after it signed the
+  person back in.
+- **The chat stops saying "Preparing the sandbox" when its socket drops** (#2251).
+  The notice waited for a `sandbox_ready` the lost socket could never bring, and
+  stayed through later turns on the open sandbox, which send no preparation
+  frames.
+- **A Telegram bot reads `up` again as soon as a polling conflict clears** (#2252).
+  The first successful poll after another process stopped polling the token now
+  records the recovery; the channels listing used to keep naming the other
+  poller for up to five minutes, and the heartbeat could read `up` while the
+  conflict still lasted.
+- **Closing a console tab no longer leaves a dead database connection behind**
+  (#2241). A live-updates socket that disconnected in the middle of its
+  per-event read cancelled the query and the connection's close with it, and
+  the pool handed the closed connection to the next request on that worker, a 500. The read now finishes before the stream stops.
+- **Sandbox tombstones no longer stall the sweep, vanish in a race, or pin a
+  connection for good** (#2250). The retry pause overflowed after about 41
+  failed attempts and aborted every sweep from then on; a tombstone written
+  while its connection was being deleted was erased with it; and a connection
+  whose credential was gone could never be deleted. The pause is capped, the
+  foreign key now refuses the delete, and deleting a connection can confirm that
+  its sandboxes were removed on the provider by hand. The console asks, where a
+  refused delete used to vanish without a word.
+- **Recent visuals shows a published app as its page.** An app with no kept
+  thumbnail drew only the kind's mark wherever the deployment has no browser to
+  photograph it; its tile now shows the page itself, live and shrunk, as the
+  apps listing does.
+- **Google and Microsoft sign in under their own full-colour marks.** The
+  sign-in buttons drew both in a single colour; they now use Google's
+  four-colour G and Microsoft's four squares, fetched in colour by
+  `gen-brand-icons.ts`. GitHub keeps its one-colour mark.
+- **The sandbox service reaps the processes it leaves behind.** It ran as PID 1
+  without an init, so anything orphaned under it stayed a zombie until the
+  container restarted; production once showed more than 600. Both compose files
+  now start it with `init: true`, as every sandbox it starts already was.
+
+## [1.8.3] - 2026-10-20
+
+### Fixed
+
+- **A teammate following a turn whose writer died is told it is over.** A
+  turn's writer now renews a short-lived key while it runs, and a follower
+  that hears nothing for a few seconds checks it: once it has expired, as it
+  does when the API process writing the turn is killed, the follow ends and
+  the chat re-reads the transcript, instead of waiting until a reload. The
+  turn is also forgotten, so the next person to open the chat is not sent to
+  follow it.
+- **Redis trouble no longer stalls a chat or floods the log.** Every call the
+  live chat makes to Redis gives up after two seconds, and each kind of
+  failure is logged at most once a minute with a count of the ones left out,
+  rather than once per open socket per retry.
+- **A live turn's replay has a total size.** Past 16 MB a turn's frames are
+  still sent to whoever is following, and only the start and the end are kept
+  for somebody arriving later. Frames published at once by a turn and its
+  delegates keep their order in the replay.
+- **Leaving a chat, or stopping following a turn, finishes before anything
+  else starts.** The tasks behind them are now awaited, so a heartbeat can no
+  longer count a socket back into a room it has just left. A turn that ends
+  while its socket is closing is still announced to the person who left.
+- **Parallel delegations to one remote A2A agent no longer share a
+  conversation.** Each delegation keeps its own `contextId`, so two tasks sent
+  at once no longer race on one, and a follow-up continues the right one.
+- **A2A takes text and says so.** The server refuses a message with a data or
+  file part with `-32005` (content type not supported) rather than a generic
+  error, and refuses a key that may not run the agent with HTTP `403` (or `404`)
+  instead of the `-32600` that means a malformed request. A task id this
+  server never issued is an unknown task (`-32001`). The client shows a data
+  or file part in an answer as a line naming it rather than dropping it.
+- **Registering two remote agents under one name at once** is refused as a
+  taken handle, not an error.
+- **The project picker asks for projects only when it opens**, and the typing
+  indicator is a live region screen readers announce (#2210).
+
+## [1.8.2] - 2026-10-20
+
+### Fixed
+
+- **A publisher's personal-data export lists only the runs they started.**
+  A run made for somebody else under the publisher's identity - an unlinked
+  channel sender, a widget visitor - carries the publisher's id, and the
+  export listed it as theirs. It now leaves those runs out, as every other
+  reader of a person's runs already did, and a delegation made under such a
+  run now carries the same mark and the sender's chat account rather than
+  reading as the publisher's own. A person who links a chat account gets that
+  account's earlier runs in their export. Deleting the publisher still keeps
+  the runs, with the id cleared (#2235).
+
+## [1.8.1] - 2026-10-19
+
+### Fixed
+
+- **A public app link fills the window.** The page behind `/a/…` was framed
+  in a box about 500 pixels tall and scrolled inside it, because the frame's
+  height resolved against a container with no definite height. It now takes
+  the window below its title, as the console's viewer does.
+- **App thumbnails load once.** A card's preview was unmounted whenever it
+  scrolled out of view, so scrolling back asked the server for a new signed
+  address and loaded the whole page again, on every card, every time. A
+  thumbnail now loads when its card first comes near the viewport and keeps
+  the page; the listing is paged, and the browser throttles frames off screen.
+
+## [1.8.0] - 2026-10-19
+
+### Added
+
+- **A sync source can be edited from its knowledge base.** The pencil on a
+  row of the **Sync** tab opens the connect wizard filled in from the source,
+  with its connector fixed, and saves only the fields that changed: renaming
+  a source, moving it to another folder or changing its schedule no longer
+  means deleting it and losing its sync history. It saves through a new
+  `PATCH /kb/{kb_id}/sync-sources/{source_id}`, which an `edit` grant on the
+  base is enough for, and which refuses a source of another base or of another
+  organization (404) and a move out of the base. A config key patched to
+  `null` is now removed rather than kept by the merge, so a field cleared in
+  the form is cleared on the source. Contributed by @henfircreo in #2199.
+
+## [1.7.1] - 2026-10-19
+
+### Fixed
+
+- **Microsoft Work IQ and the other Entra-backed MCP servers connect.** The
+  consent asked for the scopes the sign-in server listed instead of those the
+  MCP server names for itself. Entra lists Graph's `openid profile email
+offline_access`, and its token endpoint refused them beside a `resource`
+  naming Work IQ (AADSTS9010010), after the person had already consented. The
+  server's own scopes now come first, in the order the MCP authorization spec
+  gives: the `scope` of the server's 401, then its protected-resource
+  metadata, and the sign-in server's list only when it names none.
+  `offline_access` is added when the sign-in server offers it, so the
+  connection gets a refresh token, and the consent asks with
+  `prompt=consent`, as OpenID Connect requires for it. Reported and first fixed by @henfircreo
+  in #2231.
+
+## [1.7.0] - 2026-10-19
+
+### Changed
+
+- **Backend dependencies move up.**
+  - Pydantic AI 2.57.0 and the harness 0.57.0, FastAPI 0.143.2, pydantic-settings 2.16.0, Authlib 1.9.1, LiteParse 2.16.0, google-auth 2.62.0, google-genai 2.31.0, boto3 1.43.114 and aiohttp 3.14.5.
+  - The tools: ruff 0.17.1, ty 0.0.88, pre-commit 4.7.0 and mkdocstrings 1.0.7.
+  - pydantic-ai-backend 0.2.36 for the sandbox changes below.
+  - The floors in `pyproject.toml` follow. ty 0.0.88 flags the narrowed `visibility` on `ProjectCreate`; it is suppressed with the reason beside it.
+  - Replaces Dependabot's #2233 and #2234.
+- **A chat's workspace holds 32 MiB, up from 4.** `SANDBOX_STATE_MAX_BYTES` is
+  the ceiling of the `state` workspace every agent gets by default. 4 MiB
+  refused a single large attachment. Two costs that grew with the ceiling now
+  don't:
+  - A turn that changed no file stores nothing; only `last_used_at` moves.
+    Before, every message rewrote the whole JSONB column and its WAL, at
+    whatever size the workspace had reached.
+  - A write is measured by serialising only the file it wrote, not the whole
+    document on the event loop.
+- **Sandbox calls share one connection pool per process.** `SandboxdWorkspace`
+  without a client of its own opened a new connection, and built an SSL context,
+  for every command and file operation of a run. One client per event loop now
+  serves every `sandboxd` workspace, and the API closes it at shutdown.
+- **A container workspace's files are listed in one request.** The listing
+  walked the host with one `ls` per directory, up to six levels deep. It now
+  asks `sandboxd` for the whole bounded tree at once (pydantic-ai-backend
+  0.2.35). A folder below the root that cannot be read now marks the listing
+  incomplete instead of disappearing from it silently. The same release serves
+  an agent's file reads and writes from the host's disk, at ~4 ms instead of
+  50-500 ms through `docker exec`, and ships the `sandboxd` image with BuildKit.
+- **sandboxd fixes from its audit** (pydantic-ai-backend 0.2.36). The ones a
+  deployment notices:
+  - The deploy's prepare step now builds the image a session runs. With
+    `SANDBOXD_SANDBOX_UID` set, as the compose files set it, it built a variant
+    no session used, and the first chat still waited for a build.
+  - A file write that fails part-way leaves the old file.
+  - The console's path checks no longer cost a `docker exec` each.
+  - A command running past the idle timeout is no longer reaped under it.
+
+### Fixed
+
+- **A host short of CPU no longer restarts the API in a loop.** Uvicorn's
+  supervisor killed any worker that took more than 5 seconds to answer its ping.
+  On a starved host it hit live workers and then their replacements before they
+  had started, 17 times in 20 minutes on prod, and each restart re-imported the
+  whole application. Every compose file that runs `--workers` now waits
+  `UVICORN_WORKER_HEALTHCHECK_TIMEOUT` seconds, 60 by default. A blocked event
+  loop is still the watchdog's to catch (#2223).
+- **A slow production deployment can be diagnosed without reading raw logs.**
+  - Every service in the production compose files caps its log at five files
+    of 20 MB. Prod held 570 MB and growing.
+  - Postgres preloads `pg_stat_statements`, and migration
+    `0143_pg_stat_statements` creates the extension. Where the role may not,
+    the migration logs a notice and goes on.
+  - With `ENVIRONMENT=production` Logfire no longer prints a console line per
+    SQL and Redis call.
+  - `doctor` gains `query statistics` and `tracing` lines, which say whether
+    either is recording.
+  - Health probes use `urllib` instead of importing httpx, which halves the
+    cost of the interpreter each one starts every 15-30 seconds (#2228).
+- **Two pollers on one Telegram token stop fighting.** Telegram ends one of
+  two `getUpdates` requests on every poll, and aiogram retries for ever, so on
+  prod two copies of one bot ended each other's polls for fifteen minutes. The
+  adapter now hears the conflict:
+  - a worker that does not hold the bot's stream lease closes its copy;
+  - the holder keeps polling and marks the bot down with "another process is
+    polling this bot's token".
+
+  The log now names the worker each stream opens and closes on (#2224).
+
+- **An idle deployment queries its bots a third as often.** Every API worker
+  checks for polling bots nobody serves every 10 seconds. That was one query
+  per platform, three per pass, and most of an idle prod's transactions. One
+  query now covers all three (#2227).
+- **Naming a request's span no longer rebuilds the whole route table.**
+  OpenTelemetry's FastAPI instrumentation flattened `app.routes` on every
+  request, and FastAPI 0.143 rebuilds each included router's dependants to do
+  it: `inspect.signature` on all 524 endpoints. That was the largest single
+  cost of serving a request on prod. The flattened list is now built once per
+  process. Locally it goes from 0.40 ms to 0.18 ms per request (#2226).
+- **Every API worker and flow run starts lighter.** The SDKs that only one
+  optional capability or connector calls are now imported where they are used:
+  mem0 (with qdrant-client and numpy), PyMuPDF, python-docx, boto3 and the
+  Google API client. Measured on a laptop, `import app.main` goes from 4.19 s to
+  3.62 s and from 382 MB to 298 MB. A test keeps them out of the startup import
+  (#2225).
+- **The first sandboxed chat after a release no longer waits on an image
+  build.** A release that changed a sandbox runtime made sandboxd build it on
+  the production host inside the first session that asked, and every session
+  request answered 409 for minutes. `scripts/deploy.sh` now runs
+  `python -m pydantic_ai_backends.remote.prepare` in a one-off container of the
+  new sandboxd image before the old one is replaced. Each build is retried
+  (pydantic-ai-backend 0.2.34). A runtime it could not prepare is named in the
+  deploy log and still built on demand.
+  - While a session does wait on a build, the chat says "Preparing the
+    sandbox" above the composer, until the sandbox opens or the turn fails.
+  - Opening waits up to ten minutes instead of giving up after 30 seconds
+    (pydantic-ai-backend 0.2.34, `on_wait` and `opening_timeout`) (#2222).
+- **A remote sandbox outlives a deleted conversation only until the provider
+  answers.** Deleting a conversation or a project destroyed its sandboxes once,
+  after the commit. A failure - host down, worker restarted in between - left
+  nothing that knew they existed, and a Daytona sandbox kept billing the
+  organization.
+  - The deletion now writes a tombstone in the same transaction
+    (`pending_sandbox_destroys`, migration `0144_pending_sandbox_destroys`), and
+    a successful destroy removes it.
+  - A new worker sweep, `sandbox-destroy-retry`, retries the rest from 2
+    minutes up to 6 hours apart.
+  - A switched-off connection still has its sandboxes destroyed. A connection
+    with tombstones left cannot be deleted.
+  - The `scheduler` health check counts it with the other sweeps (#2209).
+
+## [1.6.3] - 2026-10-18
+
+### Fixed
+
+- **Scheduled triggers, portal polling, notification emails and the sync check
+  no longer cost a process a minute.** Each was a Prefect deployment ticking
+  every 60 seconds, and every tick was a new Python process importing the whole
+  application. On a busy host that took longer than the minute between ticks:
+  runs piled up, and the server spent its CPU on imports. They now run as
+  sweeps inside the worker's own process, one tick at a time each, staggered
+  across the minute. The sync check still starts the syncs as a Prefect run,
+  and only when a source is due. The `scheduler` health check (`doctor`,
+  `/admin/system`) reads the sweeps' heartbeat from Redis and, separately,
+  whether Prefect still completes `mcp-connection-sweep` (#2213).
+
+## [1.6.2] - 2026-10-18
+
+### Changed
+
+- **The README, the decks and the banner show what shipped in October**, on the
+  landing page's photographs: a project chat several people share, a reply the
+  agent applies, Codex building a page, a drawing and research finished in the
+  background. The introduction deck has 17 slides and the product tour 47. The
+  README, its figures and the docs count 29 built-in capabilities and 28 model
+  providers. `docs/assets/readme/frames.mjs` sets a screenshot on a photograph.
+
+## [1.6.1] - 2026-10-18
+
+### Fixed
+
+- **Work while tools run has its picture.** The capability showed a lone initial
+  among the Toolbox's dioramas; it now has its scene - a tool still busy at the
+  back while the agent gets on with its list - and a test fails when a
+  capability is registered without one.
+
+## [1.6.0] - 2026-10-18
+
+### Added
+
+- **Models on a ChatGPT subscription.** The `openai_codex` provider runs OpenAI
+  models through the Codex backend on a person's own ChatGPT plan instead of a
+  metered API key. **Sign in with ChatGPT** - in the vault, when adding a model
+  and in the chat's model picker - stores a private `openai_codex` secret whose
+  tokens the vault keeps current as they rotate; **Reconnect** renews one. A
+  run reaches a sign-in only for the person asking who may see it in the vault:
+  never for a visitor, an API key's holder, background work or an approver
+  resuming somebody else's run. See
+  [Running on a ChatGPT subscription](docs/models.md#running-on-a-chatgpt-subscription).
+- **Several people in one chat with the agent.** A conversation's open sockets
+  share a room: a bar over the transcript shows who else has the chat open, with
+  Invite for its owner, and a turn somebody asks is followed live by everybody
+  else in it, question first. While somebody writes, the others see "Anna is
+  typing" over the composer. **Reply** on any message quotes it; the reply
+  carries the quote to the transcript and to the model, which in a project's chat
+  also reads each person's turn under their name. A message's `reply_to` and the
+  `reply_to_message_id` it is sent with are the API's half.
+- **A project's chats are its members'.** Whoever may see a project reads every
+  chat in it, and whoever may work in it continues a teammate's chat; each turn
+  carries the name and face of whoever typed it. The project's **Chats** tab
+  lists everybody's chats, each saying whose it is, who is at work in it now
+  and who has had it open, and the project's chat count is everybody's.
+  Renaming, archiving and deleting stay with whoever started the chat.
+  `GET /api/v1/projects/{id}/chats` lists them; a message's `sender` names who
+  typed a user turn.
+  Access to a project's chat follows the project alone - its starter loses it
+  with the project - and deleting the starter's account keeps the chat for the
+  team, unowned.
+- **Agents served over A2A** (#2092). An agent its organization switches on under
+  **Availability → Agent2Agent (A2A)** has an agent card at
+  `/api/v1/a2a/{id}/.well-known/agent-card.json` and takes `message/send` and
+  `tasks/get` at `POST /api/v1/a2a/{id}`, with an organization key or an OAuth
+  token. Every task is an ordinary run on the new `a2a` surface, so budgets,
+  approvals, audit and Activity apply.
+- **Remote agents to delegate to** (#2092). Another vendor's A2A agent is
+  registered under **Connections → Remote agents** by its agent card, with an
+  optional vault key, and picked in an agent's delegation settings beside the
+  organization's own agents (`external_agents` in the spec). Every call is
+  budget-checked and booked to the run as unpriced.
+- **Coding agent capability** (#2092). `coding_agent` hands software work to
+  Claude Code or Codex in the agent's sandbox through one tool,
+  `run_coding_agent`: the harness works on the task until done, and the chat
+  shows each step as it takes it - the file it reads, the edit, the command - in
+  a panel under the harness's mark. The binding's `access` decides whether it
+  may change files and run commands or only read and answer (Claude Code only);
+  **Human approval** set to **Always ask** asks before each task. A
+  conversation's tasks continue one harness session. Claude Code runs on an
+  Anthropic key or a `claude setup-token` subscription token, Codex on an
+  OpenAI key or a ChatGPT sign-in, and their tokens are booked to the run. Stop
+  and the task's time limit end the harness's whole process group, and whether
+  a task is over is read from that group rather than a file the harness could
+  write. The `workbench` runtime now carries Claude Code 2.1.288 and Codex
+  0.160.0.
+- **Projects.** A project holds instructions and files in one container that
+  every chat started in it shares, whichever agent answers: a chat agent without
+  a sandbox is given the project's, and every agent reads the project's
+  instructions after its own. Start one from the project's **New chat** or the
+  composer's **+** or its `@`; upload files and folders on its **Files** tab; share it with
+  people, departments or the organization (`projects:view`, `projects:use`,
+  `projects:edit`). A deleted project leaves its chats as ordinary chats of
+  whoever started them. The sidebar lists your recent projects, the chat list
+  files each project's chats under it, and the dashboard has a **Projects** card. A
+  project opens on its files, which can be dropped anywhere on the tab and show
+  their progress as they go up; its **Apps** tab lists the apps its chats
+  published (`GET /apps?project_id=`). A chat on its **Chats** tab shows who has
+  it open right now (`here` on `GET /projects/{id}/chats`). A sandbox connection a
+  project keeps its files on cannot be deleted. See [Projects](docs/projects.md).
+
+### Fixed
+
+- **A deleted chat's sandbox is destroyed only once the deletion commits.** The
+  container or Daytona sandbox behind a conversation or project went before the
+  database did, so a deletion that rolled back left the rows naming files that
+  were already gone.
+
+- **The collapsed sidebar matches the open one.** A folded group stays folded on
+  the icon rail, which now has the same row height and group spacing, so no icon
+  moves when the column collapses.
+- **Remote agents load in the console** (#2092). The page called a route the
+  console did not proxy, so it answered 404.
+- **Coming back to an answer still being written shows it.** Opening a
+  conversation whose agent is still answering - from another chat, another tab
+  or after a reload - picks the answer up where it is, with every step so far,
+  and goes on streaming it; it used to show only the question and a note to
+  check later. The running turn's frames are kept in Redis for this.
+- **Documents no longer lists the platform's own files.** A coding task's
+  events and session under `.agenticos/` are left out, as skills and spilled
+  tool output already were.
+- **Notifications say at a glance what they are about.** Each row in the bell
+  and on the dashboard card starts with the agent it concerns - its face, with
+  a badge for how the run went - or, for a row about no agent, an icon for its
+  kind: green for a finished run or a recovered MCP server, red for a failure
+  or an exhausted budget, amber for an approval or a budget warning. Rows
+  written before this keep the icon only. The inbox API serves the row's
+  `agent`.
+- **A code file opens as it would in an editor.** The file viewer, the folder
+  page's reader and a skill's preview show source with line numbers, coloured
+  in its language, filling the pane - rather than in a chat's code block sized
+  to its content, which left a short file in a small box over empty space. On
+  the folder page the text fills the reader edge to edge instead of sitting in
+  a second box inside it; JSON and the Source view of Markdown and HTML are
+  coloured too.
+
+## [1.5.0] - 2026-10-18
+
+### Added
+
+- **The AgenticOS MCP server for any agent** (#2190). The platform's own MCP
+  server is the first card under an agent's **MCP servers**: switched on, the
+  agent reads the platform's agents, runs, spend, knowledge bases, skills and
+  members as whoever it runs for, with exactly their permissions, and every
+  tool that changes something waits for approval. The card's settings narrow the tools
+  and can hold every call. The **Claude Code like** template binds it.
+  `GET /api/v1/agents/platform-mcp-tools` lists the tools a binding chooses
+  from. See [MCP](docs/mcp.md#giving-it-to-an-agent).
+- **Agents draw in the conversation** (#2171). A new **Visuals** capability
+  gives an agent `draw`, `revise_visual` and `read_visual`: an SVG diagram, a
+  Mermaid flow, or a whole HTML page with sliders, `<canvas>` or three.js,
+  drawn under its message while it is written and kept in the conversation. The
+  drawing runs in a frame with exactly an app's sandbox, and the console tells
+  the model what broke in the person's browser so it fixes it in the same turn.
+  A drawing can use a photo attached to the thread, a workspace file, or - for
+  an agent that already reads the web - a picture from an address. From the
+  panel: full screen, zoom, the code, download, copy as image, fix it, and
+  **Save to Apps** with versions. A shared thread shows its drawings, the
+  dashboard gains a **Recent visuals** card, and with `VISUAL_RENDER_CDP_URL` a
+  chat app gets the drawing as a picture. The bundled `visual-design` skill
+  carries the house style and templates; the library set gains three.js 0.186.0
+  and Mermaid 12.1.0. `seed-skills --skill` installs one bundled skill.
+- **An agent's skills, context files and knowledge bases are listed with the
+  attached ones first**, in a capability's panel, ten to a page.
+
+### Fixed
+
+- **An agent installed from a template is visible to the whole organization.**
+  It was installed private, so a colleague could not see it until somebody
+  shared it by hand. A template's instructions ship with the product, so there
+  is nothing private in them to protect; a clone or a promoted specialist
+  still starts private.
+- **A deploy that waits for its images no longer drops its connection.** The
+  deploy job's SSH session sat silent while a merge's images were still being
+  built, and the host dropped it four minutes in, failing the deploy with
+  nothing changed. It now sends keepalives for as long as the wait lasts.
+- **A conversation shared by link opens again.** Its route promised a member's
+  conversation and returned the link's narrower shape, so every link answered 500.
+
+## [1.4.0] - 2026-10-18
+
+### Added
+
+- **Prompt-cache busts are flagged on the run** (#2109). A request whose cached
+  prompt prefix collapsed is marked in the run's request waterfall - _cache
+  bust_ when the prefix moved, _cache expired_ when the provider's retention had
+  passed - with how many cached tokens it did not read back, and logged with the
+  agent and model. The first request of a turn is compared with what the
+  previous turn cached. The counts are kept on the run, and **Runs → Spend**
+  shows a _Prompt cache_ card per agent and model with the busts, expiries and
+  cached tokens not read back over the window.
+- **Code mode: many tool calls from one sandboxed script** (#2107). An agent
+  with _Code mode_ on writes a short Python script that calls its tools in loops
+  and in parallel inside the Monty sandbox, instead of one model turn per call -
+  ten record updates take one turn, not ten. Calls from a script go through the
+  same guardrails, budget and permission checks; a tool that needs approval stays
+  an ordinary call. The run view lists each script and the calls it made. Off by
+  default; switched on in the Builder beside the limits.
+- **Run reviewers: a second model that steers a run while it goes** (#2106).
+  An agent can carry up to five reviewers, each a usually cheaper model with one
+  concern ("claims without a source"). Every few requests a reviewer reads the
+  recent run and sends one short correction when it drifts; the run's model gets
+  it with the reviewer's name, and the run view lists it. Its calls are budgeted
+  and booked like the run's own, and a reviewer that cannot review never fails
+  the run. Set in the Builder beside the limits.
+- **Tool-call loops are stopped early, with the reason** (#2086). A run that
+  calls one tool with the same arguments again and again, or goes round a short
+  cycle of calls, is told it is looping; if it goes on, it ends as
+  `loop_stopped` and says which tools - before the step limit or the budget runs
+  out. On for every agent; the Builder sets the thresholds or switches it off
+  beside "Max steps". Chat apps, embeds and run notifications say why too.
+- **A run shows how much of its input the cache served** (#2170). Runs and
+  answers now keep `cache_read_tokens` and `cache_write_tokens` beside the input
+  total, in the run API, the run's request record, the run view and the cost
+  under each answer - so a run can be reconciled with the provider's console.
+  The cost was already priced from this split: the bundled prices match
+  Anthropic's current list (a Sonnet 5.5 cache read is 5% of the input rate).
+
+### Fixed
+
+- **The web chat remembers the plan between messages** (#2162). A checklist an
+  agent wrote in the chat was gone by the next message, so asking it to start
+  step two got "No plan yet." The chat now keeps the plan a turn ended on, as
+  the API, chat apps and triggers already did, and a stopped turn hands its
+  step back as still to do.
+
+### Changed
+
+- **Prompt caching on every provider that takes it** (#2169). Caching now uses
+  Pydantic AI's provider-neutral `cache` setting instead of Anthropic's and
+  OpenRouter's own flags, so Bedrock's Anthropic and Nova models and OpenAI from
+  GPT-5.6 are cached too, and providers that cache by themselves are unchanged.
+  A model profile turns it off with `cache: false`; a profile that sets a
+  provider's own flag keeps it.
+
+## [1.3.1] - 2026-10-18
+
+### Fixed
+
+- **A host that falls behind skips sweep ticks instead of running every one.**
+  Every scheduled sweep (the four minute-ticks and the slower sweeps) now runs
+  one tick at a time: Prefect refuses the tick that arrives while the previous
+  one is still running, before the runner starts a process for it. Before, every
+  tick ran: on 2026-10-17 the production host fell behind, each queued tick was
+  another process importing the application on a saturated CPU, and eight hours
+  later ~1,650 runs were Late and the API's workers were being starved into
+  restarts. On-demand deployments (ingestion, syncs, cleanup) and the usage
+  reports, whose runs each cover a period of their own, keep no limit.
+
+## [1.3.0] - 2026-10-18
+
+### Added
+
+- **Malformed tool calls are repaired instead of retried** (#2105). A model
+  that sends a tool call with broken JSON - a trailing comma, single quotes, an
+  object cut short - no longer pays for a retry: every agent repairs the syntax
+  before validation, and the call still goes through approval and guardrails.
+  Open-weight models on Ollama or vLLM do this most. Each run counts its
+  repairs, shown on the run and per model on the dashboard's model card.
 
 ## [1.2.1] - 2026-10-18
 
@@ -91,7 +6585,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **An approval says which account is acting.** A call through a labelled MCP
   connection, or one of several accounts on one service, carries the account's
   name to the approval - the chat card, Activity, the dashboard widget, the Slack
-  and Telegram message ("as *Work*") and the approval email - so "Send in Gmail"
+  and Telegram message ("as _Work_") and the approval email - so "Send in Gmail"
   says from which mailbox. Stored on the approval row (migration
   `0132_tool_approval_account`).
 
@@ -127,7 +6621,7 @@ Two things are versioned separately from this file and worth knowing about:
   in place of the headless shell sites rejected on sight, and `browser_use` no
   longer turns on CDP's `Runtime` domain, drops `Headless` from a user agent and
   hides a software WebGL renderer. BrowserScan's bot detection reads it as
-  *Normal* on every count. `BROWSER_TZ` and `BROWSER_LANG` set where and in which
+  _Normal_ on every count. `BROWSER_TZ` and `BROWSER_LANG` set where and in which
   language it says it is.
 
 - **A browse done before goes quicker the second time, for the same person.**
@@ -191,14 +6685,14 @@ Two things are versioned separately from this file and worth knowing about:
   query that was searched.
 - **The app a turn published is a card under its answer**, and the step
   that published it stays one line, so the turn's work folds away. A link to
-  an app reads *Open the app*, and a link to a known service leads with its
+  an app reads _Open the app_, and a link to a known service leads with its
   logo.
 - **Comparisons with the new always-on agents and agent platforms**: OpenAI
   dots, Grok Bot, OpenAI Frontier, Microsoft Agent 365, Claude Managed
   Agents and OpenClaw / NemoClaw each have a guide in four languages, and
   the comparison overview places them beside the rest.
-- **Delegation reads as the team at work.** A delegation step is *Asked
-  Finance Analyst*, with that agent's face, and opens onto the brief and the
+- **Delegation reads as the team at work.** A delegation step is _Asked
+  Finance Analyst_, with that agent's face, and opens onto the brief and the
   answer - after a reload too, where it was raw JSON. While delegates work a
   strip sends the brief down a lane to each, the delegates hop in turn and
   the answer comes back; under the finished answer the same strip names who
@@ -207,7 +6701,7 @@ Two things are versioned separately from this file and worth knowing about:
   comes out as its paragraphs.
 - **Sign in to a site from Settings** (#2129). **Settings → Sign-ins** opens
   a browser on any site for you alone, held by you from the first frame: sign
-  in, hand it back with *Keep me signed in*, and your agents' browses start
+  in, hand it back with _Keep me signed in_, and your agents' browses start
   signed in there - the same keeping a take-over does, before an agent needs
   it. The deployment names the browser in `BROWSER_SIGN_IN_CDP_URL`; the
   address has to be public, and nobody but the person who opened it may
@@ -217,7 +6711,7 @@ Two things are versioned separately from this file and worth knowing about:
   question under its heading with the answer chosen, or that it is still
   open while the run waits.
 - **Stay signed in to a site your agents browse for you (#2129).** Handing
-  the browser back now offers *Keep me signed in to* the site, to the
+  the browser back now offers _Keep me signed in to_ the site, to the
   person the browse acts for; the live view says which site was kept, and
   **Settings → Sign-ins** lists the kept sites with **Forget**. The window
   also waits for a frame of its own size before showing the page. Documented
@@ -247,7 +6741,7 @@ Two things are versioned separately from this file and worth knowing about:
   who may edit the agent, can take the browser over: the agent pauses after
   its step, they click, type and scroll on the page, and hand it back. When a
   page needs a person - a sign-in, a captcha - the agent asks for one instead
-  of stopping, and the card and the channel say *Needs you*; it waits ten
+  of stopping, and the card and the channel say _Needs you_; it waits ten
   minutes before ending blocked. Members who may view runs can watch. What a
   person types is never recorded. The view lives in Redis for an hour
   after the browse's last frame (`WS /api/v1/ws/browse/{run_id}/{call_id}`).
@@ -298,7 +6792,7 @@ Two things are versioned separately from this file and worth knowing about:
   next step; it then appears in the conversation where it landed. In Slack, Telegram and
   Mattermost a mid-turn message from the same person joins the turn, and
   `/btw ...` asks on the side, answered at once without tools (#2087).
-- **A trigger can run as the person who made it.** *Run as me* on a schedule or
+- **A trigger can run as the person who made it.** _Run as me_ on a schedule or
   an event trigger lets each fire reach its creator's memory and their own MCP
   connections - the morning "what matters in my inbox" - on fixed terms: a
   schedule writes memory and an event only reads it, past conversations stay
@@ -309,7 +6803,7 @@ Two things are versioned separately from this file and worth knowing about:
   Migration `0121_trigger_runs_as_creator` (#2027).
 - **The website widget looks like a product.** It wears the agent's face -
   breathing at rest, pondering while it answers - renders answers as Markdown,
-  shows each step as a chip (*Searching the knowledge base*), streams with a
+  shows each step as a chip (_Searching the knowledge base_), streams with a
   caret and holds the send button until the turn ends, follows the visitor's
   light or dark setting and fills a phone's screen, and closes on Escape. The
   Builder adds up to four **suggested messages** under the greeting and a
@@ -376,7 +6870,7 @@ Two things are versioned separately from this file and worth knowing about:
   and calls the public API with `Authorization: Bearer aos_…` from a script,
   Postman or an MCP client, with no browser session. A key carries its issuer's
   authority narrowed to the permissions it was issued with (presets or a custom
-  pick) and to the issuer's *current* role, so demoting or removing the issuer
+  pick) and to the issuer's _current_ role, so demoting or removing the issuer
   narrows or stops it at once; a resource grant never widens a key. The key is
   shown once and stored as a hash, can expire, is revoked instantly, has its own
   rate limit (`RATE_LIMIT_API_KEY_PER_MINUTE`) and is named by prefix in every
@@ -402,7 +6896,7 @@ Two things are versioned separately from this file and worth knowing about:
   cost, invitations, and retrying a 429 (#1796).
 - **AgenticOS is an MCP server**, built on [FastMCP](https://gofastmcp.com).
   `/mcp` on the API's host speaks MCP over streamable HTTP: `claude mcp add --transport http agenticos <host>/mcp --header
-  "Authorization: Bearer aos_…"` gives Claude Code (or any MCP client) tools to
+"Authorization: Bearer aos_…"` gives Claude Code (or any MCP client) tools to
   list, create and run agents, read runs and cost, create and search knowledge
   bases and add documents to them, list skills and members, and invite a member.
   Each tool is the public API called in-process with the caller's key, so it is
@@ -410,7 +6904,7 @@ Two things are versioned separately from this file and worth knowing about:
   deletes, publishes or touches a credential (#2058).
 - **Claude Code connects by signing in, not by pasting a key.** The MCP server is
   an OAuth 2.1 authorization server: `claude mcp add --transport http agenticos
-  <host>/mcp` registers the client, opens the console's consent page — pick the
+<host>/mcp` registers the client, opens the console's consent page — pick the
   organization and what it may do — and returns an hour-long token that renews
   itself. FastMCP's token endpoint answers an invalid grant with `401`, as MCP
   requires, rather than OAuth's `400`. Public clients with PKCE only; codes are single-use, refresh tokens
@@ -420,7 +6914,7 @@ Two things are versioned separately from this file and worth knowing about:
   **Settings → MCP clients**. Migration `0108_oauth_for_mcp` (#2059).
 - **The Architect.** Every organization has one, without installing
   anything: the first time anybody opens the console it is installed from the
-  *Architect* template as the organization's owner, shared with everyone, and
+  _Architect_ template as the organization's owner, shared with everyone, and
   published on the organization's first model (migration
   `0110_organization_assistants`). It lives in the corner of every page as the
   agent's avatar, with a speech bubble that speaks to what is waiting - approvals,
@@ -480,7 +6974,7 @@ Two things are versioned separately from this file and worth knowing about:
   `create_agent_draft` takes the capabilities to switch on (#2069).
 - **A deployment's own sandbox needs no registering.** Where `sandboxd` runs
   beside the API with the token `make sandbox-token` generated, an organization
-  with no default sandbox connection gets *This deployment's sandbox* set up on
+  with no default sandbox connection gets _This deployment's sandbox_ set up on
   its own - as its owner, with the token in the vault and an audit entry - the
   first time it lists its sandboxes or runs an agent that needs one. The AI
   Architect is installed with files and code on such a deployment (#2070).
@@ -518,16 +7012,16 @@ Two things are versioned separately from this file and worth knowing about:
   Mattermost's at a new actions URL with this deployment's own signature on each
   button. Migration `0111_channel_prompts` (#2064, #2068).
 - **Telegram feels native.** A command menu with a new `/agents` (also on
-  Slack and Mattermost: which agent answers here, and what it does), *typing…*
+  Slack and Mattermost: which agent answers here, and what it does), _typing…_
   while it works, answers sent as Telegram HTML converted from the agent's
   Markdown so code and links survive, and a forum group's topic answered in that
   topic. Every channel's working status names more of what the agent is doing
   (#2068).
 - **The Slack bot is a Slack app.** **Copy Slack app manifest** on a Slack bot
   creates the whole app in one paste: the assistant pane with suggested prompts
-  and an *is thinking…* status, an App Home tab with the agent and what waits on
-  the person, `/agent <question>`, the message shortcut *Ask the agent about
-  this*, and unfurls for console links to agents (#2067).
+  and an _is thinking…_ status, an App Home tab with the agent and what waits on
+  the person, `/agent <question>`, the message shortcut _Ask the agent about
+  this_, and unfurls for console links to agents (#2067).
 - **The chat on a phone works like a messaging app.** The console's shell
   follows the visual viewport, so the composer stays above an iOS or Android
   keyboard and the conversation stays on its last message while it opens; the tab
@@ -579,7 +7073,7 @@ Two things are versioned separately from this file and worth knowing about:
   organization. A group's page has **Add to this group**: everything the reader
   may edit that the group lacks, shared several at once at a chosen level. A
   group's members are told when something is shared with it, in the inbox and by
-  email unless they turn *Shared with your group* off, and cards for agents,
+  email unless they turn _Shared with your group_ off, and cards for agents,
   skills, context and knowledge name who they are for - everyone, their
   departments, or private. API: `PATCH /orgs/{id}/groups/{id}/members/{user}`
   (`is_lead`), `GET .../shareable`, `POST .../shares`, `shared_groups` on those
@@ -650,7 +7144,7 @@ Two things are versioned separately from this file and worth knowing about:
   one question as two explained cards - one shared account for everyone, or my
   own account - and recommends one per catalog server. A custom server's
   address is checked for OAuth sign-in as it is typed (`POST
-  /api/v1/me/mcp-connections/probe`, the RFC 9728/8414 discovery a sign-in runs,
+/api/v1/me/mcp-connections/probe`, the RFC 9728/8414 discovery a sign-in runs,
   registering nothing): sign-in is chosen when it is supported, and the dialog
   says when a client made at the provider is needed. Connecting a server from the
   Builder binds it and opens its tools from the check that just ran (#2073).
@@ -750,8 +7244,8 @@ Two things are versioned separately from this file and worth knowing about:
 - **New chat starts a new conversation.** The console sends `conversation_id: null`
   for a new chat, and the session read it as "no id given" and carried on in the
   conversation the socket had open: the next message was written into the old
-  thread - with its browser panel still open - or refused with *Conversation not
-  found* once that thread had been deleted. A frame without the key still
+  thread - with its browser panel still open - or refused with _Conversation not
+  found_ once that thread had been deleted. A frame without the key still
   continues the session's conversation.
 
 - **A browse signed in to a person's sites is theirs alone, and a key is held to its
@@ -1229,7 +7723,7 @@ Two things are versioned separately from this file and worth knowing about:
   and one sentence of the period, then four figures of your own (runs,
   finished, waiting on you, spent), then the calls waiting on you beside your
   conversations. An approval names the agent with its face and the tool in
-  words - *Architect · Save to memory* rather than `write_memory`; a recent
+  words - _Architect · Save to memory_ rather than `write_memory`; a recent
   failure carries the agent's face and its first clause; spend names each
   provider with its logo; the agents you use most wear their avatars.
 - **MCP servers read as one kind of card, and connect in one click.** Every
@@ -1260,7 +7754,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **Sharing reads like sharing a document.** An agent's **Share** button opens
   one dialog: add a person or a group at a level, see who has access - the owner
   first, faces and group icons beside the names - and set **General access** to
-  *Only people with access* or *Everyone in the organization*. The two cards of
+  _Only people with access_ or _Everyone in the organization_. The two cards of
   radio buttons and paragraphs at the foot of the Availability tab are gone, the
   vault's key sharing uses the same panel, and the agent's YAML export moved
   into its **…** menu for whoever may edit it.
@@ -1397,7 +7891,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **A second page that refuses `web_fetch` no longer ends the run.** Pydantic AI
   counts retries per tool, not per URL, so two sites answering 403 (or any two
   failed fetches) in one run failed it with `UnexpectedModelBehavior: Tool
-  'web_fetch' exceeded max retries count of 1`. A failed fetch is now a retry
+'web_fetch' exceeded max retries count of 1`. A failed fetch is now a retry
   while the tool has one left and the same message as its result once it has not.
 
 ## [0.0.535] - 2026-10-09
@@ -1807,7 +8301,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **A public page can be embedded** on the sites listed for it, through an
   embed document whose policy lets only those sites frame it (#1973).
 - **The artifact list filters by the agent that published** (#1967).
-- **A "Claude Code like" agent template**, under a new *General purpose*
+- **A "Claude Code like" agent template**, under a new _General purpose_
   category: an agent for any task that reads before it acts, plans with a task
   list, edits files and runs commands in its workspace, delegates to three
   specialists sharing that workspace (`explore`, `research`, `review`), researches
@@ -1916,7 +8410,7 @@ Two things are versioned separately from this file and worth knowing about:
 - `web_fetch` returns a PDF or an office document as its extracted text instead of
   its raw bytes. A model behind an OpenAI-compatible endpoint that takes no document
   parts, such as a self-hosted vLLM, refused the whole next request (`Unsupported
-  chat content part type: 'file'`), and the agent then fetched the same document
+chat content part type: 'file'`), and the agent then fetched the same document
   again. Documents now go through the same parser as chat attachments and are cut
   at `max_content_chars`. Images still come back as images, and a binary with no
   readable text is a retry that names what came back.
@@ -2205,8 +8699,8 @@ Two things are versioned separately from this file and worth knowing about:
   through several grants, the highest one wins. A group carries no role of its
   own (#1773).
 - **Directory groups decide who joins an organization, with which role.** A
-  directory group mapping says "everyone in this directory group is a *builder*
-  here, in the group *Platform*". It is applied at every directory sign-in, and at
+  directory group mapping says "everyone in this directory group is a _builder_
+  here, in the group _Platform_". It is applied at every directory sign-in, and at
   every OIDC sign-in once `OIDC_GROUPS_CLAIM` names the provider's groups claim.
   The sync joins, re-roles and removes only the memberships it made itself. It
   never demotes or removes an owner, and it cannot map a role its author could not
@@ -2449,7 +8943,7 @@ Two things are versioned separately from this file and worth knowing about:
   instruction rather than a description: a truncated sweep answers with a
   `next_cursor`, and the next one resumes from there instead of re-reading the
   window already covered. Rows the read-time gate hides are never marked to
-  force that progress - the gate reads *current* permissions, so a recipient
+  force that progress - the gate reads _current_ permissions, so a recipient
   demoted for a week and restored would find that week's security notices
   already read and out of their badge. `marked` is what the request changed
   rather than what it looked at, so two overlapping sweeps cannot both claim the
@@ -2467,7 +8961,7 @@ Two things are versioned separately from this file and worth knowing about:
   of the product, and each carried a safety property the other lacked — so a
   deployment running both paths had one converter that could be flooded and one
   that could not, and a reader had to know which was which. There is one manager
-  now, with the union: a process group killed on timeout *and* on cancellation, a
+  now, with the union: a process group killed on timeout _and_ on cancellation, a
   per-call user profile, a concurrency semaphore, OS resource limits applied in a
   fresh single-threaded launcher, and a bounded stderr drain. Both callers are
   thin — the RAG one returns a PDF path, the chat one returns text. Nothing was
@@ -2503,7 +8997,7 @@ Two things are versioned separately from this file and worth knowing about:
   Free text, because the vocabulary is whatever a corpus turns out to use and
   the facet already reports what a collection holds; a blank is recorded as no
   unit rather than as a unit named `""`. The console offers a field on the sync
-  wizard's last step and one in *How the next uploads are read and filed*, and
+  wizard's last step and one in _How the next uploads are read and filed_, and
   shows what a document was filed under beside its parser. Nothing is
   backfilled: no rule can decide which unit an already-ingested document
   belonged to, and a re-ingest picks the value up.
@@ -2521,7 +9015,7 @@ Two things are versioned separately from this file and worth knowing about:
   channel — so an account whose address had been changed to somewhere its owner
   cannot read is an account whose password-reset link goes to somebody else, and
   one changed to an address that never signed up here turns the deployment's own
-  sender into a relay for whoever set it. The request is now *staged*: the
+  sender into a relay for whoever set it. The request is now _staged_: the
   account keeps its current address, a single-use hour-long link goes to the new
   one, and the old one is told a change was asked for — which is what makes a
   takeover visible to the person losing the account. Confirming the link moves
@@ -2570,13 +9064,13 @@ Two things are versioned separately from this file and worth knowing about:
   other.** `record_audit` holds a transaction-scoped lock on the organization's
   audit chain, and the mandatory security notification written straight after it
   takes a key-share lock on every recipient's user row — while
-  `UserService.admin_delete` locks every app admin's row exclusively *first* and
+  `UserService.admin_delete` locks every app admin's row exclusively _first_ and
   reaches for the same chain lock second. Two transactions, the same two locks,
   opposite orders: Postgres aborts one, and depending on which loses, either the
   deletion has to be retried or the surviving transaction's mandatory
   security-event notification is discarded inside its own savepoint while the
   audit entry commits regardless. The twelve sites that audit and then notify now
-  take the audience's row locks immediately *before* the audit entry, so every
+  take the audience's row locks immediately _before_ the audit entry, so every
   transaction takes user rows first and the chain last. The order is a convention
   no type can express, so a static test holds the sites to it. (#1763)
 
@@ -2633,7 +9127,7 @@ Two things are versioned separately from this file and worth knowing about:
   the last successful deploy. It approves nothing and deploys nothing — it
   drains the queue so the next merge reaches the gate, and says that it did.
   `docs/deploy.md` also now warns that approving from the environment's own
-  queue approves the *oldest* waiting run, which is how a fortnight-old commit
+  queue approves the _oldest_ waiting run, which is how a fortnight-old commit
   reached the server. (#1832)
 
 ## [0.0.483] - 2026-09-22
@@ -2697,7 +9191,7 @@ Two things are versioned separately from this file and worth knowing about:
   used as it stands: that one is an interactive checkbox with two states, and a
   plan is neither - the agent owns these rows, nobody may click one, and
   `blocked` and `cancelled` are outcomes a checkbox cannot say. Nothing
-  reorders, because the order *is* the plan.
+  reorders, because the order _is_ the plan.
 - **The sidebar collapses to a rail**, remembered across visits in
   `localStorage` - a property of the browser rather than of the account, so
   signing out leaves it alone. Every destination keeps its name in a `title`
@@ -2740,7 +9234,7 @@ Two things are versioned separately from this file and worth knowing about:
   too, having had nothing left to be for.
 - **The composer is one row of controls under the text**, where it was four
   bands: a usage strip above the message, the text, a cluster of buttons
-  floating *beside* it, a rule, and a row of pickers under that. The buttons
+  floating _beside_ it, a rule, and a row of pickers under that. The buttons
   beside the textarea meant the send button drifted to the vertical middle of a
   tall message. Readings drop out on the composer's own width through a
   container query rather than on the window's - at 900px with the conversation
@@ -2760,7 +9254,7 @@ Two things are versioned separately from this file and worth knowing about:
   too, because half of reading a run back is taking something out of it.
 - **A file opens on its source.** The viewer and the editor both opened on the
   rendered half; somebody who opens a file in a console is usually there to read
-  what it *says* - the front matter, the line that will not parse - and the
+  what it _says_ - the front matter, the line that will not parse - and the
   preview is what hides it. A kind with no source view (an image, a PDF) still
   opens on its preview rather than on a tab that does not exist.
 - **A dashboard card that is waiting says so quietly.** On a young deployment
@@ -2798,10 +9292,10 @@ Two things are versioned separately from this file and worth knowing about:
 
 ### Added
 
-- **Two more cabinets in Amigo's Arcade, both full-window.** *Just One More
-  Agent* is a management game: hire agents, survive the meetings and the chaos
+- **Two more cabinets in Amigo's Arcade, both full-window.** _Just One More
+  Agent_ is a management game: hire agents, survive the meetings and the chaos
   they generate, and ship a one-comma change without running the fictional
-  budget out. *Context Tetris* drops instruction, document and memory blocks
+  budget out. _Context Tetris_ drops instruction, document and memory blocks
   that answer a task when a line clears, and tool, MCP and skill blocks that
   arm a bonus instead. Both take keyboard and touch, pause and restart, go
   fullscreen, make a noise, and hand back a line of text worth pasting
@@ -2844,7 +9338,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **`BROWSER_CDP_ALLOWED_HOSTS`, because the SSRF guard is the wrong control for a
   CDP endpoint.** `cdp_url` first went through `validate_webhook_url`, copying
   `browser_use` - and measured, the only endpoint that would publish was a
-  *public* IP address. That refuses the isolated browser service on the
+  _public_ IP address. That refuses the isolated browser service on the
   deployment's own network that the reference page tells an operator to run
   (`http://browser:9222` in the same compose project resolves privately and was
   rejected) and accepts a CDP debugger exposed to the open internet, which is the
@@ -2856,7 +9350,7 @@ Two things are versioned separately from this file and worth knowing about:
   the default - refuses browser automation outright. The check no longer resolves
   DNS, so publish validation does not need a thread for it.
 - **Ten defects in `browser_choice`, from a review of the unmerged branch.** Each
-  had a way of being invisible: `TYPE_TEXT` aimed at a link *clicked the link*
+  had a way of being invisible: `TYPE_TEXT` aimed at a link _clicked the link_
   before failing, because typing begins by focusing and the operation and the
   target are two independent answers from the model; a native `<select>` could
   not be operated at all, because clicking one opens Chromium's own popup whose
@@ -2885,7 +9379,7 @@ Two things are versioned separately from this file and worth knowing about:
   place the field-value redaction could not reach. `private` is bound into what
   the generator is told and never into the decision prompt.
 
-  The rest: the budget is asked *before* each of a browse's own model calls, not
+  The rest: the budget is asked _before_ each of a browse's own model calls, not
   only booked after, because `BudgetGuard` wraps the agent's requests and a
   browse makes up to a hundred of its own inside one tool call (`guarded_by` is
   the sibling of `metered_by`); the candidate cap, option lists, labels and page
@@ -2899,19 +9393,20 @@ Two things are versioned separately from this file and worth knowing about:
   filled in and publishing it was refused; and the frontend reducer creates a
   browse only from its opening frame, so a late frame from the previous turn
   cannot restore a browse, and its screenshot, under the new transcript.
+
 - **Eight more, from a third review, and one I found answering them.** A field's
   contents left the browser: the history line stopped carrying a typed value and
   the next snapshot copied `el.value` straight back out, so the password the host
   model had just entered reached the decision endpoint one step after being
   redacted. Closing that left two more routes, both found by the security pass
-  that followed: a pick-one's *options* are built separately from the table and
+  that followed: a pick-one's _options_ are built separately from the table and
   carried the value too, and `labelOf` had `el.value` at the end of its fallback
-  chain, so an unlabelled field's own value became its *name*. The table and the
+  chain, so an unlabelled field's own value became its _name_. The table and the
   options both say `[filled]` now, a value is a name only where it is a caption
   (`submit`, `button`, `reset`), and only a dropdown reports its selection. `domain_allowed` let an agent with no `allowed_domains` browse
   `file:///etc/passwd`, which `read()` would have returned as the answer; the
   scheme is checked first and always. A click used coordinates without asking
-  what was *at* them, so an overlay took the press. `<div contenteditable>` was
+  what was _at_ them, so an overlay took the press. `<div contenteditable>` was
   reported as a `div`, which is not an editable role, so every rich-text editor
   could be reached and never filled. A page's visible text was serialised whole
   over CDP before Python bounded it. A `target="_blank"` link opened a tab the
@@ -2925,6 +9420,7 @@ Two things are versioned separately from this file and worth knowing about:
   reason it took a live browser to find the others at all is that a page's own
   exception was reported as "the collector did not run"; `exceptionDetails` is
   read and quoted.
+
 - **Five more review findings, four of them real.** A form control's name was
   read off the control alone, so `<label for="email">Email</label>` beside an
   `<input id="email">` reached the decision model with an empty label and the
@@ -2943,7 +9439,7 @@ Two things are versioned separately from this file and worth knowing about:
   per step for nobody while the browse itself carries on. The fifth - waiting for
   the first navigation before the first snapshot - was already fixed, and is now
   fixed properly: `about:blank` reports itself ready the instant it is asked, so
-  the wait has to be for the page it is *leaving*.
+  the wait has to be for the page it is _leaving_.
 - **The browse panel is a card first, and a window when you ask.** A full side
   panel opening itself over the conversation says watching the browser matters
   more than reading the answer, which is true for about four seconds. So a browse
@@ -2988,9 +9484,10 @@ Two things are versioned separately from this file and worth knowing about:
   probability the engine chose each at, and the viewport as a picture per step -
   narration and picture as separate frames, so encoding one never holds up the
   other, and a finish frame on every outcome so nothing is left spinning. The
-  panel opens itself when a browse starts, stays up when it ends (*blocked by the
-  page* is the outcome most worth reading), and stays closed for a browse somebody
+  panel opens itself when a browse starts, stays up when it ends (_blocked by the
+  page_ is the outcome most worth reading), and stays closed for a browse somebody
   closed it on. `preview` off keeps the narration and drops the pictures.
+
 ## [0.0.478] - 2026-09-21
 
 ### Added
@@ -3191,8 +9688,7 @@ Two things are versioned separately from this file and worth knowing about:
   Organizations are still seeded at creation, `agenticos cmd seed-skills` still
   pushes a new bundled skill out on purpose, and the gallery is where a skill is
   chosen. What is gone is the page that put one back.
-- **Chunking defaults are 2500 characters with 200 of overlap**, up from 512 and
-  50. 512 characters is roughly three sentences: it splits a paragraph across
+- **Chunking defaults are 2500 characters with 200 of overlap**, up from 512 and 50. 512 characters is roughly three sentences: it splits a paragraph across
   two embeddings and hands a model an answer with its own context missing.
   Existing collections keep whatever they stored; this is what a new one starts
   from, in the form at `/rag`, in the pipeline, and on the standalone parse
@@ -3208,7 +9704,7 @@ Two things are versioned separately from this file and worth knowing about:
   and Open Graph locale names it. The terminology is the one the documentation
   already fixed in `docs/howto/translate.md`: the product's own nouns stay English
   and keep the gender decided there — der Agent, die Capability, der Run, die
-  Sandbox — and everything around them is translated, formally (*Sie*), as the
+  Sandbox — and everything around them is translated, formally (_Sie_), as the
   German pages of the site are.
 
   `/de/legal/*` is translated with the rest of the catalog and is a translation of
@@ -3265,7 +9761,7 @@ Two things are versioned separately from this file and worth knowing about:
   filter can only narrow, never widen, access — closing the latent cross-tenant
   read on a collection name two organizations happen to share. An app-scoped,
   deployment-wide base gets its own scope shape (`AppScope`, matching `tenant IS
-  NULL`) rather than being read through the same equality conjunct an org base
+NULL`) rather than being read through the same equality conjunct an org base
   is, which previously left it always answering empty. Ingestion now stamps
   `organization_id` (from trusted worker context) and the business metadata onto
   every chunk, and `GET /rag/collections/{name}/filter-values` exposes the
@@ -3296,7 +9792,7 @@ Two things are versioned separately from this file and worth knowing about:
   twenty minutes per open tab, and each new value closed the socket an answer
   was streaming on. The server read that close as the reader leaving and
   cancelled the run, so a half-written reply was recorded `cancelled` and
-  labelled *stopped* in the transcript while the composer went on spinning -
+  labelled _stopped_ in the transcript while the composer went on spinning -
   the frame that would have ended the turn on screen had gone to the socket
   that just went away. Three changes: the socket is identified by its address
   rather than by the credential it shook hands with, so a refreshed token
@@ -3315,7 +9811,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **A notification center: every unattended alert in one inbox, in the console
   as well as in the mail.** A bell beside search carries the unread count and
   the list itself, a dashboard card carries the five most recent, and both read
-  the same rows. Every alert writes two things now - the in-app row, which *is*
+  the same rows. Every alert writes two things now - the in-app row, which _is_
   the delivery and needs nothing further to succeed, and an email queued as an
   independently retried second channel off the same write, so a bounced address
   or a down relay cannot take the console's own copy with it. Nine event types
@@ -3324,7 +9820,7 @@ Two things are versioned separately from this file and worth knowing about:
   outcome, a security event, a configuration change, a usage report and an app
   admin's broadcast. Four routes read it - a cursor-paged inbox, an unread
   count, mark-one-read and mark-all-read - and every one of them rechecks, row
-  by row against the caller's *current* standing, what the audience check
+  by row against the caller's _current_ standing, what the audience check
   decided when the row was written: a collection they can no longer see, an
   approval they can no longer decide, an organization they have left. An
   approval nobody may decide degrades to a sentence without its link rather
@@ -3342,7 +9838,7 @@ Two things are versioned separately from this file and worth knowing about:
   both ends of the send, a send reaching nobody is refused rather than recorded,
   and the audit entry keeps the count and the description - never the resolved
   recipient list. (#1598)
-- **Notification retention, on its own schedule.** A daily sweep drops a *read*
+- **Notification retention, on its own schedule.** A daily sweep drops a _read_
   row ninety days after it was written and any row after a year, both counted
   from the write. `announcements` are excluded, so what was sent stays
   answerable from the audit trail after its deliveries age out. Migrations
@@ -3461,7 +9957,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Fixed
 
 - **Chat attachments reach the model again.** A chat turn linked its uploaded
-  file to the new message and then re-validated it as *unlinked*, which failed
+  file to the new message and then re-validated it as _unlinked_, which failed
   and dropped every attachment before the model call — the turn looked skipped,
   with no reply. The run now reads its own turn's files directly, keeping the row
   where it is linked to this message or still unlinked, so `list_attached_files`'
@@ -3677,7 +10173,7 @@ Two things are versioned separately from this file and worth knowing about:
 
   **`SPEC_VERSION` moves to 12.** A stored binding that renamed `list_skills` or
   `load_skill` loads with that entry dropped and a warning in the log: a rename of
-  a tool that is gone is not a decision worth carrying forward. An *approval* on
+  a tool that is gone is not a decision worth carrying forward. An _approval_ on
   `load_skill` is, and moves to `load_capability` — the decision was "ask a person
   before a skill is opened", and that is the call that opens one now; dropping it
   would have ungated an agent whose publisher gated it deliberately, on every
@@ -3835,7 +10331,7 @@ Two things are versioned separately from this file and worth knowing about:
   permission gates it: the answer is the same for a Viewer and an Owner, because
   it is their own store. The product offered erasure and nothing else before
   this, on the reasoning that a listing is a surveillance affordance - which is
-  true of somebody *else's* store and the opposite of one's own. (#1594)
+  true of somebody _else's_ store and the opposite of one's own. (#1594)
 - **A note can be stopped without being destroyed.** A suppressed note is no
   longer listed, read or editable by any tool, so it stops reaching the model
   while staying there to be looked at and restored - the middle answer for a note
@@ -3907,7 +10403,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **GitHub triggers can run on a GitHub App instead of an OAuth App.** The OAuth
   path stays as the fallback and the two coexist; what it costs is the reason for
   the second. A `repo` plus `admin:repo_hook` token is read-write on every
-  repository the *person* can administer, never expires, needs a hook created and
+  repository the _person_ can administer, never expires, needs a hook created and
   deleted per repository, and shares that account's rate limit. An App is
   installed on the repositories somebody chose, its token is minted from a
   private key in the vault and lives an hour, and it is already delivering - so
@@ -3940,11 +10436,11 @@ Two things are versioned separately from this file and worth knowing about:
   a start at the deployment's own `/api/v1/oauth/<provider>/login`, which it opens
   in your own browser with `client=desktop` and a per-attempt nonce appended.
   Nothing in the console knows it is running in a shell, and nothing has to - and
-  because the console's same-origin hop is *followed* rather than intercepted, an
+  because the console's same-origin hop is _followed_ rather than intercepted, an
   invitee signing in from the app still carries their staged invitation.
 
   The callback reads that marker off the session it was recorded in at the
-  *start*, never off the return, and redirects to `agenticos://auth/callback`
+  _start_, never off the return, and redirects to `agenticos://auth/callback`
   with the single-use code the browser flow already mints. The shell sends the
   console window to the page it already had, which swaps the code
   server-to-server and sets the window's own cookies - so the browser's cookie
@@ -3967,7 +10463,7 @@ Two things are versioned separately from this file and worth knowing about:
   already use - the ingestion parsers, the guardrails' detectors, the
   transcription client - reached directly, so another component with a key gets
   the same answers an agent would rather than a second opinion. `GET
-  /ml/services` publishes the coverage matrix as data, including the two rows
+/ml/services` publishes the coverage matrix as data, including the two rows
   that say no: personal names, postal addresses and telephone numbers need a
   named-entity model this deployment does not ship, and image analysis is future
   scope in the requirements themselves. One permission gates all four -
@@ -4014,7 +10510,7 @@ Two things are versioned separately from this file and worth knowing about:
   `client_secret`, and left them reachable only through the API - so "Connect &
   check" on HubSpot still ended at "This server rejected the client registration
   request" with nowhere to type the credentials its MCP auth app hands out.
-  Choosing OAuth now shows *Your own client*: the two fields, and the redirect
+  Choosing OAuth now shows _Your own client_: the two fields, and the redirect
   URL the provider has to hold exactly. Left empty, nothing changes - the server
   registers this app itself. A secret typed with no client ID is refused before
   the request, which is what the backend would do one round trip later.
@@ -4391,7 +10887,7 @@ Two things are versioned separately from this file and worth knowing about:
   names rather than an unbounded fetch on a page nobody pages. Deliberately a
   separate endpoint rather than an `is_app_admin` bypass in `get_for_user`: an
   app-admin context already carries every permission at the widest scope, so
-  widening the membership path would have granted full read *and write* of a
+  widening the membership path would have granted full read _and write_ of a
   foreign tenant. (#1245)
 
 ## [0.0.424] - 2026-09-14
@@ -4621,7 +11117,7 @@ Two things are versioned separately from this file and worth knowing about:
   BSD-3-Clause - neither an OSI-approved licence. Nothing was broken by it: the
   image is pulled by the operator rather than redistributed here, and RSALv2
   permits running Redis inside your own application. But the default `docker
-  compose up` started a non-open component without saying so. Every compose file
+compose up` started a non-open component without saying so. Every compose file
   and every CI service now uses `valkey/valkey:8-alpine`, the Linux Foundation
   fork of Redis 7.2 under BSD-3-Clause. It speaks the same protocol on the same
   port, so the service name, the `redis://` scheme, the `redis_data` volume and
@@ -4641,7 +11137,7 @@ Two things are versioned separately from this file and worth knowing about:
   live in `licenses/policy.toml` (overrides with evidence, review entries for
   copyleft and share-alike components) and `licenses/components.toml` (images,
   Debian packages, fonts, glyphs, data files, compose services). `make
-  licenses-check` runs in the `security` job and `make check`: stale notices, a
+licenses-check` runs in the `security` job and `make check`: stale notices, a
   component with no readable licence, a copyleft component with no decision, or a
   decision about a licence that has since changed all fail it; tracked open
   findings pass and are counted, and so does a package that ships no licence
@@ -4763,7 +11259,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **Whether a personal MCP connection is usable is decided once, on the
   server.** The console re-derived it and disagreed with the backend: a bearer
-  token whose sealing key had been rotated away read *Connected* in the chat
+  token whose sealing key had been rotated away read _Connected_ in the chat
   controls and unavailable in the next turn. `McpConnection.account_authorized`
   is the single side-effect-free answer - an OAuth grant with a payload, a token
   whose key version is still configured, or no token at all - the run path uses
@@ -5132,7 +11628,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **Binding an identity while impersonating is refused.** Confirming a chat-link
   code, starting a personal or organization MCP OAuth flow, the GitHub and portal
   variants, and typing a bearer token into a member's MCP connection all fastened
-  the *administrator's own* identity or credential onto the impersonated account,
+  the _administrator's own_ identity or credential onto the impersonated account,
   and the binding outlived the impersonation's hour. Every one of those seams now
   answers 403 under an impersonation, before a token is read or a pending row is
   written. (#1491)
@@ -5201,7 +11697,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Fixed
 
 - **The vector-store check predicted a failure it had never checked, and hid the
-  one that would really happen.** It read whether pgvector had been *created* in
+  one that would really happen.** It read whether pgvector had been _created_ in
   this database and then reported what the first ingestion would do — but that
   row cannot tell a fresh deployment from a stock-Postgres one, a restricted
   role, or a data directory that outlived the image holding the library. A
@@ -5236,7 +11732,7 @@ Two things are versioned separately from this file and worth knowing about:
   deployment with no `SMTP_*`, and the accept token is returned once and stored
   nowhere a second read can reach. It goes through the same service the console
   does, so the role ceiling, the seat cap and the duplicate checks apply exactly
-  as they do to somebody clicking the button - which is why it invites *as*
+  as they do to somebody clicking the button - which is why it invites _as_
   somebody, defaulting to the organization's first owner. One refused address is
   reported and skipped rather than costing the rest.
 
@@ -5307,7 +11803,6 @@ Two things are versioned separately from this file and worth knowing about:
   the commands the compose files themselves advertise. Seen on the first real
   deployment.
 
-
 ## [0.0.370] - 2026-09-06
 
 ### Added
@@ -5360,7 +11855,6 @@ Two things are versioned separately from this file and worth knowing about:
   returns when the click is dispatched, and the reload on the next line aborted
   the request it started.
 
-
 ## [0.0.369] - 2026-09-06
 
 ### Added
@@ -5411,7 +11905,7 @@ Two things are versioned separately from this file and worth knowing about:
   transcript of runs made under somebody else's authority, and an agent searching
   on a person's behalf holds no permission of theirs to check it with.
 - **A note is read back only where its writer could have influenced nobody else.**
-  An agent's `MEMORY.md` reaches the *instructions* in a one-to-one conversation
+  An agent's `MEMORY.md` reaches the _instructions_ in a one-to-one conversation
   and never in a channel, where a sentence one colleague left behind would arrive
   as another colleague's orders. It stays reachable there with `read_memory`,
   which is a result the model weighs rather than an order it obeys.
@@ -5423,7 +11917,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **There is no console for reading somebody's memory.** An operator paging
   through what an agent wrote about a named colleague is a surveillance
-  affordance rather than a feature, and standing knowledge somebody *wants* an
+  affordance rather than a feature, and standing knowledge somebody _wants_ an
   agent to have belongs in context files. What is left on that surface is
   erasure.
 
@@ -5462,7 +11956,7 @@ Two things are versioned separately from this file and worth knowing about:
   embedding configuration.** `knowledge_bases.collection_name` is indexed but not
   unique, and resolution by name alone answered with whichever row the database
   ordered first - so an embedding call for one organization could read another's
-  model and unseal *their* vault key, billing them and running this
+  model and unseal _their_ vault key, billing them and running this
   organization's text through their credential. Resolution is now scoped to the
   organization the embedding is for, falling back to an app-scoped collection
   but never to a third tenant's.
@@ -5826,7 +12320,7 @@ Two things are versioned separately from this file and worth knowing about:
   The teardown removes a collection's `rag_<name>` table only after the request that
   deleted its knowledge-base rows commits, so between the commit and the drop the
   name is free of any row while the populated table lingers - and a concurrent `POST
-  /rag/collections/{name}` had `_ensure_collection`'s `CREATE TABLE IF NOT EXISTS`
+/rag/collections/{name}` had `_ensure_collection`'s `CREATE TABLE IF NOT EXISTS`
   adopt it and read another tenant's chunks. The #1355 advisory lock serializes
   claim against drop; it does not stop the claim winning the race. A tombstone
   committed with the delete does: the new `collection_teardowns` table (the name is
@@ -5883,7 +12377,7 @@ Two things are versioned separately from this file and worth knowing about:
   the claim path is two more: under READ COMMITTED a claim reading "this name is
   free" and a drop reading "no base holds this name" both act, and the drop then
   removes the table the claim just created and committed a row against. `POST
-  /rag/collections/{name}` creates the table before committing its row, so the
+/rag/collections/{name}` creates the table before committing its row, so the
   window was reachable. Both ends now take a transaction-scoped advisory lock keyed
   on the collection name - `hold_name`, the string-subject sibling of
   `hold_subject`, under a new `COLLECTION_TEARDOWN` scope in `app/db/locks.py`.
@@ -5894,7 +12388,7 @@ Two things are versioned separately from this file and worth knowing about:
   or the drop commits first and the claim recreates the table its row points at.
   (#1355)
 - Two pre-existing in-request drops still bypass that teardown - `DELETE
-  /rag/collections/{name}` and `_purge_personal_collections` - so the invariant
+/rag/collections/{name}` and `_purge_personal_collections` - so the invariant
   stays reachable through them until #1359. (#1355)
 
 ## [0.0.346] - 2026-09-01
@@ -5910,7 +12404,7 @@ Two things are versioned separately from this file and worth knowing about:
   `external_state_cleanup`, same `(storage_paths, collections)` signature, and its
   #913 reference re-check runs on the worker's own session. `rag_document`'s
   `_retire_superseded` and `delete_by_collection` dispatch it instead of an
-  in-process unlink, and `knowledge_base.delete` dispatches the files *and* the
+  in-process unlink, and `knowledge_base.delete` dispatches the files _and_ the
   collection drop in one durable run - so it no longer takes a `vector_store`, and
   the `delete_knowledge_base` route drops the parameter with it. Sync-source
   deactivation stays inline. (#1349)
@@ -6004,7 +12498,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Fixed
 
 - **The card grids clipped by 34px on a 390px viewport.**
-  `grid gap-3 md:grid-cols-2 xl:grid-cols-3` declares no column count *below* `md`, so
+  `grid gap-3 md:grid-cols-2 xl:grid-cols-3` declares no column count _below_ `md`, so
   the single implicit track is `auto` and sizes to its items' content: the grid box
   measured 324px while its own `grid-template-columns` computed **391.094px**.
   `min-width: 0` injected at every level of the ancestor chain changes nothing - the
@@ -6088,7 +12582,7 @@ Two things are versioned separately from this file and worth knowing about:
   scrolls instead of the page) and `OWN_BOTTOM_ROOM` (`/chat` and `/runs`, both having
   something that must reach the bottom edge). Activity then declares `PAGE_CLEARANCE`
   one level in, on its **list column** - and that placement is the whole point, because
-  padding on the box *around* the two-column row shortens the containing block the
+  padding on the box _around_ the two-column row shortens the containing block the
   sticky panel is clamped to. Measured at 1440x800 against a transcription of the
   page's own chain: room on the outer box gives 64px of clearance and a panel top of
   **-48px** with its header cut off by 56px, which is the figure in the issue; room on
@@ -6104,7 +12598,7 @@ Two things are versioned separately from this file and worth knowing about:
 - `page-transition.test.tsx` was asserting the old reason - "constrains Activity too,
   where the list and the run detail scroll apart", true before the page was rebuilt and
   false since. It asserts both halves of what is true now: no `min-h-0`, and no `pb-`
-  either, with the prefix-match case still checking that `/runsomething` *gets* the
+  either, with the prefix-match case still checking that `/runsomething` _gets_ the
   room. (#1206)
 
 ## [0.0.338] - 2026-08-28
@@ -6159,7 +12653,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **A per-conversation approval mode in the chat.** The spec decides which tools are
   gated, at publish time, per tool - which is right for a statement about what the
-  agent *is*, and says nothing about the mood of one session. Somebody working through
+  agent _is_, and says nothing about the mood of one session. Somebody working through
   twenty turns with an agent that gates three tools answered the same three questions
   every turn, and their only way out was to republish the agent, changing it for
   everybody, permanently, to fix an afternoon. Three modes ride the send frame beside
@@ -6173,7 +12667,7 @@ Two things are versioned separately from this file and worth knowing about:
   leave somebody believing they had turned the questions off, and the next parked run
   says the opposite; the check is in `AgentRunnerService.prepare`, the one funnel a
   fresh run and a resumed one share. Waiving needs `approvals:decide` **and** the
-  organization's leave: a standing consent *is* the decision the queue exists to
+  organization's leave: a standing consent _is_ the decision the queue exists to
   record, so `organizations.chat_may_waive_approvals` is the ceiling - **off by
   default**, changed by somebody holding `approvals:decide` - and without it a
   Builder's deliberate gate on `send_email` would be one click from nothing in every
@@ -6201,7 +12695,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 ### Added
 
-- **An Owner column on the workspaces table.** It said who *else* could see a
+- **An Owner column on the workspaces table.** It said who _else_ could see a
   workspace and never who it belongs to: `access_label` describes the **scope** -
   "everybody who talks to this agent", "one person" - which is a different fact, and on
   an agent-scoped workspace shared by six people it is not the one an operator is
@@ -6220,14 +12714,14 @@ Two things are versioned separately from this file and worth knowing about:
   `aria-expanded` - over two node shapes and **two polarities of open state**, one
   holding what was collapsed and the other what was open. `PathTree` in
   `components/files` is now the mechanics and the semantics: indentation by depth, the
-  roles, one selected file, the open set. What a row *says* stays with the caller,
+  roles, one selected file, the open set. What a row _says_ stays with the caller,
   because a skill's file is a name and a workspace's is a name, a size and a download -
   which is why there are two render props: `renderFile` inside the button that opens
   the file, so that is all a screen reader announces, and `renderFileMeta` beside it,
   because the workspace's download must not need the file opened first and a button
   inside a button is invalid. `workspace-explorer.tsx` is 110 lines lighter,
   `skill-files.tsx` 80, against one 203-line component. One deliberate visual change: a
-  skill's *file* rows were indented twelve pixels further than its folders and the
+  skill's _file_ rows were indented twelve pixels further than its folders and the
   workspace's were not, so the two trees disagreed about the same question. They indent
   alike now. (#137)
 
@@ -6269,8 +12763,8 @@ Two things are versioned separately from this file and worth knowing about:
   whichever organization the reader last used.** `apiClient` stamps
   `X-Organization-Id` from a selection persisted per browser, so somebody in two
   organizations who was last working in Globex opened the approval alert for a run in
-  Acme and read **Globex's** queue: very likely empty, and reading as *nothing is
-  waiting* about a run that is parked and ageing towards
+  Acme and read **Globex's** queue: very likely empty, and reading as _nothing is
+  waiting_ about a run that is parked and ageing towards
   `ApprovalService.expire_stale`. The agent links were wrong more quietly -
   `/agents/{id}` under the wrong organization is a refusal for an agent the reader can
   genuinely see, one switch away. `run.organization_id` and `agent.organization_id`
@@ -6286,7 +12780,7 @@ Two things are versioned separately from this file and worth knowing about:
   existing layout effect in the recovery hook, before the tenant cache reset and
   before the page's own queries, so the first request the page makes already carries
   the right tenant. Two rules follow from what the parameter is: **the path outranks
-  it**, since `/orgs/{id}` *is* that organization while `?org=` only says which one an
+  it**, since `/orgs/{id}` _is_ that organization while `?org=` only says which one an
   alert was about; and adoption is keyed on the path and the adopted id together,
   because two alerts about two organizations arrive at the same path and keying on the
   path alone would read the first one's tenant. (#1204)
@@ -6335,7 +12829,7 @@ Two things are versioned separately from this file and worth knowing about:
   checklist about a task nobody is doing. The filter is at the **seed** rather than at
   the moment the last step is ticked: within the turn that finishes a plan the store
   still holds it, so `read_plan`, the reminder and the transcript agree and the agent
-  can summarise what it just did - and it is the *next* question that starts clean,
+  can summarise what it just did - and it is the _next_ question that starts clean,
   with the ticked checklist still in the messages above it where it reads as what was
   done. Nothing is deleted; the row keeps the finished plan and `still_open` decides
   only what a fresh turn is seeded with. **Finished** means at least one step and every
@@ -6420,7 +12914,7 @@ Two things are versioned separately from this file and worth knowing about:
   on a clean tree.** The one miss was `markdown-content.impl.tsx:37`, the `pl-8`
   return in `orderedIndent` - the indent band for a 10-99 item ordered list. Nothing
   in the markdown-content suite renders a list that size, so the statement was covered
-  only when some *other* suite happened to render one, and under parallel scheduling
+  only when some _other_ suite happened to render one, and under parallel scheduling
   that render is not guaranteed. The indent test already pinned the 1-9, 100+ and
   1000+ bands; the two-digit case is pinned now too, deterministically rather than by
   accident. The branch is live - a 10-99 item list is reachable - so it is covered,
@@ -6450,7 +12944,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **Two app admins deleting each other could leave the deployment with none.** The
   not-self refusal in `admin_delete` states a lockout invariant - a deployment keeps
   at least one administrator - and it held only against one request at a time. #1115's
-  `SELECT ... FOR UPDATE` covers the *target* row, so admin A deleting B and admin B
+  `SELECT ... FOR UPDATE` covers the _target_ row, so admin A deleting B and admin B
   deleting A locked different rows, touched different personal organizations and never
   contended: both committed, and `count(*) FROM users WHERE is_app_admin` was 0, with
   a direct database write as the only recovery. New
@@ -6506,7 +13000,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Fixed
 
 - **The admin drawer said "Never signed in" for anybody who had signed out.** Both of
-  its session figures came off the same read - the user's *active* sessions - and a
+  its session figures came off the same read - the user's _active_ sessions - and a
   user who signs out, or whose sessions were revoked, has no active row at all, so
   `last_seen_at` came back null. That is most accounts most of the time, and it is the
   opposite of the truth on the one field the drawer exists to answer. Where somebody
@@ -6562,8 +13056,8 @@ Two things are versioned separately from this file and worth knowing about:
 - **Azure, Bedrock and Vertex AI are inside the model-catalog drift guard.**
   `_documented_rows` reads the two four-column tables, so the three providers with
   the most involved credential shapes were in no assertion but the id one. Their
-  credential is prose and maps to no field - but *which of the three tables a
-  provider sits in* is itself a claim about its credential, since the heading says
+  credential is prose and maps to no field - but _which of the three tables a
+  provider sits in_ is itself a claim about its credential, since the heading says
   "Credential is not an API key", and that is comparable. Two assertions follow: the
   three tables partition `PROVIDERS`, so a provider documented twice or in none of
   them fails; and which table a row is in matches `secret_kind`, so moving a row
@@ -6574,7 +13068,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Fixed
 
 - **A long maintenance message ended under the mobile tab bar.** `DeploymentGate`
-  returns `MaintenanceScreen` *instead of* rendering `PageTransition`, which is where
+  returns `MaintenanceScreen` _instead of_ rendering `PageTransition`, which is where
   every other page takes its bottom clearance from, so the last 56px plus the
   safe-area inset stayed covered even at maximum scroll - on the one screen a visitor
   sees when nothing else is available. The clearance moves onto the gate's
@@ -6582,7 +13076,7 @@ Two things are versioned separately from this file and worth knowing about:
   whole page, where the screen would inherit page padding anywhere else it were
   rendered. Still the one `PAGE_CLEARANCE` token, so there is no second copy of the
   calc to forget `env(safe-area-inset-bottom)` in. (#1241)
-- `page-clearance.test.ts` walks the *pages* and so cannot see that branch; the
+- `page-clearance.test.ts` walks the _pages_ and so cannot see that branch; the
   assertion is a render instead - the gate in maintenance, as a non-admin, with the
   token spread as classes on its root, so a token that loses the inset fails here too.
   (#1241)
@@ -6594,7 +13088,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **Deleting a user orphaned their personal organization's knowledge base.**
   `UserService.delete` purged the personal organization through
   `OrganizationService.purge`, but built that service **with no vector store** - and
-  `purge` only removes *org-scoped* collections. A personal-scoped base, whose
+  `purge` only removes _org-scoped_ collections. A personal-scoped base, whose
   `owner_user_id` and `organization_id` are both `ON DELETE SET NULL`, was therefore
   never touched: the row was orphaned and its `rag_documents` rows, uploaded files and
   `rag_<collection>` table were retained and unreachable, while the collection name
@@ -6668,13 +13162,13 @@ Two things are versioned separately from this file and worth knowing about:
 - **The email that says a run is parked now sends the reader to the queue.**
   `approvals_url` was `{frontend}/agents/{agent.id}` - the Builder page, which holds
   one sentence of prose about tool calls reaching a queue and no queue at all. So the
-  one alert whose whole purpose is *somebody has to decide, now* landed a search away
+  one alert whose whole purpose is _somebody has to decide, now_ landed a search away
   from the decision, behind a button reading "Review the request", while the run aged
   towards `ApprovalService.expire_stale`. It addresses `/runs?tab=approvals` now -
   Activity's Approvals tab, the only surface carrying Approve and Reject, and a
   surface with no URL at all until #934. (#935)
 - It deliberately does **not** name the run with `?run=`, though the notification
-  holds it: the decide controls are on the queue *row*, and below `lg` a focused run
+  holds it: the decide controls are on the queue _row_, and below `lg` a focused run
   replaces the list - so naming the run would hide the buttons from the reader most
   likely to be on a phone. Budget mail still opens the agent, which is correct: the
   cap it reports is edited there. (#935)
@@ -6701,7 +13195,7 @@ Two things are versioned separately from this file and worth knowing about:
   tabs. An unrecognised name falls back the same way. (#934)
 - **A focused run is cleared when the tab changes**, and `?run=` goes with it. It
   already was, incidentally and untested, since #537; left behind, a reload reopened
-  a detail panel on a tab that never had one - and below `lg` the panel *replaces*
+  a detail panel on a tab that never had one - and below `lg` the panel _replaces_
   the list, so the strip was live while every tab's content stayed hidden and
   clicking Approvals appeared to do nothing. (#934)
 - The approvals widget's `seeAll` points at the queue rather than the history - the
@@ -6757,7 +13251,7 @@ Two things are versioned separately from this file and worth knowing about:
   refetch onto a fetch already in flight**, and both the sharing panel and the
   skills gallery fan out several reads on mount. A read that began before the
   mutation committed resolved with the pre-write body, marked the query fresh, and
-  the panel kept the old value until a reload. It hit the *second* mutation in a
+  the panel kept the old value until a reload. It hit the _second_ mutation in a
   sequence and never the first, which is exactly the shape the issue describes.
   Each hook's one `invalidate` helper cancels the query before invalidating now, so
   the invalidation dispatches a genuinely new post-commit fetch rather than
@@ -6777,8 +13271,8 @@ Two things are versioned separately from this file and worth knowing about:
   give: an account with no membership anywhere is a different decision from one that
   owns two organizations. It now carries the organizations and the role in each,
   linked; when they were last here, with `last_seen_at` **null rather than blank**
-  for an account that has never signed in, because *created and never used* and
-  *dormant since March* are different decisions; and how many sessions are open with
+  for an account that has never signed in, because _created and never used_ and
+  _dormant since March_ are different decisions; and how many sessions are open with
   when the newest began. All from one route rather than fields on the user, because
   it is a view over three tables that a user is read in a dozen places without.
   (#942)
@@ -6794,13 +13288,13 @@ Two things are versioned separately from this file and worth knowing about:
 - The conversations are links now - opening one is the thing an admin would do with
   that list and the one thing it did not offer - and the two new blocks keep the
   three states the conversations list already got right, with the failures saying
-  *different* sentences: a 502 on the memberships and an account in no organization
+  _different_ sentences: a 502 on the memberships and an account in no organization
   are not the same thing. Revoking a session is deliberately out of scope: it needs
   a route with its own audit entry, which is a different thread. (#942, #941, #943)
 - The last-seen figure does not yet hold its own claim and is filed: both figures
   are read with `active_only=True`, so a user who has signed out has no active
   session rows and reads as "Never signed in" - the very case the field exists to
-  separate from *created and never used*. (#1256)
+  separate from _created and never used_. (#1256)
 
 ## [0.0.311] - 2026-08-27
 
@@ -6824,7 +13318,7 @@ Two things are versioned separately from this file and worth knowing about:
   band, because a band inside the archive would be a second place to look for what
   archiving just moved. (#929)
 - The one place the client patches rather than invalidating, with the boundary
-  stated: whether *this reader* starred it is a fact about the row the client just
+  stated: whether _this reader_ starred it is a fact about the row the client just
   decided, so patching makes the click instant while the reordering still comes
   from the server - and a refusal puts the star back, or the row keeps a star the
   server never recorded. (#929)
@@ -6851,10 +13345,10 @@ Two things are versioned separately from this file and worth knowing about:
 - **`model_fallbacks.json` is `curated_models.json`.** It has nothing to do with a
   profile's fallback chain - a different feature entirely - and the name was the
   first thing a reader met. A curated list is still worth keeping: it is the answer
-  when the provider *cannot be asked*, not an answer for a provider that publishes
+  when the provider _cannot be asked_, not an answer for a provider that publishes
   nothing. (#923)
 - **`source` is three answers rather than two.** Seven providers publish no listing
-  this platform can read *and* have no curated entry, so they answered `curated`
+  this platform can read _and_ have no curated entry, so they answered `curated`
   about a shortlist that does not exist. They answer `unlisted` now, end to end
   through the schema and the picker's type. Nothing on screen changes - the dropdown
   already said the right thing - the API contract was the part that was wrong.
@@ -6910,7 +13404,7 @@ Two things are versioned separately from this file and worth knowing about:
   $4 left, while the alert told its owner it had reached a cap it was at 60% of.
   The organization-wide cap double-counted identically. The baseline now excludes
   the run asking. (#15)
-- **Not only on resume**, and deliberately so: a baseline is what *other* runs have
+- **Not only on resume**, and deliberately so: a baseline is what _other_ runs have
   already spent, and what this one spends is the ledger's. On a fresh run the row
   is there too, at zero, so the exclusion changes nothing there and needs no
   branch - one rule instead of a resume-shaped exception. It is off by default,
@@ -7016,7 +13510,7 @@ Two things are versioned separately from this file and worth knowing about:
 ### Added
 
 - **The deployment's tenant list can be searched, sorted, filtered and paged.**
-  `/admin/organizations` is the only surface that answers *what tenants exist*, and
+  `/admin/organizations` is the only surface that answers _what tenants exist_, and
   it offered no way to find one: fifty rows, one fixed order, no search, no filter,
   and nothing said about the rest. The users tab beside it has had all four since
   #284; this page came out of that sweep with the shell and none of the controls,
@@ -7040,7 +13534,7 @@ Two things are versioned separately from this file and worth knowing about:
   its answer. The key carries the request now, and one hook serves both. And
   `contains_ci` was typed to mapped columns only, while the owner's address is a
   column of an outer-joined subquery: widening the alias is what keeps this search
-  going *through* the one helper that escapes `%` and `_` rather than around it.
+  going _through_ the one helper that escapes `%` and `_` rather than around it.
   (#921, #372)
 
 ## [0.0.302] - 2026-08-27
@@ -7062,7 +13556,7 @@ Two things are versioned separately from this file and worth knowing about:
   plus that, so a flat 80px left the last ten pixels of every page under the bar.
   Four surfaces carried their own workaround at three different values - which is
   why nobody noticed the layout's own declaration was inert - and all four are
-  gone. The regression test reads the *pages*, not the wrapper: asserting that
+  gone. The regression test reads the _pages_, not the wrapper: asserting that
   `PageTransition` carries the padding would not catch a fifth surface re-adding
   its own, which is the regression that actually happened. (#933)
 - One screen is left behind and filed rather than folded in: `DeploymentGate`
@@ -7165,7 +13659,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **The two sessions BFF routes hand-rolled the forwarder block** - read the
   cookie or 401, set the bearer, map the error, answer JSON - which is what
-  `platformProxy()` already does, *plus* the active-organization header, byte-
+  `platformProxy()` already does, _plus_ the active-organization header, byte-
   accurate bodies and the `no-store` those hand-rolled copies drop (#546, #553,
   #106). Both are a `sessions/[[...path]]` mount now, the same shape `kb` and
   `rag` use, and the query handling and id escaping they did by hand are the
@@ -7223,7 +13717,7 @@ Two things are versioned separately from this file and worth knowing about:
   between `2` and `p`, so `"Set the width to 12px"` was reported anyway. The
   alternative caught the standalone token it was never written for and missed the
   measurement it was. And it was dead in any case, because a phrase genuinely made
-  of units is already answered by `isFormatter`, which asks that *every* word be a
+  of units is already answered by `isFormatter`, which asks that _every_ word be a
   unit or an acronym rather than that one of them be. Deleted, with the docstring
   now recording why there is no unit alternative so it is not re-added. (#741,
   #656, #678)
@@ -7320,7 +13814,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **A bot activated moments before shutdown reopened intake at exit.** It leaves a
   committed, tracked `open_inbound_stream` task that may not have run yet: the
   lifespan stops the adapter tasks that exist, then drains - and that task's final
-  step creates a new, *untracked* polling or socket task after the stop loops have
+  step creates a new, _untracked_ polling or socket task after the stop loops have
   passed. The supervisor carries a shutting-down flag now; `open_inbound_stream`
   declines to open when it is set, re-checked after `stop_polling` so a task
   suspended there when shutdown begins cannot slip a reopen through either. The
@@ -7374,7 +13868,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **Deleting a user could leave an organization with no owner at all.**
   `UserService._release_owned_rows` reconciled only organizations the user
-  *created*, but ownership moves without the creator FK - after a transfer, or
+  _created_, but ownership moves without the creator FK - after a transfer, or
   after the creator is reassigned away - so a user can be the sole Owner of an
   organization they did not create. The created-organizations listing never returns
   it, so deleting that user cascaded their last owner membership away and left a
@@ -7500,7 +13994,7 @@ Two things are versioned separately from this file and worth knowing about:
 - **The dev reload supervisor killed healthy workers.** `SupervisedReload` replaces
   a worker whose event loop has stopped turning, and the worker reports liveness
   through uvicorn's `Config.callback_notify` - which `Server.on_tick` calls only
-  once `time.time() - last_notified > timeout_notify`, so the beat's *cadence* is
+  once `time.time() - last_notified > timeout_notify`, so the beat's _cadence_ is
   gated on the wall clock. The beat stamped `time.monotonic()` and the supervisor
   judged with `time.monotonic() - beat`: a different clock from the one the cadence
   runs on. On Docker Desktop's VM the wall clock can stall for tens of seconds
@@ -7525,7 +14019,7 @@ Two things are versioned separately from this file and worth knowing about:
 
 - **A cancelled save orphaned its file.**
   `asyncio.to_thread(path.write_bytes, data)` cannot interrupt the running write,
-  so a task cancelled mid-write unwound with the file created *after* `save()` had
+  so a task cancelled mid-write unwound with the file created _after_ `save()` had
   raised - the caller never got `storage_path`, so it could neither record the file
   nor delete it. `write_bytes_cancel_safe` shields the write and, on cancellation,
   waits it out and removes the file before the cancellation propagates. (#1108,
@@ -7540,7 +14034,7 @@ Two things are versioned separately from this file and worth knowing about:
   than the template's downgraded rules. (#1108, #25)
 - Two defects in the new pool, found by the reviewer on the branch and fixed
   before merge, both defeating the guarantee it was added for. The gate released
-  its admission slot when the *caller* unwound, and an executor cannot interrupt a
+  its admission slot when the _caller_ unwound, and an executor cannot interrupt a
   running job - so a cancelled caller handed its permit on while its own worker
   stayed occupied, and a wave of cancellations admitted arbitrarily many jobs into
   the pool's unbounded pending queue. The release rides the future's own
@@ -7591,7 +14085,7 @@ Two things are versioned separately from this file and worth knowing about:
   `PgVectorStore` overrides it with the indexed path. Index suffixes are kept no
   longer than the HNSW one, so `MAX_COLLECTION_NAME_LENGTH` stays 45 and no
   identifier truncates, and `existing_document`'s signature is unchanged so
-  `rag_tasks` and the `rag-*` commands are untouched. The document *listing* is
+  `rag_tasks` and the `rag-*` commands are untouched. The document _listing_ is
   still a full scan - that is the display path, not the ingest check. (#1102)
 
 - Two things this branch broke on `main`, fixed with it and each invisible to the
@@ -7602,6 +14096,7 @@ Two things are versioned separately from this file and worth knowing about:
   leaving the migration chain with **two heads** - `alembic upgrade head` cannot
   choose between them, so a deployment could not migrate at all. The backfill is
   re-parented onto the current head as `0058`. (#1102, #12)
+
 ## [0.0.274] - 2026-08-26
 
 ### Fixed
@@ -7615,7 +14110,7 @@ Two things are versioned separately from this file and worth knowing about:
   a hop per file, the per-file hash is `_hash_file` shared by the local and
   connector paths, and `stat` and `resolve` are offloaded per file. Values are
   unchanged - identical walks, hashes, sizes and resolved paths - only the thread
-  moves. The one-off resolve of the sync *target* path is O(1) per flow and stays
+  moves. The one-off resolve of the sync _target_ path is O(1) per flow and stays
   on the loop. (#1100, #25)
 
 ## [0.0.273] - 2026-08-26
@@ -7753,7 +14248,7 @@ CHECK forbids.
   answering `False`, and three checks compared `str` with the left operand taken
   from the caller: `deps.verify_api_key` on the API-key header, the Mattermost
   webhook bearer check, and the Slack signature check. So `{"token": "é"}` to the
-  *unauthenticated* Mattermost webhook, or a non-ASCII `X-Slack-Signature`, was a
+  _unauthenticated_ Mattermost webhook, or a non-ASCII `X-Slack-Signature`, was a
   logged 500 - a free log-flooding primitive. Not an auth bypass, since the
   comparison never matched anyway. All three compare encoded bytes now: still
   constant-time, and non-ASCII refuses cleanly. (#33)
@@ -7841,7 +14336,7 @@ CHECK forbids.
 - Two parts, both load-bearing. The **type change** is the primary guard: a 4xx
   `AppException` is logged at warning with no `exc_info`, so no traceback is
   formatted on the HTTP path and it never reaches the `logger.exception` handler.
-  And **`from None`** covers the non-HTTP readers whose traceback *is* rendered - a
+  And **`from None`** covers the non-HTTP readers whose traceback _is_ rendered - a
   Prefect task failure, `doctor.py`'s own formatting - by setting
   `__suppress_context__` and keeping the chained `ValidationError`, which still
   holds the plaintext in `__context__`, out of the formatted traceback. The
@@ -7874,7 +14369,7 @@ CHECK forbids.
   work, and looping that phase would reintroduce the unbounded wait the single shot
   avoids. (#1095)
 - The third gap in the issue - a bot created just before shutdown whose deferred
-  `open_inbound_stream` reopens intake during teardown - is a shutdown *ordering*
+  `open_inbound_stream` reopens intake during teardown - is a shutdown _ordering_
   concern rather than a `drain()` one, and is #1119. (#1095, #1119)
 
 ## [0.0.262] - 2026-08-26
@@ -7888,7 +14383,7 @@ CHECK forbids.
   `ConfigureStep` had no enum. The config step renders through `SchemaForm` now,
   with a connector's `config_schema` adapted to the JSON Schema subset it reads;
   `ConfigureStep` keeps only its wizard chrome and the wizard's props are unchanged.
-  The "no enum" half of the divergence closes for free, because the config step *is*
+  The "no enum" half of the divergence closes for free, because the config step _is_
   `SchemaForm`. (#568)
 - **`connectorConfigToJsonSchema()` in `frontend/src/lib/connector-schema.ts`** is
   the single place the two field-type vocabularies meet, and its `switch` over
@@ -7935,7 +14430,7 @@ An audit write that cannot be recorded now takes the action down with it.
 ### Changed
 
 - A failure specific to the audit row - a bad `details`, an FK on
-  `organization_id` - now rolls the *action* back rather than being dropped. That is
+  `organization_id` - now rolls the _action_ back rather than being dropped. That is
   the atomicity `governance.md` describes, and the recorded `details` were reviewed
   and are all serialisable. (#20)
 
@@ -7953,7 +14448,7 @@ An audit write that cannot be recorded now takes the action down with it.
   per-response `X-Frame-Options: SAMEORIGIN` still wins. (#18)
 - Two things the registration made live for the first time, fixed with it:
   `X-XSS-Protection: 0` rather than the deprecated `1; mode=block`, per OWASP - the
-  CSP is the real defence - and the doc pages excluded by their *real* mounted
+  CSP is the real defence - and the doc pages excluded by their _real_ mounted
   paths, since the schema is under the API prefix rather than at `/openapi.json`,
   so the exclusion is not a dead entry and the CSP cannot break Swagger or ReDoc.
   `docs/deploy.md` records the app-level headers for an operator running their own
@@ -8000,7 +14495,7 @@ An audit write that cannot be recorded now takes the action down with it.
   as a bare `(key) => key`, and `kb-detail-sections` as a hand-rolled cache that
   had grown `t.rich` but still lacked `t.markup` and `t.has`. `t` carries all three,
   and a component reading a message with a tag calls `t.rich`. They were green only
-  because none of their components reads a rich message *yet*: the #395 guard steers
+  because none of their components reads a rich message _yet_: the #395 guard steers
   copy toward `t.rich`, so they will, and then one throws `t.rich is not a function`
   inside a component several files from the assertion - which is exactly how #610
   was found. A shared `keyTranslations(format)` in `src/test-utils/intl.ts` is now
@@ -8057,7 +14552,7 @@ answered rather than queued.
   (`DB_POOL_SIZE=5` plus `DB_MAX_OVERFLOW=10`) and the sixteenth request of any
   kind blocked for `DB_POOL_TIMEOUT` and then raised. (#12)
 - **The run's transaction spanned the model call.** `_run` and
-  `ChatAgentRunner.run` commit once *before* the model is asked anything, with the
+  `ChatAgentRunner.run` commit once _before_ the model is asked anything, with the
   terminal commit from #231 left in place. The run row is visible from every other
   session mid-run, the connection goes back to the pool for the duration of the
   call, and a resumed run's `mark_running` is durable before the approved call is
@@ -8135,7 +14630,7 @@ every secret it protects.
 - **Rotation destroyed every secret.** `_wrapping_key` derived every version from
   the single current setting, so `key_version` recorded nothing and setting a new
   master key made every envelope unreadable - `rewrap` included, because it derived
-  the *from*-key from the same new value. (#8)
+  the _from_-key from the same new value. (#8)
 - **`McpConnectionService.update` and `update_for_org` sealed a replacement token
   at the current version without re-sealing the row's OAuth envelopes** - the same
   latent defect #552 fixed on channel bots, and destructive the moment versions
@@ -8158,19 +14653,19 @@ every secret it protects.
   defect under another name. (#8)
 - **`agenticos cmd vault-rotate [--dry-run]`** walks every table holding envelopes
   - `organization_secrets`, `channel_bots` four times, `mcp_connections` three
-  times with per-row scope so a personal connection re-wraps under its member, plus
-  `agent_embeds` and `agent_triggers`. A row's ciphertexts move together with the
-  version column or not at all; failures are named, do not stop the sweep, and exit
-  non-zero so a script cannot drop the old key on a partial rotation. `--dry-run`
-  performs the full unwrap and rewrap without writing. (#8)
+    times with per-row scope so a personal connection re-wraps under its member, plus
+    `agent_embeds` and `agent_triggers`. A row's ciphertexts move together with the
+    version column or not at all; failures are named, do not stop the sweep, and exit
+    non-zero so a script cannot drop the old key on a partial rotation. `--dry-run`
+    performs the full unwrap and rewrap without writing. (#8)
 
 ### Changed
 
 - `seal`, `seal_fields` and `seal_secret` default to the current key version, so a
   row created with no envelope records the current version instead of a hardcoded
   1. `doctor`'s vault check accepts either configuration form. `secrets.md` carries
-  the rotation procedure now that it is real, and `configuration.md`,
-  `commands.md` and `backend/.env.example` carry the new setting. (#8)
+     the rotation procedure now that it is real, and `configuration.md`,
+     `commands.md` and `backend/.env.example` carry the new setting. (#8)
 - **No key-length validation on a configured master, deliberately.** Refusing a
   short existing key at boot would lock a deployment out of the very rotation it
   needs to escape it, because the old key has to stay configured to rotate away
@@ -8220,7 +14715,7 @@ Every tool says what it returns, and one place decides whose mistake a failure w
 - **What deliberately stays a returned string**: a command that exited non-zero, a
   search with no hits, a channel the bot cannot see, and any refusal - a retry
   prompt on a refusal invites the model to look for a way around it. The second row
-  of the taxonomy is the one that looks wrong and is not: a *transient* failure of
+  of the taxonomy is the one that looks wrong and is not: a _transient_ failure of
   what is behind the tool is also a retry, because an error in the shape of a
   result reads as "nothing found" and the model then answers from memory,
   confidently, without saying it had to.
@@ -8235,13 +14730,13 @@ Every tool says what it returns, and one place decides whose mistake a failure w
 - **A provider's own error text no longer reaches a tool return.** `web_search`
   built its message with `str(exc)` from whatever the search SDK raised and
   `generate_image` interpolated the provider exception. On the last attempt `steer`
-  *returns* that message rather than raising it, and a returned string is stored by
+  _returns_ that message rather than raising it, and a returned string is stored by
   `app/services/transcript.py` and streamed verbatim - deliberately, because a
   return is the tool's own answer, where a retry prompt is replaced with a notice
   (#681, #695). So an httpx or SDK message naming the failing endpoint, and for
   some providers a key in its query string, reached run history for every member
   who could read the run. The message is now built from the provider name and the
-  exception's *class* - which still says whether the upstream timed out or refused
+  exception's _class_ - which still says whether the upstream timed out or refused
   the credential - and the exception's own text goes to a `logger.exception` beside
   the raise. Same rule, and the same reasoning, as `app/services/rag/failures.py`.
 
@@ -8255,7 +14750,7 @@ A week of full account access no longer sits in an access log.
   string.** That URL reaches the address bar and session history, the frontend
   server's access log and any reverse proxy in front of it, and the `Referer` of
   the next same-origin request the callback page makes - `Referrer-Policy:
-  strict-origin-when-cross-origin` sends the full URL same-origin. The refresh
+strict-origin-when-cross-origin` sends the full URL same-origin. The refresh
   token is valid for a week, so anybody who could read an access log had a week of
   full account access. (#14)
 - **The callback now hands out a single-use, one-minute code** and keeps the token
@@ -8564,7 +15059,7 @@ One runtime this repository defines, and a workspace anybody can read.
   could not.** Whether the extracted text is written beside an attachment was
   derived from whether the runtime could be described - and a description falls
   back to this catalogue's first entry for a run that named no runtime, which is
-  the case where the *host* chooses. On a custom or pre-upgrade host that left the
+  the case where the _host_ chooses. On a custom or pre-upgrade host that left the
   model twenty lines of prompt and a binary it could not open. The two questions
   are answered separately now. (#1039)
 - **And the extracted text was named whether or not it was written.** A document
@@ -8599,8 +15094,7 @@ One runtime this repository defines, and a workspace anybody can read.
 - **`docs/sandbox.md`** — how a sandbox is built and by whom, that the containers
   are siblings of the API rather than nested in it, one per session, what a tenant
   is, how long a workspace survives, what `sandbox_runtimes.json` holds and how to
-  change it, and what the browser leaves out. `SANDBOXD_MAX_SESSIONS_PER_TENANT` is
-  10. (#1039)
+  change it, and what the browser leaves out. `SANDBOXD_MAX_SESSIONS_PER_TENANT` is 10. (#1039)
 
 ## [0.0.243] - 2026-08-21
 
@@ -8620,6 +15114,7 @@ The agent avatar is served as an image or not at all.
   image is refused with a 404, and `X-Content-Type-Options: nosniff` goes out with it -
   the same shape the user and organization avatar routes already use. `mimetypes` is
   dropped from the module. (#1035)
+
 ## [0.0.242] - 2026-08-21
 
 The migration chain has one head again.
@@ -8644,6 +15139,7 @@ The migration chain has one head again.
   answers and a divergence is made by a merge on a laptop hours before CI's database
   sees it. `make db-check` is `alembic check`, which compares the models to the head
   and never counts them. (#1059)
+
 ## [0.0.241] - 2026-08-21
 
 An impersonated action names who was really acting.
@@ -8677,6 +15173,7 @@ An impersonated action names who was really acting.
   are one larger full-stack flow, with a banner, an End button and revocation, filed
   as a follow-up. #943 stays open for it, along with the policy question of whether
   the target is notified. (#943)
+
 ## [0.0.240] - 2026-08-21
 
 An answered `ask_user` question survives the conversation.
@@ -8710,6 +15207,7 @@ An answered `ask_user` question survives the conversation.
   `subagents-pydantic-ai` reaches the parent through `ctx.deps.ask_user(question, [])`
   with no asker name and `SubAgentState` carries none, so naming the delegate needs an
   upstream change to that package first. #502 stays open for it. (#502)
+
 ## [0.0.239] - 2026-08-21
 
 A multi-column row is sealed under one key version.
@@ -8721,7 +15219,7 @@ A multi-column row is sealed under one key version.
   The failures are latent - `rewrap`, master-key rotation, has no production caller
   yet - but the day it runs, a rotated `jwt` widget can never be opened again and a
   channel bot's row disagrees with its own envelopes. `vault.seal_fields(values, *,
-  scope, key_version)` seals every field at one version and hands that version back
+scope, key_version)` seals every field at one version and hands that version back
   to store, so "seal at v2 but record v1" and "no version column at all" cannot be
   written by hand. (#552)
 - **`agent_embed` had no `key_version` column**, and `_verify_token` unsealed at an
@@ -8738,6 +15236,7 @@ A multi-column row is sealed under one key version.
   and version through the typed `secret_kinds` wrappers. Both already record one
   version per row, so routing them through the multi-field helper would be churn
   rather than a fix. (#552)
+
 ## [0.0.238] - 2026-08-21
 
 A stored file is served as what it is, or not served inline at all.
@@ -8745,8 +15244,8 @@ A stored file is served as what it is, or not served inline at all.
 ### Fixed
 
 - **Stored XSS through an avatar or a chat attachment.** The bytes behind both were
-  served with a type the backend took from the *name on disk*, while the upload paths
-  validated the `Content-Type` the client *declared* and never the bytes, keeping
+  served with a type the backend took from the _name on disk_, while the upload paths
+  validated the `Content-Type` the client _declared_ and never the bytes, keeping
   whatever extension the uploader chose. So `x.html` whose bytes are `<script>…`,
   declared as `image/png`, was accepted, stored as `<hex>_x.html`, guessed back as
   `text/html`, and passed through the frontend proxy from the app's own origin -
@@ -8765,6 +15264,7 @@ A stored file is served as what it is, or not served inline at all.
   non-image and pass it explicitly with `nosniff`, and the chat-file route serves a
   render-safe type inline and forces everything else to download - the declared
   `mime_type` is not trusted to decide rendering. (#702)
+
 ## [0.0.237] - 2026-08-21
 
 Two chat controls that did nothing are gone.
@@ -8793,6 +15293,7 @@ Two chat controls that did nothing are gone.
   being quietly dropped, it never worked, and wiring it is its own issue. Temperature
   is genuinely a model setting and the easy half, but half-wiring one while deleting
   the other leaves the same one-control-in-a-tab shape. (#924)
+
 ## [0.0.236] - 2026-08-21
 
 PII is redacted where records are actually emitted.
@@ -8817,6 +15318,7 @@ PII is redacted where records are actually emitted.
   401 - redacted nothing even in theory. `setup_logging` is idempotent now and is
   called by the worker (`prefect_app.main`) and the CLI (`cli.commands.main`) as well
   as the API. (#440)
+
 ## [0.0.235] - 2026-08-21
 
 The auth surface is rate-limited, and bcrypt is off the event loop.
@@ -8854,6 +15356,7 @@ The auth surface is rate-limited, and bcrypt is off the event loop.
 - `GET /me` is deliberately not rate-limited here: a per-IP limit on an authenticated
   no-op punishes an office behind one NAT, and per-user limiting of an already
   authenticated cheap read is a separate decision. (#947)
+
 ## [0.0.234] - 2026-08-21
 
 An app admin cannot suspend or delete their own account.
@@ -8879,6 +15382,7 @@ An app admin cannot suspend or delete their own account.
 - The admin drawer no longer renders **Suspend**, **Demote** or **Impersonate** on
   your own row. **Delete stays visible and is refused by the API** - "why can I not
   delete myself" is a question worth answering on screen. (#941)
+
 ## [0.0.233] - 2026-08-21
 
 A conversation is shared inside its organization or not at all.
@@ -8901,6 +15405,7 @@ A conversation is shared inside its organization or not at all.
 - The owner's "Shared with" listing drops rows already in that state, in one query:
   a target who is a current member is kept, and so is a public-link share, which has
   no target. Cheaper than a migration, and self-correcting. (#930)
+
 ## [0.0.232] - 2026-08-21
 
 The active-sessions card holds while the next page loads.
@@ -8928,6 +15433,7 @@ The active-sessions card holds while the next page loads.
   one control. Single-page behaviour differs - the chevrons render disabled rather
   than the pager disappearing - so the orphaned `dashboard.previousPage` and
   `dashboard.nextPage` keys are removed from both catalogs. (#944)
+
 ## [0.0.231] - 2026-08-20
 
 The organization in the URL is the tenant.
@@ -8937,7 +15443,7 @@ The organization in the URL is the tenant.
 - **`/orgs/{id}/members` acted on the organization in its path and judged
   permissions from the active one.** `X-Organization-Id` travels on every request
   and names the active organization, while the organizations list opens any org's
-  members page through a link and *switching* is a separate button that navigates
+  members page through a link and _switching_ is a separate button that navigates
   to the dashboard - so the ordinary route to another organization's members page
   was the one that left the active organization behind, and the page then judged
   Acme's members by the caller's role in Globex. `ActiveOrgGuard` adopts the
@@ -8976,7 +15482,7 @@ A role picker offers what the caller may actually assign.
   `GET /roles/catalog` already returns: a role is offered only when the caller's
   own strictly outranks it. Pre-existing, and 0.0.229 widened who it happened to
   - with the server's ceiling derived from what a role holds, every custom role
-  composed with `members:manage` met the same offer-then-refuse. (#1028)
+    composed with `members:manage` met the same offer-then-refuse. (#1028)
 - **A picker seeded with a role it did not offer.** Both dialogs held Member as
   their initial value and never reconciled it with the list; Member is kept where
   it is on offer - which for every built-in role that may invite at all, it is -
@@ -9003,7 +15509,7 @@ The invitation ceiling is what the requester holds, not whether they are Admin.
   hold that permission. Both call sites, the email invite and the invite link, now
   read `assignable_roles(requester.role)`: the same catalog-derived relation
   `change_role` uses, where a role may be offered only when the requester's own
-  *strictly* outranks it. This is the invitation half of what #672 removed from
+  _strictly_ outranks it. This is the invitation half of what #672 removed from
   `change_role`. (#696)
 - Behaviour for the built-in roles is unchanged - `assignable_roles("admin")` is
   exactly the set the literal check allowed, and an Owner still invites Admins.
@@ -9019,7 +15525,7 @@ The MCP connection dialog owns its own form.
 ### Changed
 
 - **`McpConnectionDialog` was a controlled shell.** `McpServerList` held its five
-  form fields as state and drilled a value *and* a setter each into it - thirteen
+  form fields as state and drilled a value _and_ a setter each into it - thirteen
   props - seeding them by hand when a draft opened. The dialog owns those fields
   now, in an inner form keyed on the draft, so switching servers remounts it with
   freshly seeded state instead of carrying the previous server's name and token
@@ -9080,13 +15586,13 @@ The chat says which model the conversation runs on.
 
 - **The chat's Model tab opened without saying which model the conversation runs
   on** - the one thing the panel is named after. It keyed its "currently running"
-  line on the *override*, which is `null` until somebody sets one, so every
+  line on the _override_, which is `null` until somebody sets one, so every
   conversation before its first override rendered blank and asked the reader to
   choose against a baseline it never showed. The summary now reads the agent's
   published model when there is no override and the override's profile when there
-  is, labelled *Agent's model* or *Just this chat*. (#926)
+  is, labelled _Agent's model_ or _Just this chat_. (#926)
 - **A caller without `connections:manage` got a refusal in place of the whole
-  panel.** Creating a model profile needs that permission; *reading* which model
+  panel.** Creating a model profile needs that permission; _reading_ which model
   an agent runs on is `agents:view`, which opening the conversation already
   implies - and the person who may not change it is the one most likely to want to
   know. The summary renders above the gate now and only the fields that write are
@@ -9101,7 +15607,7 @@ Only the thumb whose request is in flight spins.
 - **Rating an answer spun both thumbs.** The spinner was keyed on
   `isLoading && currentRating !== <the other value>`, and an unrated message has
   `currentRating === null` - true for both thumbs at once, which is the normal
-  case rather than an edge one. It is keyed on *which* button's request is in
+  case rather than an edge one. It is keyed on _which_ button's request is in
   flight now, so the other thumb stays a thumb. (#928)
 
 ## [0.0.223] - 2026-08-20
@@ -9184,7 +15690,7 @@ Who bound a credential to a collection is recorded.
   ingests is decided at the collection - so the row is the platform's
   authorization decision for everything that credential can reach, and nothing
   recorded who made it. `sync_source.created`, `.updated` and `.deleted` name the
-  actor, the connector, the collection and the *id* of the secret. (#983)
+  actor, the connector, the collection and the _id_ of the secret. (#983)
 - **A clone is recorded as a creation naming the row it came from.** It points a
   credential somebody already scoped at a different collection, so the audience
   changes while nothing about the credential does - the decision in this set that
@@ -9218,13 +15724,13 @@ A status parameter with one value stops pretending to be a choice.
   `elif status == "done"` was a `pass` whose comment explained why nothing takes
   it - reaching `DONE` needs the vector document's id, which only
   `_run_ingestion` holds, so it calls `complete_ingestion` itself. The name now
-  says what the function does: record the *first* failure and refuse to overwrite
+  says what the function does: record the _first_ failure and refuse to overwrite
   it (#423). `vulture` could not see the dead branch, because the parameter was
   read. (#956)
 - **The guard compares `DocumentStatus.ERROR`, not the string.** Two spellings of
   one value set is how #148 happened - a fourth status nothing had ever written,
   filtered on by the listing, so every knowledge base reported `indexed_count:
-  0`. (#956)
+0`. (#956)
 
 ### Added
 
@@ -9243,7 +15749,7 @@ A tracking row says which file it tracks, so a failed attempt stops piling up.
   repeated failure added another row that counted toward the collection's
   `document_count` for good. `rag_documents` gained a `source_path` (`0043`) -
   `gdrive://<id>`, `s3://bucket/key`, or an absolute path for a local or CLI sync
-  - and a new attempt retires the previous *failed* one by that address. (#996)
+  - and a new attempt retires the previous _failed_ one by that address. (#996)
 - **Not by filename**, which is the trap and the collision #990 removed on the
   vector side reached from the other direction: `a/readme.md` and `b/readme.md`
   in one bucket share a basename, so a name match deletes the other file's row.
@@ -9253,7 +15759,7 @@ A tracking row says which file it tracks, so a failed attempt stops piling up.
   source - the second would delete the first's live row, after which the first
   finishes, replaces the vectors and finds no row to complete. Retirement matches
   `status == ERROR`. (#996)
-- **A failed *supersede* is no longer reported as a failed ingest.**
+- **A failed _supersede_ is no longer reported as a failed ingest.**
   `ingest_file` inserts the new document before deleting the one it replaces, so
   a delete that raised returned an error while the vectors sat in the store - an
   `ERROR` row with no vector id, which the next attempt then retired and
@@ -9372,18 +15878,18 @@ A scheduled sync stops duplicating everything it has already ingested.
   both flows and a mode meaning one thing for a server directory and another for
   a Drive folder is the defect whatever either does alone. (#990)
 - **A basename no longer claims a document that names its own address.**
-  `existing_document` falls back from `source_path` to *filename*, so a bucket
+  `existing_document` falls back from `source_path` to _filename_, so a bucket
   holding `a/readme.md` beside `b/readme.md` had the second key find the first
   key's document - equal contents skipped the second file, unequal contents
   deleted the first, and either way a first sync could not keep both. The
   fallback is narrowed rather than removed, because it is what stops a file
   uploaded through the browser and later synced from its own folder being
-  duplicated: an upload stores its filename *as* its `source_path`, so the two
+  duplicated: an upload stores its filename _as_ its `source_path`, so the two
   agree and it stays reachable by name. Same collision fixed for two local files
   of one name in different directories. (#990)
 - **A replacement inserts before it deletes.** `insert_document` is where the
   embeddings are computed, so a provider refusing between the two statements left
-  the collection holding *neither* document - permanently, since a failed ingest
+  the collection holding _neither_ document - permanently, since a failed ingest
   is returned rather than raised and nothing retries it. This order fails the
   recoverable way instead. (#990)
 - **A replaced file is counted as an update.** The connector loop reported every
@@ -9395,7 +15901,7 @@ A scheduled sync stops duplicating everything it has already ingested.
 ### Changed
 
 - Where a sync decides differs between the two flows, because remote bytes cost
-  something: `update_only` skips a file it has never seen *before* the download,
+  something: `update_only` skips a file it has never seen _before_ the download,
   while an unchanged file is recognised after one and before the embedding. A
   stored document with no `content_hash` is re-ingested rather than assumed
   current - skipping a file that may have changed is the answer nothing later
@@ -9429,7 +15935,7 @@ read what one ingests.
   object store rather than an S3 one (#988). Notion is decided against for now -
   MCP covers Notion-as-a-tool - and Slack and email archives stay off, because a
   conversation retrieves badly and the channel integrations already put an agent
-  *in* Slack. (#938)
+  _in_ Slack. (#938)
 - **What a new connector owes** is stated alongside: a change signal named in the
   docstring, a credential scoped where the source is created, and a file count
   somebody has thought about while reading a collection's listing is still a full
@@ -9507,7 +16013,7 @@ Both RAG pages get tabs, and the tab is in the URL.
 - **Integrations is `/rag`'s third tab.** `ReusableIntegrations` sat under the base
   grid - the right relationship, since the collections are fed from it, and the
   wrong placement: on an organization with a dozen bases it was below a grid three
-  rows deep, and reachable *only* from the Knowledge bases tab, which makes a
+  rows deep, and reachable _only_ from the Knowledge bases tab, which makes a
   page-level concern something you find by first choosing one of two tabs. (#939)
 - **A knowledge base has three tabs** - Documents, How documents are read, Sync
   sources. Each section carried a comment justifying its place under the one above,
@@ -9526,7 +16032,7 @@ Both RAG pages get tabs, and the tab is in the URL.
 ### Fixed
 
 - **Each tab shows only its own section.** The base list rendered for every value
-  that was not `search`, so choosing Integrations appended the panel *below* the
+  that was not `search`, so choosing Integrations appended the panel _below_ the
   grid rather than replacing it - the placement the tab exists to escape. (#939)
 - **A tab's panel lives inside its `Tabs` root**, on both RAG pages. A
   `TabsTrigger` points at its panel with `aria-controls`, and a root that closed
@@ -9576,8 +16082,8 @@ handles it, and it is not silent:
   deployment-wide key, which is the whole point of the change. Each named source
   then has no credential and refuses to sync until one is attached.
 - **Add the credential to the organization's Vault** - a `gcp_service_account` for
-  Drive, an `aws_credentials` pair for S3, both now offered under a new *Document
-  source* group - and point each source at it.
+  Drive, an `aws_credentials` pair for S3, both now offered under a new _Document
+  source_ group - and point each source at it.
 - **A source with no organization stops the upgrade.** `sync_sources.organization_id`
   is `NOT NULL` now, and anything `rag-source-add` created before #707 has none.
   Set it or delete the row, then upgrade.
@@ -9591,7 +16097,7 @@ handles it, and it is not silent:
   credential, encrypted by `app/core/crypto.py`: one deployment-wide Fernet key
   over every tenant's secret, which is the weakness the vault exists to remove and
   the one place `CLAUDE.md`'s "there is no second mechanism" was untrue. That module
-  is **deleted**. `config` now says only how to *find* the documents, and each
+  is **deleted**. `config` now says only how to _find_ the documents, and each
   connector declares the kind of credential it takes. A credential is added once and
   reused - five collections fed from one Drive folder used to mean the same JSON
   pasted five times and rotated in five places - and it appears on the Vault page
@@ -9629,7 +16135,7 @@ handles it, and it is not silent:
   that name existed, or whose it was - while the HTTP route for the same thing
   asks all three, for the reason its docstring gives: "a sync writes into the
   collection, so pointing one at another tenant's is an injection, not a read".
-  The name's *shape* is now judged in `create_source`, so the route and the CLI
+  The name's _shape_ is now judged in `create_source`, so the route and the CLI
   share one rule and a name no table can be called is refused where it enters
   rather than failing later in a worker. Ownership is answered in the command,
   which is the only place that knows who is asking. (#707)
@@ -9642,7 +16148,7 @@ handles it, and it is not silent:
 - **A personal collection is refused, not just another organization's.** A
   personal knowledge base carries the organization's id too, so "same tenant" is
   not ownership: `writable_kb` lets only its owner write to one. Accepted, it
-  would have pointed an *organization-owned* sync source at a member's private
+  would have pointed an _organization-owned_ sync source at a member's private
   collection, which every member holding `connections:manage` can see and
   trigger. An app-scoped base is refused for the mirror reason - it belongs to
   the deployment and takes an app admin. (#707)
@@ -9667,7 +16173,7 @@ A chat attachment was refused by a 10 MiB limit no operator could see or raise.
 ### Added
 
 - **`CHAT_MAX_UPLOAD_SIZE_MB`, default 10** - what may be attached in chat, and a
-  *different* setting from the knowledge base's `MAX_UPLOAD_SIZE_MB` rather than the
+  _different_ setting from the knowledge base's `MAX_UPLOAD_SIZE_MB` rather than the
   same one. A knowledge-base document is chunked, embedded and read back through
   retrieval; an attachment to an agent with no workspace is pasted whole into the
   prompt, so the same size fails differently on each surface and one ceiling cannot
@@ -9681,8 +16187,7 @@ A chat attachment was refused by a 10 MiB limit no operator could see or raise.
 - **The chat upload limit is a setting rather than a literal.** Three numbers
   claimed to be it and they disagreed: `MAX_UPLOAD_SIZE` (10 MiB in
   `file_storage.py`) was what refused, `MAX_UPLOAD_SIZE_MB` (50) was what `/health`
-  published and what RAG ingestion used, and the frontend defaulted its own check to
-  50. So a 20MB attachment passed the client check, was read into memory, crossed
+  published and what RAG ingestion used, and the frontend defaulted its own check to 50. So a 20MB attachment passed the client check, was read into memory, crossed
   the wire in full and came back refused by a number that appeared in no
   configuration file - while `frontend/README.md` told the operator to keep the
   client value "at or below the backend's", which was advice they could not follow.
@@ -9731,7 +16236,7 @@ Ingesting one changed file read the whole collection four times.
 - **The id and the hash come back together, so they cannot disagree.**
   `IngestionService.existing_document` answers with a frozen `StoredDocument`
   carrying both, and `find_existing` / `get_existing_hash` are gone rather than
-  kept as wrappers. While the two were computed separately they *could* name
+  kept as wrappers. While the two were computed separately they _could_ name
   different documents - the id lookup checked every document for a `source_path`
   match before falling back to `filename` while the hash lookup interleaved the
   two - so a sync compared a live file's hash against a different document's and
@@ -9775,7 +16280,7 @@ Storing a long document's chunks cost one database round trip per chunk.
 - **A document's chunks are written a batch of rows to a statement, not one
   statement each.** `insert_document` issued one `INSERT` per chunk in a Python
   loop inside one open transaction, so at the default `chunk_size` of 512 a
-  200-page PDF was one to three thousand *sequential* asyncpg round trips: a
+  200-page PDF was one to three thousand _sequential_ asyncpg round trips: a
   second or two on a local socket, five to fifteen seconds against a managed
   Postgres at 3-5ms - spent holding a connection while it waited. The rows now go
   200 at a time through an `executemany`, which asyncpg pipelines. The statement
@@ -9810,9 +16315,9 @@ connections, and the failure that followed could not be recorded.
   query raised, including the ones that would have marked a document failed. The
   symptom was an upload stuck at `processing` with a connection error in a log
   nobody reads, indistinguishable from four other failure modes. Two further
-  paths went with it: `_run_sync` built its store *before* validating the path,
+  paths went with it: `_run_sync` built its store _before_ validating the path,
   so the cheapest refusal - "path not found" - leaked a pool, and
-  `_ingestion_service_for` built the store *before* the processor, so a
+  `_ingestion_service_for` built the store _before_ the processor, so a
   collection asking for a parser this build cannot provide left a pool no
   `finally` could reach. (#948)
 - **A store built for one request is closed when the request ends.**
@@ -9835,7 +16340,7 @@ connections, and the failure that followed could not be recorded.
 - **`docs/file-processing.md` states the rule for all three stores** - the
   worker's per flow, the request's, and the capability's per process - and says
   what to look for when ingestion starts failing part-way through a large batch.
-  Pooling *within* one flow is kept deliberately: a document's chunks are written
+  Pooling _within_ one flow is kept deliberately: a document's chunks are written
   over that connection, and a flow runs in one event loop. (#948)
 
 ## [0.0.204] - 2026-08-20
@@ -9961,7 +16466,7 @@ them a one-use invitation link that admitted accounts without bound.
   writes down each request as it passes; `GET /runs/{id}/manifest` reads it back
   under the transcript's authorization, and a second tab on the run drawer
   renders it with the requests as bars. A table rather than a column on
-  `agent_runs`, provider passthrough never recorded, and the write guarded *and*
+  `agent_runs`, provider passthrough never recorded, and the write guarded _and_
   in a SAVEPOINT. Migration `0038`.
 - **A run is read beside the list rather than over it**, in two full-height
   panes, with the thread folded by run and only the run being read open.
@@ -9987,7 +16492,7 @@ them a one-use invitation link that admitted accounts without bound.
   with neither an address nor a domain is a real, documented shape and an
   address-based query cannot see one, so closing sign-up silently un-invited
   everybody holding one. `UserCreate` takes an `invitation_token`, and holding it
-  *is* the proof; registering with one does not accept the invitation, which
+  _is_ the proof; registering with one does not accept the invitation, which
   still needs a session. The console carries it across the redirect that lost it,
   and across the provider round trip in the session. A link with a `max_uses`
   reserves capacity for the registering address, because acceptance happens
@@ -10001,7 +16506,7 @@ them a one-use invitation link that admitted accounts without bound.
 - **Every wrong-method request answered 500 instead of 405**, on every route, so
   an unauthenticated caller could make the server log a traceback on any path.
   OpenTelemetry's FastAPI instrumentation reads `.path` unguarded in its
-  `Match.PARTIAL` branch — which *is* "path matches, method does not" — and the
+  `Match.PARTIAL` branch — which _is_ "path matches, method does not" — and the
   latest published version has the same line, so `app/core/otel_compat.py`
   supplies the fallback upstream missed and a test fails when they fix it. With
   it, `HTTPException` stopped answering `{"detail": …}`: one
@@ -10110,7 +16615,7 @@ them a one-use invitation link that admitted accounts without bound.
   of the validate-and-raise; it goes through the same helper as clone and update,
   so the two cannot drift apart again. (#897)
 - **A refused model id is no longer posted back.** `details` is serialized into
-  the response body *and* written to the log line beside it, so refusing a bare
+  the response body _and_ written to the log line beside it, so refusing a bare
   OpenRouter id sent the caller's own submission into the deployment's logs. It
   names the `model` field now and the id is gone. (#898)
 - **Two provider refusals name the input they are about.** "This provider is
@@ -10134,7 +16639,7 @@ them a one-use invitation link that admitted accounts without bound.
   rewrote it into the `realpath` + `startswith` idiom `py/path-injection` models
   and closed one of the three alerts it claimed; #14 and #15, both sinks in
   `LocalFileStorage.load`, survived on `main` for thirteen releases. The idiom
-  was right and the *shape* was wrong: the query clears a normalised path only
+  was right and the _shape_ was wrong: the query clears a normalised path only
   where the `startswith` call alone decides the branch, and the check was written
   `if candidate != base and not candidate.startswith(prefix)`. Falling through
   `A and B` proves neither conjunct, so the guard never applied. The root is
@@ -10175,7 +16680,7 @@ them a one-use invitation link that admitted accounts without bound.
 
 - **The rules that teach how to write a refusal name the helper.**
   `.claude/rules/exceptions-security.md` and `docs/patterns.md` still taught
-  `{"field": "base_url"}` as *the* way to name a field a refusal is about, and
+  `{"field": "base_url"}` as _the_ way to name a field a refusal is about, and
   never mentioned `app/core/field_errors.py` — so this change would have removed
   the shape from the code and left the instruction to recreate it, which is
   exactly how `assistant.py` and `UserRole` outlived their own deletion. (#891)
@@ -10191,7 +16696,7 @@ The `e2e` job stopped stalling for twenty-five minutes on an apt mirror.
   required check is not a pass the way a `skipped` one is — so the merge stayed
   blocked on a diff that was fine. Across 300 runs, 15 jobs ended that way, and
   the jobs API names the same step in fourteen of them: `Install Playwright
-  browsers`. `--with-deps` shells out to `apt-get`, the runner's mirror answers
+browsers`. `--with-deps` shells out to `apt-get`, the runner's mirror answers
   `Ign` for every index, and apt stops dead on the fallback — 22 minutes of
   silence. The flag bought nothing: on a healthy run every library Chromium
   links against is already the newest version, and the 21 MB it does install is
@@ -10218,7 +16723,7 @@ The `e2e` job stopped stalling for twenty-five minutes on an apt mirror.
   escaped all three catches in the OAuth flow and answered 500 — one layer
   further out than 0.0.190's fix could reach, because `httpx` refuses to build
   the URL before this project's validator is ever called. Discovery treats an
-  unusable candidate as ending *that candidate*: a server with a broken
+  unusable candidate as ending _that candidate_: a server with a broken
   `WWW-Authenticate` hint and correct well-known documents still connects. The
   two sites below it raise a refusal of their own. (#889)
 - **"Nothing can dial this" and "we will not go there" stay two different
@@ -10240,7 +16745,7 @@ A refusal that names a field marks that field.
   offending field from `details.fields`, and four refusals answered with
   `details.errors` instead — so an ingestion override, a spec import and a
   capability setting each showed a sentence and left every box unmarked. That is
-  the half that says *which one to fix*, and it was missing from three fixes
+  the half that says _which one to fix_, and it was missing from three fixes
   released earlier today. One module builds the shape now, reading `loc` and
   `msg` only, so what is left out is decided once rather than remembered at four
   call sites. (#882)
@@ -10267,7 +16772,7 @@ MCP OAuth connects to the address it checked, at every hop.
 
 - **The addresses an MCP OAuth flow reaches are pinned to what passed the
   check.** The authorization server, token endpoint, registration endpoint and
-  every redirect after them come from the *remote server's* discovery documents,
+  every redirect after them come from the _remote server's_ discovery documents,
   not from an operator — and the validator returned a string, so the name was
   resolved a second time to connect and whoever controlled it decided what the
   second answer was. One hostile server was enough, with no operator
@@ -10290,7 +16795,7 @@ MCP OAuth connects to the address it checked, at every hop.
   `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` behave as they did — refusing to
   run when proxied would have cost a proxy-only deployment MCP OAuth entirely,
   in exchange for an egress control it already has. What is pinned is the
-  address the proxy is *asked* to reach; TLS stays end to end either way. (#860)
+  address the proxy is _asked_ to reach; TLS stays end to end either way. (#860)
 - **A refused hop says so without quoting the URL.** The OAuth error is a fixed
   sentence; the address goes to the log. The catches were narrowed from
   `ValueError` to the refusal type this repository raises, so an unrelated
@@ -10345,7 +16850,7 @@ MCP OAuth connects to the address it checked, at every hop.
   was called inline in the route expression, and a pydantic `ValidationError` is
   a `ValueError` but not a `RequestValidationError` — so every mistake in an
   imported spec answered 500 with no field path and left a traceback in the log,
-  on an endpoint whose ordinary case *is* somebody iterating on YAML by hand. The
+  on an endpoint whose ordinary case _is_ somebody iterating on YAML by hand. The
   parse moved into the service that owns the refusal: a rule broken answers 400
   with the field path, YAML that will not parse answers 400 with the line and
   column, and
@@ -10499,7 +17004,7 @@ first of each thing.
   block. (#53)
 - **A keyboard user can finish a step.** The coach card is a real dialog now —
   `aria-modal`, focus moved to it on each step, Escape to leave — and the trap
-  cycles the card *and* the spotlit control, because a step that waits for a
+  cycles the card _and_ the spotlit control, because a step that waits for a
   signal renders no Next button and confining Tab to the card alone would make
   it uncompletable. (#53)
 - **The coach does not offer to build what the organization already has.** While
@@ -10526,7 +17031,7 @@ first of each thing.
   (#591)
 - **The notice waits for the permission set before claiming the caller cannot add
   a model.** `can()` answering false while the set is still loading is right for
-  *hiding* a control and wrong for a sentence that tells somebody what they may
+  _hiding_ a control and wrong for a sentence that tells somebody what they may
   not do: false there means "not known yet". (#591)
 
 ## [0.0.185] - 2026-08-18
@@ -10537,7 +17042,7 @@ Three places where the code said something about itself that was not true.
 
 - **`EMAIL_PROVIDER=resend` silently sent nothing.** `get_email_provider` had no
   `case "resend"` and the match ended `case "log" | _`, so a deployment setting
-  the value its own module docstring advertised got the *development* provider:
+  the value its own module docstring advertised got the _development_ provider:
   every invitation, password reset and approval notice was written to a log line
   and returned `accepted=True`. Nobody found out, because every call site catches
   and logs. An unknown value is refused now, with the supported set in `details`,
@@ -10798,7 +17303,7 @@ One mechanism draws every third-party mark, and 471 MB leaves the install.
 - **`make lint` fails on a frontend dependency nothing imports.** knip, narrowed
   to the one question it is never wrong about, moves from `bunx knip@5` to a
   pinned devDependency with its ignores in `knip.jsonc`, each carrying its reason
-  on the line above. `date-fns` sat unused for months *and* was listed in knip's
+  on the line above. `date-fns` sat unused for months _and_ was listed in knip's
   own ignores, so the report that would have found it had been told not to look.
   (#156)
 - **The frontend's OpenTelemetry spans can leave the process.** The SDK
@@ -10815,8 +17320,7 @@ One mechanism draws every third-party mark, and 471 MB leaves the install.
   `nanoid`'s four call sites all wanted a client-side id, which `chat-store.ts`
   already had; both now call `clientId()` in `src/lib/ids.ts`, keeping the
   non-secure-context fallback that an embedded widget on a plain-HTTP internal
-  host depends on. `node_modules` goes from 1.2 GB / 1012 packages to 729 MB /
-  722. (#156, #836)
+  host depends on. `node_modules` goes from 1.2 GB / 1012 packages to 729 MB / 722. (#156, #836)
 
 ## [0.0.174] - 2026-08-17
 
@@ -10830,7 +17334,7 @@ status answer.
   `handle.error`, which embeds the exception's own text — and a model client's
   message carries the failing request URL with the key still in its query string
   on a custom `base_url`. What those tools return becomes a `ToolReturnPart`, and
-  a return is stored *whole* on purpose, so `tool_retry_notice` (#695) could
+  a return is stored _whole_ on purpose, so `tool_retry_notice` (#695) could
   never reach it: the key landed on a stored tool-call row, rendered in the
   conversation and in run history to every member who can read the run, and
   streamed live as `tool_result`. Fixed upstream in
@@ -10876,7 +17380,7 @@ notices by reading all 46 lines.
   the image — built with `uv sync --no-dev` — was relying on Starlette to pull it
   in. Found by the new gate on its first run. (#155)
 - **The manifest says why the ones that read as dead are alive.** `psycopg2-binary`
-  (alembic builds a *sync* engine from a bare `postgresql://` URL, so removing it
+  (alembic builds a _sync_ engine from a bare `postgresql://` URL, so removing it
   breaks every migration), `itsdangerous` (Starlette signs our `SessionMiddleware`
   cookies with it), `tabulate` and `pillow` — the last two listed as zero-import
   in the audit and both wrong, with call sites in `cli/commands.py` and
@@ -11177,10 +17681,9 @@ A new organization starts with a spend ceiling already in place.
 - **A new organization defaults to a $100 monthly budget.** An org with no cap is
   one runaway agent away from a surprise bill, and a budget only refuses if it
   exists — so a fresh org now starts at the deployment's
-  `DEFAULT_ORG_MONTHLY_BUDGET_USD` (`$100` out of the box), editable on the org's
-  row like any other cap and enforced by the same guard. The default is applied at
-  creation across every path — team create, the personal org on signup, and
-  `bootstrap` — and `None` restores the older opt-in posture for a deployment that
+  `DEFAULT_ORG_MONTHLY_BUDGET_USD` (`$100`out of the box), editable on the org's
+row like any other cap and enforced by the same guard. The default is applied at
+creation across every path — team create, the personal org on signup, and`bootstrap`— and`None` restores the older opt-in posture for a deployment that
   would rather start uncapped. Existing organizations are untouched; no migration,
   because the column already existed. (#785)
 
@@ -11193,14 +17696,14 @@ and every agent shows how full its context window is.
 
 - **Compaction capability.** Ports the `pydantic-ai-harness` compaction strategies
   into the registry: `summarize` (the default, at 0.9 of the window — the only
-  strategy that keeps what older turns *said*), `tiered`, `clear_tool_results` and
+  strategy that keeps what older turns _said_), `tiered`, `clear_tool_results` and
   `sliding_window`. The trigger is a fraction of the window resolved **per request**
   against the model the request is going to, so the same history passes untouched on
   a 1M window and is cut on a 128K one before the request leaves. (#49)
 - **A context-fill gauge on every agent**, not only one that compacts — the warning
   matters most to the agent that will not, because that is the one the provider
   refuses. Read from the provider's own `input_tokens`, stored per turn, and divided
-  by the window of the model selected *now*. (#772, #774)
+  by the window of the model selected _now_. (#772, #774)
 - **`model_profiles.context_length`** — the window a model accepts, recorded from the
   provider's listing at creation rather than guessed from the price snapshot. (#773)
 - **`messages.cost_is_partial`** and a server-side conversation cost total; a partial
@@ -11350,8 +17853,8 @@ sentence behind it.
 - **Prose whose first word is an acronym is reported again.**
   `NOT_A_SENTENCE`'s second alternative was `[A-Z]{2,}\s` — written to exempt a
   machine token, it exempted the whole string that token opened, so `API keys
-  are stored in the vault` left the sweep while `Provider keys are stored in
-  the vault` did not. A hole the width of a vocabulary, in a product whose copy
+are stored in the vault` left the sweep while `Provider keys are stored in
+the vault` did not. A hole the width of a vocabulary, in a product whose copy
   opens on `MCP`, `API`, `RAG`, `KB` and `JWT`. Anchoring the alternative on a
   single lower-case word keeps the label it was written for — `MCP server`,
   `AI agents` — and lets the prose through. This is the same mistake as #656,
@@ -11391,7 +17894,7 @@ arranged into.
 - **A spacing system, in `lib/dashboard/system.ts`.** Band-to-band was 24px
   against card-to-card's 16px — three levels of structure inside eight
   pixels of each other, which is why five bands read as one mass. Bands sit
-  at 40px, four times the card gap. Its test asserts the *relationships*,
+  at 40px, four times the card gap. Its test asserts the _relationships_,
   since a constant equal to its own literal tests nothing.
 - **Four cards the page could not answer before.** Channels — what is
   registered and whether each bot webhooks or polls, which is the difference
@@ -11446,7 +17949,7 @@ arranged into.
 
 - **The Spend card put two definitions of cost side by side.** The headline
   read `cost.period_usd` — model spend alone — while the line under it read
-  `/spend → month_to_date_usd`, runs *plus* ingestion, which is the
+  `/spend → month_to_date_usd`, runs _plus_ ingestion, which is the
   arithmetic a monthly cap is measured with. Nothing said they were different
   questions, and on any deployment that indexes documents they disagreed,
   with `ingestion_spend` real money against the cap and nowhere on the page.
@@ -11593,7 +18096,7 @@ A thread nobody owned was everybody's to delete.
 ### Security
 
 - **An unowned room thread is writable only by its participants.** A channel
-  thread's owner is its first *linked* speaker, so a room where nobody linked
+  thread's owner is its first _linked_ speaker, so a room where nobody linked
   an account had no owner — and the write check answered yes to any member of
   the organization: renaming it, archiving it, deleting the transcript, or
   appending a `role: "assistant"` turn the model reads back as its own words,
@@ -11756,7 +18259,7 @@ sentence passed the sweep.
 - **`"Sign-in failed"` passed the i18n guard while `"Not authenticated"` was
   refused.** `NOT_A_SENTENCE` exempts a label built from title case around a
   separator — `Model / Provider` — and the whitespace on both sides of that
-  separator was optional, so a hyphen *inside* the first word made the whole
+  separator was optional, so a hyphen _inside_ the first word made the whole
   sentence a label. The separator now needs the whitespace that makes it one.
   (#656)
 
@@ -11789,7 +18292,7 @@ them.
 - **`scripts/check_comments.py` filtered after walking rather than pruning.**
   `Path.rglob("*")` descended into `.git`, `.venv`, `node_modules` and every
   checkout under `.claude/worktrees/`, and `SKIP_DIRS` only decided what was
-  *reported*. On a machine with 68 worktrees that was about 3.9M paths and roughly
+  _reported_. On a machine with 68 worktrees that was about 3.9M paths and roughly
   seven minutes per commit, because pre-commit runs the hook with
   `pass_filenames: false`. It is now `os.walk` with in-place pruning. (#635)
 
@@ -11800,7 +18303,7 @@ priced nothing.
 
 ### Fixed
 
-- **`GET /runs/spend` counted its "could not be priced" caveat over *top-level*
+- **`GET /runs/spend` counted its "could not be priced" caveat over _top-level_
   rows only.** By provider and By key price every row in the window through a
   subquery that is deliberately not windowed, so a parent that started before the
   window and delegated inside it put its delegate's spend into the breakdowns while
@@ -11919,7 +18422,7 @@ A plain role change could mint a second owner and walk around ownership transfer
   in the same breath, could be walked around with a PATCH. Both halves are closed,
   because either alone leaves the hole open somewhere: `OrganizationMemberUpdate`
   subtracts `owner` from the roles it admits, the way `InvitationCreate` already
-  did, and the service now caps the role being *assigned* rather than only
+  did, and the service now caps the role being _assigned_ rather than only
   inspecting the target. (#672)
 
 ## [0.0.124] - 2026-08-13
@@ -11975,7 +18478,7 @@ disagreed about files.
   transport that deployment happened to run — and long-polling is what a
   self-hosted install uses. Both now put the update back into the shape the
   platform sends and hand it to the same `parse_incoming`, so what counts as a
-  message is decided once. What each transport is *handed* still differs, and that
+  message is decided once. What each transport is _handed_ still differs, and that
   is the platform's doing: Telegram's polling loop subscribes to new messages
   only, so an edit reaches the webhook receiver and never the poller. (#672)
 
@@ -12086,7 +18589,7 @@ query string, to everyone watching the run.
 - **A `tool_result` frame carried whatever the tool that raised had put in its
   `ModelRetry`.** `web_search` builds one out of the `httpx` or SDK exception it
   caught, so a broken key put `401 Unauthorized for url
-  'https://api.tavily.com/search?…'` — an endpoint, a host and whatever the query
+'https://api.tavily.com/search?…'` — an endpoint, a host and whatever the query
   string held — into the chat panel and the browser console of everyone watching.
   An MCP tool's retry is a third party's string entirely, which is why the frame
   is trimmed where it is sent rather than at each raise. The frame still names the
@@ -12159,7 +18662,7 @@ apart is how the surfaces drifted in the first place.
 
 ### Fixed
 
-- **A thread past 200 messages sent the model its *first* 200.** The window read
+- **A thread past 200 messages sent the model its _first_ 200.** The window read
   from the start of the conversation rather than the end, so the longer a thread
   ran the staler the context it was answered from. `count_messages` plus `skip`
   makes the window the last 200. (#636, #638)
@@ -12203,7 +18706,7 @@ regexes, and the 137 English strings it can now see are in the catalog.
   Reading a `.tsx` file as text means deciding per candidate whether you are looking
   at TypeScript or JSX, so every rule carried a threshold standing in for a parse
   and the next shape fell between two of them. The last one was one word wide —
-  `` aria-label={`Remove ${source.name}`} `` sat below a two-word threshold that
+  ``aria-label={`Remove ${source.name}`}`` sat below a two-word threshold that
   existed to keep `` `audience${key}Hint` `` out. It is now
   `frontend/scripts/check-i18n.ts`, walking `JsxText`, `JsxExpression`,
   `StringLiteral` and `TemplateExpression` through `ts.createSourceFile`: a node the
@@ -12255,7 +18758,7 @@ regexes, and the 137 English strings it can now see are in the catalog.
   its own test. (#610)
 - **A key was checked against the wrong namespace when a file held two
   translators.** `missingKeys` unioned every namespace in a file, so a key read
-  through one translator counted as present if any *other* namespace held it. That
+  through one translator counted as present if any _other_ namespace held it. That
   hid eight keys on the admin conversations page: `archived`, `active`, `all`,
   `allOwners` and `allAgents` were read through a `useTranslations("admin")` while
   only `pages.admin` held them, so all eight rendered as their own key strings on
@@ -12287,8 +18790,8 @@ it only marks.
 
 - **One caveat, three breakdowns, and three places claiming it measured all
   three.** "Some runs could not be priced" counts top-level runs — one per run
-  tree, the same rows *By agent* groups — so it measures that breakdown and only
-  *marks* By provider and By key, which sum every row's own spend, delegated rows
+  tree, the same rows _By agent_ groups — so it measures that breakdown and only
+  _marks_ By provider and By key, which sum every row's own spend, delegated rows
   included. One parent with three unpriced delegates therefore reads `1` while
   three figures below it are a floor. The two schema descriptions, the route
   comment, the rendering side and `docs/governance.md` now say that instead of
@@ -12312,8 +18815,8 @@ in a transcript that keeps it forever.
 ### Fixed
 
 - **The approval notice was stored as the agent's words.** A chat turn that
-  parked on an approval wrote *"This run needs approval before it can go further
-  — it is waiting in the approvals queue."* into the assistant message's
+  parked on an approval wrote _"This run needs approval before it can go further
+  — it is waiting in the approvals queue."_ into the assistant message's
   `content`. The moment somebody approved, that sentence was false, and it stayed
   in the transcript attributed to the agent, in the middle of a turn that plainly
   did go further — visible between two steps that both ran, since a run's segments
@@ -12347,7 +18850,7 @@ is what CI runs.
   `make dev` needs was also the address a test's flow call tried to reach, and it
   failed as `Failed to reach API at …` out of a test that patches every
   collaborator it has. CI never saw it: with no `.env` there is no URL, so what a
-  laptop ran was never what CI ran. The URL is now assigned *empty* before Prefect
+  laptop ran was never what CI ran. The URL is now assigned _empty_ before Prefect
   is imported — deleting it would leave the dotenv source to answer, and an empty
   assignment outranks that source because Prefect's model carries
   `env_ignore_empty=False` — and Prefect reads an empty URL as no URL, running the
@@ -12380,7 +18883,7 @@ connection-pool defect that had been hiding behind collection order.
   those pages called verified had never been exercised by that mechanism. The
   seed is printed in the header and reaches every xdist worker through
   `workerinput`, so `-n auto` collects one order rather than four. A guard test
-  asserts the *declaration*, so removing the dependency fails a test rather than
+  asserts the _declaration_, so removing the dependency fails a test rather than
   silently un-shuffling the suite. (#571)
 
 ### Fixed
@@ -12391,10 +18894,10 @@ connection-pool defect that had been hiding behind collection order.
   connection created on a loop that has since closed answers
   `cannot perform operation: another operation is in progress` for the next
   statement issued through it, in whichever test checked it out. The two files
-  driving the real `get_db_session` each disposed the engine on the way *out*,
+  driving the real `get_db_session` each disposed the engine on the way _out_,
   which covers only the pair of them; anything else sharing the xdist worker
   could leave a connection there. The `engine` fixture now disposes on the way
-  *in*, and the two per-file disposes are gone. Pre-existing — which tests share
+  _in_, and the two per-file disposes are gone. Pre-existing — which tests share
   a worker was already decided at run time by `--dist load`; the shuffle only
   changed the adjacencies and made it surface, red on run 6 of 8. (#571)
 
@@ -12406,7 +18909,7 @@ Picking Polish now survives the next click.
 
 - **The language switcher redrew the current page and nothing more.** The
   locale's entire persistence was the `/pl` URL prefix, and under
-  `localePrefix: "as-needed"` a path without a prefix *is* the default locale —
+  `localePrefix: "as-needed"` a path without a prefix _is_ the default locale —
   so every ordinary `<Link href="/agents">` and `router.push("/orgs")` in the app
   dropped the prefix and the language with it, and a reload never brought Polish
   back either. next-intl reads a `NEXT_LOCALE` cookie itself, but only under
@@ -12435,7 +18938,7 @@ there can no longer be deleted with a green suite.
   suite and a 100% coverage gate, and a Slack user would be back to reading
   "here is the chart" under no chart. Both reply paths now run against a stub
   runner that fills the list the way the real one does, and assert on the PNG
-  rather than on a mock call; the stub takes the tool calls as a *required*
+  rather than on a mock call; the stub takes the tool calls as a _required_
   keyword, so a router that stops passing them fails loudly. (#515)
 
 Two things the issue behind this asserted did not survive checking, recorded
@@ -12455,7 +18958,7 @@ controls can no longer fail a frontend build.
   `next/font/google` resolves a family against `fonts.gstatic.com` at build
   time, and when gstatic 404s the `.woff2` Turbopack surfaces it as
   `Module not found: Can't resolve
-  '@vercel/turbopack-next/internal/font/google/font'` and exits non-zero — which
+'@vercel/turbopack-next/internal/font/google/font'` and exits non-zero — which
   is `test-frontend`'s `Build` step and `e2e`'s `Build the frontend` step. On
   2026-08-10 it took out two pull requests inside one push window (#570,
   Bricolage, six errors; #544, Inter, twenty-eight) while a third built fine.
@@ -12537,7 +19040,7 @@ and Publish says what it will move before it moves it.
   settled the page read as finished, while every channel, widget and API call was
   still answering with the published version — toggle a tool off in the Toolbox
   and nothing on screen said a publish was needed. A header badge now compares the
-  *stored* draft against the frozen version spec: "Draft differs from v7", with a
+  _stored_ draft against the frozen version spec: "Draft differs from v7", with a
   title spelling out that published surfaces keep answering with v7 until a
   publish, or "Up to date with v7". Compared as sorted-keys YAML, the same
   serialization the version diff reads, so key order cannot read as a change
@@ -12756,12 +19259,12 @@ The whole-suite test targets run across worker processes, roughly halving them.
 ### Changed
 
 - **`make test` and the other whole-suite targets run across workers.** `pytest
-  -n auto --maxprocesses 4` on `test`, `test-fast`, `test-integration` and
+-n auto --maxprocesses 4` on `test`, `test-fast`, `test-integration` and
   `test-cov`; `pytest-cov` combines the per-worker data so the 100% platform gate
   is unchanged, and scoped `pytest <file>` runs stay serial (spawning workers for
   one file costs more than the file). The cap is four because the unit slice is
   import-bound — every worker imports the app once — and an uncapped `-n auto` on
-  a many-core machine runs *slower* than serial, all of it worker startup. Adds
+  a many-core machine runs _slower_ than serial, all of it worker startup. Adds
   `pytest-xdist` to the dev group. Refs #520. (#570)
 
 ## [0.0.91] - 2026-08-10
@@ -12775,7 +19278,7 @@ every test, halving it.
   per-test `drop_all` + `create_all` (~0.4s of DDL each, very nearly the whole
   runtime of a suite whose assertions are microseconds of Postgres work) is
   replaced by a session-scoped build plus a `TRUNCATE ... RESTART IDENTITY
-  CASCADE` reset between tests. The integration slice drops from ~125s to ~53s,
+CASCADE` reset between tests. The integration slice drops from ~125s to ~53s,
   and the per-process `_p<pid>` database isolation is untouched, so two runs on
   one machine stay safe. `TRUNCATE`, not a rollback: the API-flow tests commit
   through the real session, so their rows would outlive a rollback. Closes #215.
@@ -12903,12 +19406,12 @@ A file dragged into the chat lands wherever it is dropped.
 - **The whole page is the drop target.** Attaching a file by dragging it meant
   hitting the composer - a strip a few centimetres tall at the bottom of the
   window - and missing it was not a no-op: the browser's default for a dropped
-  file is to *open* it, so a drop anywhere else navigated the tab away from the
+  file is to _open_ it, so a drop anywhere else navigated the tab away from the
   conversation and whatever was half-typed in it. The same `preventDefault` that
   lets the page take the file is what stops the browser taking it, so listening
   on the window fixes both halves at once. While a file is over the page an
   overlay covers it: the ground blurred, a dashed card in the middle, and the
-  per-file size limit written on it, because a 60MB video refused *after* the
+  per-file size limit written on it, because a 60MB video refused _after_ the
   drag is a round trip nobody needed to make.
 
   A drag carrying anything other than files - selected text, a link, one of the
@@ -12945,7 +19448,7 @@ of it was worse than the screen.
   arguments and its result were never written. Three commands ran in a sandbox
   and history accounted for one.
 - **What an approved call returned is recorded.** Its row is written open when
-  the run parks; the resume that finally runs it produces the return *without*
+  the run parks; the resume that finally runs it produces the return _without_
   the call it belongs to, so nothing ever closed the row. The one call somebody
   deliberately reviewed was the one call that opened onto nothing
   ([#506](https://github.com/vstorm-co/agenticos/issues/506)).
@@ -12978,7 +19481,7 @@ waiting for.
 - **A turn's order is recorded rather than reconstructed.** `messages.parts`
   (migration `0012`) stores the sequence as it was streamed — reasoning, the text
   the model wrote, and the tools it called, interleaved as they occurred. A row
-  used to say *what* a turn contained and never *when*, so a client replaying one
+  used to say _what_ a turn contained and never _when_, so a client replaying one
   had to invent an order, and the only one it could invent was reasoning, then
   every tool, then the answer. A turn that introduced three charts, drew them and
   summarised them lost its introduction on save and showed the summary above the
@@ -13028,7 +19531,6 @@ waiting for.
   specialists can be discarded without scrolling past six sections to find the
   control.
 
-
 ## [0.0.83] - 2026-08-08
 
 ### Fixed
@@ -13064,12 +19566,12 @@ waiting for.
   window contains the second's turns, and a run that never ended yields an empty
   window that reads as "nothing was recorded".
 - **Nine filters on run history**, each narrowing the page and the count
-  together: a *set* of statuses (`failed,budget_exceeded` is the query somebody
+  together: a _set_ of statuses (`failed,budget_exceeded` is the query somebody
   actually types), surface, who it ran as, a time window, environment, exposure,
   version, "slower than", and whether anybody rated it down. Sorting by duration
   is computed in SQL over the whole narrowed set, because sorting a page of
   twenty-five sorts the wrong set — that is the gap between "p95 is 14.8s" on the
-  dashboard and *those runs*.
+  dashboard and _those runs_.
 - **Spend by provider and by key**, which a per-agent breakdown cannot answer: an
   invoice arrives from a vendor, and a leaked key is found by what was spent
   through it.
@@ -13126,7 +19628,7 @@ waiting for.
   shares one ledger, so a parent's `cost_usd` already contains its children's:
   counting every row billed the money twice, and counting only top-level rows
   totalled correctly while attributing the delegate's spend to the wrong provider
-  and the wrong key. Each row now carries what it spent *itself*, which nests and
+  and the wrong key. Each row now carries what it spent _itself_, which nests and
   still sums to the bill.
 - **`logfire_trace_id` was null on every row ever written.** `finish()` accepted
   one from the day the column existed and no caller ever passed it, so the write
@@ -13140,7 +19642,7 @@ waiting for.
   employee in the dashboard are not the same thing to anyone asking how this
   product is used.
 - **The approvals queue had no stable order to page through.** `created_at` comes
-  from `server_default=func.now()`, which Postgres answers with the *transaction*
+  from `server_default=func.now()`, which Postgres answers with the _transaction_
   timestamp, and a run parks on all of its outstanding calls at once — so every
   call a fan-out parked shared an instant exactly, and a page boundary drawn
   through them let a row come back on two pages or on neither.
@@ -13163,7 +19665,7 @@ waiting for.
 ### Changed
 
 - **`SPEC_VERSION` is 8.** `observability.organization` and
-  `observability.project` say where an agent's traces can be *read*, which a write
+  `observability.project` say where an agent's traces can be _read_, which a write
   token does not carry. Both optional with a default, so every stored document and
   every client's exported YAML keeps loading unchanged and there is no migration
   to write. Both are validated as slugs rather than only length-bounded: they are
@@ -13243,7 +19745,7 @@ waiting for.
   options has nothing to compare against. They move into `SelectItem`'s `trailing`
   slot, which renders outside `ItemText` and so is not inherited by the closed
   trigger (#341).
-- Create knowledge base could not say the embedding-model list had *failed*:
+- Create knowledge base could not say the embedding-model list had _failed_:
   loading and refused were the same pixels. Refused now has its own branch and
   names the default the collection will get anyway (#365).
 - The runtime field lost its only warning when the badge moved, and
@@ -13337,7 +19839,7 @@ waiting for.
   own loop from a thread (`app/core/watchdog.py`) and kills its own process,
   which turns a wedge into the one failure all three stacks already handle.
   Neither supervisor was replaced and PID 1 is untouched in all three.
-- Ctrl+C returns from a worker that wedged *before* its first beat (#366). The
+- Ctrl+C returns from a worker that wedged _before_ its first beat (#366). The
   reload supervisor escalated to `SIGKILL` on a verdict it could not reach for a
   worker that had never beaten — one hung on a Postgres that is down, say — so
   the shutdown waited out Docker's ten-second grace period instead. It now
@@ -13365,7 +19867,6 @@ waiting for.
   so a retry was a one-way trip into permanent `processing`. A bare `ValueError`
   on a decided refusal is now a 400 rather than a 500 (#441).
 
-
 ## [0.0.70] - 2026-08-07
 
 ### Fixed
@@ -13382,7 +19883,6 @@ waiting for.
 - A failed health probe left the session's transaction aborted, which on the new
   ordering turned an intended 503 into a 500 — on the endpoint an operator reads
   when something is already wrong (#416).
-
 
 ## [0.0.69] - 2026-08-07
 
@@ -13402,7 +19902,6 @@ waiting for.
 - `escape_sql_like` in `core/sanitize.py` — dead, and half-right in a way that
   would have been worse than nothing had anything called it.
 
-
 ## [0.0.68] - 2026-08-07
 
 ### Security
@@ -13413,7 +19912,7 @@ waiting for.
 - A refusal's `details` described the server rather than the refusal: an upstream
   client's exception text on a 503, container filesystem paths on a 500, and a
   provider base URL echoed back on four validation errors — one of which exists
-  *because* the URL carries a password. The diagnosis moves to the log; the
+  _because_ the URL carries a password. The diagnosis moves to the log; the
   response names the field that explains the refusal (#342).
 - A sandbox address could carry userinfo, which `probe_policy` echoed into both
   the response and the log. `ServiceAddress` was the only one of the three URL
@@ -13423,7 +19922,6 @@ waiting for.
 
 - The capability registry echoed a rejected configuration back to the caller in a
   400, unlike the identical call one module over.
-
 
 ## [0.0.67] - 2026-08-07
 
@@ -13444,7 +19942,6 @@ waiting for.
   not be read". Harmless while all three wrote the same `str(exc)`; not harmless once
   the innermost knew which stage had failed.
 
-
 ## [0.0.66] - 2026-08-07
 
 ### Security
@@ -13456,7 +19953,7 @@ waiting for.
 - A collection name over 45 characters truncated onto another collection's table.
   The bound is derived from the longest identifier built from a name —
   `rag_<name>_embedding_idx`, not `rag_<name>` — so a name of 46 to 59 characters
-  truncated only the *index* name, `CREATE INDEX IF NOT EXISTS` then found the
+  truncated only the _index_ name, `CREATE INDEX IF NOT EXISTS` then found the
   first collection's index and built nothing, and the second collection searched
   unindexed at the first one's width (#368).
 - Upper case is refused. Postgres folds an unquoted identifier, so `Handbook` and
@@ -13471,7 +19968,6 @@ waiting for.
 - A malformed or reserved collection name answers 400 rather than 500 (#371).
 - Dropping a collection whose name the new rules refuse no longer swallows the
   refusal and orphan the vector table.
-
 
 ## [0.0.65] - 2026-08-07
 
@@ -13502,7 +19998,6 @@ waiting for.
   connectors implementing `_fetch`. A connector added later cannot choose a path,
   and a test asserts none overrides it.
 
-
 ## [0.0.64] - 2026-08-07
 
 ### Fixed
@@ -13515,7 +20010,6 @@ waiting for.
   is nothing on this surface a shared or heuristic cache may keep. A backend that
   does name a policy still wins, which is how the catalog icons and the embed
   bundle keep theirs.
-
 
 ## [0.0.63] - 2026-08-07
 
@@ -13539,7 +20033,6 @@ waiting for.
   runtime. Only `changes` had one, so a hung job ran to the platform default
   rather than to a number somebody chose (#364).
 
-
 ## [0.0.62] - 2026-08-07
 
 ### Fixed
@@ -13550,13 +20043,11 @@ waiting for.
   load-bearing and untested, so a refactor could have broken it with only a
   tree-wide `make lint` to notice. One case now fails without it.
 
-
 ## [0.0.61] - 2026-08-07
 
 ### Security
 
 - `h2` bumped past CVE-2026-71554.
-
 
 ## [0.0.60] - 2026-08-07
 
@@ -13569,7 +20060,6 @@ waiting for.
   over the whole tree regardless of what is staged, it kept rewriting those two
   files into unrelated commits and rolling them back, so every branch cut from
   `main` started red on a gate it had not broken (#407).
-
 
 ## [0.0.59] - 2026-08-06
 
@@ -13585,10 +20075,9 @@ waiting for.
 - A remaining skip now means one thing only: no Postgres answered. Under `CI` it
   is not a skip at all but a failure, because a declared service container that
   did not come up is not a laptop without Docker.
-- The probe says *why* the server did not answer. A Postgres that is up and
+- The probe says _why_ the server did not answer. A Postgres that is up and
   refusing — a wrong password, a database in recovery — used to be reported as a
   container that never started.
-
 
 ## [0.0.58] - 2026-08-06
 
@@ -13608,7 +20097,6 @@ waiting for.
 - The empty `SANDBOXD_TOKEN=` in the example did not match the `^SANDBOXD_TOKEN=.`
   that `make dev` greps for, so a fresh checkout ended up with the key twice and
   worked only by last-wins. The assignment is gone; the comment stays.
-
 
 ## [0.0.57] - 2026-08-06
 
@@ -13630,7 +20118,6 @@ waiting for.
   It is `quickstart: dev`, and nothing in that chain reaches `install` — which
   sent people down exactly the road this release closes.
 
-
 ## [0.0.56] - 2026-08-06
 
 ### Changed
@@ -13649,7 +20136,6 @@ waiting for.
 - The provider-listing key moves out of a private helper in the route and into
   `OrganizationSecretService`, so nothing in the HTTP layer unseals a secret.
 
-
 ## [0.0.55] - 2026-08-06
 
 ### Fixed
@@ -13659,7 +20145,6 @@ waiting for.
   `None` short-circuit was deleted. `_for_collection` calls it unconditionally,
   so the test raised `TypeError: 'NoneType' object is not callable` on every run
   with a real database. Shipped in 0.0.45 and fixed here.
-
 
 ## [0.0.54] - 2026-08-06
 
@@ -13676,7 +20161,6 @@ waiting for.
 - A source that is not this base's answers `404` rather than `200 []`. Both
   rendered "no syncs yet", and one of them was a request that should have failed.
 
-
 ## [0.0.53] - 2026-08-06
 
 ### Fixed
@@ -13689,7 +20173,6 @@ waiting for.
 - The self-exemption matched one absolute path, so every copy of the script under
   a worktree was reported as three findings on a line nobody had edited. It
   matches the file's name now, and `--fix` is safe on a copy for the same reason.
-
 
 ## [0.0.52] - 2026-08-06
 
@@ -13705,7 +20188,6 @@ waiting for.
   including two menu items sitting between translated siblings, and English
   compiled into the two model-picker components (#332).
 
-
 ## [0.0.51] - 2026-08-06
 
 ### Fixed
@@ -13714,7 +20196,6 @@ waiting for.
   that begins with a word before its interpolation, and a count built with a
   lambda rather than an ICU plural. Both render in English under any locale, and
   `make lint` reported clean over them (#249).
-
 
 ## [0.0.50] - 2026-08-06
 
@@ -13735,7 +20216,6 @@ waiting for.
   different secrets. By accessible name they were indistinguishable, so a screen
   reader heard the same button twice (#331).
 
-
 ## [0.0.49] - 2026-08-06
 
 ### Changed
@@ -13754,7 +20234,6 @@ waiting for.
   to its own name.
 - The tick marking a stored key was inherited by the closed select's trigger,
   where it reads as "selected" rather than "has a key".
-
 
 ## [0.0.48] - 2026-08-06
 
@@ -13776,7 +20255,6 @@ waiting for.
   shapes.
 - The add-model form in that dialog is gated on `connections:manage`; it posts a
   model profile, and a control the caller may not use is not rendered.
-
 
 ## [0.0.47] - 2026-08-06
 
@@ -13802,7 +20280,6 @@ waiting for.
 - A Tailwind class list was being stored in `messages/en.json` and read through
   the translator, so a translator opening `pl.json` was asked to translate CSS.
 
-
 ## [0.0.46] - 2026-08-06
 
 ### Changed
@@ -13824,7 +20301,6 @@ waiting for.
 - Both delete dialogs now disable while the request is in flight. A double-click
   sent a second DELETE and toasted a 404 over a removal that had worked.
 
-
 ## [0.0.45] - 2026-08-06
 
 ### Fixed
@@ -13833,7 +20309,7 @@ waiting for.
   `rag_documents`, which is the table tracking every organization's ingested
   documents, so `GET /rag/collections/documents/info` returned every
   organization's document count and the delete path issued a `DROP TABLE`
-  against it. Nothing refused the name, and `documents` was the *default*
+  against it. Nothing refused the name, and `documents` was the _default_
   collection name, so the collision sat on the documented first-run path. Both
   the store and `KnowledgeBaseService.create` now refuse a name that collides
   with a declared model table (#345).
@@ -13844,7 +20320,6 @@ waiting for.
   `rag-*` commands and two schemas, pinned by a test that fails if it is ever
   set to a model table's name. `RAGSettings.collection_name` was read nowhere
   and is deleted.
-
 
 ## [0.0.44] - 2026-08-06
 
@@ -13859,7 +20334,6 @@ waiting for.
   alembic uses, so the two answer from one source (#339).
 - The prefix match also treated `_` as a SQL wildcard, so a table named
   `ragXfoo` listed as a collection called `Xfoo`.
-
 
 ## [0.0.43] - 2026-08-06
 
@@ -13884,7 +20358,6 @@ waiting for.
   Five call sites passed it and one forgot; the default is what made forgetting
   silent.
 
-
 ## [0.0.42] - 2026-08-06
 
 ### Fixed
@@ -13899,7 +20372,6 @@ waiting for.
 - `app/db/vector_tables.py` — `is_runtime_vector_table`, one predicate for
   "is this table a runtime vector table rather than a declared model", read from
   `Base.metadata` rather than from a name pattern.
-
 
 ## [0.0.41] - 2026-08-06
 
@@ -13916,7 +20388,6 @@ waiting for.
 
 - `RELOAD_WEDGED_AFTER` — how long a worker may go without running its event
   loop before it is treated as wedged. Set it to `0` under a debugger.
-
 
 ## [0.0.40] - 2026-08-06
 
@@ -13936,7 +20407,6 @@ waiting for.
   464 MB against 28 MB, which is the whole application inside the one process
   whose job is to survive an OOM kill.
 
-
 ## [0.0.39] - 2026-08-06
 
 ### Fixed
@@ -13955,7 +20425,6 @@ waiting for.
 - The `HEALTHCHECK` moved out of `backend/Dockerfile` and into the `app` and
   `prefect-runner` service definitions in all three compose files. An image with
   two consumers should not assert what only one of them can satisfy.
-
 
 ## [0.0.38] - 2026-08-06
 
@@ -13977,7 +20446,6 @@ waiting for.
   which contradicted both the code and `architecture.md`. Domain exceptions pass
   the value; the encoder handles it. The one exception, money, says why.
 
-
 ## [0.0.37] - 2026-08-06
 
 ### Fixed
@@ -13994,7 +20462,6 @@ The cause of the Codex failure itself is an enforced spend limit on the OpenAI
 project, recorded on #311. The `pull_request` trigger stays off until that is
 lifted.
 
-
 ## [0.0.36] - 2026-08-06
 
 ### Fixed
@@ -14010,7 +20477,6 @@ The underlying cause is filed rather than fixed: this backend answers a write
 before the transaction commits, so a 2xx says the request was handled and not
 that the write is readable (#353).
 
-
 ## [0.0.35] - 2026-08-06
 
 Nothing in this release changes what the product does. It changes what CI costs,
@@ -14025,14 +20491,14 @@ August across 369 runs at 24.1 minutes each
   push started a fresh matrix and left the previous one running to completion. 75 of
   369 runs were superseded while still in flight, about 1,800 billed minutes, and only
   2 runs in that window were ever `cancelled`. A push to `main` is exempt, and via
-  `github.run_id` rather than `cancel-in-progress: false`: `false` means *queue*, and
+  `github.run_id` rather than `cancel-in-progress: false`: `false` means _queue_, and
   GitHub cancels any previously **pending** run in a group when a newer one is queued,
   so a third merge arriving would have cancelled the second and left that commit with
   no CI at all.
 - **`test`, `test-frontend` and `e2e` are skipped when the changed paths cannot affect
   them.** A `changes` job decides, and the decision lives in
   `scripts/ci_changed_scope.py` rather than in a glob, so it is testable. It skips a
-  suite only when *every* changed path is provably irrelevant to it — an unrecognised
+  suite only when _every_ changed path is provably irrelevant to it — an unrecognised
   path runs everything — because the permissive spelling of the same idea would let a
   new directory silently stop a suite, which is a green build with a gate missing from
   it rather than a red one. A required status check is satisfied by `success`,
@@ -14048,14 +20514,14 @@ August across 369 runs at 24.1 minutes each
 
 - **Four ways the new path gate could have passed on nothing**, all found in review of
   the change that introduced it and all the failure it was built to prevent. A
-  `changes` job that *failed* skipped every gated suite without its condition being
+  `changes` job that _failed_ skipped every gated suite without its condition being
   read, and since a skipped required check is a pass and `changes` is not itself a
   required context, one API error would have turned the merge button green over a
   branch where nothing ran — each gated job now carries `!cancelled()`. A rename was
   half-invisible, because `pulls/{n}/files` reports only the path a file arrived at, so
   a module moved out of `backend/` skipped the backend suite; `previous_filename` is
   fed through as well. And the `changes` job declared `pull-requests: read` without
-  `contents: read`, which a job-level block *replaces* rather than adds to — working
+  `contents: read`, which a job-level block _replaces_ rather than adds to — working
   only for as long as this repository stays public.
 
 ## [0.0.34] - 2026-08-06
@@ -14073,7 +20539,7 @@ August across 369 runs at 24.1 minutes each
   is removed until the Codex failure is understood; `workflow_dispatch` stays, because the fix has
   to be testable against a real pull request. Adding the `ai-review` label now does nothing at all.
   `CLAUDE.md` and [code review](docs/code-review.md) say so, and the latter records that its own
-  "a failed run says so" claim is what #311 disproved — making a failed run *report* as a failure is
+  "a failed run says so" claim is what #311 disproved — making a failed run _report_ as a failure is
   the second half of that issue and is not done.
 
 ## [0.0.33] - 2026-08-06
@@ -14082,7 +20548,7 @@ August across 369 runs at 24.1 minutes each
 
 - **The Prefect runner no longer starts every queued flow run at once.** `aserve` declares
   `limit: Optional[int] = None` and hands that straight to `Runner(limit=...)`, where `None` means
-  *no cap* — while constructing a `Runner` without the argument falls back to Prefect's own default
+  _no cap_ — while constructing a `Runner` without the argument falls back to Prefect's own default
   of five. Calling `aserve(*deployments)` and saying nothing was therefore the one spelling that
   removed the ceiling entirely. Starting the stack after three days of downtime, the runner found
   the backlog of once-a-minute `rag-sync-check` runs and started 71 `prefect.engine` processes at
@@ -14105,7 +20571,7 @@ August across 369 runs at 24.1 minutes each
   invented was built from rode a single per-run store keyed by the specialist's name, and the build
   factory overwrote it on a repeat. Two `delegate` calls in one turn with the same name but
   different instructions — which Pydantic AI may run concurrently — both wrote that one entry, so
-  whichever delegation opened its panel later stamped the *other* specialist's definition onto its
+  whichever delegation opened its panel later stamped the _other_ specialist's definition onto its
   `SubagentStarted` frame, and the chat's "Promote to a draft agent" control ([#177](https://github.com/vstorm-co/agenticos/issues/177))
   then carried someone else's instructions and model. Each `delegate` now owns its own copy; the
   name-keyed store is kept only for the `create_agent` specialists a `task` reaches by name, which
@@ -14159,8 +20625,8 @@ August across 369 runs at 24.1 minutes each
   innermost stamp meant it was not in the researcher's share either: on a $0.75 run the
   researcher's row read $0.50, and $0.25 reached no agent's month. The organisation total
   was always right (the top-level row is the whole ledger), which is why nothing failed.
-  An entry now carries a second attribution — *who spent it* (for the delegation panel's
-  own-share `cost_usd`) and *which agent row it bills to* (for the month): an inline
+  An entry now carries a second attribution — _who spent it_ (for the delegation panel's
+  own-share `cost_usd`) and _which agent row it bills to_ (for the month): an inline
   specialist bills to its nearest published ancestor, so that row is whole again while the
   panel still shows the specialist's own share, with nothing double-counted. Holds through
   an inline specialist nested under another inline specialist, too.
@@ -14173,7 +20639,7 @@ August across 369 runs at 24.1 minutes each
   ([#254](https://github.com/vstorm-co/agenticos/issues/254)). 0.0.20 (#175) carried a
   top-level dynamic specialist across a park — its definition serialised into `paused_state`
   and re-seeded on resume through the same factory — but only at the root. A specialist a
-  delegate *one level down* created was still lost when a nested delegation parked and
+  delegate _one level down_ created was still lost when a nested delegation parked and
   resumed: the nested level's registry was rebuilt empty, so `task` answered "unknown
   subagent" for it. The specialist carry now descends the parked tree, so a kept specialist
   at any depth is re-seeded on resume and reachable by name, metered on the run's shared
@@ -14187,7 +20653,7 @@ August across 369 runs at 24.1 minutes each
 - **A delegation panel closes when an approved resume's continuation raises**
   ([#262](https://github.com/vstorm-co/agenticos/issues/262)). The panel reconciliation
   from 0.0.16 (#173/#250) closed an awaiting panel from the resumed run's status — but only
-  when the resume *returned* one. If the continuation raised, `AgentRunnerService._run`
+  when the resume _returned_ one. If the continuation raised, `AgentRunnerService._run`
   recorded the run `failed`/`cancelled` and re-raised, so `POST /runs/{id}/resume` returned
   no result, the frontend skipped reconciliation, restored the already-decided approval, and
   left the panel on `awaiting_approval` forever — with a retry then refused because the run
@@ -14209,7 +20675,7 @@ August across 369 runs at 24.1 minutes each
 
   And it is a control now, not a picture: every node is a focusable button, click or
   Enter/Space lights its edge and dims the rest and opens a detail panel, Escape or a click
-  away clears it, and a published delegate's panel links through to *that* agent's page — so
+  away clears it, and a published delegate's panel links through to _that_ agent's page — so
   the delegation tree is walkable one hop at a time. It stays read-only (the forms own the
   fields) and keeps pan/zoom. Rendering the tree recursively inline is a deliberate
   follow-up, [#276](https://github.com/vstorm-co/agenticos/issues/276).
@@ -14260,7 +20726,7 @@ August across 369 runs at 24.1 minutes each
   and the stub model server's from `E2E_STUB_MODEL_PORT` (default 4010), driving `baseURL`,
   both `webServer` URLs, each server's `PORT`, and — the part that has to agree — the stub
   URL the specs write into the model profile the backend dials, so server, specs and backend
-  all read one value. Same shape as #189: the value is *derived* from the environment, not
+  all read one value. Same shape as #189: the value is _derived_ from the environment, not
   `setdefault`, so CI is exercised on the new path rather than silently left on the old one.
   The loopback binding is kept, so the host-uvicorn path works and the containerised-backend
   constraint is not falsely implied.
@@ -14310,7 +20776,7 @@ August across 369 runs at 24.1 minutes each
 - **A `create_agent` specialist survives the approval park that interrupts it**
   ([#175](https://github.com/vstorm-co/agenticos/issues/175)). A specialist the model
   writes at run time is documented as lasting for the reply, but it did not survive a
-  *second* approval park: the library's dynamic-agent registry belongs to the built agent,
+  _second_ approval park: the library's dynamic-agent registry belongs to the built agent,
   and a resume rebuilds the agent fresh, so `task` answered "unknown subagent" for a
   specialist the model was told it could keep. The specialist's definition — a name,
   instructions, a model — is now carried in the run's `paused_state` alongside the spend,
@@ -14327,7 +20793,7 @@ August across 369 runs at 24.1 minutes each
 
 - **An offline audit of the skill bindings a published version can no longer reach**
   ([#186](https://github.com/vstorm-co/agenticos/issues/186)). Publish-time validation
-  (0.0.8, #179) stops a *new* version binding a skill its publisher cannot see, but a
+  (0.0.8, #179) stops a _new_ version binding a skill its publisher cannot see, but a
   version published before that check keeps loading whatever its spec named — so a
   published agent may be reading another member's private skill right now, and nothing
   reported it. `agenticos cmd audit-skill-bindings` sweeps every **runnable** published
@@ -14365,7 +20831,7 @@ August across 369 runs at 24.1 minutes each
 - **Two gated tool calls in one model step no longer race the request's session**
   ([#169](https://github.com/vstorm-co/agenticos/issues/169)). A gated tool call writes an
   approval row, and pydantic-ai runs the tool calls from one model response
-  *concurrently* — so an agent with two gated tools, answering one step with both, hit
+  _concurrently_ — so an agent with two gated tools, answering one step with both, hit
   `db.add` + `flush` on the request's shared `AsyncSession` from two coroutines at once,
   and `AsyncSession` is not concurrency-safe: the damage reaches the parent run row and the
   conversation, not just the approval. Delegation widened the window, since a sync delegate
@@ -14397,7 +20863,7 @@ August across 369 runs at 24.1 minutes each
   reducer, and the panel sat on `awaiting_approval` forever after the approval was granted.
   Web-chat resume doesn't stream, so the panel is now reconciled from the HTTP answer: the
   resumed run's own status is applied to every panel still awaiting — `completed`,
-  `failed`/`budget_exceeded`→failed, `cancelled` — while a resume that parks *again* is
+  `failed`/`budget_exceeded`→failed, `cancelled` — while a resume that parks _again_ is
   left waiting, preserving the continuation case. Streamed text is kept; cost and tokens
   stay null rather than invented, since the frame that carries them never arrived. This
   covers a resume that **returns** a status; a resume whose continuation itself raises
@@ -14462,7 +20928,7 @@ August across 369 runs at 24.1 minutes each
   ([#191](https://github.com/vstorm-co/agenticos/issues/191)). A delegated `agent_runs`
   row reads its span from the library's `TaskHandle`, which is correct for a single-turn
   delegation — but one that parks on an approval and resumes runs in two processes, and
-  the resume rebuilds a fresh handle stamped at the *resume*, so the row began when the
+  the resume rebuilds a fresh handle stamped at the _resume_, so the row began when the
   person answered and dropped the entire pre-park segment. The earliest start is now
   carried across the park the way spend is (0.0.8, #180): `ParkedDelegation` holds it,
   `paused_state` serialises it, and the resumed turn folds it back in — the span is the
@@ -14521,7 +20987,7 @@ August across 369 runs at 24.1 minutes each
   which is a real product bug ([#230](https://github.com/vstorm-co/agenticos/issues/230)),
   left open, not a broken fixture.
 
-  A failing `[setup]` or `[seed]` step is a Playwright *project dependency*, so its failure
+  A failing `[setup]` or `[seed]` step is a Playwright _project dependency_, so its failure
   skips every product spec — the log reads "1 failed, 7 passed, 17 did not run" and looks
   like a product regression. `e2e/fixture-reporter.ts` now prints a banner saying exactly
   that, so the next reader does not spend the diagnosis a fourth time.
@@ -14558,7 +21024,7 @@ No schema change, `SPEC_VERSION` unchanged at **7**.
 - **A delegation's recorded cost is its own, not the run around it**
   ([#180](https://github.com/vstorm-co/agenticos/issues/180)). Cost was measured as the
   growth of the run's shared ledger between the delegation starting and being settled — and
-  a **background** delegation is settled when it is next *polled*, which is arbitrarily
+  a **background** delegation is settled when it is next _polled_, which is arbitrarily
   later than it finished. So a delegate that spent $0.01 while the parent went on to spend
   $0.50 was recorded at **$0.51**, on its own run row, in its monthly total and in the
   delegation panel.
@@ -14588,7 +21054,7 @@ No schema change, `SPEC_VERSION` unchanged at **7**.
   enforced, so a publisher whose role gives `SKILLS_VIEW: Scope.SHARED` could bind another
   member's **private** skill by UUID and every runner of that agent then read its body.
   Refused now, with the same deliberately indistinguishable "not found" wording the
-  collection check uses, so ids stay unprobeable. Versions published *before* the check are
+  collection check uses, so ids stay unprobeable. Versions published _before_ the check are
   a separate problem, tracked as [#186](https://github.com/vstorm-co/agenticos/issues/186).
 
 - **A delegation tool nothing could reach is no longer offered**
@@ -14674,13 +21140,13 @@ default, so a spec stored before it reads unchanged. Two migrations,
   the caps that bind inside a delegation are the parent's. A delegation to a published agent
   also gets an `agent_runs` row of its own carrying `parent_run_id`, and the two monthly
   questions want opposite arithmetic: what the organization owes excludes child rows, what
-  *one agent* cost includes them.
+  _one agent_ cost includes them.
 
 ### Fixed
 
 - **A delegate's own knowledge collections never reached the running delegate**
   ([#166](https://github.com/vstorm-co/agenticos/issues/166)). The delegation library runs a
-  child on `clone_for_subagent` of the *parent's* deps, so the deps our factory built for it
+  child on `clone_for_subagent` of the _parent's_ deps, so the deps our factory built for it
   — collections and all — were discarded before its first request. A delegate configured
   with a collection resolved it, never saw it, and answered "No active knowledge bases
   selected" to every search while looking correctly configured.
@@ -14706,7 +21172,7 @@ default, so a spec stored before it reads unchanged. Two migrations,
 - **Every integration run gets a database of its own**
   ([#189](https://github.com/vstorm-co/agenticos/issues/189)). `tests/integration/conftest.py`
   called `drop_all` against a fixed database name, so two suites at once dropped each
-  other's tables — two runs of the same commit produced *different* failure sets, which is
+  other's tables — two runs of the same commit produced _different_ failure sets, which is
   the signature of a race rather than a bug. Four people lost time to it in one day. The
   name now carries the pytest process id, created and dropped by the fixture; both safety
   rails are kept and one added.
@@ -14751,7 +21217,7 @@ than drifting until somebody notices.
   next such bump should be checked for the same omission.
 
 - **ruff 0.15.0 → 0.16.1** (dev). Ruff is the formatter as well as the linter, so a
-  new rule or a changed format would have turned `make lint` red *after* the merge
+  new rule or a changed format would have turned `make lint` red _after_ the merge
   rather than before it. `ruff format --check` reports 476 files already formatted
   and `ruff check` passes, so nothing in the tree needed touching.
 
@@ -14854,7 +21320,7 @@ is additive and every published agent keeps loading.
 ### Changed
 
 - **Approval is per tool.** `sandbox` is the first capability that genuinely reads
-  *and* writes, and one flag cannot describe it: marking the capability
+  _and_ writes, and one flag cannot describe it: marking the capability
   side-effecting makes an agent ask permission to list a directory, and not
   marking it lets a write run unattended. `CapabilityToolInfo.side_effecting`
   overrides the capability's answer per tool — additive, `None` defers, every
@@ -14935,7 +21401,7 @@ outcome by a different route.
   `X-Organization-Id`, and the backend reads a request without it as the
   caller's personal organization - so uploading into a collection whose name
   exists in both wrote the file to the wrong tenant and reported success under
-  the right one. The one *write* across the boundary in this list.
+  the right one. The one _write_ across the boundary in this list.
 - **Switching organization changed a label and nothing else.** Most query keys
   name no organization, so with `staleTime` at five minutes one tenant's agent
   names, knowledge bases, secrets and conversations stayed on screen under
@@ -15047,7 +21513,7 @@ warmed.
 documents, Google Drive and S3; and skills, which are written know-how the agent
 loads only when it decides one is relevant.
 
-**Governance** — monthly budgets checked *before* each model request and recorded
+**Governance** — monthly budgets checked _before_ each model request and recorded
 even when a run fails, human approval for side-effecting tools, per-agent alerts
 with an audience, and an audit trail.
 
@@ -15068,7 +21534,7 @@ than by service code alone.
 
 **Dependency freshness as a policy.** FastAPI, Pydantic AI, Logfire and
 genai-prices are uncapped and meant to track their newest release — genai-prices
-especially, since it *is* the price snapshot budgets are computed from.
+especially, since it _is_ the price snapshot budgets are computed from.
 `make deps-upgrade` bumps them, a scheduled `framework-freshness` workflow tries
 the newest on a Monday and opens an issue when it breaks, and Dependabot opens the
 PR. Majors are not held back: delaying one does not avoid the upgrade, it only
@@ -15124,7 +21590,7 @@ installed hook did nothing.
 ### Security
 
 - **A conversation was readable and writable across tenants.** `GET
-  /conversations/{id}/messages` returned a full transcript — tool calls and
+/conversations/{id}/messages` returned a full transcript — tool calls and
   their arguments included — for a conversation in another organization, and
   `POST` to the same path appended a turn to it, `role: "assistant"` included,
   which rendered to its owner as the agent's own words. `organization_id` is now
@@ -15186,7 +21652,101 @@ installed hook did nothing.
   codebase has diverged from the generator past the point where a 3-way merge
   helps.
 
-[Unreleased]: https://github.com/vstorm-co/agenticos/compare/v0.0.32...HEAD
+[Unreleased]: https://github.com/vstorm-co/agenticos/compare/v1.72.0...HEAD
+[1.72.0]: https://github.com/vstorm-co/agenticos/compare/v1.71.2...v1.72.0
+[1.71.2]: https://github.com/vstorm-co/agenticos/compare/v1.71.1...v1.71.2
+[1.71.1]: https://github.com/vstorm-co/agenticos/compare/v1.71.0...v1.71.1
+[1.71.0]: https://github.com/vstorm-co/agenticos/compare/v1.70.0...v1.71.0
+[1.70.0]: https://github.com/vstorm-co/agenticos/compare/v1.69.0...v1.70.0
+[1.69.0]: https://github.com/vstorm-co/agenticos/compare/v1.68.0...v1.69.0
+[1.68.0]: https://github.com/vstorm-co/agenticos/compare/v1.67.0...v1.68.0
+[1.67.0]: https://github.com/vstorm-co/agenticos/compare/v1.66.0...v1.67.0
+[1.66.0]: https://github.com/vstorm-co/agenticos/compare/v1.65.1...v1.66.0
+[1.65.1]: https://github.com/vstorm-co/agenticos/compare/v1.65.0...v1.65.1
+[1.65.0]: https://github.com/vstorm-co/agenticos/compare/v1.64.2...v1.65.0
+[1.64.2]: https://github.com/vstorm-co/agenticos/compare/v1.64.1...v1.64.2
+[1.64.1]: https://github.com/vstorm-co/agenticos/compare/v1.64.0...v1.64.1
+[1.64.0]: https://github.com/vstorm-co/agenticos/compare/v1.63.0...v1.64.0
+[1.63.0]: https://github.com/vstorm-co/agenticos/compare/v1.62.8...v1.63.0
+[1.62.8]: https://github.com/vstorm-co/agenticos/compare/v1.62.7...v1.62.8
+[1.62.7]: https://github.com/vstorm-co/agenticos/compare/v1.62.6...v1.62.7
+[1.62.6]: https://github.com/vstorm-co/agenticos/compare/v1.62.5...v1.62.6
+[1.62.5]: https://github.com/vstorm-co/agenticos/compare/v1.62.4...v1.62.5
+[1.62.4]: https://github.com/vstorm-co/agenticos/compare/v1.62.3...v1.62.4
+[1.62.3]: https://github.com/vstorm-co/agenticos/compare/v1.62.2...v1.62.3
+[1.62.2]: https://github.com/vstorm-co/agenticos/compare/v1.62.1...v1.62.2
+[1.62.1]: https://github.com/vstorm-co/agenticos/compare/v1.62.0...v1.62.1
+[1.62.0]: https://github.com/vstorm-co/agenticos/compare/v1.61.5...v1.62.0
+[1.61.5]: https://github.com/vstorm-co/agenticos/compare/v1.61.4...v1.61.5
+[1.61.4]: https://github.com/vstorm-co/agenticos/compare/v1.61.3...v1.61.4
+[1.61.3]: https://github.com/vstorm-co/agenticos/compare/v1.61.2...v1.61.3
+[1.61.2]: https://github.com/vstorm-co/agenticos/compare/v1.61.1...v1.61.2
+[1.61.1]: https://github.com/vstorm-co/agenticos/compare/v1.61.0...v1.61.1
+[1.61.0]: https://github.com/vstorm-co/agenticos/compare/v1.60.3...v1.61.0
+[1.60.3]: https://github.com/vstorm-co/agenticos/compare/v1.60.2...v1.60.3
+[1.60.2]: https://github.com/vstorm-co/agenticos/compare/v1.60.1...v1.60.2
+[1.60.1]: https://github.com/vstorm-co/agenticos/compare/v1.60.0...v1.60.1
+[1.60.0]: https://github.com/vstorm-co/agenticos/compare/v1.59.1...v1.60.0
+[1.59.1]: https://github.com/vstorm-co/agenticos/compare/v1.59.0...v1.59.1
+[1.59.0]: https://github.com/vstorm-co/agenticos/compare/v1.58.3...v1.59.0
+[1.58.3]: https://github.com/vstorm-co/agenticos/compare/v1.58.2...v1.58.3
+[1.58.2]: https://github.com/vstorm-co/agenticos/compare/v1.58.1...v1.58.2
+[1.58.1]: https://github.com/vstorm-co/agenticos/compare/v1.58.0...v1.58.1
+[1.58.0]: https://github.com/vstorm-co/agenticos/compare/v1.57.0...v1.58.0
+[1.57.0]: https://github.com/vstorm-co/agenticos/compare/v1.56.4...v1.57.0
+[1.56.4]: https://github.com/vstorm-co/agenticos/compare/v1.56.3...v1.56.4
+[1.56.3]: https://github.com/vstorm-co/agenticos/compare/v1.56.2...v1.56.3
+[1.56.2]: https://github.com/vstorm-co/agenticos/compare/v1.56.1...v1.56.2
+[1.56.1]: https://github.com/vstorm-co/agenticos/compare/v1.56.0...v1.56.1
+[1.56.0]: https://github.com/vstorm-co/agenticos/compare/v1.55.0...v1.56.0
+[1.55.0]: https://github.com/vstorm-co/agenticos/compare/v1.54.1...v1.55.0
+[1.54.1]: https://github.com/vstorm-co/agenticos/compare/v1.54.0...v1.54.1
+[1.54.0]: https://github.com/vstorm-co/agenticos/compare/v1.53.0...v1.54.0
+[1.53.0]: https://github.com/vstorm-co/agenticos/compare/v1.52.0...v1.53.0
+[1.52.0]: https://github.com/vstorm-co/agenticos/compare/v1.51.0...v1.52.0
+[1.51.0]: https://github.com/vstorm-co/agenticos/compare/v1.50.2...v1.51.0
+[1.50.2]: https://github.com/vstorm-co/agenticos/compare/v1.50.1...v1.50.2
+[1.50.1]: https://github.com/vstorm-co/agenticos/compare/v1.50.0...v1.50.1
+[1.50.0]: https://github.com/vstorm-co/agenticos/compare/v1.49.0...v1.50.0
+[1.49.0]: https://github.com/vstorm-co/agenticos/compare/v1.48.1...v1.49.0
+[1.48.1]: https://github.com/vstorm-co/agenticos/compare/v1.48.0...v1.48.1
+[1.48.0]: https://github.com/vstorm-co/agenticos/compare/v1.47.3...v1.48.0
+[1.47.3]: https://github.com/vstorm-co/agenticos/compare/v1.47.2...v1.47.3
+[1.47.2]: https://github.com/vstorm-co/agenticos/compare/v1.47.1...v1.47.2
+[1.47.1]: https://github.com/vstorm-co/agenticos/compare/v1.47.0...v1.47.1
+[1.47.0]: https://github.com/vstorm-co/agenticos/compare/v1.46.0...v1.47.0
+[1.46.0]: https://github.com/vstorm-co/agenticos/compare/v1.45.1...v1.46.0
+[1.45.1]: https://github.com/vstorm-co/agenticos/compare/v1.45.0...v1.45.1
+[1.45.0]: https://github.com/vstorm-co/agenticos/compare/v1.44.0...v1.45.0
+[1.44.0]: https://github.com/vstorm-co/agenticos/compare/v1.43.0...v1.44.0
+[1.43.0]: https://github.com/vstorm-co/agenticos/compare/v1.42.0...v1.43.0
+[1.42.0]: https://github.com/vstorm-co/agenticos/compare/v1.41.0...v1.42.0
+[1.41.0]: https://github.com/vstorm-co/agenticos/compare/v1.40.0...v1.41.0
+[1.40.0]: https://github.com/vstorm-co/agenticos/compare/v1.39.2...v1.40.0
+[1.39.2]: https://github.com/vstorm-co/agenticos/compare/v1.39.1...v1.39.2
+[1.39.1]: https://github.com/vstorm-co/agenticos/compare/v1.39.0...v1.39.1
+[1.39.0]: https://github.com/vstorm-co/agenticos/compare/v1.38.4...v1.39.0
+[1.38.4]: https://github.com/vstorm-co/agenticos/compare/v1.38.3...v1.38.4
+[1.38.3]: https://github.com/vstorm-co/agenticos/compare/v1.38.2...v1.38.3
+[1.38.2]: https://github.com/vstorm-co/agenticos/compare/v1.38.1...v1.38.2
+[1.38.1]: https://github.com/vstorm-co/agenticos/compare/v1.38.0...v1.38.1
+[1.38.0]: https://github.com/vstorm-co/agenticos/compare/v1.37.0...v1.38.0
+[1.37.0]: https://github.com/vstorm-co/agenticos/compare/v1.36.1...v1.37.0
+[1.36.1]: https://github.com/vstorm-co/agenticos/compare/v1.36.0...v1.36.1
+[1.36.0]: https://github.com/vstorm-co/agenticos/compare/v1.35.5...v1.36.0
+[1.35.5]: https://github.com/vstorm-co/agenticos/compare/v1.35.4...v1.35.5
+[1.35.4]: https://github.com/vstorm-co/agenticos/compare/v1.35.3...v1.35.4
+[1.35.3]: https://github.com/vstorm-co/agenticos/compare/v1.35.2...v1.35.3
+[1.35.2]: https://github.com/vstorm-co/agenticos/compare/v1.35.1...v1.35.2
+[1.35.1]: https://github.com/vstorm-co/agenticos/compare/v1.35.0...v1.35.1
+[1.35.0]: https://github.com/vstorm-co/agenticos/compare/v1.34.3...v1.35.0
+[1.34.3]: https://github.com/vstorm-co/agenticos/compare/v1.34.2...v1.34.3
+[1.27.0]: https://github.com/vstorm-co/agenticos/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/vstorm-co/agenticos/compare/v1.25.0...v1.26.0
+[1.25.0]: https://github.com/vstorm-co/agenticos/compare/v1.24.0...v1.25.0
+[1.24.0]: https://github.com/vstorm-co/agenticos/compare/v1.23.0...v1.24.0
+[1.23.0]: https://github.com/vstorm-co/agenticos/compare/v1.22.0...v1.23.0
+[1.22.0]: https://github.com/vstorm-co/agenticos/compare/v1.21.0...v1.22.0
 [0.0.32]: https://github.com/vstorm-co/agenticos/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/vstorm-co/agenticos/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/vstorm-co/agenticos/compare/v0.0.29...v0.0.30

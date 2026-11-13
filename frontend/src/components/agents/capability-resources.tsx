@@ -1,20 +1,26 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 
 import { CollectionPicker } from "@/components/agents/collection-picker";
-import { ContextGallery } from "@/components/agents/context-gallery";
-import { SkillGallery } from "@/components/agents/skill-gallery";
+import { ContextGallery, type ContextChoice } from "@/components/agents/context-gallery";
+import { SkillGallery, type SkillChoice } from "@/components/agents/skill-gallery";
 import {
-  ARTIFACT_PAGES_SKILL,
+  SystemAgentKnowledge,
+  type SystemAgentSearch,
+} from "@/components/agents/system-agent-knowledge";
+import {
   ARTIFACTS_ID,
+  COMPANION_SKILLS,
+  VISUALS_ID,
   CONTEXT_ID,
   KNOWLEDGE_ID,
   SKILLS_ID,
 } from "@/lib/agent-spec";
+import { takesSkillsOffOnly } from "@/lib/system-agents";
 import type { KnowledgeBase } from "@/types";
-import type { ContextFileSummary, SkillSummary } from "@/types/providers";
+import type { ContextSettings } from "@/lib/context-settings";
 import { useTranslations } from "next-intl";
 
 /**
@@ -27,14 +33,16 @@ import { useTranslations } from "next-intl";
  * lot instead of twelve.
  */
 export interface AgentResources {
-  contextFiles: ContextFileSummary[];
+  contextFiles: ContextChoice[];
+  onCreateContext?: () => void;
   contextTotal: number;
   contextIds: string[];
   onContextToggle: (fileId: string) => void;
   collections: KnowledgeBase[];
   collectionIds: string[];
   onCollectionToggle: (collectionId: string) => void;
-  skills: SkillSummary[];
+  skills: SkillChoice[];
+  onCreateSkill?: () => void;
   skillTotal: number;
   skillIds: string[];
   onSkillToggle: (skillId: string) => void;
@@ -46,13 +54,15 @@ export interface AgentResources {
  *
  * The tab's label, resolved by whoever renders the panel: a module constant
  * cannot call a translator, so this answers with a key and the workbench turns it
- * into words.
+ * into words. A system agent's Knowledge panel holds how it searches rather than
+ * which collections, so `system` names that tab for what it holds instead.
  */
-export function resourceTabKey(capabilityId: string): string | undefined {
+export function resourceTabKey(capabilityId: string, system = false): string | undefined {
   if (capabilityId === CONTEXT_ID) return "contextFilesHeading";
-  if (capabilityId === KNOWLEDGE_ID) return "collectionsHeading";
+  if (capabilityId === KNOWLEDGE_ID) return system ? "systemAgentKnowledge" : "collectionsHeading";
   if (capabilityId === SKILLS_ID) return "skillsHeading";
   if (capabilityId === ARTIFACTS_ID) return "artifactPagesHeading";
+  if (capabilityId === VISUALS_ID) return "visualDesignHeading";
   return undefined;
 }
 
@@ -79,33 +89,51 @@ export function CapabilityResources({
   enabled,
   resources,
   disabled,
+  system,
+  fileSettings = {},
+  onFileSettingsChange,
 }: {
+  fileSettings?: ContextSettings;
+  onFileSettingsChange?: (settings: ContextSettings) => void;
   capabilityId: string;
   /** Whether the capability is granted - see the warning below. */
   enabled: boolean;
   resources: AgentResources;
   disabled?: boolean;
+  /**
+   * Set on a system agent's page. The platform hands each of its runs the
+   * knowledge bases to search, so its Knowledge panel sets the search's steps
+   * instead of offering collections; and its files and skills come narrowed to
+   * what the whole organization shares, which the panels say.
+   */
+  system?: SystemAgentSearch;
 }) {
   const t = useTranslations("agents");
+  const sharedOnly = system === undefined ? null : t("systemAgentSharedOnly");
 
   if (capabilityId === CONTEXT_ID) {
     return (
       <ResourceGroup
-        detail={t("contextFilesDetail")}
-        warning={contextWarning(t, enabled, resources)}
+        note={sharedOnly}
+        warning={contextWarning(t, enabled, resources, fileSettings)}
+        informational={enabled}
       >
         <ContextGallery
+          onCreate={resources.onCreateContext}
           files={resources.contextFiles}
           total={resources.contextTotal}
           selectedIds={resources.contextIds}
           onToggle={resources.onContextToggle}
           disabled={disabled}
+          settings={fileSettings}
+          onSettingsChange={onFileSettingsChange}
         />
       </ResourceGroup>
     );
   }
 
   if (capabilityId === KNOWLEDGE_ID) {
+    if (system !== undefined) return <SystemAgentKnowledge search={system} disabled={disabled} />;
     return (
       <ResourceGroup
         detail={t("collectionsDetail")}
@@ -124,12 +152,29 @@ export function CapabilityResources({
   }
 
   if (capabilityId === SKILLS_ID) {
+    if (system !== undefined && takesSkillsOffOnly(system.kind)) {
+      return (
+        <ResourceGroup detail={t("systemAgentSkillsUnused")} warning={null}>
+          {resources.skillIds.length > 0 && (
+            <SkillGallery
+              skills={resources.skills}
+              total={resources.skillTotal}
+              selectedIds={resources.skillIds}
+              onToggle={resources.onSkillToggle}
+              disabled={disabled}
+            />
+          )}
+        </ResourceGroup>
+      );
+    }
     return (
       <ResourceGroup
         detail={t("skillsDetail")}
+        note={sharedOnly}
         warning={enabled || resources.skillIds.length === 0 ? null : t("skillsOffButBound")}
       >
         <SkillGallery
+          onCreate={resources.onCreateSkill}
           skills={resources.skills}
           total={resources.skillTotal}
           selectedIds={resources.skillIds}
@@ -140,25 +185,32 @@ export function CapabilityResources({
     );
   }
 
-  if (capabilityId === ARTIFACTS_ID) {
-    // The one skill this capability is better with, offered where the page is
-    // built rather than left for somebody to find in the Skills panel. Missing
+  const companion = COMPANION_SKILLS[capabilityId];
+  if (companion !== undefined) {
+    // The one skill this capability is better with, offered where its work is
+    // done rather than left for somebody to find in the Skills panel. Missing
     // from this page of the organization's skills - deleted, renamed, or past
     // the first page - it is simply not offered.
-    const pages = resources.skills.filter((skill) => skill.name === ARTIFACT_PAGES_SKILL);
+    const offered = resources.skills.filter((skill) => skill.name === companion);
     // Only this skill's own binding: the gallery reads any selected id it does not
     // list as a skill that no longer exists, and every other bound skill would
     // be reported as one - they are the Skills tab's to show.
-    const pageIds = new Set(pages.map((skill) => skill.id));
+    const offeredIds = new Set(offered.map((skill) => skill.id));
+    const visuals = capabilityId === VISUALS_ID;
     return (
-      <ResourceGroup detail={t("artifactPagesDetail")} warning={null}>
-        {pages.length === 0 ? (
-          <p className="text-muted-foreground text-xs">{t("artifactPagesMissing")}</p>
+      <ResourceGroup
+        detail={visuals ? t("visualDesignDetail") : t("artifactPagesDetail")}
+        warning={null}
+      >
+        {offered.length === 0 ? (
+          <p className="text-muted-foreground text-xs">
+            {visuals ? t("visualDesignMissing") : t("artifactPagesMissing")}
+          </p>
         ) : (
           <SkillGallery
-            skills={pages}
-            total={pages.length}
-            selectedIds={resources.skillIds.filter((id) => pageIds.has(id))}
+            skills={offered}
+            total={offered.length}
+            selectedIds={resources.skillIds.filter((id) => offeredIds.has(id))}
             onToggle={resources.onSkillToggle}
             disabled={disabled}
           />
@@ -191,13 +243,19 @@ function contextWarning(
   t: (key: string) => string,
   enabled: boolean,
   resources: AgentResources,
+  settings: ContextSettings,
 ): string | null {
   if (resources.contextIds.length === 0) return null;
   if (!enabled) return t("contextOffButBound");
   const known = new Map(resources.contextFiles.map((file) => [file.id, file]));
   const bound = resources.contextIds.map((id) => known.get(id));
   if (bound.some((file) => file === undefined)) return null;
-  const reads = bound.some((file) => file?.mode === "link" && file.enabled);
+  const reads = bound.some(
+    (file) =>
+      file &&
+      (settings[file.id]?.mode ?? file.mode) === "link" &&
+      (settings[file.id]?.enabled ?? file.enabled),
+  );
   return reads ? null : t("contextInjectOnlyNoTools");
 }
 
@@ -211,22 +269,38 @@ function contextWarning(
  */
 function ResourceGroup({
   detail,
+  note = null,
   warning,
+  informational = false,
   children,
 }: {
-  detail: string;
+  detail?: string;
+  informational?: boolean;
+  /** A second line under `detail`, for what narrows the picker below it. */
+  note?: string | null;
   warning: string | null;
   children: ReactNode;
 }) {
   return (
     <section className="space-y-3">
       {warning !== null && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        <div
+          className={
+            informational
+              ? "bg-muted/50 text-muted-foreground flex items-start gap-2 rounded-lg px-3 py-2.5"
+              : "flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5"
+          }
+        >
+          {informational ? (
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          ) : (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          )}
           <p className="text-xs">{warning}</p>
         </div>
       )}
-      <p className="text-muted-foreground text-xs">{detail}</p>
+      {detail && <p className="text-muted-foreground text-xs">{detail}</p>}
+      {note !== null && <p className="text-muted-foreground text-xs">{note}</p>}
       {children}
     </section>
   );

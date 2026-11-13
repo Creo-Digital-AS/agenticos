@@ -6,8 +6,6 @@ request, a membership and the rows' visibility, so they run against Postgres -
 with Redis replaced by an in-memory bus, the one thing here that is transport.
 """
 
-from __future__ import annotations
-
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -25,10 +23,13 @@ from app.core.config import settings
 from app.core.permissions import AuthContext, OrgRoleName, Perm
 from app.core.security import create_access_token
 from app.db.models.agent import Agent
+from app.db.models.dataset import Dataset
 from app.db.models.organization import Organization, OrganizationMember
 from app.db.models.organization_secret import OrganizationSecret
 from app.db.models.resource_grant import GrantLevel, ResourceGrant, Visibility
 from app.db.models.user import User
+from app.db.models.virtual_table import VirtualTable
+from app.db.models.workflow import Workflow
 from app.main import app
 from app.schemas.api_key import ApiKeyCreate
 from app.schemas.change_event import ChangeEvent
@@ -303,8 +304,9 @@ class TestPublishing:
 
 class TestVisibility:
     @pytest.mark.security
+    @pytest.mark.parametrize("resource", ["agent", "eval_suite", "eval_run"])
     async def test_a_viewer_hears_nothing_about_an_agent_they_cannot_read(
-        self, db: AsyncSession
+        self, db: AsyncSession, resource: str
     ) -> None:
         owner = await _person(db)
         organization = await _organization(db, owner)
@@ -313,8 +315,8 @@ class TestVisibility:
         shared = await _agent(db, organization, owner, Visibility.ORG)
         ctx = _ctx(organization, viewer, OrgRoleName.VIEWER)
 
-        hidden = _event(organization, owner, id=private.id)
-        seen = _event(organization, owner, id=shared.id)
+        hidden = _event(organization, owner, id=private.id, resource=resource)
+        seen = _event(organization, owner, id=shared.id, resource=resource)
 
         assert not await change_feed.visible(db, ctx, hidden)
         assert await change_feed.visible(db, ctx, seen)
@@ -381,9 +383,54 @@ class TestVisibility:
         viewer = await _join(db, organization, OrgRoleName.VIEWER)
         ctx = _ctx(organization, viewer, OrgRoleName.VIEWER)
 
-        for resource in ("agent", "skill", "context", "knowledge_base", "artifact"):
+        for resource in (
+            "agent",
+            "skill",
+            "context",
+            "knowledge_base",
+            "artifact",
+            "table",
+            "workflow",
+        ):
             event = _event(organization, owner, resource=resource, id=uuid.uuid4())
             assert not await change_feed.visible(db, ctx, event)
+
+    @pytest.mark.security
+    async def test_a_viewer_hears_of_a_table_or_workflow_only_when_they_may_read_it(
+        self, db: AsyncSession
+    ) -> None:
+        owner = await _person(db)
+        organization = await _organization(db, owner)
+        viewer = await _join(db, organization, OrgRoleName.VIEWER)
+        ctx = _ctx(organization, viewer, OrgRoleName.VIEWER)
+        rows: dict[str, dict[str, uuid.UUID]] = {"table": {}, "workflow": {}}
+        for visibility in (Visibility.PRIVATE, Visibility.ORG):
+            table = VirtualTable(
+                organization_id=organization.id,
+                owner_user_id=owner.id,
+                name=f"orders-{visibility.value}",
+                visibility=visibility.value,
+            )
+            workflow = Workflow(
+                organization_id=organization.id,
+                owner_user_id=owner.id,
+                slug=f"flow-{visibility.value}",
+                name="Flow",
+                visibility=visibility.value,
+            )
+            db.add_all([table, workflow])
+            await db.flush()
+            rows["table"][visibility.value] = table.id
+            rows["workflow"][visibility.value] = workflow.id
+
+        for resource, ids in rows.items():
+            private = _event(organization, owner, resource=resource, id=ids["private"])
+            shared = _event(organization, owner, resource=resource, id=ids["org"])
+            assert not await change_feed.visible(db, ctx, private)
+            assert await change_feed.visible(db, ctx, shared)
+            assert await change_feed.visible(
+                db, _ctx(organization, owner, OrgRoleName.OWNER), private
+            )
 
     @pytest.mark.security
     async def test_invitations_reach_only_whoever_manages_members(self, db: AsyncSession) -> None:
@@ -504,8 +551,15 @@ class TestVisibility:
         )
 
 
-async def _stream(socket: _Socket, organization: Organization, token: str) -> None:
-    await change_feed.stream_changes(socket, organization_id=organization.id, auth_token=token)
+async def _stream(
+    socket: _Socket, organization: Organization, token: str, conversation_events: bool = False
+) -> None:
+    await change_feed.stream_changes(
+        socket,
+        organization_id=organization.id,
+        auth_token=token,
+        conversation_events=conversation_events,
+    )
 
 
 async def _settled(event: anyio.Event) -> None:
@@ -607,6 +661,40 @@ class TestStream:
         assert [frame["resource"] for frame in heard["directory"]] == ["member", "agent"]
         assert heard["directory"][1]["actor_name"] == "Ada"
 
+    async def test_a_disconnect_mid_query_lets_the_session_finish_and_sends_nothing(
+        self, db: AsyncSession, bus: _Bus, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#2241: the read the disconnect lands in completes, and its session closes whole."""
+        owner = await _person(db)
+        organization = await _organization(db, owner)
+        shared = await _agent(db, organization, owner, Visibility.ORG)
+        await db.commit()
+        socket = _Socket()
+        reading, release = anyio.Event(), anyio.Event()
+        finished: list[bool] = []
+        real = change_feed._subscriber
+
+        async def slow_subscriber(*args: Any) -> AuthContext | None:
+            reading.set()
+            await release.wait()
+            ctx = await real(*args)
+            finished.append(ctx is not None)
+            return ctx
+
+        monkeypatch.setattr(change_feed, "_subscriber", slow_subscriber)
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(_stream, socket, organization, create_access_token(str(owner.id)))
+            await _settled(bus.listening)
+            await change_feed.publish(_event(organization, owner, id=shared.id))
+            await _settled(reading)
+            await socket.frame({"type": "websocket.disconnect"})
+            await anyio.sleep(0.05)
+            release.set()
+
+        assert finished == [True]
+        assert socket.sent == []
+        assert socket.closed is None
+
     async def test_a_subscription_redis_ends_closes_the_socket_for_a_retry(
         self, db: AsyncSession, bus: _Bus
     ) -> None:
@@ -622,3 +710,72 @@ class TestStream:
 
         assert socket.closed == (1011, "Live updates were interrupted")
         assert bus.pubsubs[0].closed
+
+
+class TestDatasetVisibility:
+    @pytest.mark.security
+    async def test_a_dataset_s_change_reaches_only_who_may_read_it(self, db: AsyncSession) -> None:
+        """A generation finishing on a private dataset says it exists and changed."""
+        owner = await _person(db)
+        organization = await _organization(db, owner)
+        viewer = await _join(db, organization, OrgRoleName.VIEWER)
+        granted = await _join(db, organization, OrgRoleName.VIEWER)
+        private, shared = (
+            Dataset(
+                organization_id=organization.id,
+                owner_user_id=owner.id,
+                visibility=visibility,
+                name=f"refunds-{visibility}",
+            )
+            for visibility in (Visibility.PRIVATE, Visibility.ORG)
+        )
+        db.add_all([private, shared])
+        await db.flush()
+        db.add(
+            ResourceGrant(
+                organization_id=organization.id,
+                resource_type="dataset",
+                resource_id=private.id,
+                subject_user_id=granted.id,
+                level=GrantLevel.READ,
+            )
+        )
+        await db.flush()
+        hidden = _event(organization, owner, resource="dataset", id=private.id, surface="run")
+        seen = _event(organization, owner, resource="dataset", id=shared.id, surface="run")
+
+        assert not await change_feed.visible(
+            db, _ctx(organization, viewer, OrgRoleName.VIEWER), hidden
+        )
+        assert await change_feed.visible(db, _ctx(organization, viewer, OrgRoleName.VIEWER), seen)
+        assert await change_feed.visible(
+            db, _ctx(organization, granted, OrgRoleName.VIEWER), hidden
+        )
+        assert await change_feed.visible(db, _ctx(organization, owner, OrgRoleName.OWNER), hidden)
+
+
+@pytest.mark.parametrize("opted_in", [False, True])
+async def test_conversation_changes_preserve_legacy_socket_vocabulary(
+    db: AsyncSession, bus: _Bus, opted_in: bool
+) -> None:
+    from app.db.models.conversation import Conversation
+
+    owner = await _person(db)
+    organization = await _organization(db, owner)
+    chat = Conversation(organization_id=organization.id, user_id=owner.id, title="Private")
+    db.add(chat)
+    await db.commit()
+    socket = _Socket()
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(
+            _stream, socket, organization, create_access_token(str(owner.id)), opted_in
+        )
+        await _settled(bus.listening)
+        await change_feed.publish(_event(organization, owner, resource="conversation", id=chat.id))
+        await change_feed.publish(
+            _event(organization, owner, resource="organization", id=organization.id)
+        )
+        await bus.pubsubs[0].end()
+    assert [event["resource"] for event in socket.sent] == (
+        ["conversation", "organization"] if opted_in else ["organization"]
+    )

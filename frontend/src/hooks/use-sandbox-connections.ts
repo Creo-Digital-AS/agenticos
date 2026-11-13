@@ -38,7 +38,7 @@ interface UseSandboxConnectionsResult {
   refresh: () => Promise<void>;
   create: (input: SandboxConnectionInput) => Promise<SandboxConnectionRecord>;
   update: (id: string, patch: SandboxConnectionPatch) => Promise<SandboxConnectionRecord>;
-  remove: (id: string) => Promise<void>;
+  remove: (id: string, options?: { forgetPendingDestroys?: boolean }) => Promise<void>;
 }
 
 /**
@@ -49,8 +49,11 @@ interface UseSandboxConnectionsResult {
  * Patching the edited row would leave two rows claiming to be the default until
  * something else refetched, and "which host does an agent with no connection
  * get" is precisely the question that view answers.
+ *
+ * `enabled: false` skips the list, for a caller who may not read it
+ * (`connections:view`) and would only be refused.
  */
-export function useSandboxConnections(): UseSandboxConnectionsResult {
+export function useSandboxConnections(enabled = true): UseSandboxConnectionsResult {
   const t = useTranslations("sandboxes");
   const tErrors = useTranslations("errors");
   const queryClient = useQueryClient();
@@ -62,10 +65,16 @@ export function useSandboxConnections(): UseSandboxConnectionsResult {
   } = useQuery({
     queryKey: qk.sandboxConnections.list(),
     queryFn: listSandboxConnections,
+    enabled,
   });
 
+  // The capability catalog recommends a container workspace only where one would
+  // publish, which is what registering or removing a connection changes.
   const invalidate = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: qk.sandboxConnections.all() });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.sandboxConnections.all() }),
+      queryClient.invalidateQueries({ queryKey: qk.agents.capabilityCatalog() }),
+    ]);
   }, [queryClient]);
 
   const create = useCallback(
@@ -87,8 +96,8 @@ export function useSandboxConnections(): UseSandboxConnectionsResult {
   );
 
   const remove = useCallback(
-    async (id: string) => {
-      await deleteSandboxConnection(id);
+    async (id: string, options?: { forgetPendingDestroys?: boolean }) => {
+      await deleteSandboxConnection(id, options);
       await invalidate();
     },
     [invalidate],
@@ -154,7 +163,7 @@ interface UseLocalSandboxServiceResult {
   /** Store this deployment's own token in the vault, and answer with its id. */
   storeCredential: () => Promise<string>;
   /** Ask an unsaved address what it allows. Throws with what went wrong. */
-  probe: (baseUrl: string, secretId: string | null) => Promise<SandboxPolicy>;
+  probe: typeof probeSandboxService;
 }
 
 /**

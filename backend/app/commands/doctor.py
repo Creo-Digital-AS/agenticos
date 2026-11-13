@@ -18,17 +18,20 @@ same questions differently - two implementations of "is this healthy" is how a
 dashboard says green while a terminal says red.
 """
 
-from __future__ import annotations
-
 import asyncio
+import ipaddress
+import socket
 from typing import TYPE_CHECKING
 
 import click
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.commands import command, error, info, success, warning
 from app.core.config import settings
+from app.core.sanitize import deployment_allowlist, mcp_allowlist, parse_private_allowlist
 from app.db.session import get_db_context
+from app.schemas.health import SystemCheck
 from app.services.health import (
     probe_database,
     probe_model_access,
@@ -53,6 +56,11 @@ The browser allowlist holds hosts rather than addresses on purpose, so there is
 no configured port to read - which is why a silent host is reported here and
 does not fail the command.
 """
+
+# A listed network wider than this is a warning: it admits more addresses than
+# one site's servers, and every member of every organization can reach them.
+_WIDE_IPV4_PREFIX = 16
+_WIDE_IPV6_PREFIX = 48
 
 _MARK = {
     "healthy": ("ok", success),
@@ -106,6 +114,21 @@ async def _redis_reachable() -> tuple[str, str]:
     return ("healthy", "PING answered") if answered else ("unhealthy", "PING failed")
 
 
+async def _scheduler() -> SystemCheck:
+    """`probe_scheduler`, on a session of its own: it reads the background job tables.
+
+    A database that cannot be reached is reported here as what failed, rather
+    than as a doctor that crashed before saying anything about the rest.
+    """
+    try:
+        async with get_db_context() as db:
+            return await probe_scheduler(db)
+    except (OSError, SQLAlchemyError) as exc:
+        return SystemCheck(
+            key="scheduler", status="unhealthy", detail=f"the database did not answer: {exc}"
+        )
+
+
 async def _postgres_tls(db: AsyncSession) -> tuple[str, str]:
     """Whether the connection this doctor made to Postgres was encrypted.
 
@@ -133,11 +156,51 @@ def _redis_tls() -> tuple[str, str]:
     )
 
 
+async def _query_statistics(db: AsyncSession) -> tuple[str, str]:
+    """Whether Postgres records which statements cost what (#2228).
+
+    Without `pg_stat_statements` a slow query is found by reading logs. Not a
+    failure when absent: it needs the library preloaded at server start, which a
+    managed database may not offer. Read under a savepoint, because the error a
+    missing extension raises would otherwise abort the session the checks after
+    this one share.
+    """
+    try:
+        async with db.begin_nested():
+            await db.execute(text("SELECT 1 FROM pg_stat_statements LIMIT 1"))
+    except Exception as exc:
+        reason = str(getattr(exc, "orig", exc)).splitlines()[0]
+        return "unconfigured", f"pg_stat_statements unavailable - {reason}"
+    return "healthy", "pg_stat_statements is recording"
+
+
+def _tracing() -> tuple[str, str]:
+    """Whether spans are exported to Logfire, independently of console output."""
+    if settings.LOGFIRE_TOKEN:
+        return "healthy", f"Logfire, environment {settings.LOGFIRE_ENVIRONMENT}"
+    return (
+        "unconfigured",
+        "LOGFIRE_TOKEN is unset - no request, query or run is exported to Logfire",
+    )
+
+
 def _vault_configured() -> tuple[str, str]:
-    """A vault with no key cannot unseal a provider credential, so no agent runs."""
+    """Which master key seals the vault.
+
+    Without `VAULT_MASTER_KEY` the vault seals under `SECRET_KEY`, which
+    configuration refuses outside local and development, so the vault works
+    either way: a warning that names the way to a dedicated key, not a failure. Setting the key later is not a switch: rows sealed under the
+    fallback are read only while it stays listed, so the way there is staging
+    both in `VAULT_MASTER_KEYS` and running `vault-rotate`.
+    """
     if not settings.VAULT_MASTER_KEY and not settings.VAULT_MASTER_KEYS:
-        return "unhealthy", "VAULT_MASTER_KEY is unset - no stored credential can be unsealed"
-    return "healthy", "a key is configured"
+        return (
+            "unconfigured",
+            "sealing with the SECRET_KEY fallback (local and development only) - for a "
+            "dedicated key, list SECRET_KEY as version 1 and the new key as version 2 in "
+            "VAULT_MASTER_KEYS, then run vault-rotate (docs/secrets.md)",
+        )
+    return "healthy", "a dedicated master key is configured"
 
 
 def _file_storage() -> tuple[str, str]:
@@ -162,6 +225,71 @@ def _file_storage() -> tuple[str, str]:
     if mode == "none":
         return "unconfigured", f"backend=s3 bucket={bucket} encryption=none"
     return "healthy", f"backend=s3 bucket={bucket} encryption={mode}"
+
+
+async def _private_network() -> tuple[str, str]:
+    """What the private allowlists let every member of every organization reach.
+
+    Both lists count: `OUTBOUND_PRIVATE_ALLOWLIST` and `MCP_ALLOWED_HOSTS`, which
+    reaches MCP connections. A listed network that contains the database's or
+    Redis's resolved address is a failure: boot refuses a store host by name or
+    literal, and cannot resolve one, so this is where a CIDR covering it is
+    found. A store host that does not resolve is skipped - the database and Redis
+    lines already say so.
+    """
+    allowed = mcp_allowlist()
+    described = "; ".join(
+        f"{setting} admits {', '.join(entries)}"
+        for setting, entries in (
+            ("OUTBOUND_PRIVATE_ALLOWLIST", deployment_allowlist().entries),
+            ("MCP_ALLOWED_HOSTS", parse_private_allowlist(settings.MCP_ALLOWED_HOSTS).entries),
+        )
+        if entries
+    )
+    if not allowed:
+        return (
+            "unconfigured",
+            "OUTBOUND_PRIVATE_ALLOWLIST and MCP_ALLOWED_HOSTS are empty - "
+            "private addresses are refused",
+        )
+
+    covered: list[str] = []
+    for setting, host in (
+        ("POSTGRES_HOST", settings.POSTGRES_HOST),
+        ("REDIS_HOST", settings.REDIS_HOST),
+    ):
+        try:
+            answers = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        except OSError, UnicodeError:
+            continue
+        for answer in answers:
+            address = ipaddress.ip_address(str(answer[4][0]))
+            if any(
+                address in network
+                for network in allowed.networks
+                if network.version == address.version
+            ):
+                covered.append(f"{setting} ({address})")
+                break
+    if covered:
+        return (
+            "unhealthy",
+            f"{described}; a listed range covers {', '.join(covered)} - "
+            "every member could aim a request at the store",
+        )
+
+    wide = [
+        str(network)
+        for network in allowed.networks
+        if network.prefixlen < (_WIDE_IPV4_PREFIX if network.version == 4 else _WIDE_IPV6_PREFIX)
+    ]
+    if wide:
+        return (
+            "not_checked",
+            f"{described}; wider than /{_WIDE_IPV4_PREFIX} (IPv4) or "
+            f"/{_WIDE_IPV6_PREFIX} (IPv6): {', '.join(wide)} - list the hosts instead",
+        )
+    return "healthy", described
 
 
 async def _browser_endpoints() -> tuple[str, str]:
@@ -233,6 +361,9 @@ async def _sandbox_connections(db: AsyncSession) -> tuple[str, str]:
     organizations. Daytona is skipped because there is nothing local to reach -
     the credential is validated by their API on first use.
 
+    So is the version: the service has to serve every route this platform's
+    client calls, read from its index, or each command fails as a lost session.
+
     The token is checked as well as the address. `/healthz` is deliberately
     unauthenticated, so a probe that stopped there would report a healthy
     service to a deployment holding the wrong secret while every session was
@@ -293,10 +424,18 @@ async def _probe_connection(
 
     import httpx
 
+    from app.services.sandboxd_compat import mismatch_message, missing_endpoints
+
     base = (connection.base_url or "").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             (await client.get(f"{base}/healthz")).raise_for_status()
+            try:
+                missing: list[str] | None = await missing_endpoints(client, base)
+            except httpx.HTTPError, ValueError:
+                # `/healthz` answered, so a failure here does not make the
+                # service unreachable, and the credential is still worth checking.
+                missing = None
             policy = await client.get(
                 f"{base}/policy",
                 headers={"X-Sandbox-Token": unsealed.api_key.get_secret_value()},
@@ -304,12 +443,19 @@ async def _probe_connection(
     except Exception as exc:
         return f"{base} did not answer: {exc}"
 
+    # Before the credential: a service of another version answers the routes this
+    # platform calls with a 404 that reads as a lost session (#2484), whatever
+    # the token says.
+    if missing:
+        return f"{base}: {mismatch_message(missing)}"
     if policy.status_code == 401:
         return "the service answered but refused its credential"
     if policy.status_code != 200:
         return f"/policy answered {policy.status_code}"
     if not policy.json().get("runtimes"):
         return "the service allows no runtime, so no sandbox can start"
+    if missing is None:
+        return f"{base} answered, but its route index at / could not be read to check its version"
     return None
 
 
@@ -344,6 +490,9 @@ async def _run(profile: str | None = None) -> int:
         model = await probe_model_access(db)
         failures += _report("model access", model.status, model.detail)
 
+        status, detail = await _query_statistics(db)
+        failures += _report("query statistics", status, detail)
+
     status, detail = await _redis_reachable()
     failures += _report("redis", status, detail)
 
@@ -356,7 +505,10 @@ async def _run(profile: str | None = None) -> int:
     status, detail = _file_storage()
     failures += _report("file storage", status, detail)
 
-    scheduler = await probe_scheduler()
+    status, detail = _tracing()
+    failures += _report("tracing", status, detail)
+
+    scheduler = await _scheduler()
     failures += _report("scheduler", scheduler.status, scheduler.detail)
 
     # A session of its own, after the vault check rather than beside the database
@@ -369,6 +521,16 @@ async def _run(profile: str | None = None) -> int:
 
     status, detail = await _browser_endpoints()
     failures += _report("browser endpoints", status, detail)
+
+    status, detail = await _private_network()
+    failures += _report("private network", status, detail)
+
+    # Imported here like every probe with a dependency of its own: the renderer
+    # reaches the artifact service, which a doctor without a database never needs.
+    from app.services.artifact_render import probe as probe_artifact_renderer
+
+    status, detail = await probe_artifact_renderer()
+    failures += _report("artifact renderer", status, detail)
 
     if profile:
         info(f"\nAgainst the {profile} profile - technical safeguards only:")

@@ -4,6 +4,7 @@ import {
   answerPreview,
   applyDelegationFrame,
   delegateNamed,
+  delegateOf,
   childrenOf,
   closeOpenDelegations,
   resolveAwaitingOnResume,
@@ -12,7 +13,13 @@ import {
   taskOutcome,
 } from "./delegations";
 import { ApiError } from "@/lib/api-error";
-import type { Delegation, SpecialistDefinition, SubagentFrame, ToolCall } from "@/types";
+import type {
+  Delegation,
+  SpecialistDefinition,
+  SubagentFrame,
+  SubagentStartFrame,
+  ToolCall,
+} from "@/types";
 
 /** A `subagent_start`, which is the only frame that can create a panel. */
 function start(
@@ -196,8 +203,38 @@ describe("applyDelegationFrame - a delegate's own tool calls", () => {
     ]);
 
     expect(named(delegations, "t1").steps).toEqual([
-      { id: "c1", name: "search_documents", ok: true },
+      { id: "c1", name: "search_documents", ok: true, title: null },
     ]);
+  });
+
+  it("keeps what a coding harness's step was about, and which harness it is", () => {
+    const delegations = fold([
+      {
+        ...(start("t1", { subagent: "Claude Code" }) as SubagentStartFrame),
+        harness: "claude_code",
+      },
+      {
+        kind: "subagent_tool_call",
+        task_id: "t1",
+        subagent: "Claude Code",
+        depth: 0,
+        tool_name: "edit",
+        tool_call_id: "c1",
+        title: "/workspace/app.py",
+      },
+    ]);
+
+    const delegation = named(delegations, "t1");
+    expect(delegation.harness).toBe("claude_code");
+    expect(delegation.steps).toEqual([
+      { id: "c1", name: "edit", ok: null, title: "/workspace/app.py" },
+    ]);
+    expect(delegateOf(delegation, [])).toEqual({
+      id: null,
+      slug: "claude_code",
+      name: "Claude Code",
+      harness: "claude_code",
+    });
   });
 
   it("records a tool that raised as having failed rather than as still running", () => {
@@ -446,6 +483,23 @@ describe("resolveAwaitingOnResume - closing a panel the HTTP resume left waiting
   it("reads a budget-exceeded resume as a delegate that stopped without finishing", () => {
     const after = resolveAwaitingOnResume(fold([start("t1"), awaiting("t1")]), "budget_exceeded");
 
+    expect(named(after, "t1").status).toBe("failed");
+  });
+
+  it("closes only the delegate that finished when its parent parks again", () => {
+    const parked = fold([start("t1"), awaiting("t1"), start("t2"), awaiting("t2")]);
+    const after = resolveAwaitingOnResume(parked, "awaiting_approval", [
+      { task_id: "t1", status: "completed" },
+    ]);
+    expect(named(after, "t1").status).toBe("completed");
+    expect(named(after, "t2").status).toBe("awaiting_approval");
+  });
+
+  it("keeps the delegate's failure when its parent completes successfully", () => {
+    const parked = fold([start("t1"), awaiting("t1")]);
+    const after = resolveAwaitingOnResume(parked, "completed", [
+      { task_id: "t1", status: "failed" },
+    ]);
     expect(named(after, "t1").status).toBe("failed");
   });
 
@@ -706,4 +760,24 @@ describe("what a task call came to", () => {
     );
     expect(taskOutcome(start(), [failed])).toEqual({ status: "failed", answer: "timed out" });
   });
+});
+
+it("uses the stable identity when matching a renamed check of a background task", () => {
+  const start: ToolCall = {
+    id: "start",
+    name: "consult",
+    tool_id: "task",
+    args: {},
+    status: "completed",
+    result: "Task started in background.\nTask ID: t1\nSubagent: legal\n",
+  };
+  const check: ToolCall = {
+    id: "check",
+    name: "progress",
+    tool_id: "check_task",
+    args: { task_id: "t1" },
+    status: "completed",
+    result: "Task: t1\nStatus: completed\nResult: PONG",
+  };
+  expect(taskOutcome(start, [start, check])).toEqual({ status: "completed", answer: "PONG" });
 });

@@ -1,7 +1,5 @@
 """Data access for collection-teardown tombstones (#1362)."""
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -9,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.locks import LockScope, hold_name
 from app.db.models.collection_teardown import CollectionTeardown
 
 
@@ -34,6 +33,21 @@ async def is_reserved(db: AsyncSession, collection_name: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def hold_unreserved(db: AsyncSession, collection_name: str) -> bool:
+    """Hold a name until this transaction ends, and say whether it is free to write to.
+
+    For a writer no base row serializes against a teardown. A teardown holds the
+    name while it decides on the drop and reserves it, so a writer holding it
+    commits before that decision is made, and one that comes after finds the
+    reservation. False means the table is about to go, with the name still held.
+
+    Exclusive, not shared, though writers need only exclude a teardown: it is also
+    what keeps two first writes from colliding as they create the table.
+    """
+    await hold_name(db, LockScope.COLLECTION_TEARDOWN, collection_name)
+    return not await is_reserved(db, collection_name)
+
+
 async def release(db: AsyncSession, collection_name: str) -> None:
     """Free a name once its table is gone.
 
@@ -51,8 +65,8 @@ async def list_stale(db: AsyncSession, *, older_than: datetime) -> Sequence[Coll
 
     A reservation is committed with its delete and released the instant the durable
     drop runs, so a row that outlives the cutoff is one whose cleanup failed for good
-    (Prefect retries exhausted) or was lost in the commit-to-dispatch gap, leaving the
-    name blocked with nothing left to reattempt it. The sweep drops their tables and
+    (the job's attempts exhausted), leaving the name blocked with nothing left to
+    reattempt it. The sweep drops their tables and
     releases them (#1364).
     """
     result = await db.execute(

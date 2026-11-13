@@ -11,8 +11,6 @@ between an agent and every conversation in the organization, and a mistake in it
 is not a wrong answer - it is one person's threads read out to another.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -24,6 +22,7 @@ from app.db.models.conversation_share import ConversationShare
 from app.db.models.organization import Organization
 from app.db.models.user import User
 from app.repositories import conversation_search as search_repo
+from app.repositories import project as project_repo
 
 pytestmark = pytest.mark.anyio
 
@@ -75,6 +74,7 @@ async def _say(
     role: str = "user",
     at: datetime = _START,
     identity: ChannelIdentity | None = None,
+    author: User | None = None,
 ) -> Message:
     message = Message(
         id=uuid.uuid4(),
@@ -83,6 +83,7 @@ async def _say(
         content=text,
         created_at=at,
         channel_identity_id=None if identity is None else identity.id,
+        author_user_id=None if author is None else author.id,
     )
     db.add(message)
     await db.flush()
@@ -101,12 +102,14 @@ async def _identity(db, name: str) -> ChannelIdentity:
     return identity
 
 
-async def _search(db, organization, user, query: str, *, participants=(), limit: int = 10):
+async def _search(
+    db, organization, user, query: str, *, participants=(), projects=(), limit: int = 10
+):
     return await search_repo.search(
         db,
         query=query,
         organization_id=organization.id,
-        readable=search_repo.readable_by(user.id, participants),
+        readable=search_repo.readable_by(user.id, participants, projects),
         limit=limit,
     )
 
@@ -351,6 +354,45 @@ class TestWhoMayFindIt:
         found = await _search(db, organization, member, "pricing", participants={room.id})
         assert [hit.conversation_id for hit in found] == [room.id]
 
+    async def test_a_projects_chat_is_found_through_the_project_alone(self, db):
+        """Its starter included: a person who lost the project, or a chat shared
+        to them before it moved there, must not find its later turns here."""
+        organization = await _org(db)
+        starter = await _user(db)
+        teammate = await _user(db)
+        project = await project_repo.create(
+            db,
+            organization_id=organization.id,
+            owner_user_id=starter.id,
+            name="Launch",
+            description="",
+            instructions="",
+            default_agent_id=None,
+            backend="state",
+            visibility="org",
+        )
+        thread = await _thread(db, organization, starter, title="plan")
+        thread.project_id = project.id
+        db.add(
+            ConversationShare(
+                id=uuid.uuid4(),
+                conversation_id=thread.id,
+                shared_by=starter.id,
+                shared_with=teammate.id,
+                permission="view",
+            )
+        )
+        await _say(db, thread, "pricing", author=teammate)
+
+        assert await _search(db, organization, starter, "pricing") == []
+        assert await _search(db, organization, teammate, "pricing") == []
+        found = await _search(db, organization, starter, "pricing", projects=[project.id])
+        assert [hit.conversation_id for hit in found] == [thread.id]
+        # Who typed it, not whose chat it is.
+        assert found[0].speaker_name == teammate.email
+        window, _ = await search_repo.turns(db, conversation_id=thread.id, skip=0, limit=10)
+        assert [turn.speaker_name for turn in window] == [teammate.email]
+
     async def test_another_organizations_conversation_is_not_searchable(self, db):
         """Even the owner's own: the corpus is scoped to the organization the run
         is in, so switching organizations does not carry a thread across."""
@@ -430,3 +472,32 @@ class TestOpeningOne:
         turns, _ = await search_repo.turns(db, conversation_id=thread.id, skip=0, limit=10)
 
         assert [turn.speaker_name for turn in turns] == ["Anna Kowalska", None]
+
+
+@pytest.mark.security
+async def test_refused_text_cannot_rank_quote_or_title_a_model_search(db):
+    organization = await _org(db)
+    owner = await _user(db)
+    thread = await _thread(db, organization, owner, title="forbidden payload")
+    refused = await _say(db, thread, "forbidden payload pricing pricing pricing")
+    refused.guardrail_refused = True
+    await _say(db, thread, "pricing approved at forty")
+    await db.flush()
+
+    assert await _search(db, organization, owner, "forbidden") == []
+    found = await _search(db, organization, owner, "pricing")
+    assert len(found) == 1
+    assert found[0].hits == 1
+    assert found[0].title is None
+    assert "forbidden" not in found[0].snippet
+    turns, total = await search_repo.turns(db, conversation_id=thread.id, skip=0, limit=10)
+    assert total == 1
+    assert [turn.content for turn in turns] == ["pricing approved at forty"]
+
+    opened = await search_repo.readable_conversation(
+        db,
+        conversation_id=thread.id,
+        organization_id=organization.id,
+        readable=search_repo.readable_by(owner.id, ()),
+    )
+    assert opened is not None and opened.title is None

@@ -12,6 +12,9 @@ import type { DirectoryLoginRequest, User, LoginRequest, RegisterRequest } from 
 import { goToDestination, postSignInDestination } from "@/lib/auth-landing";
 import { ROUTES } from "@/lib/constants";
 import { INVITATION_FLOW_PARAM } from "@/lib/invitation-links";
+import { isNetworkFailure, offlineAvailable } from "@/lib/offline/device-cache";
+
+import { clearNativeAccount } from "@/lib/desktop/account-cleanup";
 
 // Session-level singletons so /auth/me runs ONCE per page load no matter how
 // many components mount useAuth(). Concurrent mounts share the in-flight
@@ -19,6 +22,30 @@ import { INVITATION_FLOW_PARAM } from "@/lib/invitation-links";
 // session). Reset on logout so the next login re-checks.
 let authCheckPromise: Promise<void> | null = null;
 let authChecked = false;
+
+/** What `/auth/me` answers: the account, and the token the chat socket needs. */
+type SessionAnswer = User & { access_token?: string };
+
+// The one `/auth/me` in flight in this tab. The auth guard asks before the
+// dashboard mounts and `useAuth` as it does, and on a cold load both start
+// before the persisted store says anybody is signed in - so each sent its own
+// request on every page load (#2248). Dropped wherever `authCheckPromise` is:
+// a read begun before a sign-in, a sign-out or a re-read is not shared past it.
+let sessionRead: Promise<SessionAnswer> | null = null;
+
+/** Who the session cookie belongs to, sharing a read already on its way. */
+export function readSession(): Promise<SessionAnswer> {
+  if (sessionRead) return sessionRead;
+  const read = apiClient.get<SessionAnswer>("/auth/me");
+  sessionRead = read;
+  // Beside the read rather than chained onto it, so the caller gets the answer
+  // when it lands rather than a tick later.
+  const forget = () => {
+    if (sessionRead === read) sessionRead = null;
+  };
+  read.then(forget, forget);
+  return read;
+}
 
 // Access tokens expire after 15 min. The in-memory token (used by the chat
 // WebSocket and proxied API calls) is set once on load and would otherwise go
@@ -34,6 +61,8 @@ const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 // and it would otherwise install the previous account and its token over the
 // one the cookies now hold, leaving the socket and the page as different people.
 let identityEpoch = 0;
+// Several components can use the hook in one window; each storage signal starts one check.
+const handledStorageEvents = new WeakSet<StorageEvent>();
 
 /**
  * How long a sign-in request may take before the form says so.
@@ -130,6 +159,10 @@ export function useAdoptSession(): (user: User, accessToken: string | null) => v
     (user: User, accessToken: string | null) => {
       adoptUser(queryClient, setUser, user);
       useAuthStore.getState().setAccessToken(accessToken);
+      // What was adopted is the answer the once-per-page check would fetch: the
+      // guard's own `/auth/me` and then `useAuth`'s were two reads of one
+      // identity on every page load.
+      authChecked = true;
     },
     [queryClient, setUser],
   );
@@ -155,19 +188,48 @@ export function useReauthenticate(): () => Promise<void> {
     identityEpoch += 1;
     authChecked = false;
     authCheckPromise = null;
+    sessionRead = null;
     await runAuthCheck((u) => adoptUser(queryClient, setUser, u));
   }, [queryClient, setUser]);
+}
+
+/** A request failure that does not establish whether the session is valid. */
+export function sessionUnavailable(error: unknown): boolean {
+  return (
+    isNetworkFailure(error) ||
+    (error instanceof ApiError && (error.status === 429 || error.status >= 500))
+  );
+}
+
+/**
+ * Whether a temporary session-check failure leaves the person signed in as they were.
+ *
+ * In the apps it does: they keep the recent conversations on the device to read
+ * without a network (#2097), and a phone opened on a train is not a sign-out.
+ * The account is the one the store kept; network/server failures and rate limits
+ * keep it. The check runs again on reconnect or focus; a token refusal signs out.
+ * A browser tab keeps no copy, so it is sent to sign in as before.
+ */
+export function stayOffline(error: unknown): boolean {
+  return sessionUnavailable(error) && offlineAvailable() && useAuthStore.getState().user !== null;
 }
 
 function runAuthCheck(setUser: (u: User | null) => void): Promise<void> {
   if (authChecked) return Promise.resolve();
   if (authCheckPromise) return authCheckPromise;
   const epoch = identityEpoch;
+  useAuthStore.getState().setLoading(true);
   authCheckPromise = (async () => {
-    let answer: (User & { access_token?: string }) | null;
+    let answer: SessionAnswer | null;
     try {
-      answer = await apiClient.get<User & { access_token?: string }>("/auth/me");
-    } catch {
+      answer = await readSession();
+    } catch (error) {
+      if (epoch !== identityEpoch) return;
+      if (stayOffline(error)) {
+        useAuthStore.getState().setLoading(false);
+        authCheckPromise = null;
+        return;
+      }
       answer = null;
     }
     if (epoch !== identityEpoch) return;
@@ -197,6 +259,41 @@ export function useAuth() {
     const adopt = (u: User | null) => adoptUser(queryClient, setUser, u);
     void runAuthCheck(adopt);
     ensureTokenRefresh(adopt);
+    const retry = () => {
+      // A page that found nobody signed in asks again when it is looked at: the
+      // desktop's Quick Ask and blobby load beside the console and stay loaded,
+      // so one built before the person signed in kept saying "sign in" after
+      // they had (2026-11-06).
+      if (authChecked && useAuthStore.getState().user === null) authChecked = false;
+      if (!authChecked) void runAuthCheck(adopt);
+    };
+    const shown = () => {
+      if (document.visibilityState === "visible") retry();
+    };
+    const sessionChanged = (event: StorageEvent) => {
+      if (
+        event.key !== "auth-storage" ||
+        event.oldValue === event.newValue ||
+        handledStorageEvents.has(event)
+      )
+        return;
+      handledStorageEvents.add(event);
+      identityEpoch += 1;
+      authChecked = false;
+      authCheckPromise = null;
+      sessionRead = null;
+      void runAuthCheck(adopt);
+    };
+    window.addEventListener("storage", sessionChanged);
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    document.addEventListener("visibilitychange", shown);
+    return () => {
+      window.removeEventListener("storage", sessionChanged);
+      window.removeEventListener("online", retry);
+      window.removeEventListener("focus", retry);
+      document.removeEventListener("visibilitychange", shown);
+    };
   }, [setUser, queryClient]);
 
   // Both sign-in forms end the same way - a user and a token in the answer - so
@@ -211,6 +308,7 @@ export function useAuth() {
         // sign out the account that just arrived.
         identityEpoch += 1;
         authCheckPromise = null;
+        sessionRead = null;
         adoptUser(queryClient, setUser, response.user);
         useAuthStore.getState().setAccessToken(response.access_token);
         authChecked = true; // login already populated user + token; skip /auth/me
@@ -274,8 +372,12 @@ export function useAuth() {
     } catch {
       // Ignore logout errors
     } finally {
+      // A read that set out before this sign-out must not land after it and
+      // sign the person who just left back in.
+      identityEpoch += 1;
       authChecked = false; // re-check on next login
       authCheckPromise = null;
+      sessionRead = null;
       stopTokenRefresh();
       // The cache and the stores belong to a session, not to the browser tab.
       // Emptied here as well as on the next sign-in, so nothing of somebody's
@@ -283,7 +385,14 @@ export function useAuth() {
       queryClient.clear();
       resetSessionState();
       logout();
-      toast.success(t("loggedOut"));
+      let cleanupFailed = false;
+      try {
+        await clearNativeAccount();
+      } catch {
+        cleanupFailed = true;
+        toast.error(t("nativeLogoutFailed"));
+      }
+      if (!cleanupFailed) toast.success(t("loggedOut"));
       router.push(ROUTES.LOGIN);
     }
   }, [logout, router, queryClient, t]);

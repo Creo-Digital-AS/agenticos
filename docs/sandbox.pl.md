@@ -1,5 +1,5 @@
 ---
-source_sha: "904d3115d4e7"
+source_sha: "5605d024cb81"
 ---
 
 # Sandbox { #the-sandbox }
@@ -21,6 +21,10 @@ oraz jak długo cokolwiek z tego przeżywa.
 [Konfiguracja](configuration.md#the-services-own-settings) to referencja zmienna
 po zmiennej.
 
+Wdrożenia Podmana korzystają z [ręcznej ścieżki z Docker Compose](deploy.md#podman-support)
+i dodatkowego override dla socketu sandboxa i uprawnień workspace. Quickstart
+obsługuje Dockera; `podman-compose` 1.6.0 nie jest wspierany.
+
 ## Co gdzie działa { #what-runs-where }
 
 Trzy procesy, a ten układ jest modelem bezpieczeństwa:
@@ -35,7 +39,7 @@ flowchart LR
 - **Kontener API nie trzyma gniazda Dockera.** To cały powód, dla którego
   `sandboxd` jest osobną usługą, a nie wywołaniem biblioteki: uruchomienie
   kontenera wymaga demona, a dostęp do demona jest równoważny rootowi na hoście.
-- **`sandboxd` trzyma gniazdo i prosi demona *hosta*** o uruchomienie kontenera.
+- **`sandboxd` trzyma gniazdo i prosi demona _hosta_** o uruchomienie kontenera.
   Sandbox jest więc **rodzeństwem** `sandboxd`, a nie kontenerem w jego środku.
   Nie ma tu żadnego Docker-in-Docker, nic nie jest `--privileged` i nie działa
   żaden zagnieżdżony demon.
@@ -46,9 +50,65 @@ flowchart LR
 
 `sandboxd` to serwer z [`pydantic-ai-backend`](https://github.com/vstorm-co/pydantic-ai-backend),
 dostarczany jako `ghcr.io/vstorm-co/sandboxd`; backend rozmawia z nim po HTTP,
-z tokenem w `SANDBOXD_TOKEN`. Dwa pozostałe backendy sandboksa, które spec może
-wskazać — `daytona` i `state` — to usługa hostowana i dokument w Postgresie
-i żaden z nich nie ma nic wspólnego z powyższym.
+z tokenem w `SANDBOXD_TOKEN`. Pozostałe backendy sandboksa — połączenia `daytona`
+i `e2b` oraz `state` — to usługi hostowane i dokument w Postgresie i żaden z nich
+nie ma nic wspólnego z powyższym; własny komputer osoby też nie (zobacz
+[Poza sandboxd](#beyond-sandboxd)).
+
+### Usługa i backend zmieniają się razem { #the-service-and-the-backend-move-together }
+
+Usługa i klient backendu pochodzą z tego samego wydania `pydantic-ai-backend`,
+a klient wywołuje ścieżki, które obsługuje tylko jego własne wydanie. Dlatego
+każdy plik compose przypina obraz dokładnie do wersji z `backend/uv.lock`, a test
+backendu nie przechodzi, gdy pliki compose albo inwentarz licencji podają inną.
+Podbijaj lock, pliki compose i inwentarz w jednej zmianie. Nowy pin to tag,
+którego host jeszcze nie ma, więc `make dev` i `scripts/deploy.sh` pobierają go
+przy następnym starcie.
+
+Pin żyje w checkoucie, nie w `AGENTICOS_VERSION`, więc host, który ręcznie
+przypina albo wycofuje backend, robi też checkout tagu tego wydania ([Przypnij wydanie](deploy.md#the-images)).
+Instalacja bez checkoutu, taka jak ta z `scripts/quickstart.sh`, pobiera zamiast
+tego `docker-compose.yml` tego wydania ([Instalacja](install.md)).
+
+Ruchomy tag już raz to zepsuł (#2484). Zapisany w pamięci podręcznej
+`sandboxd:0.2` obsługiwał starsze API niż to, którym mówił klient, i każde
+polecenie kończyło się błędem `sandboxd session '…' is gone`, choć sesja żyła.
+Platforma odróżnia teraz te dwa przypadki. Gdy 404 niesie gołe
+`{"detail":"Not Found"}` FastAPI zamiast własnego `No such session` usługi,
+platforma czyta indeks usługi pod `/`. Jeśli w indeksie brakuje ścieżki, której
+klient potrzebuje, wywołanie narzędzia kończy się błędem, a agent dostaje
+komunikat:
+
+```text
+The sandbox service does not serve /sessions/{session_id}/run,
+/sessions/{session_id}/runs/{run_id}/stop - its version does not match this
+platform (expected <version>). Run ghcr.io/vstorm-co/sandboxd:<version> and
+redeploy it
+```
+
+To samo sprawdzenie obsługuje `409` przy podłączaniu referencji sesji zapisanej
+przed aktualizacją: stara usługa może ją odrzucić, choć sesja nadal istnieje. Tylko
+potwierdzony brak endpointu zmienia konflikt w błąd wersji; zwykłe konflikty
+i niedostępny indeks zachowują pierwotny błąd.
+
+Komunikat pomija adres usługi, którego członkowie i model mogą nie mieć prawa
+widzieć; backend zapisuje go w logu jako `sandboxd_version_mismatch`. Sesja nie
+jest zgłaszana jako utracona, ale rozmowa zapomina zapisane odwołanie do niej:
+starsza usługa odmawia dołączenia do żywej sesji po odwołaniu. Następna tura
+otwiera sesję po nazwie, więc po aktualizacji rozmowa wraca do tej samej sesji,
+jeśli usługa ją zachowała.
+
+`agenticos cmd doctor` robi to samo sprawdzenie dla
+każdego zarejestrowanego połączenia i podaje obraz, który trzeba uruchomić.
+Wdróż ponownie stos, który uruchamia usługę: `scripts/deploy.sh` w produkcji
+(uruchamia profil `sandbox`, gdy ustawiony jest `SANDBOXD_TOKEN`), `make dev` na
+laptopie. `make prod` nie rusza usługi, bo nie uruchamia tego profilu; na stosie
+uruchomionym w ten sposób pobierz i odtwórz ją sam:
+
+```bash
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox pull sandboxd
+docker compose --env-file backend/.env -f docker-compose-prod.yml --profile sandbox up -d sandboxd
+```
 
 !!! danger "Ten token jest równoważny rootowi"
 
@@ -60,6 +120,31 @@ ponieważ wygenerowanie go na nowo osierocia każdy workspace, który usługa
 aktualnie trzyma. To także powód, dla którego własny dashboard usługi jest
 wyłączony (`SANDBOXD_UI_ENABLED: 0`): ta strona prosi człowieka o wklejenie
 tokena do przeglądarki.
+
+## Workspace nowego agenta { #a-new-agents-workspace }
+
+Nowy agent zaczyna z workspace'em, który jego organizacja może opublikować.
+Kontenerowy workspace z szablonu startowego zostaje, gdy organizacja ma domyślne
+połączenie z sandboxem albo gdy to wdrożenie uruchamia `sandboxd`, a organizacja
+ma właściciela, na którego można je zarejestrować — pierwsza publikacja zakłada
+wtedy to połączenie. W przeciwnym razie agent zaczyna na przechowywanym
+workspace'ie `state`: pliki bez shella, które niczego nie potrzebują, więc nowy
+agent publikuje się na wdrożeniu bez usługi sandboxa.
+
+Katalog capability, od którego zaczyna Builder, i instalacja szablonu pytają o to
+dla każdej organizacji osobno, a odpowiedź jest trzymana przez minutę. `sandboxd`,
+który powinien odpowiedzieć, a nie odpowiada, trafia do logu jako
+`sandbox_service_not_answering`, a agent zaczyna na `state`. Zapisany już agent
+zachowuje swój spec.
+
+Publikacja odrzucona z braku sandboxa proponuje poprawkę obok powodu.
+**Przełącz workspace na Pliki** przepisuje wersję roboczą na workspace `state`,
+zapisuje ją i sprawdza ponownie. **Przestań udostępniać to, czego ten agent nie
+może udostępnić** robi to samo z listą udostępniania delegacji, która nazywa
+capability, której agent już nie ma, i usuwa z niej też `subagents`, którego delegat
+nigdy nie dziedziczy. Żadna z nich nie publikuje: to pozostaje
+osobnym kliknięciem. Kody przychodzą w `details.fixes` odmowy (zob.
+[architekturę](architecture.md#a-refusal-that-names-a-field)).
 
 ## Sesja i to, co ją współdzieli { #a-session-and-what-shares-one }
 
@@ -118,30 +203,44 @@ Co oddziela jednego tenanta od drugiego:
 
 ## O jakie środowiska agent może poprosić { #which-environments-an-agent-may-ask-for }
 
-**Dostarczany jest jeden runtime i jest on zdefiniowany w tym repozytorium** —
+**Dostarczane są dwa runtime'y i są one zdefiniowane w tym repozytorium** —
 `backend/app/core/catalog/sandbox_runtimes.json`:
 
-| | `workbench` — 1,93 GB, budowany w około 65 s na rozgrzanym hoście |
-|---|---|
-| Zbudowany na | `python:3.12-slim` |
-| Języki | Python 3.12; Node 24.19.0 LTS z npm 11 oraz `tsx` dla TypeScriptu |
-| Narzędzia | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo` |
-| Czytanie | **liteparse** (`lit`) — PDF-y i obrazy do tekstu lub markdownu, z OCR-em włącznie; `poppler-utils` dla szybkiej ścieżki po warstwie tekstowej i dla liczby stron |
-| Dokumenty | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless do konwersji i do starszych formatów |
-| Dane | `pandas`, `duckdb`, `tabulate` |
-| Wykresy i obrazy | `matplotlib` (Agg), `pillow` |
-| Web | `httpx`, `requests`, `beautifulsoup4`, `lxml`, `markdownify` |
-| Inne | `pyyaml` |
-| Pamięć | 2 GiB |
-| Sieć | tak — jedyny runtime, który ją ma |
+|                  | `workbench` — 1,93 GB, budowany w około 65 s na rozgrzanym hoście                                                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Zbudowany na     | `python:3.12-slim`                                                                                                                                               |
+| Języki           | Python 3.12; Node 24.19.0 LTS z npm 11 oraz `tsx` dla TypeScriptu                                                                                                |
+| Coding agenci    | Claude Code 2.1.288 i Codex 0.160.0, dla [coding agenta](reference/capabilities.md#coding-agent)                                                                 |
+| Narzędzia        | `git`, `curl`, `ripgrep`, `fd`, `jq`, `less`, `procps`, `unzip`, `zip`, `uv`, `pdftotext`/`pdfinfo`                                                              |
+| Czytanie         | **liteparse** (`lit`) — PDF-y i obrazy do tekstu lub markdownu, z OCR-em włącznie; `poppler-utils` dla szybkiej ścieżki po warstwie tekstowej i dla liczby stron |
+| Dokumenty        | `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`; **LibreOffice** headless do konwersji i do starszych formatów                                    |
+| Dane             | `pandas`, `duckdb`, `tabulate`                                                                                                                                   |
+| Wykresy i obrazy | `matplotlib` (Agg), `pillow`                                                                                                                                     |
+| Web              | `httpx`, `requests`, `beautifulsoup4`, `lxml`, `markdownify`                                                                                                     |
+| Inne             | `pyyaml`                                                                                                                                                         |
+| Pamięć           | 2 GiB                                                                                                                                                            |
+| Sieć             | tak                                                                                                                                                              |
 
-Jeden zamiast ośmiu, a powodem jest `prewarm`: usługa buduje przy starcie
+|              | `desktop` — do [obsługi komputera](reference/capabilities.md#computer-use)                       |
+| ------------ | ------------------------------------------------------------------------------------------------ |
+| Zbudowany na | `python:3.12-slim`                                                                               |
+| Pulpit       | Xvfb na ekranie `:0`, XFCE, Firefox ESR; `xdotool` i `scrot`, które nim sterują i go fotografują |
+| Narzędzia    | `git`, `curl`, `jq`, `procps`, `unzip`                                                           |
+| Pamięć       | 2 GiB                                                                                            |
+| Sieć         | tak, żeby przeglądarka na nim mogła otworzyć stronę                                              |
+
+Dwa zamiast ośmiu, a powodem jest `prewarm`: usługa buduje przy starcie
 **każdy** wpis swojej listy dozwolonych, więc osiem aliasów to osiem instalacji
 `pip` w starcie, któremu nikt się nie przygląda, osiem obrazów w cache hosta
 i agent poproszony o przeczytanie PDF-a dostający ten alias, który akurat wskazał
-jego spec. `workbench` jest zbudowany tak, by być odpowiedzią na *napisz
+jego spec. `workbench` jest zbudowany tak, by być odpowiedzią na _napisz
 i uruchom trochę kodu, przeczytaj to, co załączył użytkownik, narysuj wykres,
-pobierz stronę*.
+pobierz stronę_, i jest pierwszy, więc dostaje go agent, który nie wskazuje
+żadnego runtime'u.
+
+`desktop` jest jedynym, czym `workbench` być nie może: ekranem, na który agent
+z `computer_use` patrzy i w który klika. Jego pulpit startuje przy pierwszym
+zrzucie ekranu w runie, a nie razem z kontenerem.
 
 Do #1040 tym katalogiem było `BUILTIN_RUNTIMES` z biblioteki sandboksa:
 piętnaście receptur, z których `sandboxd` uruchomiony przez ten projekt
@@ -160,14 +259,14 @@ Zmierzone na `python:3.12-slim` (205 MB), arm64:
 - **LibreOffice, za +683 MB, i jest tego wart.** Kupuje trzy rzeczy, których nic
   innego tutaj nie daje: `lit` potrafi czytać starsze formaty `.doc`, `.xls`
   i `.ppt`, czyli to, co biznesowy użytkownik naprawdę załącza; `soffice
-  --headless --convert-to pdf deck.pptx` renderuje prezentację, którą agent
+--headless --convert-to pdf deck.pptx` renderuje prezentację, którą agent
   zbudował przez `python-pptx`, czyli tak prezentacja staje się czymś, co człowiek
   może otworzyć; a `--convert-to png` zamienia slajd w obraz, który agent może
-  odczytać z powrotem i *obejrzeć*, bo `read_file` jest tu multimodalne. Około
+  odczytać z powrotem i _obejrzeć_, bo `read_file` jest tu multimodalne. Około
   sekundy na dokument po pierwszym. Writer i Calc to +135 MB z tych 683 i są tu
   z jednego powodu: konwersja biurowa, która działa dla prezentacji, a nie dla
   dokumentów, byłaby wyjątkiem w produkcie i wyjątkiem w promptcie.
-- **Działa to tylko dlatego, że runtime jest *budowany*.** LibreOffice tworzy przy
+- **Działa to tylko dlatego, że runtime jest _budowany_.** LibreOffice tworzy przy
   pierwszym uruchomieniu profil użytkownika, więc potrzebuje prawdziwego konta
   z zapisywalnym katalogiem domowym — a takie tworzy builder, gdy ustawione jest
   `SANDBOXD_SANDBOX_UID` (`useradd --uid 10001 --create-home`). Uruchom ten sam
@@ -176,7 +275,7 @@ Zmierzone na `python:3.12-slim` (205 MB), arm64:
   runtime typu `image` nie może po prostu dołożyć LibreOffice'a: te dwie decyzje
   są jedną decyzją.
 - **Node z nodejs.org, a nie z apt.** Debianowe `nodejs npm` to +398 MB i npm
-  w wersji 9; oficjalny tarball to +239 MB *i* jest aktualny — a Node 20, który ta
+  w wersji 9; oficjalny tarball to +239 MB _i_ jest aktualny — a Node 20, który ta
   receptura przypięła jako pierwszy, jest po końcu wsparcia od kwietnia 2026.
   Architektura jest wykrywana w poleceniu, bo ten sam katalog buduje się na amd64
   i na arm64.
@@ -187,7 +286,7 @@ Zmierzone na `python:3.12-slim` (205 MB), arm64:
   milisekundach jest tym, co zamienia „wyciągnij tę książkę” w plan.
 - **OCR jest kosztem, który ma znaczenie, i jest zmierzony.** `lit` OCR-uje tylko
   strony bez warstwy tekstowej, więc 120 wygenerowanych stron kosztuje ułamek
-  sekundy — ale strona *skanowana* kosztuje **8,8 s**, więc skan liczący 300 stron
+  sekundy — ale strona _skanowana_ kosztuje **8,8 s**, więc skan liczący 300 stron
   to około 44 minut wobec 300-sekundowego pułapu polecenia: zabity, bez niczego do
   pokazania. `--target-pages 1-40` to ogranicza (trzy skanowane strony w 1,6 s),
   a `--no-ocr` na skanie **kończy się powodzeniem i zwraca 179 bajtów** — cicha,
@@ -220,7 +319,7 @@ się inaczej, przez porażkę w środku czyjejś prośby.
 zainstalowane.**
 
 Instrukcja, która zasługuje na swoje miejsce, to ta, której nic innego nie
-nauczy: *nie czytaj dużego pliku po to, żeby go przejrzeć*. Wyciągnij go raz do
+nauczy: _nie czytaj dużego pliku po to, żeby go przejrzeć_. Wyciągnij go raz do
 pliku tekstowego, `rg -n` po miejsca, które mają znaczenie, `sed -n '400,460p'`,
 żeby przeczytać jedno.
 
@@ -262,25 +361,27 @@ Wpis ma jeden z dwóch kształtów, nigdy oba naraz:
   "alias": "workbench",
   "description": "What it is for - shown in the connection dialog",
   "base_image": "python:3.12-slim",
-  "setup_commands": ["apt-get update && apt-get install -y --no-install-recommends git"],
+  "setup_commands": [
+    "apt-get update && apt-get install -y --no-install-recommends git"
+  ],
   "packages": ["pillow"],
   "mem_limit": "2g",
   "needs_network": true
 }
 ```
 
-| Pole | |
-|---|---|
-| `alias` | To, co wskazuje spec. Małe litery, `[a-z][a-z0-9-]*` |
-| `description` | Pokazywane w polu `Default runtime` w dialogu połączenia. Powiedz, *do czego* służy |
-| `image` | Gotowy obraz. Startuje w czasie, jaki zajmuje pobranie, i nic nie instaluje |
-| `base_image` | Budowany raz, przy pierwszym użyciu, i potem cache'owany — kształt, który potrafi instalować |
-| `setup_commands` | Powłoka w czasie budowania, przed pakietami: warstwa apt, instalator |
-| `packages` | `pip`, instalowane w czasie budowania. Wymaga `base_image` |
-| `env_vars` | Ustawiane w każdym kontenerze na tym runtimie — `MPLBACKEND`, `PYTHONUTF8` |
-| `briefing` | Zdania przekazywane modelowi, których nie da się wyprowadzić z powyższych pól |
-| `mem_limit` | Własna składnia Dockera (`2g`). Przy braku obowiązuje `SANDBOXD_MEM_LIMIT` |
-| `needs_network` | Czy **sesja** na nim dostaje sieć. Budowanie ma ją zawsze |
+| Pole             |                                                                                              |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `alias`          | To, co wskazuje spec. Małe litery, `[a-z][a-z0-9-]*`                                         |
+| `description`    | Pokazywane w polu `Default runtime` w dialogu połączenia. Powiedz, _do czego_ służy          |
+| `image`          | Gotowy obraz. Startuje w czasie, jaki zajmuje pobranie, i nic nie instaluje                  |
+| `base_image`     | Budowany raz, przy pierwszym użyciu, i potem cache'owany — kształt, który potrafi instalować |
+| `setup_commands` | Powłoka w czasie budowania, przed pakietami: warstwa apt, instalator                         |
+| `packages`       | `pip`, instalowane w czasie budowania. Wymaga `base_image`                                   |
+| `env_vars`       | Ustawiane w każdym kontenerze na tym runtimie — `MPLBACKEND`, `PYTHONUTF8`                   |
+| `briefing`       | Zdania przekazywane modelowi, których nie da się wyprowadzić z powyższych pól                |
+| `mem_limit`      | Własna składnia Dockera (`2g`). Przy braku obowiązuje `SANDBOXD_MEM_LIMIT`                   |
+| `needs_network`  | Czy **sesja** na nim dostaje sieć. Budowanie ma ją zawsze                                    |
 
 Cztery rzeczy, których plik nie pozwoli ci pomylić albo które ugryzą, jeśli
 pominiesz tę sekcję:
@@ -309,13 +410,13 @@ a jedyne pytanie warte odpowiedzi brzmi, czy może się rozjechać:
 `backend/tests/test_sandbox_runtime_catalog.py` zawodzi, gdy tak się stało,
 nazywając plik i mówiąc ci, żeby uruchomić `make sandbox-runtimes`.
 
-Generowana *do* śledzonego pliku, a nie czytana przy starcie z pliku obok,
+Generowana _do_ śledzonego pliku, a nie czytana przy starcie z pliku obok,
 ponieważ `docker compose up` musi działać bez wcześniejszego generowania
 czegokolwiek — alternatywą jest wdrożenie po cichu biorące własną domyślną listę
 dozwolonych biblioteki.
 
 I nie jest to formularz w produkcie. `PUT /policy` zmienia pułapy i czasy życia
-w czasie działania i celowo odrzuca *skład* tej listy, wraz z `network_mode`,
+w czasie działania i celowo odrzuca _skład_ tej listy, wraz z `network_mode`,
 `oci_runtime`, `sandbox_uid`, `work_dir` i `persist_containers`: wskazanie obrazu
 jest decyzją o izolacji, a token usługi trzyma aplikacja, a nie ten, kto prowadzi
 hosta. Zmiana listy to restart.
@@ -325,7 +426,7 @@ hosta. Zmiana listy to restart.
 Pole `Default runtime` w **dialogu połączenia** oferuje ten katalog — to, co pliki
 compose dały usłudze — wypełnione, zanim jakikolwiek host został o cokolwiek
 zapytany, i oznaczone, gdy któryś już odpowiedział. Pole `Runtime` w **Builderze
-agenta** oferuje to, na co usługa na tym połączeniu *faktycznie* pozwala, czytane
+agenta** oferuje to, na co usługa na tym połączeniu _faktycznie_ pozwala, czytane
 z niej na żywo, więc alias, który wskazuje, jest aliasem, który następne wywołanie
 narzędzia przyjmie. Tam, gdzie te dwie się nie zgadzają, rację ma druga: host
 mógł zostać uruchomiony z inną listą dozwolonych, a wdrożenie, które wygenerowało
@@ -350,13 +451,13 @@ przycisk.
 
 ## Kiedy pojawia się kontener { #when-a-container-appears }
 
-**Przy pierwszej operacji na workspasie, co nie jest tym samym co pierwsze
-wywołanie narzędzia przez agenta.** Run przygotowuje to, co ktoś załączył,
-i materializuje skille agenta *przed* wywołaniem modelu, a jedno i drugie otwiera
-sesję leniwie — więc kontener może istnieć w turze, w której agent nigdy nie
-sięgnął po powłokę. Warto o tym wiedzieć przy czytaniu listy sesji: sandbox,
-którego log aktywności nie zawiera nic poza zapisami, to sandbox, o który nic
-jeszcze nie poprosiło.
+**Przy pierwszej operacji na workspasie: narzędziu, które agent tam wywoła, albo
+pliku, który ktoś załączył i który trafia do workspace'u.** Skille agenta są
+zapisywane do workspace'u właśnie wtedy, tuż przed tą operacją, a nie podczas
+przygotowania runu, więc tura, która nie używa sandboxa, nie otwiera sesji i nie
+uruchamia kontenera. Tura, która go używa, ma skille na dysku od razu. Na liście
+sesji nadal może się pojawić sandbox, którego log aktywności zawiera same zapisy:
+taki, do którego załączono plik i który potem nie był używany.
 
 ## Co w nim zrobiono i gdzie żyje ten zapis { #what-was-done-in-one-and-where-that-record-lives }
 
@@ -413,8 +514,21 @@ nieudane” są żądaniami, więc pager nad trzystoma operacjami ma po czym str
 **w czasie startu usługi**, a nie w środku czyjegoś pierwszego żądania —
 budowanie to dziesięć sekund i więcej. Obrazy są cache'owane, więc host płaci raz.
 
-Co zostaje do czekania: pierwsza sesja otwarta *w trakcie* prewarmu oraz host,
-któremu wyczyszczono cache obrazów. `SANDBOXD_PERSIST_CONTAINERS: true` usuwa
+Deploy buduje je jeszcze wcześniej. `scripts/deploy.sh` uruchamia biblioteczne
+`python -m pydantic_ai_backends.remote.prepare` w jednorazowym kontenerze nowego
+obrazu sandboxd, zanim stara usługa zostanie zastąpiona. Wydanie, które zmienia
+runtime, płaci więc za build, gdy stara usługa wciąż obsługuje ruch. Wcześniej,
+18.10.2026, pierwszy czat z sandboxem po takim wydaniu czekał minuty, a każde
+żądanie sesji dostawało 409, dopóki build się nie skończył. Build, który się nie
+uda, jest tam ponawiany trzy razy, a przy starcie dwa. Runtime, który nadal nie
+jest zbudowany, buduje się na żądanie, jak wcześniej, a log deployu go wymienia.
+
+Gdy sesja czeka na taki build, czat mówi o tym nad polem wpisywania:
+„Przygotowuję sandbox”. Otwarcie czeka na niego do dziesięciu minut, a nie 30
+sekund zwykłego żądania.
+
+Co zostaje do czekania: runtime, którego deploy nie zdołał przygotować, oraz
+host, któremu wyczyszczono cache obrazów. `SANDBOXD_PERSIST_CONTAINERS: true` usuwa
 wtedy większość reszty — zamknięta sesja zachowuje swój kontener, więc następna
 sesja na tym workspasie startuje bez budowania i z tym, co agent zainstalował
 ostatnim razem, nadal zainstalowanym.
@@ -424,7 +538,7 @@ ostatnim razem, nadal zainstalowanym.
 Co się trzyma:
 
 - sandbox nie widzi gniazda Dockera; widzi je tylko `sandboxd`;
-- żadnej sieci, chyba że runtime o nią prosi, a robi to tylko `workbench`;
+- żadnej sieci, chyba że runtime o nią prosi, a robią to oba dostarczane runtime'y;
 - 2 CPU, 512 procesów i 64 MiB `tmpfs` pod `/tmp` na sandbox, plus
   `SANDBOXD_EXECUTE_TIMEOUT` (300 s) na każde polecenie oraz
   `SANDBOXD_MAX_READ_BYTES` (8 MiB) na każdy odczyt;
@@ -433,7 +547,7 @@ Co się trzyma:
   na hoście do tego uid. **Musi to być własny uid usługi**: otwarcie sesji robi
   `chown` workspace'u na tego użytkownika, a nieuprzywilejowany `sandboxd` potrafi
   to zrobić tylko dla siebie, więc inny numer zawodzi przy pierwszej sesji, a nie
-  przy starcie. Dotyczy to runtime'u, który to wdrożenie *buduje* — gotowy obraz
+  przy starcie. Dotyczy to runtime'u, który to wdrożenie _buduje_ — gotowy obraz
   nie ma takiego konta ani virtualenva, więc agent w jego środku nie mógłby nic
   zainstalować.
 
@@ -451,14 +565,14 @@ Co pozostaje, powiedziane wprost, a nie tylko zasugerowane:
 !!! warning "Zastrzeżenie dla laptopa, ale sprawdź je, zanim skopiujesz lokalny plik compose"
 
     `docker-compose.yml` publikuje Postgresa i Redisa z `postgres/postgres`,
-    a `workbench` jest jedynym runtimem z siecią. Na współdzielonym hoście jest to
+    a oba dostarczane runtime'y mają sieć. Na współdzielonym hoście jest to
     osiągalne z wnętrza sandboksa; `docker-compose-prod.yml` nie publikuje żadnego
     z nich.
 
 ## Co pokazuje przeglądarka plików, a co pomija { #what-the-file-browser-shows-and-what-it-leaves-out }
 
 **Documents** (`/documents`) wypisuje to, co agent trzyma **dla człowieka**, a nie jest to ten
-sam zbiór co to, co leży na wolumenie. Dwa prefiksy są pomijane w każdym
+sam zbiór co to, co leży na wolumenie. Trzy prefiksy są pomijane w każdym
 zestawieniu, które czyta człowiek — na liście wszystkich plików, w plikach
 jednego folderu, w panelu rozmowy i w liczbach plików:
 
@@ -468,9 +582,21 @@ jednego folderu, w panelu rozmowy i w liczbach plików:
   ktoś przyjmuje. Usunięto je raz, bo zestawienie składało się głównie z nich, co
   było słuszną pretensją o niewłaściwą rzecz (#1064).
 - katalog przelewowy — tam, gdzie zapisano nadmiarowe wyjście narzędzia.
+- `.agenticos/` — zdarzenia zadania coding agenta i sesja, którą kontynuuje następne.
+
+Pomijane są też foldery, które wypełnia toolchain, gdziekolwiek leżą: `.venv`,
+`venv`, `node_modules`, `__pycache__`, `.pytest_cache`, `.mypy_cache`,
+`.ruff_cache`, `.tox`, `.git`, `.next` i `.cache`. Coding agent, który postawił
+jedną aplikację FastAPI, wrzucił ich na stronę tysiąc, między tuzin plików, które
+napisał.
 
 Liczba plików też musi je pominąć, bo workspace raportujący cztery pliki, z których
 widać jeden, to liczba, której nikt nie sprawdzi.
+**Wszystkie pliki** grupują to, co zostało, według workspace'u, który je trzyma,
+od najnowszych, pod rozmową, do której należą: luźne pliki i załączniki jako
+wiersze, każdy folder najwyższego poziomu jako jeden wiersz z pierwszymi plikami i
+link do folderu po resztę. Najnowsze pliki mają podgląd nad grupami, a wyszukiwanie
+pokazuje trafienia płasko.
 
 ### Czyj to workspace i kto jeszcze go widzi { #whose-workspace-it-is-and-who-else-can-see-it }
 
@@ -500,29 +626,76 @@ nie do odróżnienia od człowieka i nic go przed tym nie powstrzymuje.
 
 ### Wypisanie zawartości kontenera kosztuje obiegi, więc dwie rzeczy są ograniczone { #listing-a-container-costs-round-trips-so-two-things-are-bounded }
 
-`ls` z archiwum czyta jeden katalog, więc zestawienie chodzi po drzewie: wszerz,
-najwyżej na sześć poziomów w głąb, zatrzymując się na 2000 wpisach — bo host
-trzymający `node_modules` nie może zamienić jednego workspace'u w dziesięć tysięcy
-wierszy.
+`ls` z archiwum czyta jeden katalog, więc zestawienie prosi hosta o `tree`:
+jedno żądanie, drzewo przechodzone wszerz na dysku samego hosta, najwyżej na sześć
+poziomów w głąb, z zatrzymaniem na 2000 wpisach — bo host trzymający
+`node_modules` nie może zamienić jednego workspace'u w dziesięć tysięcy wierszy.
 
 **Oba ograniczenia są raportowane.** Strona workspace'u mówi wprost, że to nie są
 wszystkie pliki, bo drzewo, które zatrzymuje się bez uprzedzenia, ktoś przeczyta
 jako wszystko, co agent trzyma.
 
-Katalog, który nie chce odpowiedzieć, jest logowany i pomijany. Dopiero odmowa
-*korzenia* czyni workspace nieczytelnym, bo jeden folder, któremu agent zabrał
+Katalog, który nie chce odpowiedzieć, jest pomijany, a zestawienie zgłasza, że jest
+niepełne. Dopiero odmowa
+_korzenia_ czyni workspace nieczytelnym, bo jeden folder, któremu agent zabrał
 prawa, to nie jest host, którego nikt nie potrafi odczytać.
 
 A miniatura obrazu to `read_bytes` dla tego pliku: rozszerzenie i rozmiar są
 sprawdzane we wpisie zestawienia, zanim cokolwiek zostanie pobrane, a jedno żądanie
 rysuje najwyżej 24. Powyżej tego kafelek zostaje przy znaku.
 
-Workspace *przechowywany* nie płaci żadnego z tych kosztów — jego pliki i ich
+Workspace _przechowywany_ nie płaci żadnego z tych kosztów — jego pliki i ich
 bajty są kolumną wiersza, który zestawienie już odczytało.
 
 Panel **Files** w czacie i własna lista plików workspace'u rysują kafle tak samo
 jak **All files**: pierwsze linie zapisanego pliku tekstowego, a obraz jako
 miniaturę w tym samym limicie.
+
+### Pobieranie folderu jako zip { #downloading-a-folder-as-a-zip }
+
+Panel **Files** w czacie ma **Pobierz jako .zip** dla całego workspace'u oraz
+przycisk pobierania przy każdym folderze. Oba wywołują
+`GET /api/v1/conversations/{id}/workspace/archive?path=<folder>` (pusty `path` to
+cały workspace), autoryzowane tak samo jak `/workspace/raw`: przez odczyt
+rozmowy. Osoba, której udostępniono czat, może więc pobrać jego folder, a nikt
+inny nie może.
+
+Zip zawiera to, co pokazuje panel. Prefiksy i foldery narzędzi wymienione wyżej
+(`.git`, `node_modules`, `.venv`, ...) są pomijane. Lista dla zipa sięga 64
+poziomów w głąb, a nie sześciu, bo repozytorium jest głębsze niż strona kafli, i
+prosi host o najwyżej 100 000 wpisów, bo host listuje też ukryte foldery. Pliki
+leżą pod jednym folderem głównym nazwanym jak pobierany folder.
+
+Foldery są osobnymi wpisami, więc pusty folder, na przykład rozpakowany z
+załączonego archiwum, też trafia do zipa. Pusty folder pobrany osobno to zip
+zawierający tylko ten folder, a nie 404: panel go pokazuje, więc pobranie daje to,
+co pokazano. Folder, którego panel nie pokazuje, to 404.
+
+Ukośnik wsteczny,
+`%` albo znak sterujący w nazwie pliku są w zipie zakodowane procentowo (`a\b`
+staje się `a%5Cb`), bo program rozpakowujący na Windows czyta ukośnik wsteczny jako
+separator folderów.
+
+Całość jest wyliczana przed wysłaniem pierwszego bajtu. Folder z więcej niż
+`WORKSPACE_ARCHIVE_MAX_ENTRIES` wpisami (pliki i foldery, z folderem głównym,
+liczone jak w załączonym archiwum) albo większy niż `WORKSPACE_ARCHIVE_MAX_BYTES`,
+albo taki, którego host nie wylistował w całości, jest odrzucany z kodem 413; zip, w
+którym bez słowa brakuje plików, byłby gorszy. Potem pliki są czytane i
+strumieniowane po jednym.
+
+Plik, którego nie da się przeczytać po rozpoczęciu pobierania, jest pomijany i
+wymieniony, z powodem podanym przez host, w `NOT-INCLUDED.txt` w głównym folderze
+zipa (`_NOT-INCLUDED.txt`, jeśli folder ma plik o tej nazwie). To plik usunięty po
+wylistowaniu albo większy niż własny limit odczytu hosta (`SANDBOXD_MAX_READ_BYTES`,
+domyślnie 8 MiB). Jeśli host przestanie odpowiadać albo po wylistowaniu pliki urosną
+ponad limit bajtów, strumień się zatrzymuje, a pobrany plik jest niekompletny i się
+nie otworzy.
+
+Folder na tym komputerze, w aplikacji desktopowej, nie ma takiego przycisku: on
+już jest folderem na tym komputerze.
+
+Archiwa działają też w drugą stronę: `.zip` albo `.tar.gz` załączone do czatu
+jest rozpakowywane do `uploads/` — zob. [Archiwa](file-processing.md#archives).
 
 ## Jak długo cokolwiek przeżywa { #how-long-anything-survives }
 
@@ -532,12 +705,12 @@ Pliki żyją na hoście, pod `{SANDBOXD_WORKSPACE_ROOT}/{session_id}/workspace` 
 Ten bind mount jest też tym, co umożliwia panel Files w produkcie: odczyt
 workspace'u nigdy nie uruchamia kontenera.
 
-| | Ustawienie | Co się dzieje |
-|---|---|---|
-| Bezczynna sesja | `SANDBOXD_IDLE_TIMEOUT` 1800 s | Kontener jest zamykany i sprzątany. **Pliki zostają** |
-| Zatrzymany kontener | `SANDBOXD_CONTAINER_TTL` 86400 s | To, co zainstalowała sesja — build, wheele, `node_modules` — jest odzyskiwane. Workspace pozostaje nietknięty |
-| Katalog workspace'u | `SANDBOXD_WORKSPACE_TTL` **nieustawione** | Trzymany **bezterminowo** |
-| Zapis tego, co zrobiono | `OPERATION_RETENTION_DAYS` 30 | Codzienny `sandbox-log-sweep` kasuje te wiersze. Pliki pozostają nietknięte |
+|                         | Ustawienie                                | Co się dzieje                                                                                                 |
+| ----------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Bezczynna sesja         | `SANDBOXD_IDLE_TIMEOUT` 1800 s            | Kontener jest zamykany i sprzątany. **Pliki zostają**                                                         |
+| Zatrzymany kontener     | `SANDBOXD_CONTAINER_TTL` 86400 s          | To, co zainstalowała sesja — build, wheele, `node_modules` — jest odzyskiwane. Workspace pozostaje nietknięty |
+| Katalog workspace'u     | `SANDBOXD_WORKSPACE_TTL` **nieustawione** | Trzymany **bezterminowo**                                                                                     |
+| Zapis tego, co zrobiono | `OPERATION_RETENTION_DAYS` 30             | Codzienny `sandbox-log-sweep` kasuje te wiersze. Pliki pozostają nietknięte                                   |
 
 Ostatni wiersz to domyślna wartość biblioteki i jest celowa — notatki i skrypty są
 tą pracą, a użytkownik agenta oczekuje ich w przyszłym tygodniu.
@@ -553,15 +726,78 @@ tą pracą, a użytkownik agenta oczekuje ich w przyszłym tygodniu.
 Usunięcie rozmowy czyści jej workspace poprzez produkt, więc rzecz dotyczy tego,
 czego nikt nie usuwa, a nie tego, co ludzie robią.
 
+To czyszczenie nie zależy od tego, czy dostawca akurat odpowiada. Usunięcie w tej
+samej transakcji zapisuje nagrobek dla każdego zdalnego sandboxa, a destroy usuwa
+nagrobek, gdy dostawca je potwierdzi. Gdy host sandboxa leży, klucz Daytony
+zostanie odrzucony albo worker zrestartuje się w międzyczasie, sweep workera
+`sandbox-destroy-retry` próbuje ponownie. Przerwa podwaja się za każdym razem, od
+2 minut do 6 godzin, aż destroy się uda. Sandbox Daytony nie ma za sobą TTL, więc
+tylko to go kończy.
+
+Połączenie wyłączone dalej ma swoje sandboxy usuwane, bo wyłączenie wstrzymuje
+nową pracę, a nie rachunek. Połączenia, na którym zostały tombstone'y, nie da się
+usunąć: zniknęłyby razem z nim, a to jedyny zapis tego, co nadal działa u
+dostawcy. Gdy sweep nie ma szans się udać, bo poświadczenie połączenia zostało
+usunięte albo unieważnione, usuń sandboxy w konsoli dostawcy. Potem usuń
+połączenie jeszcze raz i potwierdź, że to zrobiono: tombstone'y zostaną
+zapomniane, a ich liczba trafi do logu audytu.
+
+## Poza sandboxd { #beyond-sandboxd }
+
+Jeszcze dwa miejsca, gdzie mogą działać narzędzia sandboksa runa - z tymi samymi
+narzędziami i bez niczego z powyższej izolacji.
+
+**Połączenie E2B.** Połączenie sandboksa rodzaju `e2b` uruchamia sandboksy na
+własnym koncie [E2B](https://e2b.dev) organizacji: jego klucz API to sekret
+połączenia w vault, a domyślny runtime połączenia nazywa szablon E2B - puste dla
+domyślnego szablonu E2B, `desktop` dla szablonu, którym steruje computer use.
+Każde utworzenie, podłączenie i zniszczenie odbywa się tym kluczem, nigdy
+`E2B_API_KEY`, który akurat ma proces wdrożenia, więc sandboksy każdej organizacji
+działają i są rozliczane na jej własnym koncie. Sandbox jest na koniec swojej
+godziny wstrzymywany, a nie zabijany, więc workspace o dłuższym zakresie zachowuje
+pliki, a sweep niszczenia kończy go tak jak sandbox Daytona.
+
+**Połączenie OpenSandbox.** Wybierz `opensandbox` w **Ustawienia → Sandboksy → Połączenia**, wpisz adres serwera dostępny z backendu, wybierz jego klucz API z sejfu i podaj obraz, np. `python:3.12-slim`. Obraz wymaga powłoki POSIX i podstawowych narzędzi plików. Serwer jest utrzymywany osobno; obsługiwane są wdrożenia Docker i Kubernetes. Zobacz [konfigurację serwera OpenSandbox](https://open-sandbox.ai/getting-started/configuration). Użyj server/execd `release-1.2.0` lub późniejszej zgodnej wersji; execd musi mieć co najmniej 1.1.1 dla wyników poleceń. AgenticOS używa SDK 1.2 bez ponawiania poleceń i tworzenia.
+
+Przycisk **Testuj serwer i obraz** tworzy tymczasowy sandbox, sprawdza powłokę i usuwa go. Jawny test może pobrać obraz i zużyć zasoby; otwarcie formularza niczego nie tworzy. Opublikuj agenta z dotychczasową zdolnością sandboxa na tym połączeniu; narzędzia plików, powłoki i zakresy współdzielenia działają jak wcześniej. Domyślny obraz połączenia może mieć 512 znaków; opcjonalne nadpisanie runtime agenta nadal ma limit 64.
+
+Opcjonalny **Secure Access** wymaga bramy ingress OpenSandbox na Kubernetes. Docker odrzuca ten tryb. Ustawienie dotyczy nowych przestrzeni; jego zmiana nie odtwarza istniejących plików. Zresetuj lub przenieś przestrzeń jawnie, aby zmienić tryb. AgenticOS zawsze używa uwierzytelnionego proxy serwera API. Chroni to dostęp do endpointów, nie izolację procesów ani ruch wychodzący. Klucz API kontroluje wszystkie sandboxy tego serwera: osobne połączenia AgenticOS nie zapewniają odrębnych kluczy serwera ani izolacji wykonania organizacji. Operator izoluje serwer, socket Dockera, obciążenia i sieci; zastosuj osobne serwery, gdy wspólny serwer wykracza poza granicę zaufania. API powinno być w sieci prywatnej lub za uwierzytelnionym TLS; nie udostępniaj endpointów sandboxów publicznie.
+
+Kolejna tura łączy się z zapisaną przestrzenią. Brak lub niedostępność powoduje odmowę; identyfikator pozostaje, zamiast cichego tworzenia pustych plików. Reset wykonuj jawnie po odzyskaniu potrzebnych plików. Zamknięcie tury zwalnia klientów HTTP, a przestrzeń żyje zgodnie ze swoim zakresem; jawne sprzątanie korzysta z trwałej kolejki usuwania. Zachowaj połączenie i klucz do zakończenia oczekujących usunięć. AgenticOS nie wylicza wszystkich sandboxów serwera; panele sesji i limitów sandboxd nie opisują tego dostawcy.
+
+Walidacja objęła cykl życia na Dockerze, trwałość plików, ponowne połączenie, odmowę brakującej przestrzeni i sprzątanie na server/execd 1.2.0. Secure Access na Kubernetes nie przetestowano na rzeczywistym klastrze. Cofnięcie migracji `0317_opensandbox_connections.py` jest odrzucane, dopóki istnieją połączenia OpenSandbox lub nazwy runtime dłuższe niż 64 znaki.
+
+**Własny komputer osoby.** W [aplikacji desktopowej](desktop.md#work-on-this-computer)
+czat może pracować w folderze na komputerze, na którym działa. Narzędzia sięgają
+go przez połączenie aplikacji z serwerem, a to aplikacja - nie ten serwer -
+odrzuca każdy folder i tryb, którego osoba nie przyznała; zapisy działają pod
+Seatbelt na macOS albo bubblewrap na Linuksie. Tylko własne czaty osoby i
+triggery działające jako ich twórca sięgają jej komputera; run czeka do dziesięciu
+minut, aż się połączy. Nic z tego nie jest tu trzymane: nie ma wiersza workspace'u
+ani sesji do sprzątania.
+
 ## Podsumowanie { #recap }
 
 - Kontener API **nie trzyma gniazda Dockera**. Trzyma je `sandboxd`, a sandbox
   jest jego rodzeństwem, a nie kontenerem w jego środku.
 - **Klucz sesji** zawiera w sobie zasięg, organizację, rodzaj backendu i host —
   czyli dokładnie to, co decyduje, kto dzieli kontener.
+- **Dostarczane są dwa runtime'y**, `workbench` i `desktop`, a model jest
+  informowany o tym, co jest w tym, na którym działa, składanym z tego samego
+  katalogu, który go zbudował.
+
+- **Nowy agent zaczyna na workspace'ie, który jego organizacja może
+  opublikować**: kontenerowym tam, gdzie połączenie istnieje albo da się je
+  założyć, a w przeciwnym razie na `state`.
 - **Dostarczany jest jeden runtime**, `workbench`, a model jest informowany o tym,
   co w nim jest, składanym z tego samego katalogu, który go zbudował.
 - Zapis tego, co zrobił agent, żyje w **tabeli tej platformy**, trzyma ścieżkę,
   a nigdy zawartości, i przeżywa agenta.
 - **Pliki są trzymane bezterminowo**, chyba że ustawisz `SANDBOXD_WORKSPACE_TTL`.
   Zużycie dysku tylko rośnie.
+- **E2B i własny komputer osoby** to też sandboksy: jeden na własnym kluczu
+  organizacji, drugi trzymany tego, co osoba na nim przyznała.
+
+Backend `state` wlicza pliki i puste katalogi do limitu przechowywania, również przy końcowym scalaniu równoległych zmian. Jeśli osobno zaakceptowane dokumenty nie mieszczą się razem, wspólny dokument pozostaje bez zmian, a późniejszy zapis trafia do kopii odzyskiwania w **Documents**. Run zapisuje błąd z identyfikatorem kopii; operacja na projekcie zwraca konflikt zamiast sukcesu. Kopie projektów wymagają uprawnień do przeglądania i używania projektu. Klucz obcy usuwa kopię wraz ze źródłem, także przy równoczesnym usuwaniu danych. Obniżenie limitu poniżej rozmiaru istniejącego dokumentu nadal pozwala go zmniejszać.
+
+Instrukcje workbench wyjaśniają agentom, że polecenia działają w POSIX `/bin/sh`, a nie w Bashu. Na przykład `mkdir -p sources inbox notes` tworzy trzy foldery; ta powłoka nie rozwija `{sources,inbox,notes}`. Pliki projektu należą do `/workspace`; katalog domowy (`~`) znajduje się poza współdzielonymi plikami. Każde polecenie uruchamia nowy proces, więc zmienne powłoki i zmiany katalogu nie przechodzą do kolejnego wywołania. Agent ma sprawdzać błędy i pliki przed zgłoszeniem powodzenia.

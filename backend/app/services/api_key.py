@@ -10,17 +10,15 @@ The plaintext is in exactly one response, the one that creates it. It is never
 logged, audited or returned again; refusals name the key by its prefix at most.
 """
 
-from __future__ import annotations
-
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import record_audit
+from app.core.audit import current_impersonator, record_audit
 from app.core.exceptions import AuthenticationError, InternalError, NotFoundError
 from app.core.field_errors import refused_field
 from app.core.permissions import AuthContext, Perm
@@ -67,6 +65,7 @@ _READ_ONLY = frozenset(
         Perm.SKILLS_VIEW,
         Perm.CONTEXT_VIEW,
         Perm.ARTIFACTS_VIEW,
+        Perm.PROJECTS_VIEW,
         Perm.RUNS_VIEW,
         Perm.MEMBERS_VIEW,
     }
@@ -124,6 +123,8 @@ class KeyCaller:
     surface: ChangeSurface = "api_key"
     """Which kind of client holds the key - what a change it makes is attributed to."""
 
+    name: str = ""
+
 
 class ApiKeyService:
     def __init__(self, db: AsyncSession) -> None:
@@ -148,8 +149,11 @@ class ApiKeyService:
             presets.append(ApiKeyPreset(id="read_only", scopes=read_only))
         if set(held) >= _KNOWLEDGE_INGEST:
             presets.append(ApiKeyPreset(id="knowledge_ingest", scopes=sorted(_KNOWLEDGE_INGEST)))
-        if held:
-            presets.append(ApiKeyPreset(id="full_access", scopes=[perm.value for perm in held]))
+        # Standing personal consent is a separate, informed opt-in, including
+        # when the person chooses the broad organization-access preset.
+        ordinary = [perm.value for perm in held if perm is not Perm.PERSONAL_CONSENT]
+        if ordinary:
+            presets.append(ApiKeyPreset(id="full_access", scopes=ordinary))
         return ApiKeyScopeCatalog(scopes=[perm.value for perm in held], presets=presets)
 
     async def create(self, ctx: AuthContext, data: ApiKeyCreate) -> ApiKeyCreated:
@@ -265,7 +269,9 @@ class ApiKeyService:
         )
         return key
 
-    async def issue_for_run(self, ctx: AuthContext) -> str | None:
+    async def issue_for_run(
+        self, ctx: AuthContext, *, agent_id: UUID | None = None, conversation_id: UUID | None = None
+    ) -> str | None:
         """A short-lived credential carrying `ctx`, for the in-app assistant (#1798).
 
         The assistant operates the platform through the public API as the person
@@ -293,6 +299,20 @@ class ApiKeyService:
             oauth_grant_id=None,
             internal=True,
         )
+        provenance: dict[str, UUID] = {}
+        if agent_id is not None:
+            provenance["source_agent_id"] = agent_id
+        if (
+            conversation_id is not None
+            and ctx.api_key_id is None
+            and ctx.key_scopes is None
+            and ctx.fired_as_creator is None
+            and ctx.routine_id is None
+            and current_impersonator() is None
+        ):
+            provenance["source_conversation_id"] = conversation_id
+        if provenance:
+            await api_key_repo.update(self.db, key=_row, update_data=provenance)
         return key
 
     async def list_keys(self, ctx: AuthContext) -> ApiKeyList:
@@ -345,7 +365,39 @@ class ApiKeyService:
         if key is None or not secrets.compare_digest(key.key_hash, _digest(raw)):
             raise AuthenticationError(message=_REFUSED)
         now = datetime.now(UTC)
-        if _status(key, now) != "active":
+        caller = await self._caller(key, now)
+        await api_key_repo.touch(self.db, key.id, at=now, stale_before=now - _TOUCH_EVERY)
+        return caller
+
+    async def context_for_key(self, api_key_id: UUID, *, organization_id: UUID) -> AuthContext:
+        """The context a key stands for *now*, for work it asked for earlier.
+
+        An asynchronous run executes after the request that queued it, and the
+        key may have been revoked, or its issuer demoted or removed, in between.
+        So the worker re-establishes the context by the same checks
+        `authenticate` makes - minus the secret, which it never had - rather
+        than trusting the one the request was answered under.
+
+        One check differs: a key that has merely expired still stands for work it
+        started while it was valid. Expiry bounds what a key can start; the work
+        then belongs to its issuer, so an OAuth token's hour or a run credential's
+        two hours do not cut a long run short. Revoking the key, or its OAuth
+        grant, stops the work, as does its issuer leaving.
+
+        Raises:
+            AuthenticationError: The key is gone or revoked, or its issuer is no
+                longer an active member of its organization.
+        """
+        key = await api_key_repo.get(self.db, api_key_id, organization_id=organization_id)
+        if key is None:
+            raise AuthenticationError(message=_REFUSED)
+        return (await self._caller(key, datetime.now(UTC), started_earlier=True)).context
+
+    async def _caller(
+        self, key: ApiKey, now: datetime, *, started_earlier: bool = False
+    ) -> KeyCaller:
+        status = _status(key, now)
+        if status == "revoked" or (status == "expired" and not started_earlier):
             raise AuthenticationError(message=_REFUSED, details={"prefix": key.prefix})
         membership = await member_repo.get_active(
             self.db, organization_id=key.organization_id, user_id=key.user_id
@@ -354,12 +406,12 @@ class ApiKeyService:
         organization = await organization_repo.get_by_id(self.db, key.organization_id)
         if membership is None or issuer is None or not issuer.is_active or organization is None:
             raise AuthenticationError(message=_REFUSED, details={"prefix": key.prefix})
-        await api_key_repo.touch(self.db, key.id, at=now, stale_before=now - _TOUCH_EVERY)
         return KeyCaller(
             user=issuer,
             organization=organization,
             api_key_id=key.id,
             prefix=key.prefix,
+            name=key.name,
             surface="mcp" if key.oauth_grant_id else "assistant" if key.internal else "api_key",
             context=AuthContext(
                 user_id=key.user_id,
@@ -367,11 +419,67 @@ class ApiKeyService:
                 role=membership.role,
                 api_key_id=key.id,
                 key_scopes=frozenset(Perm(scope) for scope in key.scopes if scope in Perm),
+                key_internal=key.internal,
+                source_conversation_id=key.source_conversation_id if key.internal else None,
             ),
         )
 
 
-async def mint_for_run(ctx: AuthContext) -> str | None:
+#: What a job's row says when the API key it was started with no longer stands.
+KEY_GONE = "The API key that started this was revoked or no longer exists, so it was stopped."
+
+
+async def job_context(
+    db: AsyncSession,
+    *,
+    organization_id: UUID,
+    user_id: UUID | None,
+    api_key_id: UUID | None,
+) -> AuthContext | None:
+    """The authority background work runs with, rebuilt when the work starts.
+
+    Work queued by a request runs later, under a context it rebuilds rather
+    than the request's: whoever started it may have lost their role, and a key
+    it was started with may have been narrowed or revoked. So it is the
+    starter's role as it is now, narrowed to the key's scopes as they are now
+    - a job does no more than the request that started it could do today. A
+    job is not the starter talking, so it reads and writes none of their
+    personal memory.
+
+    Returns:
+        The context, or `None` when the starter is no longer an active member.
+
+    Raises:
+        AuthenticationError: Started with a key that is now revoked, gone or in
+            another organization, with :data:`KEY_GONE` as the message the job's
+            row shows. A key that has only expired still stands for the job.
+    """
+    if api_key_id is not None:
+        try:
+            ctx = await ApiKeyService(db).context_for_key(
+                api_key_id, organization_id=organization_id
+            )
+        except AuthenticationError:
+            raise AuthenticationError(message=KEY_GONE) from None
+        return replace(ctx, subject_is_publisher_fallback=True)
+    membership = (
+        None
+        if user_id is None
+        else await member_repo.get_active(db, organization_id=organization_id, user_id=user_id)
+    )
+    if user_id is None or membership is None:
+        return None
+    return AuthContext(
+        user_id=user_id,
+        organization_id=organization_id,
+        role=membership.role,
+        subject_is_publisher_fallback=True,
+    )
+
+
+async def mint_for_run(
+    ctx: AuthContext, *, agent_id: UUID | None = None, conversation_id: UUID | None = None
+) -> str | None:
     """:meth:`ApiKeyService.issue_for_run`, committed before it returns.
 
     The credential is presented by an in-process request on a session of its
@@ -380,4 +488,6 @@ async def mint_for_run(ctx: AuthContext) -> str | None:
     flushed on the run's session would not be seen until the run ended.
     """
     async with get_db_context() as db:
-        return await ApiKeyService(db).issue_for_run(ctx)
+        return await ApiKeyService(db).issue_for_run(
+            ctx, agent_id=agent_id, conversation_id=conversation_id
+        )

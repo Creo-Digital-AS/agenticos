@@ -19,6 +19,11 @@ Three ways in, for three different callers.
 | **JWT** | `Authorization: Bearer <access token>` | A person, or something acting as one. Short-lived, refreshed with a refresh token |
 | **Session cookie** | set by the console | The browser only — the token is HttpOnly and never reaches JavaScript |
 
+Use `Authorization: Bearer aos_…` for organization keys. `X-API-Key` is a separate deployment
+service credential; sending an `aos_…` key there does not authenticate an organization request.
+Vault routes such as `GET /api/v1/secrets` and the console messages route require a signed-in
+session. API clients read conversation messages through `GET /api/v1/conversations/{id}/transcript`.
+
 ### Organization API keys
 
 A key is issued by a member, in one organization, from **Settings → API**
@@ -27,7 +32,7 @@ authority, narrowed twice:
 
 - **To the permissions it was issued with.** Pick a preset — *Read-only*,
   *Knowledge ingest*, *Full access* — or tick permissions from the
-  [catalog](permissions.md). You can only grant what you hold.
+  [catalog](https://vstorm-co.github.io/agenticos/permissions/). You can only grant what you hold.
 - **To what the issuer may do now.** Every request re-reads the issuer's
   membership, so demoting them narrows each of their keys at once. Removing them
   from the organization, or their leaving it, revokes every key they issued and
@@ -42,12 +47,46 @@ the key that acted — every entry recorded during a key-authenticated request
 carries `via_api_key` in its details. A key can have an expiry, and revoking it
 (`DELETE /api/v1/api-keys/{id}`) takes effect on its next request.
 
+The console puts your keys before the connection guide, with active keys first.
+Search by name, prefix or issuer; phone cards keep expiry and last use visible.
+In **Create key**, expand the permission details for a preset, or choose
+**Custom** to search individual permissions. Searching does not clear selections.
+Enter in the name field creates the key; Enter in the permission search does not submit.
+
+Fields and dismissal are locked while a key is being created. A refusal keeps
+your draft for retry. After creation, copy the key before closing; a clipboard
+refusal leaves the value available for another attempt. Closing clears the
+creation state. A refused revocation keeps its confirmation open for retry.
+
 **A key is not its issuer's person.** A run it starts is owned, budgeted and
 audited as the issuer, but it reaches none of their personal state: no
-[memory](reference/capabilities.md#whose-notes-and-who-may-hear-them), no search
+[memory](https://vstorm-co.github.io/agenticos/reference/capabilities/#whose-notes-and-who-may-hear-them), no search
 of their past conversations, no sites they kept signed in for the browser, and
 no user-scoped sandbox workspace. Whoever holds the key is a script, not the
 person, so the run answers as it would on a public widget.
+
+Approving personal routines and watches requires the explicit `personal:consent` scope, selected under **Custom** when issuing a key or authorizing an MCP client. It is excluded from every preset, including **Full access**. The confirmation allows the credential to approve persistent routines and watches using your personal connections and data; ordinary `agents:run` and `runs:view` scopes do not. Existing keys and MCP authorizations gain no personal consent automatically.
+
+**Setting up work that acts as you is yours to do with a key you issued.** A
+key you created, or an MCP client's token you authorized, may create and change
+your own [routines](https://vstorm-co.github.io/agenticos/triggers/) that act as you (`runs_as_creator`) and your
+[watches](https://vstorm-co.github.io/agenticos/console/), review a routine's sources, and publish an agent without
+withdrawing the consent of routines you made to act as you. The run those
+routines start is still the routine's, under its reviewed sources and budget.
+An agent's own run credential cannot do this outside your private chat, and
+neither can an administrator impersonating you.
+
+Conversations are public too: `GET /api/v1/conversations` lists the issuer's
+chats (`runs:view`), and `POST /api/v1/conversations` with a `title` and
+`PATCH /api/v1/conversations/{id}` open and rename one (`agents:run`) - for
+example a topic chat a routine answers in. `POST /api/v1/me/mcp-connections/{id}/test`
+checks one of your own connections and refreshes its tools (`agents:run`).
+
+Read-only connection discovery is also public: `GET /sandbox-connections`,
+`GET /sandbox-connections/runtimes` and `GET /sandbox-connections/{id}/policy`
+require `connections:view`; `GET /mcp-connections` requires `mcp:manage`.
+Organization and key scopes still apply. Connection writes and credential
+operations remain session-only.
 
 ```bash
 curl "$BASE/api/v1/me/permissions" \
@@ -58,7 +97,7 @@ Two refusals are worth knowing:
 
 - **`403` "API keys are not accepted on this endpoint"** — keys are accepted on
   the public API only: agents, runs and approvals, knowledge bases and RAG, skills,
-  context files, apps, the ML services, `/me/permissions`, and an
+  context files, projects, apps, the ML services, `/me/permissions`, and an
   organization's members, invitations, groups and settings. The console's own
   routes, your account, leaving or handing over an organization, and key
   management itself stay session-only, so a leaked key cannot mint its successor.
@@ -121,6 +160,19 @@ Refreshing does not start a new session — the refresh token rotates in place a
 the access token keeps naming the same one — so a long-lived connection is not cut
 off by a routine refresh.
 
+### Work that runs after the request { #work-that-runs-after-the-request }
+
+An organization key cannot start an [eval run](evals.md) or a request to the [authoring
+assistant](authoring.md): those routes are for people signed in, and a key is answered
+`403` on them. Work that runs later, in the background, is held to its starter's
+authority as it stands when the work starts - a role lost since stops it. Were a key
+ever let start such work, the same would hold for the key: its scopes as they stand
+then, and a key revoked or deleted since stopping the work, with a reason on the run or
+the request.
+
+Expiry only bounds what a key can start: work it started while valid goes on after it
+expires.
+
 ## The organization header
 
 **An API key acts in its own organization**, and needs no header. Sending
@@ -131,11 +183,15 @@ organization; naming another one answers `400` with
 **A session token takes the tenant from `X-Organization-Id`.** A caller who
 belongs to three organizations is a different principal in each, with a
 different role and different grants, so send the header on every request. When
-it is absent the request falls back to the caller's **personal organization** —
-a script that forgets it acts there, with whatever agents, grants and budget
-that organization has, and gets no error. Send the wrong one and you get a
-refusal that looks exactly like the resource not existing — deliberately, so ids
-stay unprobeable.
+it is absent the request falls back to the deployment's **default organization**
+if the caller belongs to it, then to their **personal organization**, then to
+their only one — a script that forgets the header acts there, with whatever
+agents, grants and budget that organization has, and gets no error. A caller who
+belongs to several and has neither gets a `400` with
+`details.header = "X-Organization-Id"` rather than a guess
+([where a new account starts](https://vstorm-co.github.io/agenticos/deployment/#where-a-new-account-starts)). Send
+the wrong one and you get a refusal that looks exactly like the resource not
+existing — deliberately, so ids stay unprobeable.
 
 ## Running an agent
 
@@ -147,7 +203,39 @@ curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
 ```
 
 The response carries the run id, the output, the status, the tokens and the cost.
-`environment_id` in the body picks [which environment](environments.md) answers.
+`environment_id` in the body picks [which environment](https://vstorm-co.github.io/agenticos/environments/) answers.
+An agent with an [answer format](concepts.md#spec) answers with an object: it is in
+`structured`, already validated against the agent's `output_schema`, and `output`
+shows the same object as a JSON block.
+`"draft": true` runs the unpublished draft instead, as the Builder's test panel
+does: a test run, for a key whose issuer may edit the agent, refused with the
+reason when the draft would not publish, and never with `Prefer: respond-async`.
+
+Synchronous runs, including draft tests, return `status: awaiting_answer` and `questions` when the
+agent asks the person. Answer with `POST /api/v1/runs/{run_id}/answers`, using
+`{"responses":{"<tool_call_id>":[{"selected":["Choice"]}]}}`; use `answer` for custom text or
+`skipped: true` to skip deliberately. No response is treated as a refusal automatically. Platform
+MCP exposes the same flow as `test_agent_draft` and `answer_agent_questions`.
+
+Conversation history retains answered question cards and successful deferred capability loads.
+Current registered skills resolve their current instructions on the next turn; revoked skills are
+not re-enabled. Historical table results are not cached as current data. Top-level agent `starters`
+describes the published version; draft starters live under `draft_spec.starters`.
+
+A key also reaches an agent's routines - `GET /api/v1/triggers` and
+`GET`, `POST`, `PATCH` and `DELETE` under `/api/v1/agents/{agent_id}/triggers`,
+plus `POST .../{trigger_id}/run` to fire one now - and the organization's models
+at `GET /api/v1/providers/model-profiles`. Three routes act on the issuer
+themselves: `GET /api/v1/me/mcp-connections` lists the services they connected
+with their own account, `PUT /api/v1/users/me/locale` sets the console's
+language for them on every device, and `PATCH /api/v1/users/me/agent-context`
+saves their role (`job_title`) and what they work on (`about`), which every
+agent is told. Each needs a key issued for `agents:run`.
+
+`POST /api/v1/agents` creates an agent from the spec in its body, and keeps an
+empty field empty. With `"from_starter": true` it fills what the spec leaves out -
+the instructions, skills, the platform's own tools and the budget - from the
+AgenticOS starter agent, as **New agent** in the console does.
 
 **A run continues a conversation.** A call without `conversation_id` opens a new
 conversation for the key's issuer and returns its id as `conversation_id`; send
@@ -158,8 +246,20 @@ else's, answers `404`; one of the issuer's own conversations from the console or
 channel answers `400` - a key that may run agents was not given the person's chats.
 So does a parked run: a key resumes or answers only a run a key started, and
 one the person started answers `403`, since continuing it acts as them.
-The conversation is filed in the issuer's chat list,
-labelled **API** and hidden until they switch such conversations on there.
+The conversation is filed in the issuer's chat list, labelled **API** and hidden
+until they switch such conversations on there.
+
+A run asked in a chat is the exception to resuming it yourself. When a person
+decides its last pending approval, or answers its questions, the server continues
+the run as them and posts the answer to the chat. A key's decision continues
+nothing: a person has to resume that run from the console within about an hour of
+the last decision, or it is ended.
+
+`continues_in_chat` says so: it is on `ApprovalRead`, on `AgentRunRead` (the single
+read) and on the result of a resume and of an answer. It is always false on
+`POST /agents/{id}/run`, and for an API key. When it is true, do not call
+`/resume`. A `/resume` that arrives second gets the existing `400`, with the run's
+`status`. See [Decided outside the chat](https://vstorm-co.github.io/agenticos/channels/#decided-outside-the-chat).
 
 `GET /api/v1/conversations/{id}/transcript` reads one of the issuer's
 conversations turn by turn, with the tools each turn called and what it cost,
@@ -174,9 +274,42 @@ for a key holding `runs:view`.
     That is the point of one runner, and it is why there is no "fast path" that
     skips it.
 
+### Without holding the connection
+
+A run of minutes - a browse, a long tool chain - holds the request open the
+whole time, and a proxy's read timeout can cut it off while the run goes on.
+Send `Prefer: respond-async` and the call answers `202` at once instead, with a
+run request to poll:
+
+```bash
+curl -X POST "$BASE/api/v1/agents/$AGENT_ID/run" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: respond-async" \
+  -H "Idempotency-Key: ticket-4711" \
+  -d '{"prompt": "Summarise this quarter for the board"}'
+# 202, Location: /api/v1/run-requests/{id}, Preference-Applied: respond-async
+
+curl "$BASE/api/v1/run-requests/$REQUEST_ID" -H "Authorization: Bearer $AGENTICOS_KEY"
+```
+
+The request reads `queued`, `running`, then `completed` with `result` - the
+same body the synchronous call answers - or `failed` with `error`. Its
+`conversation_id` is known from the first answer, so a follow-up can be sent
+before the run ends. A worker runs it through the same runner, budget and
+approvals as every other surface.
+
+What can be checked at once is checked at once: an unknown conversation or
+attachment is a `404` on the `POST`, not a failure to poll for. The key's
+authority is checked again when the run starts, so a key revoked while its run
+waited does not run it; one that only expired meanwhile still does. Only the person who asked, or a key of theirs, can read
+a run request; anyone else's answers `404`. An asynchronous run gets one
+attempt - a run that failed is recorded with what it spent, and is not retried
+into spending it twice.
+
 The route carries a **rate limit rather than a permission gate**. Permission is
 decided inside the service, against that specific agent's grants — a role gate
-on a per-resource route [cannot see them](permissions.md).
+on a per-resource route [cannot see them](https://vstorm-co.github.io/agenticos/permissions/).
 
 `PATCH /api/v1/agents/{id}/metadata` sets an agent's **categories** and **tags**
 with a body like `{"categories": [...], "tags": [...]}`, where an empty list
@@ -195,12 +328,275 @@ crosses a tenant or a grant boundary.
 The response also carries `categories` and `tags`: every distinct label on the
 agents you could list, whatever the filter and the page — the choices a filter
 menu offers. A private agent you cannot see adds none.
+
+## Running a workflow
+
+Organization API keys may start runs and read their status, graph, steps, files and
+events through `/api/v1/workflow-runs`. Start with `workflows:run`; reading also needs
+`workflows:view`, and draft tests need `workflows:edit`. The worker retains the key's
+admitted scope ceiling and rechecks the key and the issuer on every step, including
+after an approval or wait. Revocation or deletion stops new work with
+`PRINCIPAL_REVOKED`; it never promotes a continuation to the issuer's full role.
+
+Expiry does not: an expired key starts nothing, but a run it started while valid goes
+on, so an OAuth token's hour does not cut a long wait short. Key-started runs have no
+access to the issuer's personal state. Workflow authoring remains session-only.
+
+API keys can list and read public-origin runs, including runs started by keys;
+member-started personal runs return `404`, including their graph, steps, events,
+files, retry and cancellation endpoints. A key cannot import files from those runs.
+
+```bash
+curl -X POST "$BASE/api/v1/workflow-runs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "'"$WORKFLOW_ID"'", "input": {"question": "How long do refunds take?"}, "deadline_seconds": 3600}'
+```
+
+This starts a run of the workflow's published version and answers `201` at
+once; the nodes run in the background. `input` is what the graph's
+[`core.input`](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/#core-input) trigger hands on, at most
+`WORKFLOW_RUN_MAX_INPUT_BYTES` as JSON (`413` past it). Only a version that starts
+from that trigger, or from none, is started here: any other answers `409
+WORKFLOW_TRIGGER_MISMATCH`, because a webhook, a schedule, a chat message or a
+table record starts it. `"mode": "test"` runs the current draft instead, from any
+trigger, and needs `workflows:edit`.
+
+Before calling, read `GET /api/v1/workflows/{id}/input-schema` with
+`workflows:view`. It returns the published `version_id` and an `entries` list with
+`entry_node_id`, `trigger` and effective `input_schema` for each Manual, API,
+Called by a workflow or Form entry. Pass `version_id` to inspect a specific
+published version. JSON Schema contracts are returned unchanged; simple fields
+are represented as JSON Schema, and untyped entries return `{"type": "object"}`.
+Use the intended entry's contract and pass its `entry_node_id` when starting.
+
+Legacy simple `integer` fields additionally require JSON integer tokens: `1`
+is accepted, while `1.0` and `1e0` are refused. Discovery marks these fields with
+`x-agenticos-strict-integer: true`, including inside optional nullable fields.
+Ordinary JSON Schema cannot assert this token distinction, so schema validation
+alone is insufficient for those legacy fields; server admission remains authoritative.
+Raw JSON Schema contracts use standard integer semantics instead.
+
+The optional [JSON Schema input contract](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/#json-schema-input-contracts)
+is checked before admission. A mismatch answers `422 WORKFLOW_RUN_INPUT_INVALID`
+with field paths and messages in `error.details.fields`; no run is created.
+Each entry has `field` and `message`; nested request paths include array indices,
+for example `input.items.0.sku`. For existing callers, `error.details.problems`
+also retains `field`, `message` and `type` with paths relative to the input object.
+The contract comes from the current published version, or from the draft for
+`"mode": "test"`. It applies equally over WebSocket and MCP and when another
+workflow calls it.
+
+`deadline_seconds` (up to thirty days) sets
+a deadline that is checked each time a node is about to be dispatched: the
+first node due after it passes fails the run with `DEADLINE_EXCEEDED`, while a
+node already running, or a run parked on an approval, is not interrupted by it. The route is rate-limited per caller like the agent run route,
+answering `429` with `Retry-After` past the allowance.
+
+`GET /api/v1/workflow-runs/{id}` returns the run's status, `spent_cost`,
+`error` and, once its [`core.output`](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/#core-output)
+node has run, its `output`, and `POST /api/v1/workflow-runs/{id}/cancel` stops it. `GET
+/api/v1/workflow-runs/{id}/events?after=<cursor>` returns the run's event stream
+oldest first, with a `next_cursor` to pass back as `after`: it stays the same
+while nothing newer exists, so polling with it tails a live run. Who may do each
+of these is in [Permissions](https://vstorm-co.github.io/agenticos/permissions/#workflow-runs).
+
+`GET /api/v1/workflow-runs/{id}/nodes` lists every step the run took, loop
+iterations included, each with its `scope_path`, status, tries, cost and the typed
+error it last failed with, and `GET /api/v1/workflow-runs/{id}/graph` returns the
+graph the run executes: its version's, or a test run's draft snapshot.
+
+### Reading a workflow's log { #reading-a-workflows-log }
+
+The lines a workflow's [Quick Logs](workflows.md#the-logs-page) wrote can be read from
+outside the console - by a script, a spreadsheet, or a dashboard tool such as Grafana or
+Metabase - with an organization API key holding `workflows:view`.
+
+A key reads the lines of public-origin runs, including runs started by keys: those
+started by any organization key, those started from outside (a webhook, form, channel
+message, Gmail, Outlook or GitHub event) and any run in a chain one of those started.
+Lines of runs a member, a schedule, a table record, a chat, an agent or an app started
+are not included, so a scheduled workflow's log reads empty through a key and its counts
+differ from the console's. A workflow of another organization, or one the key's member
+may not view, answers `404`; a key without `workflows:view` is refused.
+
+```bash
+# The newest lines, 100 at a time (the most a page holds); test runs are left out
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs?outcome=error&from=2026-10-01T00:00:00Z&limit=100" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+
+# How many lines each day left, by outcome, over the last 30 days in Warsaw's days
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&tz=Europe/Warsaw" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflows/{id}/logs` lists newest first - by `created_at`, then by `seq`,
+the position a line took in the log as it was written. Narrow it with `node_instance_id`
+(one step), `outcome` (a port, or `error`; repeat it to match any of several, and a
+line that left by several ports matches each of them), `run` (a run id, or its first 4 or more
+characters), `q` (text in the message) and the time window `from` (inclusive) and `to`
+(exclusive); `include_test=true` adds the lines test runs wrote. `skip` and `limit` page
+through it - `limit` is at most 100 - and `total` counts every matching line, so a
+client pages until `skip` reaches it.
+
+`GET /api/v1/workflows/{id}/logs/summary` is the data a chart wants: for the last
+`days` days (7, 30 or 90, today included) it answers one entry per day, oldest first,
+with the count each outcome left, and a day with no lines is still present. `tz`, an
+IANA name, sets whose days are counted and is UTC by default; the other filters are the
+list's. To pull it into a dashboard tool, point a JSON data source at the route with the
+key as a bearer header and read `by_day`.
+
+```bash
+# Errors and timeouts per day for a month: one JSON data source for a dashboard panel
+curl "$BASE/api/v1/workflows/$WORKFLOW_ID/logs/summary?days=30&outcome=error&outcome=timeout" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID"
+```
+
+`GET /api/v1/workflow-runs/{id}/logs` lists one run's lines oldest first by `seq`
+(`limit` up to 500), and `GET /api/v1/workflow-logs` the newest lines across every
+workflow the key may view, each with its workflow's name, plus how many lines each
+outcome left in the last 24 hours. The alert rules on a log are not part of the public
+API.
+
+### Exporting and importing a workflow { #exporting-and-importing-a-workflow }
+
+`GET /api/v1/workflows/{id}/export` (`workflows:view`) returns the draft as a
+portable file: `name`, `description`, `tags`, `settings`, `graph` and
+`unresolved`, the step and field of every resource pin it left out. It carries no
+id of this deployment and no secret value. `POST /api/v1/workflows/import`
+(`workflows:create`) takes that file and answers `201` with the new draft
+`workflow` and its `unresolved` pins; a graph that does not parse, or names a step
+this deployment does not have, is a `400` and makes nothing.
+
+### Following a run over a WebSocket { #following-a-run-over-a-websocket }
+
+`/api/v1/ws/workflow-runs?organization_id=<org>` authenticates like the chat's
+socket, with the access token as the `access_token.<token>` subprotocol. Send
+`{"type": "start", "workflow_id": ..., "input": {...}}` to start a run, or
+`{"type": "attach", "run_id": ..., "after": <cursor>}` to follow one. The server
+sends `{"type": "run", "run": {...}}` when it starts following and again when the
+run ends, and `{"type": "event", "event": {...}, "cursor": ...}` for every event
+between. A refused frame gets `{"type": "error", "code": ..., "message": ...}`,
+and a revoked session closes the socket with `4001`. One socket follows one run;
+a new frame replaces the run it was following. A `start` frame spends the per-minute
+allowance `POST /workflow-runs` does, and past it gets `RATE_LIMIT_EXCEEDED`.
+
+### Webhooks and schedules { #workflow-webhooks-and-schedules }
+
+Webhook and GitHub delivery IDs survive run-content retention as minimal tombstones owned by the exposure and organization. A duplicate still returns the original run UUID after its content is deleted; its status and previous webhook response may no longer be available. Deleting the exposure or organization ends that deduplication lifetime. Migration `0230_webhook_delivery_tombstones.py` cannot restore claims already deleted by older retention; downgrading removes orphan tombstones before restoring the old cascading foreign key.
+
+Unattended trigger publication and authority changes require a member session (`403` for an organization API key). Keys may publish manual workflows, start runs within their scopes and pause exposures, but cannot enable them, rotate secrets/form links, retime schedules or choose a new error-workflow identity. These operations retain a user's authority for future events.
+
+Public workflow form submissions enforce the workflow input byte limit while reading the request stream, before JSON parsing or token lookup. Oversized declared or chunked bodies return `413`; malformed JSON and invalid submission fields return `422`. Each entry of a `422`'s `details.problems` is `{field, message, type}`, where `type` is the validator's own error type (`missing`, `int_type`, `extra_forbidden`, ...), so a form can say per answer what it needed.
+
+
+A workflow whose trigger node is a webhook or a schedule gets its exposure when
+that version is published, and the publish response carries it as `exposure`. A
+webhook's signing secret is in the publish's `webhook_secret` the first time it is
+switched on, and nowhere else. `GET /api/v1/workflows/{id}/exposure` reads it back,
+or `null` for a workflow that starts another way. `PATCH
+.../exposures/{exposure_id}` with `{"is_active": false}` pauses it, and `POST
+.../exposures/{exposure_id}/rotate-secret` replaces a webhook's secret and returns
+the new one once. Both need `workflows:edit` and `workflows:run` on the workflow. A
+webhook's `webhook_url` is where the sender delivers:
+
+```bash
+BODY='{"lead": 42}'
+SIGNATURE="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)"
+curl -X POST "$WEBHOOK_URL" \
+  -H "X-Signature-256: $SIGNATURE" \
+  -H "X-Delivery-Id: lead-42" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
+```
+
+It answers `202` with `{"run_id": ..., "duplicate": false}` as soon as the run is
+admitted, never waiting for the run itself. A delivery id already admitted answers
+`"duplicate": true` with the first run's id, and so does the same signed request under
+another id within 24 hours. A signature that does not verify is a
+`403`, a delivery with no id or with a body that is not a JSON object a `400`, and
+a paused or unknown webhook a `404`.
+
+A graph with a [Respond to webhook](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/#webhook-respond)
+step answers with that step's status, headers and JSON body instead, and a retry
+of the delivery gets the same answer. The request waits for it for up to
+`WORKFLOW_WEBHOOK_RESPONSE_TIMEOUT_SECONDS`, then answers `202` as above; a run
+that fails, is cancelled or runs out of budget before answering is a `500`
+`WORKFLOW_WEBHOOK_UNANSWERED` naming the run.
+
+Before publishing, `POST /api/v1/workflows/{id}/webhook-test` (`workflows:edit`)
+opens a test URL for the draft, returned as `url` with the `test_token` in it and open
+for one call for two minutes. The call needs no signature, is answered
+`{"captured": true}` and starts no run. `GET .../webhook-test/{token}` reads back
+`state` (`listening`, `caught` or `expired`) and the `delivery` it caught.
+
+Expired internal and OAuth key rows are retained while a workflow, eval, improvement run, authoring request, skill check, case generation or queued/running background job still needs them. Once that work finishes, the usual cleanup may remove them.
+
+## Working with tables { #working-with-tables }
+
+A record's `values` are keyed by column id; `GET /api/v1/tables/{id}` lists the
+columns. Every write takes an `Idempotency-Key`: a retry with the same key and body
+answers with the first write's result and `Idempotent-Replayed: true` instead of
+writing again, and the same key with a different body is `422`.
+
+```bash
+curl -X POST "$BASE/api/v1/tables/$TABLE_ID/records" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Organization-Id: $ORG_ID" \
+  -H "Idempotency-Key: lead-ada-2026-09-29" \
+  -H "Content-Type: application/json" \
+  -d '{"external_id": "ada@example.com", "values": {"'"$EMAIL_COLUMN"'": "ada@example.com"}}'
+```
+
+`PATCH .../records/{record_id}` changes some cells and needs the
+`expected_revision` you last read; a stale one is `409 REVISION_CONFLICT`. `PUT
+.../records/by-external-id/{external_id}` creates the record or updates it, with
+`expected_revision` required once it exists. `POST .../records/query` filters,
+searches and sorts one page at a time, and `POST .../records/count` says how many
+records the same filters and search match, up to 100,000.
+
+A workflow whose trigger node is **Table record** runs, once it is published, for
+the records of its table added, changed or deleted - whichever its trigger names. `GET .../triggers` lists the workflows that
+start from a table, `PATCH .../triggers/{trigger_id}` with `{"is_active": false}`
+pauses one, and `GET .../triggers/{trigger_id}/admissions` lists what it decided
+about each record. See [Triggers](virtual-tables.md#triggers).
+## Agents over A2A
+
+An agent its organization serves over A2A answers JSON-RPC at
+`POST /api/v1/a2a/{agent_id}`, with the same keys as `/run`; its agent card is at
+`GET /api/v1/a2a/{agent_id}/.well-known/agent-card.json` and needs none.
+`PUT /api/v1/agents/{id}/a2a` with `{"enabled": true}` turns it on, for a caller
+holding `agents:publish` on that agent.
+
+```bash
+curl -X POST "$BASE/api/v1/a2a/$AGENT_ID" \
+  -H "Authorization: Bearer $AGENTICOS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "message/send",
+       "params": {"message": {"role": "user", "messageId": "m1",
+                              "parts": [{"kind": "text", "text": "Review clause 7"}]}}}'
+```
+
+The answer is a `Task` whose id is the run's and whose `contextId` continues the
+conversation. `tasks/get` reads one again. [Channels](https://vstorm-co.github.io/agenticos/channels/#a2a) has the
+rest.
+
+Remote agents this organization delegates to are registered at
+`/api/v1/external-agents`: `GET` lists them (`agents:view`); `POST` with a
+`card_url`, an optional `slug` and an optional API key `secret_id` reads the card
+and registers it, and `POST /{id}/refresh` reads it again; `DELETE /{id}` removes
+one (`agents:edit` for all three).
+
 ## The ML services
 
 Four of the platform's services answer on their own, with no conversation and no
 agent behind them: document analysis, OCR, speech to text and personal data
 detection. They are gated on `ml:invoke` rather than `agents:run`, and
-[The ML services](ml-services.md) is their reference.
+[The ML services](https://vstorm-co.github.io/agenticos/ml-services/) is their reference.
 
 ```bash
 curl -X POST "$BASE/api/v1/ml/privacy/pii" \
@@ -218,7 +614,8 @@ example names; the console shows the key once.
 **Put a document into a knowledge base and search it** — a key with
 `collections:view` and `collections:edit` (the *Knowledge ingest* preset).
 Ingestion runs in the background, so a search right after the upload may not find
-the document yet; `GET /api/v1/kb/$KB_ID/documents` shows its status.
+the document yet; `GET /api/v1/kb/$KB_ID/documents` shows its status, and
+`GET /api/v1/kb/$KB_ID/ingestion` answers `complete` once none is still processing.
 
 ```bash
 # Find the knowledge base, upload a file into it, and search it.
@@ -298,19 +695,121 @@ Two WebSocket endpoints, for two audiences.
   turn on this socket is a person at the keyboard, with their personal
   connections. Integrations run agents with `POST /api/v1/agents/{id}/run`.
 - **`/api/v1/embed/{public_key}/ws`** — the public one behind an
-  [embed](channels.md), for a visitor who has no account.
+  [embed](https://vstorm-co.github.io/agenticos/channels/), for a visitor who has no account.
 
 Both stream tokens as they arrive (an agent with an output guardrail streams a step
-at a time, see [Guardrails](reference/capabilities.md#guardrails)) and both produce
+at a time, see [Guardrails](https://vstorm-co.github.io/agenticos/reference/capabilities/#guardrails)) and both produce
 an ordinary run, with the same books as everything else.
 
 A third, **`/api/v1/ws/events`**, only listens. It is how an open console
-[keeps up with changes made elsewhere](console.md#changes-made-elsewhere):
+[keeps up with changes made elsewhere](https://vstorm-co.github.io/agenticos/console/#changes-made-elsewhere):
 authenticated the same way, with the organization in `?organization_id=`, it
 sends one JSON frame per successful public write in that organization —
 `resource`, `id`, `action` (`created`, `updated` or `deleted`), `surface`
 (`console`, `api_key`, `mcp` or `assistant`) and who made it — and only for rows
-the caller may read.
+the caller may read. Changes nobody wrote arrive the same way: `run` for a run
+moving through its states, and `system` for the platform's own scheduled work,
+such as a knowledge gaps grouping pass.
+
+## Voice calls
+
+A [voice call](https://vstorm-co.github.io/agenticos/voice/) has a socket of its own, because a call is not a turn
+loop: **`/api/v1/ws/voice`** for a member, and
+**`/api/v1/embed/{public_key}/voice/ws`** for a visitor on a widget or a hosted
+page ([admission](https://vstorm-co.github.io/agenticos/channels/#the-call-socket)). Both speak the same frames,
+defined in `backend/app/schemas/voice.py`.
+
+The console socket authenticates as `/ws/agent` does: the token as a
+`Sec-WebSocket-Protocol` entry `access_token.<JWT>` (or the same-origin cookie),
+never in the query string, and the organization as `?organization_id=`. It
+closes with `4001` without a valid session and `4003` when the caller is not a
+member or authenticated with an organization API key: a call is a person at the
+microphone, as a chat turn is a person at the keyboard.
+
+The embed socket closes with `4029` past a rate limit and `4003` for any
+refusal about the embed. Every heartbeat re-checks the session, so a call does
+not outlive a sign-out.
+
+**The client sends** JSON frames, and over the relay binary audio too:
+
+| Frame | Fields | When |
+|---|---|---|
+| `start` | `agent_id`, `conversation_id`, `sdp_offer` (WebRTC), `resume_of` and `resume_token` (a reconnect), `context` (an embed's variables) | First, within 10 seconds |
+| `approval` | `id`, `decision` (`approve` or `deny`) | Deciding an approval the call is waiting on |
+| `mute` | `muted` | The relay: the microphone muted |
+| `played` | `bytes` | The relay: how much of the agent's audio has been played |
+| `end` | - | Hanging up |
+| *binary* | 16-bit PCM at the model's input rate | The relay: the caller's audio |
+
+**The server sends:**
+
+| Frame | Fields | Means |
+|---|---|---|
+| `answer` | `sdp` | WebRTC: the provider's answer for the browser's peer connection |
+| `ready` | `call_id`, `run_id`, `conversation_id`, `transport`, `input_sample_rate`, `output_sample_rate`, `cap_seconds`, `resume_token` | The call is set up. `resume_token` is sent only here, to this caller; a reconnect sends it back |
+| `state` | `state`: `connecting`, `listening`, `user_speaking`, `thinking`, `agent_speaking`, `interrupted`, `tool_running`, `awaiting_approval` | Who is talking, or what the agent is doing |
+| `caption` | `role`, `turn_id`, `part`, and one of `delta` (append), `text` (replace with the screened text so far) or `final` | A live caption |
+| `turn_saved` | `message` | A finished turn, as the message it was saved as; it replaces the captions carrying its `turn_id` |
+| `tool` | `name`, `status` (`running` or `done`) | A tool the agent is running |
+| `approval_required` | `id`, `tool`, `args`, `said`, `timeout_seconds` | An approval for the person on the call: the exact arguments, and what they were heard to say |
+| `approval_unavailable` | `tool`, `args` | A tool call this caller cannot approve by voice |
+| `approval_settled` | `id`, `outcome` (`approved`, `denied` or `expired`) | How an approval ended |
+| `notice` | `kind`, `message` (optional) | Something to say in words: a guardrail hit, a limit being reached |
+| `limit` | `seconds_left` | The call's time is nearly up |
+| `clear_playback` | - | The relay: drop the agent's queued audio |
+| `ended` | `reason`, `message` | The call is over |
+| *binary* | 16-bit PCM at the model's output rate | The relay: the agent's audio |
+
+**A visitor on a widget or a hosted page is told less.** `ready` leaves out
+`run_id`; its `cap_seconds` is the call's limit - the agent's longest call, or
+what is left of a call being resumed. The tool frames follow the
+embed's `show_tool_steps` and `show_tool_results` switches, as a typed reply's
+do. Without tool steps no `tool` frame is sent and `tool_running` is sent as
+`thinking`. Without tool results, `approval_unavailable` is sent with empty
+`args`. A visitor's `turn_saved` carries only the message's `id`, `role`,
+`content`, `interrupted` and `turn_id`, whatever the switches: never its run,
+agent or version ids, its cost or its tool calls.
+
+**A reconnect proves it holds the call.** A `start` with `resume_of` must also
+carry the `resume_token` from that connection's `ready`. Without it, or with a
+wrong one, the reconnect is refused as `resume_refused` and the call it names
+is not touched. The server keeps only a hash of the token. A call already made
+of 20 connections is not resumed again: its next reconnect is refused as
+`resume_refused` too.
+
+A socket that sends no `start` within 10 seconds gets `ended` with `no_start`.
+A call that will not start answers with `ended` and a stable `reason`:
+`no_agent`, `forbidden`, `not_configured`, `bad_offer`, `data_channel`,
+`resume_refused`, `call_limit`, `not_priced`, `budget`, `busy` or `line_busy`,
+with a `message` safe to show. `busy` is said only after a call the same person
+hung up a moment ago has had up to four seconds to finish ending. A start that
+fails for any other reason answers `ended` with `error`.
+
+A visitor refused as `not_configured`, `not_priced` or `budget`, or a visitor's
+call that ends as `budget`, gets `unavailable` instead,
+with the message "Calls are not available right now.": the code and the full
+message are the agent's operator's to know. A call into an archived
+conversation is refused as `forbidden`, as a typed message into one is refused.
+
+A call that ran ends with `user`, `time_limit`, `budget`, `disconnected`,
+`revoked`, `guardrail`, `shutdown` or `error`; `time_limit` when the agent's
+longest call was reached. A visitor's call ends as `revoked` when its embed is
+paused, has its calls
+switched off or is pointed at another agent. No frame ever carries a provider
+credential.
+
+Five HTTP routes go with it:
+
+| Route | Gate | Answers |
+|---|---|---|
+| `GET /api/v1/agents/{agent_id}/voice` | `agents:run` on that agent, a grant included; `404` otherwise | Whether a call would start, why not (`no_voice`, `not_offered` or `no_key`), the transport and the longest call |
+| `POST /api/v1/agents/{agent_id}/voice/preview` | `agents:edit` on that agent, a grant included; `404` otherwise | A draft Voice section's voice saying one fixed sentence, as `audio/wav`. Cached per voice and language; `RATE_LIMIT_VOICE_PREVIEW_PER_MINUTE` per person |
+| `GET /api/v1/providers/realtime-models` | `agents:view` | The realtime catalog the Voice section picks from |
+| `GET /api/v1/voice/usage?start=…&end=…` | `runs:view` | Call seconds and calls for calls started at or after `start` and before `end`, by agent (a deleted agent's calls as one row with no id or name). An `end` not after `start` is refused with `422` |
+| `GET /api/v1/runs?modality=voice` | `runs:view` | Calls only (`text` for typed runs only); a call that reconnected is one row carrying `voice_chain`, every connection summed |
+
+An approval that belongs to a live call is decided in the call:
+`POST /api/v1/approvals/{id}` refuses it with `400`.
 
 ## Errors
 
@@ -347,8 +846,9 @@ sending the request again starts a new run.
 
 ## Retries, idempotency and revisions
 
-v1 has no `Idempotency-Key` header and no revision preconditions: no `ETag`, no
-`If-Match`. A write is applied when it arrives, and the last one wins.
+v1 has no revision preconditions: no `ETag`, no `If-Match`. A write is applied
+when it arrives, and the last one wins. `Idempotency-Key` is honoured on one
+route, the asynchronous run.
 
 - **`GET`, `PUT` and `DELETE` are safe to repeat.** Reading twice reads twice;
   deleting what is already gone answers `404`, which a retry can treat as done.
@@ -359,6 +859,13 @@ v1 has no `Idempotency-Key` header and no revision preconditions: no `ETag`, no
   dropped connection, look before you retry: `GET /api/v1/runs?agent_id=…&surface=api`
   lists the runs newest first, and a list read finds a row the first attempt did
   create.
+- **An asynchronous run is, with an `Idempotency-Key`.** Send
+  `Prefer: respond-async` and a key of your choosing, at most 255 characters,
+  and a retry with the same key and the same body answers the same run request,
+  in whatever state it is in. The same key with a different body is a `409`,
+  never a second run. Keys are per organization. A synchronous call carrying
+  the header is refused with a `400` rather than letting a caller believe a
+  retry is safe.
 - **`429` is the one refusal to retry**, after the `Retry-After` it carries. Every
   other `4xx` is final for that request.
 
@@ -382,7 +889,7 @@ to one of them is additive — a new route, a new optional field, a new response
 field or enum value — and a client must ignore response fields it does not know.
 Removing or renaming something there happens only after it has been marked
 `deprecated` in that document for at least 90 days and listed in the
-[release notes](release-notes.md); a change that cannot be made that way goes into
+[release notes](https://vstorm-co.github.io/agenticos/release-notes/); a change that cannot be made that way goes into
 `/api/v2`, beside v1.
 
 The console reads the same document as a page: **Settings → API → API reference** lists every endpoint with its parameters, body, responses and a ready `curl` call.
@@ -403,7 +910,7 @@ What the public API does not do yet, so a client is not built on it:
 - **No streaming for a key.** The chat socket takes a person's session only.
 - **No idempotency keys and no revisions**, as above.
 
-The [agent spec](reference/spec.md) carries its own promise: it is versioned and
+The [agent spec](https://vstorm-co.github.io/agenticos/reference/spec/) carries its own promise: it is versioned and
 only moves forward.
 
 ## Recap
@@ -414,13 +921,18 @@ only moves forward.
 - A key carries its issuer's authority **narrowed to its permissions and to the
   issuer's current role**, is shown once, and works on the public API only.
 - **A key acts in its own organization; a session reads `X-Organization-Id`**
-  and falls back to the personal organization without it. The wrong one looks
-  like a missing resource.
+  and falls back to the default, personal or only organization without it. The
+  wrong one looks like a missing resource.
 - Running an agent over HTTP is the **same runner** — budget, approval and audit
   all apply.
 - A script gets its own key **without a browser** — sign in, issue, revoke — and
   `examples/public-api.sh` runs that round trip.
 - **Only `429` is worth retrying**; a `POST` is not idempotent, so look before
-  repeating one.
+  repeating one - except an asynchronous run sent with an `Idempotency-Key`.
+- **`Prefer: respond-async`** turns a run into a `202` and a run request to
+  poll, so a long run does not hold a connection open.
 - **The public API is in `/api/v1/public/openapi.json`** and changes only
   additively within v1, with 90 days' deprecation; there is no SDK yet.
+
+
+Skills whose load requires approval must be approved again in each turn; historical loads never bypass that gate.

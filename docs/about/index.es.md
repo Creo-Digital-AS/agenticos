@@ -1,5 +1,5 @@
 ---
-source_sha: "51103c7b1def"
+source_sha: "77658c876710"
 ---
 
 # Acerca de AgenticOS { #about-agenticos }
@@ -51,7 +51,7 @@ lo estés comparando.
 | Procesos | Los runs son de primera clase: historial, coste, estado, y un aislamiento entre inquilinos que imponen restricciones de base de datos en vez del código de servicio |
 | Límites de recursos | [Budgets mensuales](../governance.md) por agent, comprobados antes de cada petición al modelo. Un run que falla registra igualmente lo que gastó, porque un budget que ignora los fallos no es un budget |
 | Control de acceso | Un [catálogo de permisos](../permissions.md) en código, roles compuestos a partir de él, grants por recurso que amplían y nunca reducen. `approval: required` es el `sudo` — el run se aparca y espera a una persona |
-| Drivers | [27 providers de modelos](../models.md) detrás de un perfil de modelo, y [cualquier servidor MCP por URL](../mcp.md). Cambia el perfil y todos los agents que lo usan se mueven con él, sin republicar ninguno |
+| Drivers | [28 providers de modelos](../models.md) detrás de un perfil de modelo, y [cualquier servidor MCP por URL](../mcp.md). Cambia el perfil y todos los agents que lo usan se mueven con él, sin republicar ninguno |
 | Sistema de ficheros | [Colecciones, skills y context](../file-processing.md) en tu propio Postgres, con embeddings que usan una clave por organización |
 | Shell | Un único runner detrás del [chat web, la API, Slack, Telegram, un widget, una página alojada y un horario](../channels.md) |
 | Registro de auditoría | Cada run, cada decisión de aprobación, cada rotación de secreto — con valores, nunca con filas, y nunca con una clave en texto plano |
@@ -100,9 +100,13 @@ repositorio, y un connector, un canal o una estrategia de ingesta siguen el mism
 patrón. La diferencia es que escribes la tool una vez y después todo el mundo
 compone con ella.
 
-**No es un servicio alojado.** Nada llama a casa. Los precios de los modelos
-vienen de una instantánea incluida con la release, y las únicas peticiones
-salientes son las que hacen tus agents. Un sistema operativo se instala en tu
+**No es un servicio alojado.** Tus prompts, conversaciones y documentos
+se quedan en tu propio deployment, en su base de datos y su almacenamiento. Las
+únicas peticiones salientes son las que hacen tus agents y las que necesita el
+parser o el provider de embeddings de una colección, más el
+[diagnóstico del deployment](../configuration.md#diagnostics), que está activado
+por defecto y se puede desactivar. Los precios de los modelos vienen de una
+instantánea incluida con la release. Un sistema operativo se instala en tu
 propia máquina; nadie alquila un kernel por puesto.
 
 **No es un sitio donde escribir integraciones.** Una integración con un producto

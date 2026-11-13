@@ -15,9 +15,15 @@ import {
   DRAFT_AGENT_NAME,
   FAKE_KEY_LABEL,
   FAKE_KEY_SECRET,
+  LIVE_CLOSED_RECORD_TITLE,
+  LIVE_RECORD_TITLE,
+  LIVE_TABLE_NAME,
+  LIVE_VIEW_NAME,
   SEEDED_EMBEDDING_KEY_LABEL,
   SEEDED_EMBEDDING_KEY_SECRET,
   SEEDED_KB_NAME,
+  SEEDED_PROJECT_NAME,
+  SEEDED_CONTEXT_NAME,
   SEEDED_LLAMAPARSE_KEY_LABEL,
   SEEDED_LLAMAPARSE_KEY_SECRET,
   SEEDED_AWS_SECRET_NAME,
@@ -32,8 +38,10 @@ import {
   chooseEmbeddingKey,
   json,
   nowListed,
+  nowMatching,
   pageHeading,
   rowsAt,
+  signInAs,
   submitDialog,
 } from "./helpers";
 
@@ -118,12 +126,8 @@ setup("a skill exists", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Name").fill(SEEDED_SKILL_NAME);
   await dialog.getByLabel("Description").fill(SEEDED_SKILL_DESCRIPTION);
-  // The body is `SKILL.md` in a file tree now, not a "Content" textarea - the
-  // create dialog was rebuilt to look like the editor a skill becomes. It opens
-  // in Preview, where there is no input at all, so switch to Source first; the
-  // textarea then takes its accessible name from the file it is showing.
-  await dialog.getByRole("button", { name: "Source" }).click();
-  await dialog.getByLabel(/SKILL\.md source/).fill(SEEDED_SKILL_CONTENT);
+  // Creation opens directly on the source of the body, which the pane calls Instructions.
+  await dialog.getByLabel(/Instructions source/).fill(SEEDED_SKILL_CONTENT);
   await submitDialog(page, {
     dialog,
     submit: dialog.getByRole("button", { name: "Create" }),
@@ -213,7 +217,7 @@ async function storeSecret(
 
   await page.getByRole("button", { name: "Add key" }).first().click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("Add a key")).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Add a key" })).toBeVisible();
 
   // Two steps rather than one list of thirty-one: the family first, which rules
   // out most of the second question.
@@ -294,7 +298,7 @@ setup("an S3 key pair is stored", async ({ page }) => {
 
   await page.getByRole("button", { name: "Add key" }).first().click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("Add a key")).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Add a key" })).toBeVisible();
 
   await dialog.getByRole("button", { name: /^Document source/ }).click();
   await dialog.getByLabel(/^(Which one|Service)$/).click();
@@ -344,6 +348,84 @@ setup("the organization has connected an MCP server", async ({ page }) => {
   await nowThere(page, "/api/mcp-connections", "name", SEEDED_ORG_MCP_NAME);
 });
 
+setup("a live-data table and a shared view exist", async ({ page }) => {
+  // Through the API: what a page bound to live data reads is under test, not the
+  // Tables editor, which has its own specs. Each part is checked on its own, so a
+  // run that stopped halfway finishes the fixture instead of duplicating it.
+  const request = page.request;
+  if (!(await alreadyThere(request, "/api/tables", "name", LIVE_TABLE_NAME))) {
+    const created = await request.post("/api/tables", {
+      data: {
+        name: LIVE_TABLE_NAME,
+        // Left `private`: the colleague not being able to read it is the
+        // refusal the live-data spec asserts.
+        columns: [
+          { label: "Title", type: "text" },
+          {
+            label: "Status",
+            type: "single_select",
+            options: [{ label: "Open" }, { label: "Closed" }],
+          },
+        ],
+      },
+    });
+    expect(created.ok(), `creating the live table answered ${created.status()}`).toBe(true);
+    await nowThere(page, "/api/tables", "name", LIVE_TABLE_NAME);
+  }
+
+  const table = (await rowsAt(request, "/api/tables")).find((row) => row.name === LIVE_TABLE_NAME);
+  const tableId = String(table!.id);
+  const columns = (await json<{ columns: LiveColumn[] }>(request, `/api/tables/${tableId}`))
+    .columns;
+  const title = columns.find((column) => column.label === "Title")!;
+  const status = columns.find((column) => column.label === "Status")!;
+  const optionId = (label: string) => status.options.find((option) => option.label === label)!.id;
+
+  const recordsPath = `/api/tables/${tableId}/records`;
+  for (const [name, state] of [
+    [LIVE_RECORD_TITLE, "Open"],
+    [LIVE_CLOSED_RECORD_TITLE, "Closed"],
+  ] as const) {
+    const titles = (await rowsAt(request, recordsPath)).map(
+      (record) => (record.values as Record<string, unknown>)[title.id],
+    );
+    if (titles.includes(name)) continue;
+    const created = await request.post(recordsPath, {
+      data: { values: { [title.id]: name, [status.id]: optionId(state) } },
+    });
+    expect(created.ok(), `creating the record ${name} answered ${created.status()}`).toBe(true);
+    await nowMatching(
+      request,
+      recordsPath,
+      (record) => (record.values as Record<string, unknown>)[title.id] === name,
+      `a record titled ${name}`,
+    );
+  }
+
+  const viewsPath = `/api/tables/${tableId}/views`;
+  if (await alreadyThere(request, viewsPath, "name", LIVE_VIEW_NAME)) return;
+  const view = await request.post(viewsPath, {
+    data: {
+      name: LIVE_VIEW_NAME,
+      kind: "table",
+      // Shared, so a page bound to it serves somebody other than its owner - and
+      // filtered, so a page that shows the closed record read the table rather
+      // than the view.
+      visibility: "shared",
+      config: { filters: [{ column_id: status.id, op: "eq", value: optionId("Open") }] },
+    },
+  });
+  expect(view.ok(), `creating the shared view answered ${view.status()}`).toBe(true);
+  await nowThere(page, viewsPath, "name", LIVE_VIEW_NAME);
+});
+
+/** As much of a column as the live-data fixture reads. */
+interface LiveColumn {
+  id: string;
+  label: string;
+  options: { id: string; label: string }[];
+}
+
 setup("a colleague is a member of the organization", async ({ page, browser }) => {
   const organizationId = await activeOrganizationId(page.request);
   const membersPath = `/api/orgs/${organizationId}/members`;
@@ -353,15 +435,9 @@ setup("a colleague is a member of the organization", async ({ page, browser }) =
   const token = await ensurePendingInvitation(page, organizationId);
   await acceptAsColleague(browser, token);
 
-  // `acceptAsColleague` returns only once the colleague's own screen says they
-  // joined, so the server has answered 204 before this line. Since #353 that
-  // does mean the membership row is readable; before it, the acceptance
-  // committed *after* the response went out, which is what this step lost to.
-  //
-  // This step used to read the list once and assert on it. It was the only one
-  // in the file that did: #222 converted four call sites to `nowThere` and did
-  // not reach this one, which is why this is the step that turns a fixture
-  // project red and takes all eighty-seven product specs with it (#335).
+  // Acceptance navigates to onboarding, so its success text may disappear
+  // before Playwright observes it. The response acknowledges the write; this
+  // poll proves the member exists independently of the screen's navigation.
   await nowThere(page, membersPath, "email", COLLEAGUE_EMAIL);
 });
 
@@ -516,20 +592,55 @@ async function acceptAsColleague(
   browser: import("@playwright/test").Browser,
   token: string,
 ): Promise<void> {
-  const context = await browser.newContext();
+  const context = await signInAs(browser, COLLEAGUE_EMAIL, COLLEAGUE_PASSWORD);
   try {
     const colleague = await context.newPage();
-
-    await colleague.goto("/login");
-    await colleague.getByLabel("Email").fill(COLLEAGUE_EMAIL);
-    await colleague.getByLabel("Password").fill(COLLEAGUE_PASSWORD);
-    await colleague.getByRole("button", { name: "Login" }).click();
-    await expect(colleague).toHaveURL(/\/dashboard(\?.*)?$/);
-
     await colleague.goto(`/invitations/${token}`);
+    const accepted = colleague.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/api/invitations/${token}` &&
+        response.request().method() === "POST" &&
+        response.status() !== 401,
+    );
     await colleague.getByRole("button", { name: "Accept invitation" }).click();
-    await expect(colleague.getByText("You joined the organization!")).toBeVisible();
+    const response = await accepted;
+    expect(response.ok(), `accepting the invitation answered ${response.status()}`).toBe(true);
+    await expect(colleague).toHaveURL(/\/onboarding(?:\?|$)/);
   } finally {
     await context.close();
   }
 }
+
+setup("a project exists for the phone file actions", async ({ page }) => {
+  if (await alreadyThere(page.request, "/api/projects", "name", SEEDED_PROJECT_NAME)) return;
+  await page.goto("/projects");
+  await page.getByRole("button", { name: "New project", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name", { exact: true }).fill(SEEDED_PROJECT_NAME);
+  await submitDialog(page, {
+    dialog,
+    submit: dialog.getByRole("button", { name: "Create", exact: true }),
+    path: "/api/projects",
+  });
+  await nowThere(page, "/api/projects", "name", SEEDED_PROJECT_NAME);
+});
+
+setup("a context file exists for the catalog", async ({ page }) => {
+  if (await alreadyThere(page.request, "/api/context", "name", SEEDED_CONTEXT_NAME)) return;
+  await page.goto("/context");
+  await page.getByRole("button", { name: "New context file", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name", { exact: true }).fill(SEEDED_CONTEXT_NAME);
+  await dialog
+    .getByLabel("Description", { exact: true })
+    .fill("Company facts used by the E2E catalog.");
+  await dialog
+    .getByRole("textbox", { name: /e2e-company-guide\.md source/ })
+    .fill("# Company guide\n\nUse the customer-facing company name.");
+  await submitDialog(page, {
+    dialog,
+    submit: dialog.getByRole("button", { name: "Create", exact: true }),
+    path: "/api/context",
+  });
+  await nowThere(page, "/api/context", "name", SEEDED_CONTEXT_NAME);
+});

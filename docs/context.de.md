@@ -1,5 +1,5 @@
 ---
-source_sha: "e32baf02f7e8"
+source_sha: "6ed5be54f7ae"
 ---
 
 # Context-Dateien { #context-files }
@@ -20,17 +20,19 @@ Sie ist die Antwort auf ein Problem, das jedes Unternehmen bei seinem dritten
 Agent trifft — dieselben drei Absätze, in drei Sätze von Instruktionen kopiert
 und dann in einem davon bearbeitet.
 
+Im Agent Builder erstellt **Context → New context file** eine Datei direkt im Fähigkeitspanel, ordnet sie dem aktuellen Entwurf zu und aktiviert Context. Anschließend lässt sich festlegen, wie dieser Agent die Datei nutzt. Das Veröffentlichen bleibt ein eigener Schritt. Zum Erstellen sind Bearbeitungsrechte für den Agenten und Kontextdateien erforderlich.
+
 ## Wo sie zwischen Skills und Wissen sitzt { #where-it-sits-between-skills-and-knowledge }
 
 Drei Dinge legen einem Modell Text vor, und die falsche Wahl ist die übliche
 Ursache für einen Agent, der entweder ignoriert, was man ihm gesagt hat, oder
 überhaupt nichts liest.
 
-| | Sie hält | Das Modell sieht es |
-|---|---|---|
-| **Context-Datei** | Stehende Fakten, klein und stabil — ein Glossar, ein Tonfall-Leitfaden, ein Organigramm | Immer oder auf Anforderung — Sie entscheiden |
-| **[Skill](skills.md)** | Ein Vorgehen für eine Art von Aufgabe — wie eine Rückerstattungsanfrage behandelt wird | Wenn das Modell entscheidet, dass genau diese Aufgabe gerade ansteht |
-| **[Wissens-Collection](file-processing.md)** | Ein Korpus, der zu groß zum Lesen ist — jedes Richtliniendokument, jedes Ticket | Nur die Chunks, die eine Suche zurückgibt |
+|                                              | Sie hält                                                                                | Das Modell sieht es                                                  |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Context-Datei**                            | Stehende Fakten, klein und stabil — ein Glossar, ein Tonfall-Leitfaden, ein Organigramm | Immer oder auf Anforderung — Sie entscheiden                         |
+| **[Skill](skills.md)**                       | Ein Vorgehen für eine Art von Aufgabe — wie eine Rückerstattungsanfrage behandelt wird  | Wenn das Modell entscheidet, dass genau diese Aufgabe gerade ansteht |
+| **[Wissens-Collection](file-processing.md)** | Ein Korpus, der zu groß zum Lesen ist — jedes Richtliniendokument, jedes Ticket         | Nur die Chunks, die eine Suche zurückgibt                            |
 
 Die Faustregel: **Wenn es kurz und immer relevant ist, ist es eine Context-Datei.
 Wenn es lang ist, ist es Wissen. Wenn es ein Vorgehen ist, ist es ein Skill.**
@@ -41,8 +43,7 @@ ganzen Inhalt.
 
 ## Zwei Modi, und der Unterschied sind die Kosten { #two-modes-and-the-difference-is-cost }
 
-Jede Context-Datei trägt einen Modus, und der entscheidet, wie die Datei das
-Modell erreicht.
+Jede angehängte Context-Datei hat einen Modus in den **Context**-Einstellungen des Agents. Dieselbe gemeinsame Datei kann bei einem Agent injiziert, bei einem anderen verlinkt und bei einem dritten deaktiviert sein.
 
 === "`inject` — immer da"
 
@@ -89,7 +90,9 @@ Das ist der ganze Sinn und zugleich das, womit man vorsichtig sein muss: Eine
 Änderung an einer injizierten Datei ist eine Änderung an jedem Agent, der sie
 trägt. Behandeln Sie sie als den gemeinsamen, tragenden Text, der sie ist.
 
-Die Capability hat eine Einstellung, die zu kennen lohnt. Das Lese-Tool
+Im Builder hat jede ausgewählte Datei einen Schalter **In diesem Agent verwenden** und eine Modusauswahl. Diese Einstellungen gehören zum Agent-Entwurf und gelten nach der Veröffentlichung. Der Bibliothekseditor ändert nur gemeinsamen Inhalt und Beschreibung; das Format folgt dem Dateinamen. Bestehende Agent-Versionen ohne individuelle Einstellungen behalten ihren bisherigen Modus und ihre Verfügbarkeit.
+
+Die Capability steuert außerdem das Lese-Tool. Das Lese-Tool
 **abzuschalten** heißt, dass nur injizierte Dateien das Modell erreichen und
 nichts auf Anforderung gelesen wird — eine vernünftige Wahl, wenn Sie die Eingaben
 eines Agents vollständig vorhersehbar haben wollen.
@@ -98,6 +101,36 @@ Man kann auch bei der Datei anfangen: **Zu einem Agenten hinzufügen** auf ihrer
 Karte fügt sie dem Entwurf des Agenten hinzu, mit eingeschalteter
 Kontext-Capability, und die Karte sagt, welche Agents sie schon tragen. Eine
 Wissensdatenbank hat dieselbe Aktion auf ihrer eigenen Seite.
+
+## Änderungen, die der Assistent vorschlägt { #changes-the-assistant-proposes }
+
+**Mit dem Assistenten verbessern** im Editor einer Datei bittet den
+[Authoring-Assistenten](authoring.md#context-files) um einen besseren Inhalt,
+geschrieben aus den Runs der Agents, die die Datei lesen. Was er vorschlägt,
+wird nicht angewendet: Es wartet über der Liste auf der Context-Seite, mit
+Begründung, den Runs, auf denen es beruht, und den Agents, an die die Datei
+gebunden ist.
+
+Es anzuwenden ist dasselbe, wie die Datei von Hand zu bearbeiten - sofort
+wirksam für jeden Agent, dessen veröffentlichte Version die Datei liest -,
+deshalb kommt **Mit Evals prüfen** zuerst, an einem dieser Agents. Neben
+**Anwenden** sagt die Änderung, was das Anwenden bewirkt: jeder Agent und jede
+Umgebung, für die sie wirksam wird, die Eval-Suites, die es in die Warteschlange
+stellt, und die Wächter, die sie erst bei der nächsten Promotion des Agents
+prüfen. Eine Datei, die jemand nach dem Vorschlag bearbeitet hat, lehnt die
+Änderung ab; die Bearbeitung wird nie überschrieben.
+
+Den Assistenten erneut zu fragen schreibt die wartende Änderung um, statt eine
+zweite hinzuzufügen. Eine Entscheidung nennt die Version der Änderung, die Sie
+gelesen haben, sodass von zwei gleichzeitigen nur eine zählt, und eine Seite,
+die vor dem Umschreiben geöffnet wurde, wird mit „The proposal changed since you
+opened it“ abgelehnt, bis Sie die neue Version prüfen. Eine Änderung, die sagt,
+was die Datei schon sagt, wird gar nicht erst vorgeschlagen.
+
+Jede Bearbeitung einer Datei - angewendet oder von Hand - und ihr Löschen
+stellen die Eval-Suites, die laufen, wenn sich eine Abhängigkeit ändert, für
+jeden Agent in die Warteschlange, der sie liest, und das Anwenden einer Änderung
+benachrichtigt die Besitzer dieser Agents.
 
 ## Zugriff { #access }
 

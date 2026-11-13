@@ -9,8 +9,6 @@ only thing that makes an entry in the trail reviewable and so has to say
 something (#1421).
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -66,9 +64,13 @@ def _export() -> PersonalDataExport:
         tool_calls=[],
         memberships=[],
         ratings=[],
+        case_verdicts=[],
+        scored_answers=[],
         sessions=[],
         runs=[],
+        knowledge_searches=[],
         memory=[],
+        memory_claims=[],
         channel_identities=[],
         slash_commands=[],
         dashboard_layouts=[],
@@ -77,11 +79,14 @@ def _export() -> PersonalDataExport:
         browser_sign_ins=[],
         api_keys=[],
         oauth_grants=[],
+        case_proposals=[],
+        suggestions=[],
+        watches=[],
     )
 
 
 @pytest.fixture(autouse=True)
-def _clear() -> AsyncGenerator[None, None]:
+def _clear() -> AsyncGenerator[None]:
     yield
     app.dependency_overrides.clear()
 

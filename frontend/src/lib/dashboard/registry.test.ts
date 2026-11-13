@@ -13,6 +13,7 @@ import {
   type WidgetId,
 } from "./registry";
 import { ROUTES } from "@/lib/constants";
+import en from "../../../messages/en.json";
 import { Perm, type Permission } from "@/types/permissions";
 
 const canOnly =
@@ -30,8 +31,14 @@ const GATE_TABLE: Record<WidgetId, Permission | "app_admin" | "everyone"> = {
   channels: Perm.channelsManage,
   routines: Perm.agentsView,
   knowledge: Perm.collectionsView,
+  tables: Perm.tablesView,
+  workflows: Perm.workflowsView,
+  "approval-outcomes": Perm.workflowsView,
+  "workflow-logs": Perm.workflowsView,
   platform: "app_admin",
   health: "app_admin",
+  "background-tasks": "everyone",
+  "background-jobs": "app_admin",
   "top-orgs": "app_admin",
   "platform-ratings": "app_admin",
   runs: Perm.runsView,
@@ -61,15 +68,36 @@ const GATE_TABLE: Record<WidgetId, Permission | "app_admin" | "everyone"> = {
   "my-quality": Perm.agentsRun,
   "shared-with-you": Perm.agentsView,
   artifacts: Perm.artifactsView,
+  datasets: Perm.datasetsView,
+  "knowledge-gaps": Perm.runsView,
+  "needs-attention": Perm.runsView,
+  "improvements-waiting": Perm.runsView,
+  "review-queue": Perm.datasetsView,
+  "eval-runs": Perm.runsView,
+  "eval-suites": Perm.runsView,
+  "authoring-suggestions": Perm.agentsEdit,
+  "voice-minutes": Perm.runsView,
+  "phone-calls": "everyone",
+  projects: Perm.projectsView,
+  "recent-visuals": Perm.agentsRun,
   "sandbox-capacity": Perm.connectionsView,
   "sandbox-sessions": Perm.connectionsView,
   "sandbox-policy": Perm.connectionsView,
   notifications: "everyone",
+  suggestions: Perm.agentsRun,
 };
 
 describe("the widget catalog", () => {
-  it("holds all thirty-eight widgets", () => {
-    expect(WIDGET_IDS).toHaveLength(40);
+  it("holds all fifty-nine widgets", () => {
+    expect(WIDGET_IDS).toHaveLength(59);
+  });
+
+  it.each(WIDGET_IDS)("%s has a title and a description under its own id", (id) => {
+    const copy = (en.dashboard.widgets as Record<string, { title?: string; description?: string }>)[
+      id
+    ];
+    expect(copy?.title).toBeTruthy();
+    expect(copy?.description).toBeTruthy();
   });
 
   it.each(WIDGET_IDS)("%s opens on exactly its own permission", (id) => {
@@ -91,12 +119,12 @@ describe("the widget catalog", () => {
     }
   });
 
-  it("shows a caller with no permissions only the one card that needs none", () => {
+  it("shows personal inbox, background tasks and telephone receipts without organization permissions", () => {
     // Every own inbox is a person's own, not an organization's - the same
     // reason a Viewer, who holds nothing else on this page, still gets it.
     const visible = WIDGET_IDS.filter((id) => WIDGETS[id].gate(NOBODY, false));
 
-    expect(visible).toEqual(["notifications"]);
+    expect(visible).toEqual(["background-tasks", "notifications", "phone-calls"]);
   });
 
   it("every widget's default span is a class the grid knows", () => {

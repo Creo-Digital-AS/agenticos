@@ -15,8 +15,6 @@ Adding a route that returns a credential should fail here. If it does, the fix
 is the route, not the allowlist.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Any
 
@@ -76,6 +74,11 @@ _SECRET_WORDS = re.compile("secret|password|token|api_key|private_key")
 # promise about the value, and writing the promise down is the point - an
 # allowance nobody can explain is a hole.
 _PATTERN_ALLOWED: dict[str, str] = {
+    "secret_sources": "vault row IDs mapped to authorization-generation UUIDs, never credential values",
+    "review_token": "a metadata fingerprint binding a consent form to the reviewed snapshot, not an authentication credential",
+    "secret_fields": "Mirage backend credential field names, never their values",
+    "required_secrets": "the subset of credential field names required by a Mirage backend",
+    "secret_purposes": "service purpose identifiers used to filter the Mirage vault picker",
     "has_auth_token": "a boolean saying whether one is set",
     "token_hint": "the last four characters, so two keys can be told apart",
     "access_token": "minted for the caller who just authenticated - it is theirs",
@@ -97,6 +100,25 @@ _PATTERN_ALLOWED: dict[str, str] = {
         "person wiring the relay can sign deliveries; TriggerRead (every read and "
         "the listing) has no such field, so it is never re-exposed"
     ),
+    "webhook_secret": (
+        "a workflow webhook's minted signing secret, returned once by the publish "
+        "that first switches it on so its publisher can sign deliveries; "
+        "WorkflowExposureRead (every read) has no such field, so it is never re-exposed"
+    ),
+    "trigger_secrets": (
+        "one-time signing secrets keyed by trigger node, only in WorkflowPublished; "
+        "workflow definitions, versions and exposure listings never return this map"
+    ),
+    "form_token": (
+        "a workflow form's public link - the page exists to be handed to strangers, "
+        "it is read only by who may view the workflow, and New link replaces it; "
+        "it opens a form that starts runs as its publisher, never anything else"
+    ),
+    "test_token": (
+        "a draft webhook's test URL, returned once to the editor who opened it and "
+        "open for one call for two minutes; reading what it caught takes the token "
+        "in the path and returns none"
+    ),
     "secret_id": "a reference to a stored secret, not the secret",
     "api_keys": (
         "the personal-data export's list of keys a person issued: name, prefix, "
@@ -117,6 +139,10 @@ _PATTERN_ALLOWED: dict[str, str] = {
         "the same again: which vault key a collection embeds on - the id of a "
         "reference the organization can revoke, never the key itself"
     ),
+    "speech_to_text_secret_id": (
+        "which organization vault key transcription is billed to, on the "
+        "organization and on a channel bot - the id of the key, never the key"
+    ),
     "token_secret_id": (
         "the same, named for what it points at: an agent's Logfire write token "
         "lives in the vault and the spec carries only its id, because a spec is "
@@ -129,6 +155,9 @@ _PATTERN_ALLOWED: dict[str, str] = {
     "output_tokens": "the same, for the completion",
     "context_used_tokens": "the same word again: how much of a context window a turn filled",
     "context_window_tokens": "how many tokens a model accepts, which is a capacity not a key",
+    "avg_tokens": "the same usage count, averaged over an eval arm's cases",
+    "cache_read_tokens": "the prompt tokens a turn read from the provider's prompt cache",
+    "cache_write_tokens": "the prompt tokens a turn wrote to that cache",
 }
 
 # A property whose type is one of these cannot be carrying a credential

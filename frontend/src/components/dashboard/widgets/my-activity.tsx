@@ -21,6 +21,7 @@ import type { DashboardWidgetProps } from "./types";
  */
 export function MyActivityWidget({ title, hint, period, seeAll, options }: DashboardWidgetProps) {
   const t = useTranslations("dashboard.widgets.my-activity");
+  const locale = useLocale();
   const { usage, isLoading, error, refetch } = useUsageStats(
     { from: period.from, to: period.to },
     { scope: "own" },
@@ -30,7 +31,7 @@ export function MyActivityWidget({ title, hint, period, seeAll, options }: Dashb
   return (
     <WidgetFrame title={title} hint={hint} seeAll={seeAll} options={options}>
       {isLoading ? (
-        <WidgetSkeleton />
+        <WidgetSkeleton variant="chart" />
       ) : error ? (
         <WidgetErrorBody onRetry={() => refetch()} />
       ) : !usage || !usage.total_runs ? (
@@ -38,7 +39,7 @@ export function MyActivityWidget({ title, hint, period, seeAll, options }: Dashb
       ) : (
         <div className="flex h-full flex-col gap-3">
           <Figure
-            value={usage.total_runs.toLocaleString()}
+            value={usage.total_runs.toLocaleString(locale)}
             unit={t("unit")}
             delta={
               usage.pending_approvals ? (

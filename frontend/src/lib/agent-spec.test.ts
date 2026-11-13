@@ -5,6 +5,7 @@ import {
   CONTEXT_ID,
   DEFAULT_SUBAGENTS_CONFIG,
   delegationNameClashes,
+  enableMcpToolSearch,
   duplicateDelegateIds,
   newSpecialist,
   pinStatus,
@@ -19,6 +20,9 @@ import {
   hasResource,
   KNOWLEDGE_ID,
   withSkills,
+  withVisuals,
+  CHARTS_ID,
+  VISUALS_ID,
 } from "./agent-spec";
 import type { AgentSpec, AgentVersion, CapabilityBindingSpec } from "@/types/agents";
 
@@ -60,8 +64,21 @@ describe("withCapability", () => {
   it("adds a binding that publishing will accept", () => {
     const [added] = withCapability([], "charts", true);
 
-    expect(added).toMatchObject({ id: "charts", enabled: true, secret_id: null });
+    expect(added).toMatchObject({
+      id: "charts",
+      enabled: true,
+      secret_id: null,
+      approval: "required",
+    });
   });
+
+  it.each(["default", "never", "required"] as const)(
+    "preserves an existing %s approval",
+    (approval) => {
+      const configured = binding("charts", { approval });
+      expect(withCapability([configured], "charts", true)).toEqual([configured]);
+    },
+  );
 
   it("leaves a capability that is already on exactly as it was", () => {
     // Otherwise asking for a state it is already in would silently reset
@@ -78,6 +95,41 @@ describe("withCapability", () => {
     expect(withCapability([binding("charts"), binding("clock")], "charts", false)).toEqual([
       binding("clock"),
     ]);
+  });
+});
+
+describe("enableMcpToolSearch", () => {
+  it("adds an enabled Tool search binding configured to defer MCP tools", () => {
+    expect(enableMcpToolSearch([])).toEqual([
+      binding("tool_search", { config: { defer_mcp_servers: true }, approval: "required" }),
+    ]);
+  });
+
+  it("enables MCP deferral without resetting exclusions or other capability settings", () => {
+    const clock = binding("clock");
+    const configured = binding("tool_search", {
+      enabled: false,
+      approval: "required",
+      config: {
+        strategy: "local_bm25",
+        defer_capabilities: true,
+        defer_mcp_servers: false,
+        exclude_capabilities: ["knowledge"],
+        exclude_mcp_servers: ["github_work"],
+        exclude_tools: ["renamed_search"],
+      },
+    });
+
+    expect(enableMcpToolSearch([clock, configured])).toEqual([
+      clock,
+      {
+        ...configured,
+        enabled: true,
+        config: { ...configured.config, defer_mcp_servers: true },
+      },
+    ]);
+    expect(configured.enabled).toBe(false);
+    expect(configured.config.defer_mcp_servers).toBe(false);
   });
 });
 
@@ -372,12 +424,17 @@ describe("withResource", () => {
   });
 
   it("binds one of the organization's MCP servers once, with every tool it allows", () => {
-    const personal = { account: "personal" as const, catalog_key: "c1", allowed_tools: null };
+    const personal = {
+      account: "personal" as const,
+      catalog_key: "c1",
+      allowed_tools: null,
+      approval: "none" as const,
+    };
     const bound = withResource({ ...spec(), mcp_servers: [personal] }, { kind: "mcp", id: "c1" });
 
     expect(bound.mcp_servers).toEqual([
       personal,
-      { account: "organization", connection_id: "c1", allowed_tools: null },
+      { account: "organization", connection_id: "c1", allowed_tools: null, approval: "none" },
     ]);
     expect(hasResource(bound, { kind: "mcp", id: "c1" })).toBe(true);
     expect(withResource(bound, { kind: "mcp", id: "c1" })).toBe(bound);
@@ -386,4 +443,59 @@ describe("withResource", () => {
       false,
     );
   });
+});
+
+describe("withVisuals", () => {
+  const design = { id: "design", name: "visual-design" };
+
+  it("brings the skill that teaches drawing, and the capability that reads it", () => {
+    const updated = withVisuals(spec(), [{ id: "other", name: "code-review" }, design]);
+
+    expect(updated.skill_ids).toEqual(["design"]);
+    expect(updated.capabilities.map((entry) => entry.id)).toEqual([
+      VISUALS_ID,
+      CHARTS_ID,
+      SKILLS_ID,
+    ]);
+  });
+
+  it("binds nothing twice", () => {
+    const updated = withVisuals(
+      spec({ skill_ids: ["design"], capabilities: [binding(SKILLS_ID)] }),
+      [design],
+    );
+
+    expect(updated.skill_ids).toEqual(["design"]);
+    expect(updated.capabilities.map((entry) => entry.id)).toEqual([
+      SKILLS_ID,
+      VISUALS_ID,
+      CHARTS_ID,
+    ]);
+  });
+
+  it("leaves a charts binding the author switched off as it is", () => {
+    const off = { ...binding(CHARTS_ID), enabled: false };
+    const updated = withVisuals(spec({ capabilities: [off] }), []);
+
+    expect(updated.capabilities).toEqual([off, expect.objectContaining({ id: VISUALS_ID })]);
+  });
+
+  it("still switches drawing on where the organization has no such skill", () => {
+    const updated = withVisuals(spec({ skill_ids: ["x"] }), []);
+
+    expect(updated.skill_ids).toEqual(["x"]);
+    expect(updated.capabilities.map((entry) => entry.id)).toEqual([VISUALS_ID, CHARTS_ID]);
+  });
+
+  it("switches the Skills capability back on for a skill already bound", () => {
+    const updated = withVisuals(spec({ skill_ids: [design.id] }), [design]);
+    expect(updated.skill_ids).toEqual([design.id]);
+    expect(updated.capabilities.find((binding) => binding.id === "skills")?.enabled).toBe(true);
+  });
+});
+
+it("starts newly enabled computer use on an explicit sandbox without rewriting existing routing", () => {
+  expect(withCapability([], "computer_use", true)[0]?.config).toEqual({ desktop: "sandbox" });
+  const legacy = { ...binding("computer_use"), config: { desktop: "auto" } };
+  expect(withCapability([legacy], "computer_use", true)).toEqual([legacy]);
 });

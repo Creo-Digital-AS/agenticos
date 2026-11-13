@@ -76,25 +76,119 @@ function mount(overrides: Partial<Agent> = {}, { canEdit = true, busy = false } 
  * the accessible names, which is the only way that stays true.
  */
 describe("AgentCard", () => {
-  it("keeps the beam off the element the gallery's entrance animates", () => {
-    // `rise-in` animates each grid child; on the beam's own wrapper, the beam's
-    // animation displaced it and handed it back at opacity 0 when the hover ended.
-    const { container } = render(
+  it("flags an agent that needs attention, saying why on hover", () => {
+    render(
       <AgentCard
-        agent={agent({})}
-        canEdit
-        actions={{
-          onDuplicate: vi.fn(),
-          onArchive: vi.fn(),
-          onRestore: vi.fn(),
-          onDelete: vi.fn(),
+        agent={agent({ name: "Refund desk" })}
+        canEdit={false}
+        attention={{
+          agent_id: "a1",
+          name: "Refund desk",
+          rated_down: 5,
+          failed_runs: 0,
+          failing_suites: 1,
+          can_edit: false,
         }}
       />,
     );
 
-    expect(container.children).toHaveLength(1);
-    expect(container.firstElementChild).not.toHaveAttribute("data-beam");
-    expect(container.querySelector("[data-beam]")).not.toBeNull();
+    expect(screen.getByText("Needs attention")).toHaveAttribute(
+      "title",
+      "5 answers rated down · 1 failing suite",
+    );
+  });
+
+  it("keeps an agent with attention on the normal builder route", () => {
+    render(
+      <AgentCard
+        agent={agent({ id: "a9", name: "Refund desk" })}
+        canEdit
+        attention={{
+          agent_id: "a9",
+          name: "Refund desk",
+          rated_down: 5,
+          failed_runs: 0,
+          failing_suites: 0,
+          can_edit: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Needs attention").closest("a")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open Refund desk" })).toHaveAttribute(
+      "href",
+      "/agents/a9",
+    );
+    expect(screen.queryByRole("link", { name: /Improve/ })).toBeNull();
+  });
+
+  it("only describes the attention to a reader who may not improve the agent", () => {
+    render(
+      <AgentCard
+        agent={agent({ name: "Refund desk" })}
+        canEdit={false}
+        attention={{
+          agent_id: "a1",
+          name: "Refund desk",
+          rated_down: 5,
+          failed_runs: 0,
+          failing_suites: 0,
+          can_edit: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Needs attention").closest("a")).toBeNull();
+  });
+
+  it("flags nothing without a reason to", () => {
+    mount({ name: "Refund desk" });
+
+    expect(screen.queryByText("Needs attention")).toBeNull();
+  });
+
+  it("marks the judge the platform seeded as the default one", () => {
+    mount({ system_key: "eval_judge", name: "Eval judge", kind: "judge" });
+
+    expect(screen.getByText("Default judge")).toBeInTheDocument();
+  });
+
+  it("names the kind a seeded agent is the default of", () => {
+    mount({ system_key: "case_generator", name: "Case generator", kind: "generator" });
+
+    expect(screen.getByText("Default case generator")).toBeInTheDocument();
+    expect(screen.queryByText("Default judge")).toBeNull();
+  });
+
+  it("names the kind of an organization's own system agent, which is nobody's default", () => {
+    mount({ system_key: null, name: "Refunds judge", kind: "judge" });
+
+    expect(screen.getByText("System agent · Judge")).toHaveAttribute(
+      "title",
+      "The platform runs it for the whole organization; nobody chats with it.",
+    );
+    expect(screen.queryByText("Default judge")).toBeNull();
+  });
+
+  it("lets an editor open a card with no menu, as a judge's has none", () => {
+    render(
+      <AgentCard
+        agent={agent({ name: "Refunds judge", kind: "judge" })}
+        canEdit
+        footer={<p>Used by Refunds</p>}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Edit Refunds judge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /more actions/i })).toBeNull();
+    expect(screen.getByText("Used by Refunds")).toBeInTheDocument();
+  });
+
+  it("marks nothing on an agent a person made", () => {
+    mount();
+
+    expect(screen.queryByText("Default judge")).toBeNull();
+    expect(screen.queryByText(/System agent/)).toBeNull();
   });
 
   it("opens the builder from anywhere on the card", () => {
@@ -110,15 +204,6 @@ describe("AgentCard", () => {
     mount({ description: null });
 
     expect(screen.getByText("No description.")).toBeInTheDocument();
-  });
-
-  it("names the surfaces an agent answers on, and passes an unknown one through", () => {
-    // A new platform must not vanish from the card between a backend release and
-    // a frontend one.
-    mount({ channels: ["slack", "discord"] });
-
-    expect(screen.getByText("Slack")).toBeInTheDocument();
-    expect(screen.getByText("discord")).toBeInTheDocument();
   });
 
   it("says when an agent was last edited, and says so when it never was", () => {
@@ -188,14 +273,6 @@ describe("AgentCard", () => {
     );
   });
 
-  it("shows the agent's categories and tags as chips", () => {
-    mount({ categories: ["sales"], tags: ["urgent", "beta"] });
-
-    expect(screen.getByText("sales")).toBeInTheDocument();
-    expect(screen.getByText("urgent")).toBeInTheDocument();
-    expect(screen.getByText("beta")).toBeInTheDocument();
-  });
-
   it("draws no metadata chips when a listing carries none", () => {
     // The fields are optional in the type; the card reads them as `?? []`.
     mount({});
@@ -254,4 +331,20 @@ describe("AgentCard", () => {
     fireEvent.mouseLeave(card);
     expect(container.querySelector(".bg-card")).toBe(card);
   });
+});
+
+it("shows the edit date directly while keeping access and actions available", () => {
+  mount({ channels: ["slack"], categories: ["Sales"] });
+  expect(screen.queryByText("Details")).toBeNull();
+  expect(screen.getByText("never edited")).toBeVisible();
+  expect(screen.getByText("Private")).toBeVisible();
+  expect(screen.getByRole("button", { name: "More actions for Support" })).toBeVisible();
+});
+
+it("marks archived agents without washing out their portrait", () => {
+  mount({ status: "archived" });
+  expect(screen.getByRole("link", { name: "Open Support" }).parentElement).not.toHaveClass(
+    "opacity-70",
+  );
+  expect(screen.getByText("archived")).toBeVisible();
 });

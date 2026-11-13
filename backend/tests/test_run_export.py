@@ -7,8 +7,6 @@ answer on its own: an export with no date range, and one over the row cap. The
 and in integration as *the rows that come back* - a colleague's absent from both.
 """
 
-from __future__ import annotations
-
 import csv
 import io
 from datetime import UTC, datetime
@@ -22,7 +20,7 @@ import pytest
 from app.core.exceptions import ExportTooLargeError, ValidationError
 from app.core.permissions import AuthContext, Scope
 from app.repositories import agent_run_repo
-from app.repositories.agent_run import ApprovalFilters, RunFilters
+from app.repositories.agent_run import ApprovalFilters, ApprovalRow, ChatAsker, RunFilters
 from app.services import run_export
 from app.services.run_export import MAX_EXPORT_ROWS, RunExportService
 
@@ -69,6 +67,8 @@ def _run(**overrides) -> SimpleNamespace:
         "provider": "openai",
         "input_tokens": 100,
         "output_tokens": 50,
+        "cache_read_tokens": 70,
+        "cache_write_tokens": 20,
         "cost_usd": Decimal("0.1234"),
         "cost_is_partial": False,
         "started_at": _WINDOW[0],
@@ -159,6 +159,10 @@ class TestRunsExport:
         rows = _parsed(result.content)
         assert rows[0] == run_export._RUNS_HEADER
         assert rows[1][0] == str(run.id)
+        # The cache split, so the export reconciles with a provider's invoice (#2170).
+        header = rows[0]
+        assert rows[1][header.index("cache_read_tokens")] == "70"
+        assert rows[1][header.index("cache_write_tokens")] == "20"
         assert result.row_count == 1
         assert result.filename.startswith("runs_export_")
         assert result.filename.endswith(".csv")
@@ -317,6 +321,7 @@ class TestApprovalsExport:
             "agent_name": "Clerk",
             "tool_id": "send_email",
             "tool_args": {"to": "a@b.co"},
+            "capability_tool_id": None,
             "subagent_name": None,
             "subagent_agent_id": None,
             "status": "pending",
@@ -327,9 +332,79 @@ class TestApprovalsExport:
             "decided_at": None,
             "note": None,
             "created_at": _WINDOW[0],
+            "asked_in_chat": None,
         }
         row.update(overrides)
         return SimpleNamespace(**row)
+
+    @pytest.mark.security
+    async def test_the_approvals_export_names_the_chat_account_in_its_own_columns(
+        self, monkeypatch
+    ):
+        service = _service(monkeypatch)
+        stranger = self._approval(
+            triggered_by_user_id=None,
+            triggered_by_email=None,
+            asked_in_chat=ChatAsker("slack", "Ana", "Support"),
+        )
+        member = self._approval()
+        monkeypatch.setattr(
+            agent_run_repo, "list_approvals", AsyncMock(return_value=([stranger, member], 2))
+        )
+
+        result = await service.export_approvals(
+            _ctx(Scope.ALL),
+            filters=ApprovalFilters(created_from=_WINDOW[0], created_to=_WINDOW[1]),
+            oldest_first=True,
+        )
+
+        rows = _parsed(result.content)
+        header = rows[0]
+        assert header[:16] == [
+            "approval_id", "run_id", "agent_id", "agent_name", "tool_id", "tool_args",
+            "subagent_name", "subagent_agent_id", "status", "triggered_by_user_id",
+            "triggered_by_email", "decided_by_user_id", "decided_by_email", "decided_at",
+            "note", "created_at",
+        ]  # fmt: skip
+        assert header[16:] == [
+            "asked_in_chat_platform",
+            "asked_in_chat_account",
+            "asked_in_chat_bot",
+        ]
+        assert rows[1][16:] == ["slack", "Ana", "Support"]
+        assert rows[1][header.index("triggered_by_user_id")] == ""
+        assert rows[1][header.index("triggered_by_email")] == ""
+        assert rows[2][16:] == ["", "", ""]
+
+    @pytest.mark.security
+    async def test_a_reader_who_may_not_see_the_run_exports_no_corrected_fact(self, monkeypatch):
+        service = _service(monkeypatch)
+        correction = ApprovalRow(
+            **{
+                **vars(self._approval()),
+                "tool_id": "correct_memory",
+                "capability_tool_id": "correct_memory",
+                "tool_args": {"claim_id": "c-1", "statement": "Office closes at five"},
+                "context": None,
+                "account": None,
+                "decided_via": "click",
+            }
+        )
+        monkeypatch.setattr(
+            agent_run_repo, "list_approvals", AsyncMock(return_value=([correction], 1))
+        )
+        reader = _ctx(Scope.OWN)
+        reader.user_id = uuid4()
+        reader.api_key_id = None
+
+        result = await service.export_approvals(
+            reader,
+            filters=ApprovalFilters(created_from=_WINDOW[0], created_to=_WINDOW[1]),
+            oldest_first=True,
+        )
+
+        rows = _parsed(result.content)
+        assert rows[1][rows[0].index("tool_args")] == '{"claim_id": "c-1"}'
 
     async def test_the_record_exports_with_its_resolved_emails(self, monkeypatch):
         service = _service(monkeypatch)

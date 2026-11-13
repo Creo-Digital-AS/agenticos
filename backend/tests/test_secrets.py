@@ -26,11 +26,13 @@ from app.core.secret_kinds import (
     GcpServiceAccountSecret,
     GithubOAuthAppSecret,
     GoogleOAuthAppSecret,
+    MicrosoftOAuthAppSecret,
     NoSecret,
     SecretKind,
     SecretRequirement,
     describe_kinds,
     seal_secret,
+    unseal_kind,
     unseal_secret,
 )
 from app.core.vault import VaultScope, seal
@@ -125,6 +127,17 @@ class TestSecretKinds:
             client_id="Iv1.0123456789wxyz", client_secret="ghs-never-shown"
         )
         assert value.hint == "wxyz"
+
+    def test_a_microsoft_oauth_app_is_hinted_by_its_public_client_id(self):
+        """The Outlook portal's app registration (#1984): the client id names it in
+        the Entra admin center, and the secret is never part of the hint."""
+        value = MicrosoftOAuthAppSecret(
+            tenant_id="contoso.onmicrosoft.com",
+            client_id="11111111-2222-3333-4444-55555555abcd",
+            client_secret="never-shown-secret",
+        )
+        assert value.hint == "abcd"
+        assert "never-shown-secret" not in str(value.model_dump())
 
     def test_an_unknown_field_is_refused_rather_than_ignored(self):
         with pytest.raises(ValidationError):
@@ -706,6 +719,110 @@ class TestTheKeyThatAsksAProviderForItsCatalog:
             assert await OrganizationSecretService(_db()).listing_key(_ctx(), "openrouter") is None
 
 
+class TestTheKeyATranscriptionIsPaidWith:
+    """`transcription_key`: the key named next to a speech-to-text pair (#1797).
+
+    It opens the one key it is given and chooses none: no lookup by provider,
+    no "first by name". A key that is gone, of another kind, for another
+    provider, or - where the platform spends it for everybody - no longer
+    organization-visible, is not usable, and nothing is opened in its place.
+    The organization filter is held against a real database in
+    `tests/integration/test_secret_tenant_isolation.py`.
+    """
+
+    @staticmethod
+    def _speech_row(ctx, *, purpose="openai", visibility="org", value=None):
+        row = _row(ctx, value or ApiKeySecret(api_key="sk-named-4242"), name="Speech")
+        row.purpose = purpose
+        row.visibility = visibility
+        return row
+
+    @pytest.mark.anyio
+    async def test_the_named_key_is_opened_for_its_provider(self):
+        ctx = _ctx()
+        row = self._speech_row(ctx)
+
+        with patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=row),
+        ) as got:
+            key = await OrganizationSecretService(_db()).transcription_key(
+                ctx.organization_id, row.id, provider="openai", shared=True
+            )
+
+        assert key == "sk-named-4242"
+        assert got.await_args.args[1] == row.id
+        assert got.await_args.kwargs == {"organization_id": ctx.organization_id}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("change", "shared"),
+        [
+            ({"purpose": "groq"}, False),
+            ({"kind": "azure_openai"}, False),
+            ({"visibility": "private"}, True),
+            ({"visibility": "team"}, True),
+            ("missing", False),
+        ],
+        ids=["another-provider", "another-kind", "private-shared", "team-shared", "gone"],
+    )
+    async def test_a_key_that_is_not_usable_is_not_opened(self, change, shared: bool):
+        ctx = _ctx()
+        row = self._speech_row(ctx)
+        if change == "missing":
+            row = None
+        else:
+            for field, value in change.items():
+                setattr(row, field, value)
+
+        with (
+            patch(
+                "app.services.organization_secret.organization_secret_repo.get",
+                new=AsyncMock(return_value=row),
+            ),
+            patch("app.services.organization_secret.unseal_secret") as unseal,
+        ):
+            key = await OrganizationSecretService(_db()).transcription_key(
+                ctx.organization_id, uuid.uuid4(), provider="openai", shared=shared
+            )
+
+        assert key is None
+        unseal.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_a_private_key_lent_by_an_agent_is_usable(self):
+        """Not shared: its publisher could view it, which publish checked."""
+        ctx = _ctx()
+        row = self._speech_row(ctx, visibility="private")
+
+        with patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=row),
+        ):
+            found = await OrganizationSecretService(_db()).usable_transcription_key(
+                ctx.organization_id, row.id, provider="openai", shared=False
+            )
+
+        assert found is row
+
+    @pytest.mark.anyio
+    @pytest.mark.security
+    async def test_a_key_sealed_for_another_organization_does_not_open(self):
+        """Cryptographic, not a filter: the envelope is bound to its owner."""
+        foreign = self._speech_row(_ctx())
+
+        with (
+            patch(
+                "app.services.organization_secret.organization_secret_repo.get",
+                new=AsyncMock(return_value=foreign),
+            ),
+            pytest.raises(BadRequestError),
+        ):
+            await OrganizationSecretService(_db()).transcription_key(
+                uuid.uuid4(), foreign.id, provider="openai", shared=True
+            )
+
+
 class TestTheGithubOAuthAppReader:
     """`github_oauth_app` is the vault's third reader, and the most narrowly scoped.
 
@@ -812,3 +929,121 @@ class TestTheGithubOAuthAppReader:
             await OrganizationSecretService(_db()).oauth_app(ctx, kind=SecretKind.GITHUB_OAUTH_APP)
         assert excinfo.value.details["names"] == ["aaa", "bbb"]
         assert "s1" not in str(excinfo.value.details)
+
+
+class TestTheKeyACallIsHungUpWith:
+    """`voice_call_key`: the key a voice call was held with, opened only to hang it up (#54)."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "value",
+        [
+            ApiKeySecret(api_key="sk-voice-4242"),
+            AzureOpenAISecret(
+                api_key="azure-voice-4242",
+                azure_endpoint="https://x.openai.azure.com",
+                api_version="2025-04-01-preview",
+            ),
+        ],
+        ids=["api-key", "azure"],
+    )
+    async def test_a_voice_key_unseals_only_in_its_own_organization(self, value):
+        ctx = _ctx()
+        row = _row(ctx, value, name="Voice")
+
+        with patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=row),
+        ) as got:
+            opened = await OrganizationSecretService(_db()).voice_call_key(
+                ctx.organization_id, row.id
+            )
+
+        assert opened == value
+        assert got.await_args.kwargs == {"organization_id": ctx.organization_id}
+
+        with (
+            patch(
+                "app.services.organization_secret.organization_secret_repo.get",
+                new=AsyncMock(return_value=row),
+            ),
+            pytest.raises(BadRequestError),
+        ):
+            await OrganizationSecretService(_db()).voice_call_key(uuid.uuid4(), row.id)
+
+    @pytest.mark.anyio
+    async def test_a_deleted_voice_key_reads_as_none(self):
+        with patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=None),
+        ):
+            assert (
+                await OrganizationSecretService(_db()).voice_call_key(uuid.uuid4(), uuid.uuid4())
+                is None
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("visible", [True, False])
+async def test_selected_listing_key_requires_resource_visibility(visible: bool) -> None:
+    ctx = _ctx()
+    secret = _row(ctx, ApiKeySecret(api_key="sk-stav-selected"))
+    secret.purpose = "stav"
+    with (
+        patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=secret),
+        ) as get,
+        patch(
+            "app.services.organization_secret.resolve_access", new=AsyncMock(return_value=visible)
+        ),
+        patch("app.services.organization_secret.unseal_kind", wraps=unseal_kind) as unseal,
+    ):
+        if visible:
+            assert (
+                await OrganizationSecretService(_db()).listing_key(ctx, "stav", secret_id=secret.id)
+                == "sk-stav-selected"
+            )
+        else:
+            with pytest.raises(BadRequestError):
+                await OrganizationSecretService(_db()).listing_key(ctx, "stav", secret_id=secret.id)
+            unseal.assert_not_called()
+    assert get.await_args.kwargs == {"organization_id": ctx.organization_id}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("purpose,kind", [("openai", "api_key"), ("stav", "aws_credentials")])
+async def test_selected_listing_key_refuses_wrong_provider_or_kind(purpose: str, kind: str) -> None:
+    ctx = _ctx()
+    secret = _row(ctx, ApiKeySecret(api_key="sk-stav-selected"))
+    secret.purpose, secret.kind = purpose, kind
+    with (
+        patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=secret),
+        ),
+        patch("app.services.organization_secret.resolve_access", new=AsyncMock(return_value=True)),
+        patch("app.services.organization_secret.unseal_kind") as unseal,
+        pytest.raises(BadRequestError),
+    ):
+        await OrganizationSecretService(_db()).listing_key(ctx, "stav", secret_id=secret.id)
+    unseal.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_selected_listing_key_refuses_a_missing_or_foreign_tenant_key() -> None:
+    ctx, secret_id = _ctx(), uuid.uuid4()
+    with (
+        patch(
+            "app.services.organization_secret.organization_secret_repo.get",
+            new=AsyncMock(return_value=None),
+        ) as get,
+        patch("app.services.organization_secret.resolve_access", new=AsyncMock()) as access,
+        patch("app.services.organization_secret.unseal_kind") as unseal,
+        pytest.raises(BadRequestError),
+    ):
+        await OrganizationSecretService(_db()).listing_key(ctx, "stav", secret_id=secret_id)
+    assert get.await_args.args[1] == secret_id
+    assert get.await_args.kwargs == {"organization_id": ctx.organization_id}
+    access.assert_not_called()
+    unseal.assert_not_called()

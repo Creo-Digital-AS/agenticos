@@ -7,32 +7,38 @@ credential to edit, and an organization query that matched a personal one would
 put somebody's private token inside a published agent.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload
+from sqlalchemy.sql import Select
 
+from app.db.locks import LockScope, hold_name, try_hold_name
 from app.db.models.mcp_connection import McpConnection
 from app.db.models.resource_grant import Visibility
 
 
-async def get_by_id(db: AsyncSession, connection_id: UUID) -> McpConnection | None:
-    result = await db.execute(select(McpConnection).where(McpConnection.id == connection_id))
+async def get_by_id(
+    db: AsyncSession, connection_id: UUID, *, fresh: bool = False
+) -> McpConnection | None:
+    result = await db.execute(
+        select(McpConnection)
+        .where(McpConnection.id == connection_id)
+        .execution_options(populate_existing=fresh)
+    )
     return result.scalar_one_or_none()
 
 
 async def get_by_id_for_update(db: AsyncSession, connection_id: UUID) -> McpConnection | None:
     """Fetch a connection and lock the row (`SELECT ... FOR UPDATE`).
 
-    Used before spending an OAuth refresh token, so two concurrent chat turns
-    can't both redeem it. `lazyload` drops the model's eager join on `users`
+    Used when editing or replacing a credential. `lazyload` drops the model's eager join on `users`
     (PostgreSQL refuses `FOR UPDATE` on the nullable side of an outer join),
     and `populate_existing` re-reads the columns so the caller sees what the
     other transaction committed rather than the stale identity-map copy.
@@ -47,8 +53,25 @@ async def get_by_id_for_update(db: AsyncSession, connection_id: UUID) -> McpConn
     return result.scalar_one_or_none()
 
 
+async def get_for_token_refresh(db: AsyncSession, connection_id: UUID) -> McpConnection | None:
+    """Serialize credential rotation without blocking foreign-key readers."""
+    result = await db.execute(
+        select(McpConnection)
+        .where(McpConnection.id == connection_id)
+        .options(lazyload(McpConnection.user))
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_org_scoped_by_id(
-    db: AsyncSession, *, connection_id: UUID, organization_id: UUID, for_update: bool = False
+    db: AsyncSession,
+    *,
+    connection_id: UUID,
+    organization_id: UUID,
+    for_update: bool = False,
+    fresh: bool = False,
 ) -> McpConnection | None:
     """One organization-scoped connection, looked up inside one organization.
 
@@ -69,6 +92,7 @@ async def get_org_scoped_by_id(
         McpConnection.organization_id == organization_id,
         McpConnection.scope == "org",
     )
+    stmt = stmt.execution_options(populate_existing=fresh)
     if for_update:
         stmt = (
             stmt.options(lazyload(McpConnection.user))
@@ -177,6 +201,7 @@ async def get_org_scoped_by_catalog_key(
     result = await db.execute(
         select(McpConnection)
         .where(
+            McpConnection.purpose == "mcp",
             McpConnection.organization_id == organization_id,
             McpConnection.catalog_key == catalog_key,
             McpConnection.scope == "org",
@@ -187,7 +212,7 @@ async def get_org_scoped_by_catalog_key(
 
 
 async def list_user_scoped_by_catalog_key(
-    db: AsyncSession, *, user_id: UUID, catalog_key: str
+    db: AsyncSession, *, user_id: UUID, catalog_key: str, fresh: bool = False
 ) -> list[McpConnection]:
     """This person's own enabled connections to one catalog entry.
 
@@ -205,6 +230,7 @@ async def list_user_scoped_by_catalog_key(
             McpConnection.is_enabled.is_(True),
         )
         .order_by(McpConnection.created_at.asc())
+        .execution_options(populate_existing=fresh)
     )
     return list(result.scalars())
 
@@ -274,43 +300,63 @@ async def get_org_scoped_portal_by_id(
     return result.scalar_one_or_none()
 
 
-async def claim_portal_grants_to_poll(
-    db: AsyncSession, *, portal_keys: list[str], not_polled_since: datetime, limit: int
-) -> list[McpConnection]:
-    """Grants due a poll, claimed so two ticks cannot read one mailbox twice.
+# A grant is due this much before its interval has run out, so the minute tick that
+# finds a one-minute grant a few seconds short of a full minute still takes it
+# instead of leaving it for the tick after.
+_POLL_SLACK = timedelta(seconds=5)
 
-    `FOR UPDATE SKIP LOCKED` and `polled_at` advanced in the same statement, the
-    protocol the trigger heartbeat already uses: a tick that outruns its own
-    interval cannot be double-claimed by the next, and a worker that dies mid-poll
-    releases its lock without parking the mailbox for ever - the next tick finds
-    `polled_at` old again.
 
-    Only authorized, enabled grants are claimed. A revoked or half-consented one
-    has nothing to read, and polling it every minute to fail would spend somebody's
-    rate limit on a question already answered.
+def _portal_poll_query(*, portal_keys: list[str], now: datetime) -> Select[McpConnection]:
+    interval = func.make_interval(0, 0, 0, 0, 0, McpConnection.poll_interval_minutes)
+    return select(McpConnection).where(
+        McpConnection.purpose == "portal",
+        McpConnection.portal_key.in_(portal_keys),
+        McpConnection.is_enabled.is_(True),
+        McpConnection.oauth_payload.is_not(None),
+        or_(
+            McpConnection.polled_at.is_(None),
+            McpConnection.polled_at + interval <= now + _POLL_SLACK,
+        ),
+    )
+
+
+async def portal_poll_candidates(
+    db: AsyncSession, *, portal_keys: list[str], now: datetime, limit: int
+) -> list[UUID]:
+    """Bound discovery without locking credential rows across a batch.
+
+    A grant is due when it was never polled or its own `poll_interval_minutes`
+    has passed since `polled_at` - decided per row, in SQL.
     """
     if not portal_keys:
         return []
     stmt = (
-        select(McpConnection)
-        .where(
-            McpConnection.purpose == "portal",
-            McpConnection.portal_key.in_(portal_keys),
-            McpConnection.is_enabled.is_(True),
-            McpConnection.oauth_payload.is_not(None),
-            or_(McpConnection.polled_at.is_(None), McpConnection.polled_at <= not_polled_since),
-        )
-        .order_by(McpConnection.polled_at.asc().nullsfirst())
+        _portal_poll_query(portal_keys=portal_keys, now=now)
+        .with_only_columns(McpConnection.id)
+        .order_by(McpConnection.polled_at.asc().nulls_first(), McpConnection.id.asc())
         .limit(limit)
-        .options(lazyload(McpConnection.user))
-        .with_for_update(skip_locked=True)
     )
-    claimed = list((await db.execute(stmt)).scalars())
-    now = datetime.now(UTC)
-    for grant in claimed:
-        grant.polled_at = now
-    await db.flush()
-    return claimed
+    return list((await db.execute(stmt)).scalars())
+
+
+async def claim_portal_grant_to_poll(
+    db: AsyncSession, *, connection_id: UUID, portal_keys: list[str], now: datetime
+) -> McpConnection | None:
+    """Own one poll until its cursor and queued fires commit together.
+
+    A transaction advisory lock leaves the credential row available to the
+    independent OAuth rotation transaction. Re-read eligibility after claiming:
+    another worker may have completed this candidate since discovery.
+    """
+    if not await try_hold_name(db, LockScope.PORTAL_POLL, str(connection_id)):
+        return None
+    stmt = (
+        _portal_poll_query(portal_keys=portal_keys, now=now)
+        .where(McpConnection.id == connection_id)
+        .options(lazyload(McpConnection.user))
+        .execution_options(populate_existing=True)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def list_oauth_connections(db: AsyncSession) -> list[McpConnection]:
@@ -331,8 +377,8 @@ async def list_oauth_connections(db: AsyncSession) -> list[McpConnection]:
     return list(result.scalars().all())
 
 
-async def list_org_servers_to_check(db: AsyncSession) -> list[McpConnection]:
-    """Every enabled organization server on the deployment, for the scheduled check (#2100).
+async def list_org_servers_to_check(db: AsyncSession, *, limit: int = 64) -> list[McpConnection]:
+    """A bounded batch of the least recently checked organization servers, for the scheduled check (#2100).
 
     Deliberately unscoped, like :func:`list_oauth_connections`: the check is
     about whether servers answer, and a tenant learns only about its own through
@@ -346,7 +392,8 @@ async def list_org_servers_to_check(db: AsyncSession) -> list[McpConnection]:
             McpConnection.scope == "org",
             McpConnection.is_enabled.is_(True),
         )
-        .order_by(McpConnection.created_at.asc())
+        .order_by(McpConnection.health_checked_at.asc(), McpConnection.id.asc())
+        .limit(limit)
     )
     return list(result.scalars().all())
 
@@ -396,7 +443,11 @@ async def close_outage(db: AsyncSession, *, connection: McpConnection) -> dateti
 
 async def get_by_oauth_state(db: AsyncSession, state: str) -> McpConnection | None:
     """Find the connection awaiting this OAuth callback (state is the CSRF token)."""
-    result = await db.execute(select(McpConnection).where(McpConnection.oauth_state == state))
+    result = await db.execute(
+        select(McpConnection)
+        .where(McpConnection.oauth_state == state)
+        .execution_options(populate_existing=True)
+    )
     return result.scalar_one_or_none()
 
 
@@ -436,10 +487,14 @@ async def create(
     oauth_pending_payload: str | None = None,
     label: str | None = None,
     catalog_key: str | None = None,
+    purpose: str = "mcp",
+    account_source_organization_id: UUID | None = None,
 ) -> McpConnection:
     connection = McpConnection(
         user_id=user_id,
         catalog_key=catalog_key,
+        purpose=purpose,
+        account_source_organization_id=account_source_organization_id,
         name=name,
         url=url,
         auth_token=auth_token,
@@ -474,6 +529,7 @@ async def create_org_scoped(
     oauth_state: str | None = None,
     oauth_pending_payload: str | None = None,
     purpose: str = "mcp",
+    account_source_organization_id: UUID | None = None,
     portal_key: str | None = None,
     label: str | None = None,
     visibility: str = Visibility.ORG.value,
@@ -505,6 +561,7 @@ async def create_org_scoped(
         oauth_state=oauth_state,
         oauth_pending_payload=oauth_pending_payload,
         purpose=purpose,
+        account_source_organization_id=account_source_organization_id,
         portal_key=portal_key,
         label=label,
         visibility=visibility,
@@ -564,3 +621,103 @@ async def portal_grants_for_account(
         )
     )
     return list(result.scalars().all())
+
+
+async def list_accounts(
+    db: AsyncSession,
+    *,
+    provider: str,
+    user_id: UUID | None = None,
+    organization_id: UUID | None = None,
+) -> list[McpConnection]:
+    """Connected accounts on one provider: a person's own, or an organization's.
+
+    Exactly one of `user_id` and `organization_id`; the two are different owners
+    and a read across both would show a person the organization's grants as theirs.
+    Only accounts whose consent completed - a row still waiting at the consent
+    screen has no grant to mount.
+    """
+    owner = (
+        McpConnection.user_id == user_id
+        if user_id is not None
+        else (McpConnection.scope == "org") & (McpConnection.organization_id == organization_id)
+    )
+    result = await db.execute(
+        select(McpConnection)
+        .execution_options(populate_existing=True)
+        .where(
+            owner,
+            McpConnection.purpose == "account",
+            McpConnection.catalog_key == provider,
+            McpConnection.oauth_payload.is_not(None),
+        )
+        .order_by(McpConnection.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def get_account(db: AsyncSession, account_id: UUID) -> McpConnection | None:
+    """One connected account by id, whoever owns it - the caller checks the owner."""
+    result = await db.execute(
+        select(McpConnection)
+        .execution_options(populate_existing=True)
+        .where(McpConnection.id == account_id, McpConnection.purpose == "account")
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_pending_account(
+    db: AsyncSession,
+    *,
+    provider: str,
+    user_id: UUID | None = None,
+    organization_id: UUID | None = None,
+) -> McpConnection | None:
+    """Reuse an abandoned consent row instead of creating one on every attempt."""
+    await lock_account_owner(db, user_id=user_id, organization_id=organization_id)
+    owner = (
+        (McpConnection.scope == "user") & (McpConnection.user_id == user_id)
+        if user_id is not None
+        else (McpConnection.scope == "org") & (McpConnection.organization_id == organization_id)
+    )
+    result = await db.execute(
+        select(McpConnection)
+        .where(
+            owner,
+            McpConnection.purpose == "account",
+            McpConnection.catalog_key == provider,
+            McpConnection.oauth_payload.is_(None),
+        )
+        .order_by(McpConnection.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def lock_account_owner(
+    db: AsyncSession,
+    *,
+    user_id: UUID | None = None,
+    organization_id: UUID | None = None,
+) -> None:
+    """Serialize consent, deduplication and disconnect for one account owner."""
+    if (user_id is None) == (organization_id is None):
+        raise ValueError("An account has exactly one owner")
+    subject = f"user:{user_id}" if user_id is not None else f"org:{organization_id}"
+    await hold_name(db, LockScope.CONNECTED_ACCOUNTS, subject)
+
+
+async def delete_accounts_for_member(
+    db: AsyncSession, *, organization_id: UUID, user_id: UUID
+) -> None:
+    """A later invitation must not resurrect a former member's copied OAuth client."""
+    await lock_account_owner(db, user_id=user_id)
+    await db.execute(
+        sql_delete(McpConnection).where(
+            McpConnection.scope == "user",
+            McpConnection.purpose == "account",
+            McpConnection.user_id == user_id,
+            McpConnection.account_source_organization_id == organization_id,
+        )
+    )
+    await db.flush()

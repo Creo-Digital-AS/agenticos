@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DashboardPage from "./page";
@@ -50,10 +50,34 @@ vi.mock("@/hooks/use-permissions", () => ({
 
 const params = new URLSearchParams();
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => params,
+  useSearchParams: () => {
+    const query = useSyncExternalStore(
+      (listener) => {
+        window.addEventListener("dashboard:test-navigation", listener);
+        return () => window.removeEventListener("dashboard:test-navigation", listener);
+      },
+      () => params.toString(),
+    );
+    return new URLSearchParams(query);
+  },
   // The header's "?" reads the path to decide whether this page has tips.
   usePathname: () => "/dashboard",
 }));
+
+// Next.js makes native history writes observable through useSearchParams.
+// Keep that behavior in the mock so filter controls exercise the same contract.
+vi.mock("@/lib/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/utils")>();
+  return {
+    ...actual,
+    setUrlParam: (key: string, value: string | null) => {
+      actual.setUrlParam(key, value);
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+      window.dispatchEvent(new Event("dashboard:test-navigation"));
+    },
+  };
+});
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({
@@ -161,7 +185,28 @@ function respond(path: string, options?: { params?: Record<string, string> }): u
       ? { kind: "docker", runtimes: [], default_runtime: null, max_sessions_per_tenant: 8 }
       : { sessions: [], limit: null, open_limit: null, tenant_limit: 8 };
   }
+  // The call-minutes card asks with its window in the query string, so it is
+  // matched by prefix; what it renders is `widgets/voice-minutes.test.tsx`'s.
+  if (path.startsWith("/voice/usage?")) {
+    return {
+      start: "2026-07-07T00:00:00Z",
+      end: "2026-08-06T00:00:00Z",
+      seconds: 1260,
+      calls: 9,
+      by_agent: [{ agent_id: "a1", agent_name: "Front desk", seconds: 1260, calls: 9 }],
+    };
+  }
   switch (path) {
+    case "/conversations/background-tasks":
+      return [];
+    case "/admin/background-jobs/activity":
+      return {
+        window: "day",
+        bucket_seconds: 3600,
+        buckets: [],
+        kinds: [],
+        oldest_wait_seconds: null,
+      };
     case "/sandbox-connections":
       return {
         items: [
@@ -205,6 +250,7 @@ function respond(path: string, options?: { params?: Record<string, string> }): u
         by_provider: [],
         by_key: [],
         by_day: [],
+        cache_by_agent_model: [],
       };
     case "/agents":
       return {
@@ -220,7 +266,7 @@ function respond(path: string, options?: { params?: Record<string, string> }): u
             current_version_id: "v1",
           },
         ],
-        total: 4,
+        total: 1,
       };
     case "/kb":
       return { items: [{ id: "k1" }, { id: "k2" }, { id: "k3" }] };
@@ -299,6 +345,15 @@ function respond(path: string, options?: { params?: Record<string, string> }): u
       };
     case "/admin/ratings/summary":
       return RATINGS;
+    case "/authoring/waiting":
+      return { agents: [], skills: 0, contexts: 0 };
+    case "/improvements":
+      return [];
+    case "/skill-improvements/awaiting":
+    case "/skill-checks/awaiting":
+      return [];
+    case "/workflows/summary":
+      return { runs: 0, succeeded: 0, failed: 0, cost_usd: 0, needs_you: 0, workflows: [] };
     default:
       return { items: [], total: 0 };
   }
@@ -344,6 +399,9 @@ describe("the steward's dashboard", () => {
 
   it("renders the organization's sections and reads org-scoped usage", async () => {
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(screen.getByText("dashboard.sections.attention")).toBeInTheDocument();
     expect(screen.getByText("dashboard.sections.usage")).toBeInTheDocument();
@@ -362,6 +420,9 @@ describe("the steward's dashboard", () => {
 
   it("names the people who used it, and says how far the list reaches", async () => {
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(await screen.findByText("Katarzyna Nowak")).toBeInTheDocument();
     // No display name stored, so the row is the address - the *whole* address,
@@ -387,6 +448,9 @@ describe("the steward's dashboard", () => {
     );
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     const failures = await screen.findAllByText("dashboard.errors.title");
     expect(failures.length).toBeGreaterThan(0);
@@ -404,6 +468,9 @@ describe("the steward's dashboard", () => {
   it("switching the period asks the window again and writes the URL", async () => {
     const replaceState = vi.spyOn(window.history, "replaceState");
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     const before = callsTo("/stats/usage").length;
 
@@ -423,6 +490,9 @@ describe("the steward's dashboard", () => {
     params.set("sections", "usage,deployment");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(screen.getByText("dashboard.sections.usage")).toBeInTheDocument();
     expect(screen.queryByText("dashboard.sections.attention")).not.toBeInTheDocument();
@@ -439,6 +509,9 @@ describe("the sandbox cards", () => {
     auth.can = holds("agents:view", "agents:run", "approvals:decide", "runs:view");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     expect(callsTo("/sandbox-connections")).toHaveLength(0);
@@ -451,29 +524,43 @@ describe("the app admin's dashboard", () => {
     auth.role = "";
 
     const { unmount } = render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     expect(callsTo("/admin/stats")).toHaveLength(0);
     unmount();
 
     params.set("view", "deployment");
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await waitFor(() => expect(callsTo("/admin/stats").length).toBeGreaterThan(0));
+    await userEvent.click(screen.getAllByRole("button", { name: "common.moreInformation" })[0]!);
     expect(screen.getByText("dashboard.views.deployment.description")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
   });
 });
 
 describe("the view switcher", () => {
-  it("opens a steward on their own view, not the organization's", () => {
+  it("opens a steward on their own view, not the organization's", async () => {
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
-    expect(screen.getByText("dashboard.views.me.description")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /dashboard\.greeting/ })).toBeInTheDocument();
     expect(screen.queryByText("dashboard.edit.customize")).not.toBeInTheDocument();
   });
 
   it("moves to the organization's view and writes it to the URL", async () => {
     const replaceState = vi.spyOn(window.history, "replaceState");
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await userEvent.click(screen.getByText("dashboard.views.org.label"));
 
@@ -481,21 +568,27 @@ describe("the view switcher", () => {
     expect(String(replaceState.mock.calls.at(-1)?.[2])).toContain("view=org");
   });
 
-  it("offers no deployment view to an organization admin", () => {
+  it("offers no deployment view to an organization admin", async () => {
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(screen.getByText("dashboard.views.org.label")).toBeInTheDocument();
     expect(screen.queryByText("dashboard.views.deployment.label")).not.toBeInTheDocument();
   });
 
-  it("is not drawn for a reader who has only their own view", () => {
+  it("is not drawn for a reader who has only their own view", async () => {
     auth.role = "member";
     auth.can = holds("agents:view", "agents:run");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(screen.queryByRole("group", { name: "dashboard.views.label" })).not.toBeInTheDocument();
-    expect(screen.getByText("dashboard.views.me.description")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /dashboard\.greeting/ })).toBeInTheDocument();
   });
 
   it("narrows every usage question to the chosen group", async () => {
@@ -510,6 +603,9 @@ describe("the view switcher", () => {
     params.set("group", "g2");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     const asked = callsTo("/stats/usage").map(
@@ -527,6 +623,9 @@ describe("the viewer's dashboard", () => {
     auth.can = holds("agents:view", "collections:view");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     // The my-agents card under its overridden title.
     expect(screen.getByText("dashboard.widgets.my-agents.sharedTitle")).toBeInTheDocument();
@@ -547,6 +646,9 @@ describe("the member's dashboard", () => {
     auth.can = holds("agents:view", "agents:edit", "agents:run", "collections:view");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     for (const [, options] of callsTo("/stats/usage")) {
@@ -565,6 +667,9 @@ describe("the member's dashboard", () => {
     auth.can = holds("agents:view", "agents:edit", "agents:run", "collections:view");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     await waitFor(() => expect(callsTo("/stats/usage").length).toBeGreaterThan(0));
     const named = callsTo("/stats/usage").filter(
@@ -594,6 +699,9 @@ describe("the arrangeable dashboard", () => {
     auth.can = holds("agents:view", "agents:run");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     // The saved arrangement settles in: the member default's other cards give
     // way to the two the person saved (of which only one survives the gate).
@@ -615,6 +723,9 @@ describe("the arrangeable dashboard", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     // The steward default's section spine gives way to the person's own flat
     // arrangement - the cards render, the headings do not.
@@ -634,6 +745,9 @@ describe("the arrangeable dashboard", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     // The unknown id is dropped rather than rendered as a blank card; the known
     // one still renders.
@@ -645,6 +759,9 @@ describe("the arrangeable dashboard", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     expect(await screen.findByText("dashboard.edit.emptyTitle")).toBeInTheDocument();
     expect(screen.getByText("dashboard.edit.reset")).toBeInTheDocument();
@@ -657,6 +774,9 @@ describe("the arrangeable dashboard", () => {
     auth.can = holds("agents:view", "agents:run", "runs:view");
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.summary.title");
 
     await userEvent.click(screen.getByText("dashboard.edit.customize"));
@@ -681,6 +801,9 @@ describe("the arrangeable dashboard", () => {
     auth.role = "owner";
 
     const { container } = render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
 
     // The stored height reaches the grid as a row-span class, not just the width.
     await waitFor(() => expect(container.querySelector(".lg\\:row-span-5")).toBeTruthy());
@@ -691,6 +814,9 @@ describe("the arrangeable dashboard", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.runs.title");
 
     await userEvent.click(screen.getByText("dashboard.edit.customize"));
@@ -722,6 +848,9 @@ describe("the saved-dashboards switcher", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.runs.title");
 
     await userEvent.click(screen.getByText("dashboard.presets.menu"));
@@ -757,6 +886,9 @@ describe("the saved-dashboards switcher", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.runs.title");
 
     await userEvent.click(screen.getByText("dashboard.presets.menu"));
@@ -781,6 +913,9 @@ describe("the saved-dashboards switcher", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.spend.title");
 
     await userEvent.click(screen.getByText("dashboard.presets.menu"));
@@ -797,6 +932,9 @@ describe("the saved-dashboards switcher", () => {
     auth.role = "owner";
 
     render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
     await screen.findByText("dashboard.widgets.runs.title");
 
     await userEvent.click(screen.getByText("dashboard.edit.customize"));
@@ -820,4 +958,138 @@ describe("the saved-dashboards switcher", () => {
     // Still in edit mode - Save as… does not leave.
     expect(screen.getByText("dashboard.edit.saveAsPreset")).toBeInTheDocument();
   });
+});
+
+describe("dashboard links while the page stays mounted", () => {
+  it("applies a report's view and exact period after navigation on the same page", async () => {
+    const page = render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
+    expect(screen.getByRole("heading", { name: /dashboard\.greeting/ })).toBeInTheDocument();
+
+    params.set("view", "org");
+    params.set("period", "2026-09-01..2026-09-07");
+    page.rerender(<DashboardPage />);
+
+    await userEvent.click(screen.getAllByRole("button", { name: "common.moreInformation" })[0]!);
+    expect(screen.getByText("dashboard.views.org.description")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        callsTo("/stats/usage").some(([, options]) => {
+          const query = new URLSearchParams(options?.params);
+          return (
+            query.get("scope") === "org" &&
+            query.get("from") === "2026-09-01" &&
+            query.get("to") === "2026-09-07"
+          );
+        }),
+      ).toBe(true),
+    );
+    params.delete("period");
+    page.rerender(<DashboardPage />);
+    await userEvent.click(screen.getByRole("button", { name: "dashboard.period.label" }));
+    expect(
+      await screen.findByRole("menuitemradio", { name: "dashboard.period.30d" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("updates group and section filters, then resets to defaults when the URL removes them", async () => {
+    groupList = {
+      items: [
+        { id: "g1", name: "Finance" },
+        { id: "g2", name: "Support" },
+      ],
+      total: 2,
+    };
+    params.set("view", "group");
+    params.set("group", "g1");
+    params.set("sections", "usage");
+    const page = render(<DashboardPage />, { wrapper });
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(
+        callsTo("/stats/usage").some(
+          ([, options]) => new URLSearchParams(options?.params).get("group_id") === "g1",
+        ),
+      ).toBe(true),
+    );
+
+    params.set("group", "g2");
+    page.rerender(<DashboardPage />);
+    await waitFor(() =>
+      expect(
+        callsTo("/stats/usage").some(
+          ([, options]) => new URLSearchParams(options?.params).get("group_id") === "g2",
+        ),
+      ).toBe(true),
+    );
+
+    params.set("view", "org");
+    params.set("sections", "attention");
+    page.rerender(<DashboardPage />);
+    expect(screen.getByText("dashboard.sections.attention")).toBeInTheDocument();
+    expect(screen.queryByText("dashboard.sections.usage")).not.toBeInTheDocument();
+
+    params.delete("view");
+    params.delete("sections");
+    params.delete("group");
+    page.rerender(<DashboardPage />);
+    expect(await screen.findByRole("heading", { name: /dashboard\.greeting/ })).toBeInTheDocument();
+  });
+});
+
+it("waits for a saved arrangement before mounting and fetching default widgets", async () => {
+  params.set("view", "org");
+  let finish: (value: { entries: { widget: string; span: string }[] }) => void = () => {};
+  const pending = new Promise<{ entries: { widget: string; span: string }[] }>((resolve) => {
+    finish = resolve;
+  });
+  vi.mocked(apiClient.get).mockImplementation((path: string) =>
+    path === "/me/dashboard-layout" ? pending : Promise.resolve(respond(path)),
+  );
+  const view = render(<DashboardPage />, { wrapper });
+  await waitFor(() => expect(callsTo("/me/dashboard-layout")).toHaveLength(1));
+  expect(callsTo("/stats/usage")).toHaveLength(0);
+  expect(callsTo("/approvals")).toHaveLength(0);
+  finish({ entries: [{ widget: "my-agents", span: "s6" }] });
+  await waitFor(() => expect(callsTo("/agents").length).toBeGreaterThan(0));
+  expect(callsTo("/approvals")).toHaveLength(0);
+  view.unmount();
+});
+
+it("keeps one loading state until onboarding and briefing can mount in their final shape", async () => {
+  const pending = Promise.withResolvers<unknown>();
+  const org = "00000000-0000-4000-8000-000000000001";
+  useOrgStore.setState({ activeOrgId: org });
+  const previous = vi.mocked(apiClient.get).getMockImplementation()!;
+  vi.mocked(apiClient.get).mockImplementation((path, options) =>
+    path === "/me/onboarding" ? pending.promise : previous(path, options),
+  );
+  render(<DashboardPage />, { wrapper });
+  await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith("/me/onboarding"));
+  expect(document.querySelectorAll('[role="status"][aria-busy="true"]')).toHaveLength(1);
+  expect(screen.queryByRole("heading", { name: "dashboard.widgets.suggestions.title" })).toBeNull();
+  pending.resolve({
+    organization_id: org,
+    organization_name: "Demo",
+    goal: null,
+    dismissed: true,
+    completed: true,
+    can_prepare: true,
+    can_configure_model: true,
+    support_email: null,
+    agents: [],
+    latest_conversation_id: null,
+    latest_completed_at: null,
+    has_result: true,
+    has_activity: true,
+  });
+  expect(
+    await screen.findByRole("heading", { name: "dashboard.widgets.suggestions.title" }),
+  ).toBeInTheDocument();
+  expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull();
 });

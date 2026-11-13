@@ -42,40 +42,74 @@ an agent's author cannot raise it - so its alert goes to the people who can, and
 no spec can redirect it.
 """
 
-from __future__ import annotations
-
 import hashlib
+import logging
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
+from urllib.parse import urlencode
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.capabilities.budget import BudgetScope
 from app.agents.spec import AgentSpec, AlertAudience, AlertSpec
+from app.core.background import spawn_after_commit
 from app.core.config import settings
 from app.core.permissions import OrgRoleName
-from app.db.models.agent import Agent
-from app.db.models.agent_run import AgentRun, ToolApproval
+from app.db.models.agent import Agent, AgentVersion
+from app.db.models.agent_run import AgentRun, RunStatus, ToolApproval
+from app.db.models.artifact import Artifact
 from app.db.models.audit_log import AppAdminAuditLog
+from app.db.models.case_generation import CaseGeneration, GenerationStatus
+from app.db.models.context import ContextFile
+from app.db.models.eval_run import EvalRun, EvalRunPurpose, EvalRunStatus
+from app.db.models.eval_suite import EvalSuite, EvalSuiteResult, EvalSuiteResultStatus
 from app.db.models.mcp_connection import McpConnection
-from app.db.models.notification import NotificationEventType
+from app.db.models.notification import NotificationChannel, NotificationEventType
+from app.db.models.promotion_gate import PromotionOverride
 from app.db.models.rag_document import RAGDocument
+from app.db.models.resource_grant import Visibility
+from app.db.models.skill import Skill
+from app.db.models.watch import Watch, WatchAttemptStatus
+from app.db.models.workflow import Workflow
+from app.db.models.workflow_log_alert import WorkflowLogAlertRule
 from app.repositories import agent as agent_repo
+from app.repositories import agent_exposure as agent_exposure_repo
 from app.repositories import agent_run as agent_run_repo
+from app.repositories import agent_trigger as agent_trigger_repo
+from app.repositories import channel_bot as channel_bot_repo
+from app.repositories import channel_identity as channel_identity_repo
+from app.repositories import eval_suite as eval_suite_repo
 from app.repositories import group as group_repo
 from app.repositories import member as member_repo
 from app.repositories import organization as organization_repo
 from app.repositories import user as user_repo
+from app.repositories import watch as watch_repo
+from app.schemas.change_event import ChangeEvent
+from app.schemas.eval_suite import EvalSuiteSummary, ThresholdReason
+from app.schemas.improvement import NextStepBlocked
 from app.services.notification_center import NotificationCenterService, absolute_context_url
+from app.services.outcome import OutcomeService, routine_failure_cause
 from app.services.spend import month_start, organization_spend_since
+
+logger = logging.getLogger(__name__)
 
 # Who answers for the organization. Owners and admins because they answer for
 # the spend; a builder can create an agent but is not who gets called when the
 # organization's month runs out.
 _ESCALATION_ROLES = [OrgRoleName.OWNER.value, OrgRoleName.ADMIN.value]
+
+_CHAT_PLATFORM_NAMES: dict[str, str] = {
+    "slack": "Slack",
+    "telegram": "Telegram",
+    "mattermost": "Mattermost",
+    "teams": "Microsoft Teams",
+    "discord": "Discord",
+    "whatsapp": "WhatsApp",
+}
 
 # The console page a security event's `context_url` opens, by the audited
 # entry's `target_type` - the same resource an admin would go check. A type
@@ -105,6 +139,43 @@ _SECURITY_EVENT_SUMMARY: dict[str, str] = {
 }
 
 
+def agent_face(agent: Agent) -> dict[str, str | bool | int | None]:
+    """Which agent a notification is about, kept so the inbox can draw its face.
+
+    In `render_context` beside the name the email reads: the row is the one
+    record of the event, and an id there is what lets the bell show the agent
+    rather than a dot.
+    """
+    return {
+        "agent_id": str(agent.id),
+        "agent_slug": agent.slug,
+        "agent_has_avatar": agent.has_avatar,
+        "agent_avatar_color": agent.avatar_color,
+    }
+
+
+def _outcome_links(run: AgentRun) -> dict[str, str]:
+    """Where the outcome this notification opens came from: the run, and the chat it is in.
+
+    Kept in `render_context` with the rest, so the shared outcome can show its card in
+    that chat and close when the run's approvals are decided (#2575).
+    """
+    links = {"run_id": str(run.id)}
+    if run.routine_origin_id is not None:
+        links.update(routine_origin_id=str(run.routine_origin_id), routine_kind=run.routine_kind)
+    if run.routine_kind == "watch" and run.routine_origin_id is not None:
+        links["cause"] = f"watch:{run.routine_origin_id}"
+    if run.conversation_id is not None:
+        links["conversation_id"] = str(run.conversation_id)
+    policy = (run.routine_policy or {}).get("approved_sources")
+    if isinstance(policy, dict) and policy.get("project_id") is not None:
+        try:
+            links["project_id"] = str(UUID(str(policy["project_id"])))
+        except ValueError:
+            links["project_id"] = ""  # An invalid stored binding remains ineligible for delivery.
+    return links
+
+
 def _security_event_summary(entry: AppAdminAuditLog) -> str:
     return _SECURITY_EVENT_SUMMARY.get(
         entry.action, f"A privileged action was recorded: {entry.action}"
@@ -117,6 +188,9 @@ _PERIOD_DAYS: dict[ReportPeriod, int] = {"weekly": 7, "monthly": 30}
 
 BUDGET_WARNING_SHARE = Decimal("0.8")
 """How much of a department's month is spent before its lead hears about it."""
+
+ROUTINE_EXCERPT_CHARS = 200
+"""How much of a routine's answer its notification carries - enough to decide to open it."""
 
 
 class NotificationService:
@@ -144,7 +218,7 @@ class NotificationService:
         spec: AgentSpec,
         reason: str,
         scope: BudgetScope,
-    ) -> None:
+    ) -> set[UUID]:
         """The run stopped because a limit was reached.
 
         Which limit decides who hears. An agent's own cap is its author's to
@@ -155,6 +229,10 @@ class NotificationService:
         department's is set by an administrator and is its lead's to argue for,
         so it reaches both (#2072).
         """
+        if scope is BudgetScope.RUN:
+            # A ceiling one caller set for one run - a workflow step's - is
+            # reported by that caller: the workflow run fails with it.
+            return set()
         if scope is BudgetScope.ORGANIZATION:
             recipients = await self._administrator_ids(run.organization_id)
         elif scope is BudgetScope.GROUP:
@@ -170,20 +248,99 @@ class NotificationService:
                 initiator_user_id=run.user_id,
             )
         if not recipients:
-            return
+            return set()
 
+        native_context: dict[str, str] = {}
+        owner: UUID | None = None
+        incident_reason: Literal["run", "check", "delivery"] = "run"
+        clock = run.ended_at or run.started_at
+        if (
+            run.routine_origin_id is not None
+            and run.parent_run_id is None
+            and clock is not None
+            and scope is BudgetScope.AGENT
+        ):
+            if run.routine_kind == "trigger":
+                trigger = await agent_trigger_repo.get_by_id(
+                    self.db, run.routine_origin_id, fresh=True, for_update=True
+                )
+                if (
+                    trigger is not None
+                    and trigger.organization_id == run.organization_id
+                    and trigger.is_active
+                    and (run.user_id is None or run.user_id == trigger.created_by_user_id)
+                ):
+                    owner = trigger.created_by_user_id
+            elif run.routine_kind == "watch":
+                watch = await watch_repo.get_by_id(
+                    self.db, run.routine_origin_id, fresh=True, for_update=True
+                )
+                if (
+                    watch is not None
+                    and watch.organization_id == run.organization_id
+                    and watch.is_active
+                    and run.user_id == watch.user_id
+                ):
+                    owner = watch.user_id
+                    incident_reason = "check"
+            if owner is not None:
+                kind: Literal["trigger", "watch"] = (
+                    "watch" if run.routine_kind == "watch" else "trigger"
+                )
+                cause = routine_failure_cause(kind, run.routine_origin_id, incident_reason)
+                if owner in recipients and kind == "trigger":
+                    latest = await agent_run_repo.latest_terminal_for_trigger(
+                        self.db,
+                        organization_id=run.organization_id,
+                        trigger_id=run.routine_origin_id,
+                    )
+                    if latest != run.id:
+                        recipients.discard(owner)
+                if owner in recipients and kind == "watch":
+                    activation = run.routine_activation_at or run.started_at
+                    if (
+                        watch is not None
+                        and watch.last_attempt_at is not None
+                        and (activation is None or watch.last_attempt_at > activation)
+                    ):
+                        recipients.discard(owner)
+                if owner in recipients:
+                    occurrence = await OutcomeService(self.db).routine_failure_occurrence(
+                        organization_id=run.organization_id,
+                        user_id=owner,
+                        cause=cause,
+                        observed_at=clock,
+                        summary=f"{agent.name} stopped: {reason}",
+                        run_id=run.id,
+                    )
+                    if occurrence is None:
+                        recipients.discard(owner)
+                native_context = {
+                    "routine_failure_owner_id": str(owner),
+                    "routine_origin_id": str(run.routine_origin_id),
+                    "routine_kind": kind,
+                    "routine_failure_reason": incident_reason,
+                    "routine_observed_at": clock.isoformat(),
+                    "cause": cause,
+                    **_outcome_links(run),
+                }
+                native_context["cause"] = cause
+        if not recipients:
+            return set()
         organization = await organization_repo.get_by_id(self.db, run.organization_id)
         organization_name = organization.name if organization else "your organization"
         run_path = self._link(f"/agents/{agent.id}", run.organization_id)
         render_context = {
             "agent_name": agent.name,
+            **agent_face(agent),
             "org_name": organization_name,
             "reason": reason,
             "spent": f"{run.cost_usd:.2f}" if run.cost_usd is not None else "0.00",
             "run_url": absolute_context_url(run_path),
             "app_name": settings.PROJECT_NAME,
+            **native_context,
         }
-        await self._center.write(
+        written = await self._center.write(
             recipients=list(recipients),
             event_type=NotificationEventType.BUDGET_EXCEEDED,
             occurrence_id=str(run.id),
@@ -195,6 +352,8 @@ class NotificationService:
             # transaction that just recorded the run's own outcome.
             use_savepoint=True,
         )
+
+        return {notification.recipient_user_id for notification in written}
 
     async def department_budget_warnings(self, run: AgentRun) -> None:
         """Warn when a department this run's person is in has used 80% of its month (#2072).
@@ -291,9 +450,13 @@ class NotificationService:
             f"{approval.tool_id} ({approval.account})" if approval.account else approval.tool_id
             for approval in approvals
         ]
+        asked_by, summary = await self._asked_by(run, agent)
         render_context = {
             "agent_name": agent.name,
+            **agent_face(agent),
+            **_outcome_links(run),
             "tools": ", ".join(tools) if tools else "a tool call",
+            "asked_by": asked_by,
             "approvals_url": absolute_context_url(approvals_path),
             "app_name": settings.PROJECT_NAME,
         }
@@ -314,12 +477,50 @@ class NotificationService:
             occurrence_id=hashlib.sha256(
                 ":".join(sorted(str(approval.id) for approval in approvals)).encode()
             ).hexdigest(),
-            summary=f"{agent.name} is waiting on your approval",
+            summary=summary,
             context_url=approvals_path,
             render_context=render_context,
             organization_id=run.organization_id,
             use_savepoint=True,
         )
+
+    async def _asked_by(self, run: AgentRun, agent: Agent) -> tuple[str, str]:
+        """The sentence naming who asked, and the in-app summary, for an approval.
+
+        A chat message from an unlinked person runs as the binding's publisher,
+        so "your approval" would be wrong for the publisher who gets this and
+        the email would otherwise never say a stranger asked. Wording only: the
+        audience is still resolved from `run.user_id`.
+        """
+        summary = f"{agent.name} is waiting on your approval"
+        if not (run.initiated_by_publisher_fallback and run.channel_identity_id is not None):
+            return "", summary
+        identity = await channel_identity_repo.get_by_id(self.db, run.channel_identity_id)
+        if identity is None:
+            return "", summary
+        platform = _CHAT_PLATFORM_NAMES.get(identity.platform, identity.platform.title())
+        name = agent_run_repo.chat_account_name(identity)
+        asked = f"asked in {platform} by {name} (unverified)"
+        bot_name = await self._chat_bot_name(run)
+        through = f", through {bot_name}" if bot_name else ""
+        return (
+            f"Asked in {platform} by {name} (unverified){through}.",
+            f"{agent.name} is waiting on an approval {asked}",
+        )
+
+    async def _chat_bot_name(self, run: AgentRun) -> str | None:
+        """The bot the run's chat reached the agent through, or none once it is unbound."""
+        if run.exposure_id is None:
+            return None
+        exposure = await agent_exposure_repo.get(
+            self.db, run.exposure_id, organization_id=run.organization_id
+        )
+        if exposure is None:
+            return None
+        bot = await channel_bot_repo.get_for_org(
+            self.db, exposure.channel_bot_id, organization_id=run.organization_id
+        )
+        return bot.name if bot else None
 
     async def run_completed(self, run: AgentRun, *, agent: Agent) -> None:
         """A run finished on a surface nobody was watching live.
@@ -357,6 +558,7 @@ class NotificationService:
             context_url=run_path,
             render_context={
                 "agent_name": agent.name,
+                **agent_face(agent),
                 "app_name": settings.PROJECT_NAME,
                 "run_url": absolute_context_url(run_path),
             },
@@ -364,10 +566,546 @@ class NotificationService:
             use_savepoint=True,
         )
 
+    async def routine_finished(
+        self,
+        run: AgentRun,
+        *,
+        agent: Agent,
+        routine_name: str | None,
+        creator_id: UUID | None,
+        answer: str,
+        source_conversation_id: UUID | None = None,
+    ) -> None:
+        """A routine finished, told to whoever set it up with the start of what it said (#2301).
+
+        `run_completed` names the agent and nothing else, which for a routine is
+        the one fact the person already knew: they asked for it every Monday. The
+        first lines of the answer are what makes the notification worth opening,
+        and the creator is told whether or not the routine fires as them - a
+        routine that runs as nobody still belongs to the person who made it.
+        """
+        if creator_id is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=run.organization_id, user_ids=[creator_id]
+        )
+        if not recipients:
+            return
+        name = routine_name or agent.name
+        excerpt = " ".join(answer.split())
+        if len(excerpt) > ROUTINE_EXCERPT_CHARS:
+            excerpt = excerpt[: ROUTINE_EXCERPT_CHARS - 1].rstrip() + "…"
+        target = (
+            "/routines" if source_conversation_id is None else f"/chat/{source_conversation_id}"
+        )
+        path = self._link(target, run.organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.RUN_COMPLETED,
+            occurrence_id=str(run.id),
+            summary=f"{name}: {excerpt}" if excerpt else f"{name} finished.",
+            context_url=path,
+            render_context={
+                "agent_name": agent.name,
+                "routine_name": name,
+                **_outcome_links(run),
+                **(
+                    {"conversation_id": str(source_conversation_id)}
+                    if source_conversation_id is not None
+                    else {}
+                ),
+                "excerpt": excerpt,
+                **agent_face(agent),
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(path),
+            },
+            organization_id=run.organization_id,
+            use_savepoint=True,
+        )
+
+    async def routine_budget_paused(
+        self,
+        *,
+        organization_id: UUID,
+        owner_user_id: UUID | None,
+        routine_id: UUID,
+        routine_kind: Literal["trigger", "watch"],
+        name: str | None,
+        limit: Decimal,
+        spent: Decimal,
+        period_start: datetime,
+    ) -> None:
+        """Tell the owner once per monthly limit, without inventing a failed run."""
+        if owner_user_id is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[owner_user_id]
+        )
+        if not recipients:
+            return
+        budget_name = (
+            "your monthly proactive-work budget"
+            if routine_kind == "watch"
+            else "its monthly routine budget"
+        )
+        remedy = (
+            "Ask an administrator to review the limit"
+            if routine_kind == "watch"
+            else "Increase the limit"
+        )
+        cause = f"routine:{routine_kind}:{routine_id}:budget:{period_start.date().isoformat()}"
+        path = self._link("/routines", organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.BUDGET_EXCEEDED,
+            occurrence_id=f"{cause}:{limit.normalize()}",
+            summary=(
+                f"{name or 'Your routine'} is waiting: {budget_name} of "
+                f"${limit:.2f} is used up (${spent:.2f} spent). {remedy} "
+                "or wait for the next month to resume."
+            ),
+            context_url=path,
+            render_context={
+                "routine_budget_paused": True,
+                "routine_origin_id": str(routine_id),
+                "routine_kind": routine_kind,
+                "cause": cause,
+                "limit": str(limit),
+                "spent": str(spent),
+                "period_start": period_start.isoformat(),
+            },
+            organization_id=organization_id,
+            use_savepoint=True,
+        )
+
+    async def routine_blocked(
+        self,
+        *,
+        organization_id: UUID,
+        owner_user_id: UUID | None,
+        routine_id: UUID,
+        routine_kind: Literal["trigger", "watch"],
+        reason: Literal["run", "check", "delivery"],
+        name: str,
+        detail: str,
+        observed_at: datetime,
+        run: AgentRun | None = None,
+        conversation_id: UUID | None = None,
+        budget: bool = False,
+        external_delivery: bool = True,
+        auto_stopped_at: datetime | None = None,
+    ) -> None:
+        """Keep continuing failures quiet while their single case remains actionable.
+
+        `detail` is platform-authored copy, never a provider exception or prompt.
+        """
+        if owner_user_id is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[owner_user_id]
+        )
+        if not recipients:
+            return
+        summary = f"{name} needs attention: {detail}"
+        cause = routine_failure_cause(routine_kind, routine_id, reason)
+        occurrence = await OutcomeService(self.db).routine_failure_occurrence(
+            organization_id=organization_id,
+            user_id=owner_user_id,
+            cause=cause,
+            observed_at=observed_at,
+            summary=summary,
+            run_id=run.id if run is not None else None,
+            escalation_at=auto_stopped_at,
+        )
+        if occurrence is None:
+            return
+        path = self._link("/routines", organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.BUDGET_EXCEEDED
+            if budget
+            else NotificationEventType.RUN_FAILED,
+            occurrence_id=occurrence,
+            summary=summary,
+            context_url=path,
+            render_context={
+                "cause": cause,
+                "routine_origin_id": str(routine_id),
+                "routine_kind": routine_kind,
+                "routine_failure_reason": reason,
+                "routine_observed_at": observed_at.isoformat(),
+                **(
+                    {"routine_auto_stopped_at": auto_stopped_at.isoformat()}
+                    if auto_stopped_at is not None
+                    else {}
+                ),
+                **(
+                    {"routine_failure_owner_id": str(owner_user_id), "routine_budget_result": True}
+                    if budget
+                    else {}
+                ),
+                **({"run_id": str(run.id)} if run is not None else {}),
+                **(
+                    {"conversation_id": str(conversation_id)} if conversation_id is not None else {}
+                ),
+            },
+            organization_id=organization_id,
+            channels=None if external_delivery else {NotificationChannel.IN_APP},
+            use_savepoint=True,
+        )
+
+    async def watch_blocked(
+        self,
+        watch: Watch,
+        status: WatchAttemptStatus,
+        *,
+        run: AgentRun | None = None,
+        observed_at: datetime | None = None,
+        external_delivery: bool = True,
+    ) -> None:
+        details = {
+            WatchAttemptStatus.NEEDS_AGENT: "Select its agent and approve its sources.",
+            WatchAttemptStatus.ACCESS_REVOKED: "Review its account connection and current access.",
+            WatchAttemptStatus.SOURCE_UNAVAILABLE: "Its source cannot currently be read.",
+            WatchAttemptStatus.NOT_COMPLETED: "Its check did not complete successfully; review Activity.",
+            WatchAttemptStatus.BUDGET_PAUSED: "Its check reached a run limit; review Activity and its budget.",
+            WatchAttemptStatus.DELIVERY_UNAVAILABLE: "Its source chat is unavailable. Review its delivery destination.",
+        }
+        if watch.ends_at is not None and watch.ends_at <= datetime.now(UTC):
+            await OutcomeService(self.db).resolve_routine_attention(
+                organization_id=watch.organization_id,
+                user_id=watch.user_id,
+                routine_id=watch.id,
+                routine_kind="watch",
+            )
+            return
+        detail = details.get(status)
+        stopped = watch.auto_stopped_at
+        if stopped is not None and status is WatchAttemptStatus.DELIVERY_UNAVAILABLE:
+            return
+        if (not watch.is_active and stopped is None) or detail is None:
+            return
+        if stopped is not None:
+            detail = f"Paused automatically after {watch.consecutive_failures} unsuccessful checks. Review Activity and resume when ready."
+        clock = (
+            stopped
+            or observed_at
+            or (run.routine_activation_at or run.started_at if run is not None else None)
+            or watch.last_attempt_at
+        )
+        if clock is None:
+            return
+        await self.routine_blocked(
+            organization_id=watch.organization_id,
+            owner_user_id=watch.user_id,
+            routine_id=watch.id,
+            routine_kind="watch",
+            reason="delivery" if status is WatchAttemptStatus.DELIVERY_UNAVAILABLE else "check",
+            name=watch.title,
+            detail=detail,
+            observed_at=clock,
+            budget=status is WatchAttemptStatus.BUDGET_PAUSED,
+            external_delivery=external_delivery,
+            run=run,
+            conversation_id=watch.source_conversation_id,
+            auto_stopped_at=stopped,
+        )
+
+    async def routine_result(
+        self, run: AgentRun, *, budget_recipients: set[UUID] | None = None
+    ) -> None:
+        """A shared runner terminal callback covers initial and resumed routine runs."""
+        if (
+            run.parent_run_id is not None
+            or run.routine_origin_id is None
+            or run.routine_kind not in ("trigger", "watch")
+        ):
+            return
+        terminal = {
+            RunStatus.COMPLETED.value,
+            RunStatus.FAILED.value,
+            RunStatus.LOOP_STOPPED.value,
+            RunStatus.BUDGET_EXCEEDED.value,
+            RunStatus.GUARDRAIL_BLOCKED.value,
+        }
+        if run.status not in terminal:
+            return
+        opened = False
+        try:
+            async with self.db.begin_nested():
+                opened = True
+                await self._routine_result(
+                    run,
+                    origin_id=run.routine_origin_id,
+                    budget_recipients=budget_recipients or set(),
+                )
+        except SQLAlchemyError as error:
+            if not opened or not self.db.is_active:
+                raise
+            logger.warning(
+                "routine_health_write_failed",
+                extra={"run_id": str(run.id), "error_type": type(error).__name__},
+            )
+
+    async def _routine_result(
+        self, run: AgentRun, *, origin_id: UUID, budget_recipients: set[UUID]
+    ) -> None:
+        if run.routine_kind == "watch":
+            if run.status == RunStatus.COMPLETED.value:
+                return  # The watch must validate its source receipt and reading first.
+            watch = await watch_repo.get_by_id(self.db, origin_id, fresh=True, for_update=True)
+            if (
+                watch is None
+                or watch.organization_id != run.organization_id
+                or run.user_id != watch.user_id
+            ):
+                return
+            activation = run.routine_activation_at or run.started_at
+            if (
+                watch.auto_stopped_at is None
+                and watch.last_attempt_at is not None
+                and (activation is None or watch.last_attempt_at > activation)
+            ):
+                return
+            await self.watch_blocked(
+                watch,
+                WatchAttemptStatus.BUDGET_PAUSED
+                if run.status == RunStatus.BUDGET_EXCEEDED.value
+                else WatchAttemptStatus.NOT_COMPLETED,
+                run=run,
+                external_delivery=watch.user_id not in budget_recipients,
+            )
+            return
+        trigger = await agent_trigger_repo.get_by_id(
+            self.db, origin_id, fresh=True, for_update=True
+        )
+        if (
+            trigger is None
+            or trigger.organization_id != run.organization_id
+            or (run.user_id is not None and run.user_id != trigger.created_by_user_id)
+        ):
+            return
+        if trigger.ends_at is not None and trigger.ends_at <= datetime.now(UTC):
+            await OutcomeService(self.db).resolve_routine_attention(
+                organization_id=trigger.organization_id,
+                user_id=trigger.created_by_user_id,
+                routine_id=trigger.id,
+                routine_kind="trigger",
+            )
+            return
+        if not trigger.is_active and trigger.auto_stopped_at is None:
+            return
+        latest = await agent_run_repo.latest_terminal_for_trigger(
+            self.db, organization_id=run.organization_id, trigger_id=trigger.id
+        )
+        if latest != run.id and trigger.auto_stopped_at is None:
+            return
+        clock = trigger.auto_stopped_at or run.ended_at or run.started_at
+        if clock is None:
+            return
+        if run.status == RunStatus.COMPLETED.value:
+            if trigger.auto_stopped_at is not None:
+                return
+            await OutcomeService(self.db).resolve_routine_failure(
+                organization_id=run.organization_id,
+                user_id=trigger.created_by_user_id,
+                routine_id=trigger.id,
+                routine_kind="trigger",
+                reason="run",
+                recovered_at=run.ended_at or run.started_at,
+            )
+            return
+        detail = "The run did not finish successfully. Review Activity before retrying."
+        if run.status == RunStatus.BUDGET_EXCEEDED.value:
+            detail = "The run stopped on a spending limit. Review its budget and Activity."
+        elif run.status == RunStatus.GUARDRAIL_BLOCKED.value:
+            detail = "A guardrail stopped the run. Review Activity and its policy."
+        if trigger.auto_stopped_at is not None:
+            detail = f"Paused automatically after {trigger.consecutive_failures} unsuccessful executions. Review Activity and resume when ready."
+        await self.routine_blocked(
+            organization_id=run.organization_id,
+            owner_user_id=trigger.created_by_user_id,
+            routine_id=trigger.id,
+            routine_kind="trigger",
+            reason="run",
+            name=trigger.name or "Your routine",
+            detail=detail,
+            observed_at=clock,
+            budget=run.status == RunStatus.BUDGET_EXCEEDED.value,
+            external_delivery=trigger.created_by_user_id not in budget_recipients,
+            run=run,
+            conversation_id=run.conversation_id,
+            auto_stopped_at=trigger.auto_stopped_at,
+        )
+
+    async def capability_requested(
+        self,
+        *,
+        agent: Agent,
+        capability_name: str,
+        capability_id: str,
+        reason: str,
+        requester_id: UUID,
+        requester_name: str,
+    ) -> None:
+        """Somebody asked for a capability one of the owner's agents lacks (#2301).
+
+        To the agent's owner, who decides; one occurrence per agent, capability
+        and asker, so asking twice tells the owner once. The link opens the
+        agent's Toolbox, where switching it on is one click.
+        """
+        if agent.owner_user_id is None or agent.owner_user_id == requester_id:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=agent.organization_id, user_ids=[agent.owner_user_id]
+        )
+        if not recipients:
+            return
+        path = self._link(f"/agents/{agent.id}?highlight=agent-capabilities", agent.organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.CAPABILITY_REQUESTED,
+            occurrence_id=f"{agent.id}:{capability_id}:{requester_id}",
+            summary=f"{requester_name} asked for {capability_name} in {agent.name}: {reason}",
+            context_url=path,
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "capability_name": capability_name,
+                "reason": reason,
+                "requester_name": requester_name,
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(path),
+            },
+            organization_id=agent.organization_id,
+            actor_user_id=requester_id,
+            use_savepoint=True,
+        )
+
+    async def suggestions_ready(
+        self, *, organization_id: UUID, user_id: UUID, count: int, now: datetime
+    ) -> None:
+        """The night's look at somebody's week found things worth proposing (#2301).
+
+        One row however many there are, and one a day at most: the occurrence is
+        the person and the date, so a second sweep the same morning adds nothing.
+        The link opens the starter agent's empty chat, where the cards wait.
+        """
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[user_id]
+        )
+        if not recipients:
+            return
+        path = self._link("/chat?agent=agenticos", organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.SUGGESTION,
+            occurrence_id=f"{user_id}:{now.date().isoformat()}",
+            summary=(
+                "AgenticOS has a new suggestion for you."
+                if count == 1
+                else f"AgenticOS has {count} new suggestions for you."
+            ),
+            context_url=path,
+            render_context={
+                "count": count,
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(path),
+            },
+            organization_id=organization_id,
+            use_savepoint=True,
+        )
+
+    async def finding(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID,
+        finding_id: UUID,
+        title: str,
+        conversation_id: UUID | None = None,
+        run_id: UUID | None = None,
+        watch_id: UUID | None = None,
+        external_delivery: bool = True,
+        routine_id: UUID | None = None,
+        routine_kind: Literal["trigger", "watch"] = "watch",
+        revision: str | None = None,
+    ) -> None:
+        """A watch found something its person asked to hear about at once (#2301).
+
+        One row per finding - the finding's own id is the occurrence - so a
+        second look that finds it again, already recorded, sends nothing. The
+        rest of what a watch finds waits for the morning briefing.
+        """
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[user_id]
+        )
+        if not recipients:
+            return
+        path = self._link("/inbox", organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.FINDING,
+            channels={NotificationChannel.IN_APP} if not external_delivery else None,
+            occurrence_id=str(finding_id)
+            if revision is None
+            else f"{finding_id}:{hashlib.sha256(revision.encode()).hexdigest()[:32]}",
+            summary=title,
+            context_url=path,
+            render_context={
+                "finding_id": str(finding_id),
+                **(
+                    {"routine_origin_id": str(routine_id), "routine_kind": routine_kind}
+                    if routine_id is not None
+                    else {}
+                ),
+                **(
+                    {"routine_origin_id": str(watch_id), "routine_kind": "watch"}
+                    if watch_id is not None
+                    else {}
+                ),
+                **(
+                    {"conversation_id": str(conversation_id)} if conversation_id is not None else {}
+                ),
+                **({"run_id": str(run_id)} if run_id is not None else {}),
+            },
+            organization_id=organization_id,
+            use_savepoint=True,
+        )
+
+    async def briefing(
+        self, *, organization_id: UUID, user_id: UUID, count: int, now: datetime
+    ) -> None:
+        """A person's morning briefing of what their watches found (#2301).
+
+        The same event as an urgent finding - one switch for everything watches
+        say - and one row a day: the occurrence is the person and the date.
+        """
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[user_id]
+        )
+        if not recipients:
+            return
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.FINDING,
+            occurrence_id=f"briefing:{user_id}:{now.date().isoformat()}",
+            summary=(
+                "Your watches found 1 new thing."
+                if count == 1
+                else f"Your watches found {count} new things."
+            ),
+            context_url=self._link("/inbox", organization_id),
+            organization_id=organization_id,
+            use_savepoint=True,
+        )
+
     async def run_failed(self, run: AgentRun, *, agent: Agent, error: str | None) -> None:
         """The mirror of `run_completed`, for the run that did not finish
         cleanly - same audience, same surface exclusion, same publisher-
         fallback exclusion, a different fact."""
+        if run.routine_origin_id is not None and run.routine_kind in ("trigger", "watch"):
+            return  # The routine callback owns its creator's incident, including resumes.
         if run.user_id is None or run.initiated_by_publisher_fallback:
             return
         recipients = await member_repo.list_member_ids_for(
@@ -395,6 +1133,8 @@ class NotificationService:
             context_url=run_path,
             render_context={
                 "agent_name": agent.name,
+                **agent_face(agent),
+                **_outcome_links(run),
                 "app_name": settings.PROJECT_NAME,
                 "run_url": absolute_context_url(run_path),
             },
@@ -442,6 +1182,7 @@ class NotificationService:
             context_url=chat_path,
             render_context={
                 "agent_name": agent.name,
+                **agent_face(agent),
                 "app_name": settings.PROJECT_NAME,
                 "run_url": absolute_context_url(chat_path),
             },
@@ -656,6 +1397,39 @@ class NotificationService:
             use_savepoint=True,
         )
 
+    async def conversation_shared(
+        self,
+        *,
+        recipient: UUID,
+        organization_id: UUID,
+        conversation_id: UUID,
+        title: str | None,
+        sharer: str,
+        actor_user_id: UUID,
+    ) -> None:
+        """A conversation was shared with one person.
+
+        One occurrence per conversation and recipient, so sharing it again after
+        a revoke does not tell them twice. The link opens the conversation.
+        """
+        shown = title or "A conversation"
+        await self._center.write(
+            recipients=[recipient],
+            event_type=NotificationEventType.RESOURCE_SHARED,
+            occurrence_id=f"conversation:{conversation_id}:{recipient}",
+            summary=f"{sharer} shared '{shown}' with you.",
+            context_url=self._link(f"/chat?id={conversation_id}", organization_id),
+            render_context={
+                "resource_kind": "conversation",
+                "resource_id": str(conversation_id),
+                "resource_name": shown,
+                "shared_by": sharer,
+            },
+            organization_id=organization_id,
+            actor_user_id=actor_user_id,
+            use_savepoint=True,
+        )
+
     async def mcp_server_down(
         self, connection: McpConnection, *, organization_id: UUID, since: datetime
     ) -> None:
@@ -700,6 +1474,321 @@ class NotificationService:
             use_savepoint=True,
         )
 
+    async def eval_run_finished(self, run: EvalRun) -> None:
+        """Announce a terminal eval; only a manual check notifies its requester.
+
+        Suite and improvement checks have their own terminal notification, so
+        every child finishing must not produce another inbox entry. Answers,
+        grading notes and provider errors never enter this notice.
+        """
+        from app.services import change_feed
+
+        if run.status in {EvalRunStatus.QUEUED.value, EvalRunStatus.RUNNING.value}:
+            return
+        spawn_after_commit(
+            self.db,
+            change_feed.publish(
+                ChangeEvent(
+                    organization_id=run.organization_id,
+                    resource="eval_run",
+                    id=run.agent_id,
+                    action="updated",
+                    surface="run",
+                    actor_user_id=run.created_by_user_id,
+                    actor_name=None,
+                )
+            ),
+            name=f"eval-run-finished:{run.id}",
+        )
+        if await eval_suite_repo.awaits_run(self.db, run.id, organization_id=run.organization_id):
+            # The suite service imports this module.
+            from app.services.eval_suite import wake_sweep
+
+            await wake_sweep(self.db)
+        if (run.proposal_check or {}).get("improvement_run_id") is not None:
+            # The pipeline imports this module.
+            from app.services.improvement_pipeline import ImprovementPipelineService
+
+            await ImprovementPipelineService(self.db).check_finished(run)
+        if run.purpose != EvalRunPurpose.MANUAL.value or run.proposal_check is not None:
+            return
+        await self._evaluation_finished(
+            organization_id=run.organization_id,
+            user_id=run.created_by_user_id,
+            event_type=NotificationEventType.EVAL_RUN_FINISHED,
+            occurrence_id=run.id,
+            status=run.status,
+            summary=_EVAL_SUMMARY.get(run.status, "Your test has ended."),
+            path=f"/agents/{run.agent_id}/evals/{run.id}",
+        )
+
+    async def case_generation_finished(self, generation: CaseGeneration) -> None:
+        """Tell the requester their proposed questions are ready or generation failed."""
+        if generation.status == GenerationStatus.RUNNING.value:
+            return
+        await self._evaluation_finished(
+            organization_id=generation.organization_id,
+            user_id=generation.requested_by_user_id,
+            event_type=NotificationEventType.CASE_GENERATION_FINISHED,
+            occurrence_id=generation.id,
+            status=generation.status,
+            summary=_GENERATION_SUMMARY.get(
+                generation.status, "Writing your test questions has ended."
+            ),
+            path=f"/datasets/{generation.dataset_id}?tab=generated",
+        )
+
+    async def _evaluation_finished(
+        self,
+        *,
+        organization_id: UUID,
+        user_id: UUID | None,
+        event_type: NotificationEventType,
+        occurrence_id: UUID,
+        status: str,
+        summary: str,
+        path: str,
+    ) -> None:
+        if user_id is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=organization_id, user_ids=[user_id]
+        )
+        link = self._link(path, organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=event_type,
+            occurrence_id=str(occurrence_id),
+            summary=summary,
+            context_url=link,
+            render_context={
+                "status": status,
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(link),
+            },
+            organization_id=organization_id,
+            use_savepoint=True,
+        )
+
+    async def improvement_finished(
+        self,
+        *,
+        agent: Agent,
+        run_id: UUID,
+        user_id: UUID | None,
+        status: str,
+        reason: str | None,
+        end: str,
+        next_step_blocked: NextStepBlocked | None = None,
+    ) -> None:
+        """One end of a session - each end once, however often it is reported.
+
+        A session ends more than once: stopped on its budget, continued, then
+        ready. `end` names which end this is, so the next one is not taken for a
+        repeat of the last. No evidence text is put in the notification.
+        `next_step_blocked` says why a stop's next step cannot be taken.
+        """
+        if user_id is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=agent.organization_id, user_ids=[user_id]
+        )
+        path = self._link(f"/agents/{agent.id}/improve/{run_id}", agent.organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.IMPROVEMENT_FINISHED,
+            occurrence_id=f"{run_id}:{end}",
+            summary=_improvement_summary(agent.name, status, reason, blocked=next_step_blocked),
+            context_url=path,
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "status": status,
+                "reason": reason,
+                "next_step_blocked": None
+                if next_step_blocked is None
+                else next_step_blocked.model_dump(),
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(path),
+            },
+            organization_id=agent.organization_id,
+            use_savepoint=True,
+        )
+
+    async def eval_suite_reevaluated(
+        self, suite: EvalSuite, result: EvalSuiteResult, *, agent: Agent
+    ) -> None:
+        """A changed verdict after human review; no automatic promotion or answer text."""
+        summary = EvalSuiteSummary.model_validate(result.summary) if result.summary else None
+        if summary is None or summary.review is None:
+            return
+        recipients = await member_repo.list_member_ids_for(
+            self.db,
+            organization_id=suite.organization_id,
+            user_ids=[suite.owner_user_id] if suite.owner_user_id else [],
+        )
+        if not recipients:
+            return
+        review = summary.review
+        path = self._link(f"/agents/{agent.id}/evals/{result.eval_run_id}", suite.organization_id)
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.EVAL_SUITE_REEVALUATED,
+            occurrence_id=f"{result.id}:{review.at.isoformat()}",
+            summary=f"{suite.name} on {agent.name}: {review.previous_verdict} → {result.status} after review. Promotion requires a person.",
+            context_url=path,
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "suite_name": suite.name,
+                "status": result.status,
+                "run_url": absolute_context_url(path),
+                "app_name": settings.PROJECT_NAME,
+            },
+            organization_id=suite.organization_id,
+            use_savepoint=True,
+        )
+
+    async def eval_suite_failed(
+        self, suite: EvalSuite, result: EvalSuiteResult, *, agent: Agent
+    ) -> None:
+        """A suite's run fell below its threshold, could not run, or passed uncompared.
+
+        Its owner hears once per run of such results on a version - the caller
+        sends only the first - and the occurrence is that first result, so a
+        retried write is a no-op. A failure names the cases that broke, so the
+        owner knows what to open before they open anything.
+        """
+        recipients = await member_repo.list_member_ids_for(
+            self.db,
+            organization_id=suite.organization_id,
+            user_ids=[suite.owner_user_id] if suite.owner_user_id else [],
+        )
+        if not recipients:
+            return
+        summary = EvalSuiteSummary.model_validate(result.summary) if result.summary else None
+        path = (
+            f"/agents/{agent.id}/evals/{result.eval_run_id}"
+            if result.eval_run_id is not None
+            else f"/agents/{agent.id}?tab=evals"
+        )
+        failing = [case.input for case in summary.failing_cases] if summary else []
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.EVAL_SUITE_FAILED,
+            occurrence_id=f"{suite.id}:{result.id}",
+            summary=_suite_summary(suite, result, agent=agent, summary=summary),
+            context_url=self._link(path, suite.organization_id),
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "suite_name": suite.name,
+                "status": result.status,
+                "reason": result.reason,
+                "version": result.version_number,
+                "failing_cases": failing,
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(self._link(path, suite.organization_id)),
+            },
+            organization_id=suite.organization_id,
+            use_savepoint=True,
+        )
+
+    async def promotion_overridden(
+        self,
+        override: PromotionOverride,
+        *,
+        agent: Agent,
+        version: AgentVersion,
+        owners: list[UUID],
+    ) -> None:
+        """A version was promoted onto an environment past eval suites that had not passed.
+
+        The owners of those suites hear it - they set the bar that was waved
+        aside - and the occurrence is the override, so a retried write is a
+        no-op.
+        """
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=override.organization_id, user_ids=owners
+        )
+        if not recipients:
+            return
+        overridden = [guard["suite_name"] for guard in override.gate if guard["state"] != "passed"]
+        path = f"/agents/{agent.id}?tab=history"
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.PROMOTION_OVERRIDDEN,
+            occurrence_id=str(override.id),
+            summary=(
+                f"v{version.version} of {agent.name} went to {override.environment_name} "
+                f"without passing {', '.join(overridden)}: {_clip(override.reason)}"
+            ),
+            context_url=self._link(path, override.organization_id),
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "environment_name": override.environment_name,
+                "version": version.version,
+                "suites": overridden,
+                "reason": override.reason,
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(self._link(path, override.organization_id)),
+            },
+            organization_id=override.organization_id,
+            use_savepoint=True,
+        )
+
+    async def shared_change_applied(
+        self,
+        *,
+        agent: Agent,
+        kind: Literal["context", "skill"],
+        resource: ContextFile | Skill,
+        occurrence: str,
+        actor_user_id: UUID | None,
+    ) -> None:
+        """A change to a context file or skill an agent reads went live for it.
+
+        The agent's owner hears it - unless they applied it themselves - and is
+        pointed at the agent's evals, where the suites it queued run. The file's
+        or skill's content is never in it. Its name is only when the owner can see
+        the resource anyway - it is the organization's, or theirs - since an
+        agent may read a private one somebody else shared with its publisher.
+        """
+        owners = [agent.owner_user_id] if agent.owner_user_id not in (None, actor_user_id) else []
+        recipients = await member_repo.list_member_ids_for(
+            self.db, organization_id=agent.organization_id, user_ids=owners
+        )
+        if not recipients:
+            return
+        what = "context file" if kind == "context" else "skill"
+        named = (
+            resource.visibility == Visibility.ORG.value
+            or resource.owner_user_id == agent.owner_user_id
+        )
+        path = f"/agents/{agent.id}?tab=evals"
+        await self._center.write(
+            recipients=list(recipients),
+            event_type=NotificationEventType.SHARED_CHANGE_APPLIED,
+            occurrence_id=f"{occurrence}:{agent.id}",
+            summary=(
+                f"A change to the {what} {resource.name} went live for {agent.name}"
+                if named
+                else f"A change to a {what} it reads went live for {agent.name}"
+            ),
+            context_url=self._link(path, agent.organization_id),
+            render_context={
+                "agent_name": agent.name,
+                **agent_face(agent),
+                "kind": kind,
+                **({"name": resource.name} if named else {}),
+                "app_name": settings.PROJECT_NAME,
+                "run_url": absolute_context_url(self._link(path, agent.organization_id)),
+            },
+            organization_id=agent.organization_id,
+            use_savepoint=True,
+        )
+
     async def _mcp_audience(self, connection: McpConnection, organization_id: UUID) -> set[UUID]:
         """Whoever manages the organization's servers, and whoever owns an agent bound to this one.
 
@@ -733,8 +1822,9 @@ class NotificationService:
         notify about, and never after it. `record_audit` holds a
         transaction-scoped lock on the organization's audit chain, and the
         notification write that follows reaches for a key-share lock on every
-        recipient's `users` row - while `UserService.admin_delete` takes those
-        rows exclusively *first* and the chain lock second. Two transactions,
+        recipient's `users` row - while `UserService.admin_update` takes those
+        rows exclusively *first* and the chain lock second (and
+        `UserService.admin_delete` the deleted account's own row). Two transactions,
         the same two locks, opposite orders: Postgres aborts one, and the side
         that loses can lose its mandatory security notification inside the
         per-recipient savepoint while the audit entry commits regardless
@@ -751,7 +1841,7 @@ class NotificationService:
 
     async def hold_configuration_audience(self) -> list[UUID]:
         """The same, for `configuration_changed`, whose audience is always the
-        deployment's app admins - which is exactly the set `admin_delete` locks
+        deployment's app admins - which is exactly the set `admin_update` locks
         exclusively, so this is the half of #1763 with the shortest cycle."""
         audience = sorted(await member_repo.list_app_admin_ids(self.db))
         await user_repo.hold_key_share(self.db, audience)
@@ -813,6 +1903,42 @@ class NotificationService:
             # alone gives every impersonated target its own fresh budget and
             # never actually bounds the administrator doing the impersonating.
             actor_user_id=entry.impersonator_user_id or entry.actor_user_id,
+            use_savepoint=True,
+        )
+
+    async def background_task_paused(
+        self, kind: str, *, organization_name: str | None, reason: str, paused_at: datetime
+    ) -> None:
+        """A kind of background job kept killing its workers and is paused (#2219).
+
+        To the deployment's owners - the app admins - in the app and by email,
+        whatever their preferences: work of that kind is piling up from now on
+        and nothing restarts it but one of them, from the Background jobs page.
+        Once per pause: the occurrence is the kind and the moment it paused.
+        Paused for one organization, it says which - the rest still run (#2248).
+        """
+        recipients = sorted(await member_repo.list_app_admin_ids(self.db))
+        if not recipients:
+            return
+        link_path = "/admin/background-jobs"
+        await self._center.write(
+            recipients=recipients,
+            event_type=NotificationEventType.BACKGROUND_TASK_PAUSED,
+            occurrence_id=f"{kind}:{organization_name or ''}:{paused_at.isoformat()}",
+            summary=(
+                f"Background jobs of the kind {kind} are paused"
+                + ("" if organization_name is None else f" for {organization_name}")
+                + f": {reason}. Resume them on the Background jobs page once the cause is fixed."
+            ),
+            context_url=link_path,
+            render_context={
+                "kind": kind,
+                "organization_name": organization_name,
+                "reason": reason,
+                "app_name": settings.PROJECT_NAME,
+                "url": absolute_context_url(link_path),
+            },
+            organization_id=None,
             use_savepoint=True,
         )
 
@@ -902,7 +2028,9 @@ class NotificationService:
         total = await organization_spend_since(self.db, organization_id, since, until=window_start)
         organization = await organization_repo.get_by_id(self.db, organization_id)
         organization_name = organization.name if organization else "your organization"
-        dashboard_path = self._link("/agents", organization_id)
+        last_day = (window_start - timedelta(microseconds=1)).date()
+        report_period = f"{since.date().isoformat()}..{last_day.isoformat()}"
+        dashboard_path = self._link(f"/dashboard?view=org&period={report_period}", organization_id)
         render_context = {
             "period": "week" if period == "weekly" else "month",
             "org_name": organization_name,
@@ -1004,6 +2132,155 @@ class NotificationService:
             use_savepoint=True,
         )
         return bool(written)
+
+    async def artifact_owner_changed(
+        self,
+        artifact: Artifact,
+        *,
+        previous_owner_id: UUID | None,
+        new_owner_id: UUID,
+        by_user_id: UUID,
+        by_name: str,
+        new_owner_name: str,
+    ) -> None:
+        """A page changed hands: the old owner is told they gave it up, the new one that it
+        is theirs and its data waits for their confirmation.
+
+        Each says which page and who switched it, never what the page shows. A page
+        with no owner left has no one to tell of giving it up, and whoever made the
+        switch (`by_user_id`) is never told of their own act.
+        """
+        path = self._link(f"/apps/{artifact.id}", artifact.organization_id)
+        title = artifact.title or artifact.name
+        # A page can change hands again, and the same pair twice: the instant makes each
+        # switch its own fact for the dedup key.
+        occurrence = f"{artifact.id}:{datetime.now(UTC).isoformat()}"
+        render_context = {
+            "artifact_id": str(artifact.id),
+            "app_name": settings.PROJECT_NAME,
+            "page_url": absolute_context_url(path),
+            # Lets the old owner read this row after the switch took their access.
+            "previous_owner_id": str(previous_owner_id) if previous_owner_id else None,
+        }
+        told: list[tuple[UUID, str]] = [
+            (
+                new_owner_id,
+                f"{by_name} made you the owner of {title}. Its data stays hidden from "
+                "others until you confirm it.",
+            )
+        ]
+        if previous_owner_id is not None:
+            told.append(
+                (previous_owner_id, f"{by_name} made {new_owner_name} the owner of {title}.")
+            )
+        for user_id, summary in told:
+            if user_id == by_user_id:
+                continue
+            await self._center.write(
+                recipients=[user_id],
+                event_type=NotificationEventType.ARTIFACT_OWNER_CHANGED,
+                occurrence_id=occurrence,
+                summary=summary,
+                context_url=path,
+                render_context=render_context,
+                organization_id=artifact.organization_id,
+            )
+
+    async def artifact_share_requested(
+        self,
+        artifact: Artifact,
+        *,
+        request_id: UUID,
+        kind: str,
+        requester_name: str,
+        recipients: Sequence[UUID],
+    ) -> None:
+        """Somebody asked for a page to be shared, or for a version of it to be confirmed.
+
+        Told to those who decide it (see :func:`app.services.artifact_requests.deciders`).
+        Names the page, the requester and what they asked, never what the page reads.
+        """
+        # `requests=open` opens the page's Requests section, in the console and from an email.
+        path = self._link(f"/apps/{artifact.id}?requests=open", artifact.organization_id)
+        title = artifact.title or artifact.name
+        summary = {
+            "audience": f"{requester_name} asked to share {title} with more people.",
+            "access": f"{requester_name} asked for access to {title}.",
+            "version": (
+                f"{requester_name} changed the data {title} shows. Others see the earlier "
+                "version until you approve it."
+            ),
+        }[kind]
+        render_context = {
+            "artifact_id": str(artifact.id),
+            "request_id": str(request_id),
+            "kind": kind,
+            "app_name": settings.PROJECT_NAME,
+            "page_url": absolute_context_url(path),
+        }
+        for user_id in recipients:
+            await self._center.write(
+                recipients=[user_id],
+                event_type=NotificationEventType.ARTIFACT_SHARE_REQUESTED,
+                occurrence_id=str(request_id),
+                summary=summary,
+                context_url=path,
+                render_context=render_context,
+                organization_id=artifact.organization_id,
+            )
+
+    async def workflow_log_alert(
+        self,
+        rule: WorkflowLogAlertRule,
+        workflow: Workflow,
+        *,
+        firing_id: UUID,
+        count: int,
+    ) -> None:
+        """A workflow's log crossed a rule's threshold: told to the rule's audience.
+
+        Names the workflow, the rule and how many lines matched, never the lines - the
+        Logs page the link opens shows them, to whoever may still view the workflow.
+        The audience resolves as an agent alert's does (`admins`, `owner`, `chosen`):
+        the owner and the chosen members only while they still belong.
+        """
+        recipients = await self._audience_ids(
+            AlertSpec(
+                to=[AlertAudience(audience) for audience in rule.audience],
+                user_ids=list(rule.user_ids),
+            ),
+            organization_id=workflow.organization_id,
+            owner_user_id=workflow.owner_user_id,
+            initiator_user_id=None,
+        )
+        if not recipients:
+            return
+        query: list[tuple[str, str]] = []
+        if rule.node_instance_id is not None:
+            query.append(("step", str(rule.node_instance_id)))
+        query.extend(("outcome", outcome) for outcome in rule.outcomes)
+        path = self._link(
+            f"/workflows/{workflow.id}/logs?{urlencode(query)}", workflow.organization_id
+        )
+        minutes = rule.window_minutes
+        window = f"{minutes // 60} hours" if minutes >= 120 else f"{minutes} minutes"
+        await self._center.write(
+            recipients=sorted(recipients),
+            event_type=NotificationEventType.WORKFLOW_LOG_ALERT,
+            occurrence_id=str(firing_id),
+            summary=(
+                f"{rule.name}: {count} {'occurrence' if count == 1 else 'occurrences'} in the log "
+                f"of {workflow.name} in the last {window}."
+            ),
+            context_url=path,
+            render_context={
+                "workflow_id": str(workflow.id),
+                "rule_id": str(rule.id),
+                "app_name": settings.PROJECT_NAME,
+                "page_url": absolute_context_url(path),
+            },
+            organization_id=workflow.organization_id,
+        )
 
     def _link(self, path: str, organization_id: UUID) -> str:
         """A console path that says which organization it is about.
@@ -1151,3 +2428,165 @@ class NotificationService:
             )
 
         return recipients
+
+
+_SHOWN_CASES = 5
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    """One line of a person's text, short enough for a notification's summary."""
+    line = " ".join(text.split())
+    return line if len(line) <= limit else f"{line[: limit - 1]}…"
+
+
+def _suite_summary(
+    suite: EvalSuite, result: EvalSuiteResult, *, agent: Agent, summary: EvalSuiteSummary | None
+) -> str:
+    """One line saying which suite, on what, why - and, for a failure, which cases. A
+    pass is told only when it ran uncompared, and says why."""
+    on = f"{agent.name} v{result.version_number}" if result.version_number else agent.name
+    deciding = result.status in (
+        EvalSuiteResultStatus.FAILED.value,
+        EvalSuiteResultStatus.INCONCLUSIVE.value,
+    )
+    if result.status == EvalSuiteResultStatus.PASSED.value and summary and summary.message:
+        return f"{suite.name} passed on {on}. {summary.message}"
+    if not deciding:
+        why = (summary.message if summary and summary.message else None) or (result.reason or "")
+        return f"{suite.name} did not run on {on}: {why.rstrip('.')}."
+    failed = result.status == EvalSuiteResultStatus.FAILED.value
+    reasons = summary.reasons if summary else []
+    if reasons:
+        said = "; ".join(_reason_text(reason) for reason in reasons)
+    elif summary and summary.message:
+        said = summary.message.rstrip(".")
+    else:
+        said = "below its threshold"
+    line = f"{suite.name} {'failed' if failed else 'could not decide'} on {on}: {said}."
+    cases = [
+        case.input
+        for case in (summary.failing_cases if summary else [])
+        if failed or case.kind in ("ungraded", "incomplete")
+    ]
+    if cases:
+        named = ", ".join(f"'{text}'" for text in cases[:_SHOWN_CASES])
+        more = len(cases) - _SHOWN_CASES
+        label = "Failing" if failed else "Undecided"
+        line += f" {label}: {named}" + (f" and {more} more." if more > 0 else ".")
+    return line
+
+
+def _reason_text(reason: ThresholdReason) -> str:
+    value = reason.value or 0
+    limit = reason.limit or 0
+    match reason.code:
+        case "pass_rate_below":
+            return f"pass rate {value:.0%} is below {limit:.0%}"
+        case "nothing_graded":
+            return "no case could be graded"
+        case "regressions":
+            return (
+                "1 case breaks reproducibly"
+                if int(value) == 1
+                else f"{int(value)} cases break reproducibly"
+            )
+        case "cost_per_pass_rise":
+            if reason.detail == "zero_baseline":
+                return "cost per passed case rose from zero, exceeding every percentage ceiling"
+            return f"cost per passed case rose {value:.0%}"
+        case "p95_rise":
+            if reason.detail == "zero_baseline":
+                return "p95 latency rose from zero, exceeding every percentage ceiling"
+            return f"p95 latency rose {value:.0%}"
+        case "ungraded":
+            return f"{int(value)} case(s) nothing grades"
+        case "incomplete":
+            return f"{int(value)} case(s) the provider or a scorer failed on"
+        case "crashed":
+            return f"the agent's run failed on {int(value)} case(s)"
+        case _:
+            return "the comparison is invalid"
+
+
+_EVAL_SUMMARY = {
+    "completed": "Your test finished.",
+    "failed": "Your test could not finish.",
+    "cancelled": "Your test was cancelled.",
+    "budget_exceeded": "Your test stopped at its budget.",
+}
+_GENERATION_SUMMARY = {
+    "ready": "Your test questions are written and wait for your review.",
+    "failed": "Writing your test questions failed.",
+}
+_STOP_SENTENCE = {
+    "no_data": "it needs more test questions or feedback.",
+    "no_proposal": "no change fits the current instructions.",
+    "budget": "the next step does not fit the spending limit.",
+    "inconclusive": "too few answers could be graded reliably.",
+    "regression": "the changes broke questions that worked before.",
+    "no_change": "no change made a measurable difference.",
+    "max_iterations": "it reached its attempt limit.",
+    "repeat_candidate": "it proposed changes it had already tested.",
+    "permission": "the access it needs is no longer available.",
+    "stale": "the agent or its test questions changed.",
+    "stalled": "a step stopped making progress.",
+    "proposal": "writing the changes failed.",
+    "eval": "testing the changes failed.",
+    "superseded": "newer suggestions replaced these.",
+    "knowledge_only": "topics are missing from the knowledge base - draft the ones you want.",
+    "draft": "drafting the knowledge documents failed.",
+    "expired": "nobody took the next step for seven days.",
+}
+# An attempt that did not do better ends where a person decides whether to try again.
+_RESULT_REASONS = frozenset({"no_change", "regression", "inconclusive"})
+
+
+_CHECK_SUMMARY = {
+    "knowledge_check": "The knowledge document check in your improvement of {agent} finished.",
+    "attribution_check": "Testing each change in your improvement of {agent} finished.",
+}
+_DECIDED_SUMMARY = {
+    "accepted": "The changes from your improvement of {agent} were kept as a draft.",
+    "published": "The changes from your improvement of {agent} were published.",
+    "rejected": "The changes from your improvement of {agent} were discarded.",
+    "cancelled": "Your improvement of {agent} was stopped by an administrator.",
+}
+
+
+# Where a session waits, by the step it finished: reading the examples, sorting
+# them, or proposing changes for a person to look over.
+_WAITING_SUMMARY = {
+    "analyzing": "Your improvement of {agent} has read its examples. Look them over, then take the next step.",
+    "classifying": "Your improvement of {agent} has sorted its examples. Look them over, then take the next step.",
+    "filtering": "Your improvement of {agent} has changes ready. Look them over, then take the next step to check them.",
+}
+
+
+def _improvement_summary(
+    agent_name: str, status: str, reason: str | None, *, blocked: NextStepBlocked | None = None
+) -> str:
+    """The bell's English line for a finished session; it names no internal status."""
+    if blocked is not None:
+        return (
+            f"Your improvement of {agent_name} has changes, but too few test questions are "
+            f"left to check them: {blocked.needed} more are needed, and this session's "
+            "questions are fixed. End it, add questions and start a new one."
+        )
+    if reason in _CHECK_SUMMARY:
+        return _CHECK_SUMMARY[reason].format(agent=agent_name)
+    if status in _DECIDED_SUMMARY:
+        return _DECIDED_SUMMARY[status].format(agent=agent_name)
+    if status == "waiting":
+        return _WAITING_SUMMARY.get(reason or "", _WAITING_SUMMARY["analyzing"]).format(
+            agent=agent_name
+        )
+    if status == "ready":
+        return f"Your improvement of {agent_name} is ready to review."
+    because = _STOP_SENTENCE.get(reason or "")
+    if status == "failed":
+        head = f"Your improvement of {agent_name} could not finish"
+    elif status == "stopped" and reason in _RESULT_REASONS:
+        head = f"Your improvement of {agent_name} finished an attempt"
+    else:
+        head = f"Your improvement of {agent_name} stopped"
+    return f"{head}: {because}" if because else f"{head}."

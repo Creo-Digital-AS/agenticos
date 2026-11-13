@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
+import { readThrough } from "@/lib/offline/device-cache";
 import { DASHBOARD_FRESHNESS } from "@/lib/query-freshness";
 import { qk } from "@/lib/query-keys";
 import { listSyncSources } from "@/lib/rag-api";
@@ -11,21 +12,23 @@ import type { AdminStats, SystemHealth } from "@/types/admin";
 import type { AdminRatingsSummary, Conversation } from "@/types/conversation";
 import type { AgentRunList } from "@/types/runs";
 
-/** Failed or out-of-budget runs, newest first - the recent-failures card. */
+/** Failed, out-of-budget or loop-stopped runs, newest first - the recent-failures card. */
 export function useRecentFailures(limit = 5, options?: { enabled?: boolean }) {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.runs.failures(limit),
     queryFn: () =>
-      apiClient.get<AgentRunList>("/runs", {
-        params: { status: "failed,budget_exceeded", limit: String(limit) },
-      }),
+      readThrough(`failures:${limit}`, () =>
+        apiClient.get<AgentRunList>("/runs", {
+          params: { status: "failed,budget_exceeded,loop_stopped", limit: String(limit) },
+        }),
+      ),
     enabled: options?.enabled ?? true,
     ...DASHBOARD_FRESHNESS,
   });
   return { failures: data?.items ?? [], total: data?.total ?? 0, isLoading, error, refetch };
 }
 
-/** The organization's sync sources and their freshness - the knowledge-sync card. */
+/** The sync sources the caller can list and their freshness - the knowledge-sync card. */
 export function useSyncSources(options?: { enabled?: boolean }) {
   const activeOrgId = useOrgStore((state) => state.activeOrgId);
   const { data, isLoading, error, refetch } = useQuery({
@@ -42,9 +45,11 @@ export function useRecentConversations(limit = 4, options?: { enabled?: boolean 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.conversations.recent(limit),
     queryFn: () =>
-      apiClient.get<{ items: Conversation[] }>("/conversations", {
-        params: { limit: String(limit) },
-      }),
+      readThrough(`recent-conversations:${limit}`, () =>
+        apiClient.get<{ items: Conversation[] }>("/conversations", {
+          params: { limit: String(limit) },
+        }),
+      ),
     enabled: options?.enabled ?? true,
     ...DASHBOARD_FRESHNESS,
   });

@@ -9,6 +9,7 @@ import { qk } from "@/lib/query-keys";
 import { getErrorMessage } from "@/lib/api-error";
 import type {
   Trigger,
+  TriggerAttemptList,
   TriggerCreate,
   TriggerCreated,
   TriggerList,
@@ -31,10 +32,14 @@ export function useTriggers(agentId: string | null) {
   const tErrors = useTranslations("errors");
   const base = `/agents/${agentId}/triggers`;
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.triggers.list(agentId ?? ""),
     queryFn: () => apiClient.get<TriggerList>(base),
     enabled: !!agentId,
+    refetchInterval: (query) =>
+      query.state.data?.items.some((trigger) => trigger.is_active && trigger.local_target != null)
+        ? 30_000
+        : false,
   });
 
   const invalidate = useCallback(
@@ -106,8 +111,10 @@ export function useTriggers(agentId: string | null) {
   });
 
   return {
-    triggers: (data?.items ?? []) as Trigger[],
+    triggers: data?.items ?? [],
     isLoading,
+    error,
+    refetch,
     create,
     update,
     setActive,
@@ -115,4 +122,16 @@ export function useTriggers(agentId: string | null) {
     remove,
     rotateSecret,
   };
+}
+
+/** Durable refusals are separate from agent runs and survive notification delivery failures. */
+export function useTriggerAttempts(trigger: Trigger, page: number, pending: boolean) {
+  return useQuery({
+    queryKey: qk.triggers.attempts(trigger.agent_id, trigger.id, page),
+    queryFn: () =>
+      apiClient.get<TriggerAttemptList>(
+        `/agents/${trigger.agent_id}/triggers/${trigger.id}/attempts?skip=${page * 10}&limit=10`,
+      ),
+    refetchInterval: pending ? 3000 : trigger.is_active ? 30_000 : false,
+  });
 }

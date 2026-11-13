@@ -48,8 +48,6 @@ window, the filters that were applied and the row count - never the request body
 or a resolved row.
 """
 
-from __future__ import annotations
-
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -60,6 +58,7 @@ from app.core.audit import record_audit
 from app.core.permissions import Perm, Scope
 from app.repositories import agent_run_repo
 from app.repositories.agent_run import ApprovalFilters, RunFilters
+from app.services.approvals import ApprovalService
 from app.services.exporting import (
     MAX_EXPORT_ROWS,
     ExportResult,
@@ -98,6 +97,8 @@ _RUNS_HEADER = [
     "provider",
     "input_tokens",
     "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
     "cost_usd",
     "cost_is_partial",
     "started_at",
@@ -122,6 +123,9 @@ _APPROVALS_HEADER = [
     "decided_at",
     "note",
     "created_at",
+    "asked_in_chat_platform",
+    "asked_in_chat_account",
+    "asked_in_chat_bot",
 ]
 
 _SPEND_HEADER = [
@@ -222,7 +226,9 @@ class RunExportService:
 
         Gated on `approvals:decide` at the route, which is organization-wide, so
         there is no `Scope.OWN` floor to apply - an approver sees the whole queue.
-        The two emails are kept because the queue already resolves them on screen.
+        The two emails are kept because the queue already resolves them on screen. A
+        chat stranger's call leaves them empty and fills the `asked_in_chat_*`
+        columns instead: the publisher the run ran as did not ask.
         """
         require_range(filters.created_from, filters.created_to)
 
@@ -235,6 +241,7 @@ class RunExportService:
             limit=MAX_EXPORT_ROWS,
         )
         guard_cap(total, remedy="Narrow the date range and try again.")
+        items = await ApprovalService(self.db).as_read_by(ctx, items)
 
         content = _write(_APPROVALS_HEADER, [_approval_row(row) for row in items])
         now = datetime.now(UTC)
@@ -329,6 +336,8 @@ def _run_row(run: AgentRun) -> list[object]:
         run.provider,
         run.input_tokens,
         run.output_tokens,
+        run.cache_read_tokens,
+        run.cache_write_tokens,
         run.cost_usd,
         run.cost_is_partial,
         run.started_at,
@@ -338,6 +347,7 @@ def _run_row(run: AgentRun) -> list[object]:
 
 
 def _approval_row(row: ApprovalRow) -> list[object]:
+    asker = row.asked_in_chat
     return [
         row.id,
         row.run_id,
@@ -355,6 +365,9 @@ def _approval_row(row: ApprovalRow) -> list[object]:
         row.decided_at,
         row.note,
         row.created_at,
+        asker.platform if asker else None,
+        asker.name if asker else None,
+        asker.bot_name if asker else None,
     ]
 
 
@@ -405,6 +418,7 @@ def _applied_run_filters(
         "exposure_id": filters.exposure_id is not None,
         "agent_version_id": filters.agent_version_id is not None,
         "rated": filters.rated is not None,
+        "modality": filters.modality is not None,
     }
     return sorted(name for name, present in named.items() if present)
 

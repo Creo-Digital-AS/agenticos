@@ -12,7 +12,7 @@ from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -21,24 +21,43 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCall
 from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage, RunUsage
+from pydantic_ai_harness import CodeMode
 
 from app.agents.audience import RunAudience
 from app.agents.capabilities import all_capabilities, load_builtins
 from app.agents.capabilities.approval._capability import ApprovalGate
 from app.agents.capabilities.budget import BudgetScope, SpendLimit
 from app.agents.capabilities.compaction import ReportContextSize
+from app.agents.code_mode import CodeCalls
+from app.agents.computer_on_use import ComputerAccessRequest, RequestComputerOnUse
 from app.agents.connect_on_use import ConnectionRequest, ConnectOnUse, PendingService
-from app.agents.factory import _AUDIENCE_AWARE, DEFAULT_MAX_STEPS, BuiltAgent, build_agent
+from app.agents.factory import (
+    _AUDIENCE_AWARE,
+    DEFAULT_MAX_STEPS,
+    BuiltAgent,
+    _fits_schema,
+    answer_text,
+    build_agent,
+)
+from app.agents.loop_guard import LoopGuard
 from app.agents.model_resolver import ModelRequestSpec, ResolvedCredential
+from app.agents.run_reviewer import RunReviewer
 from app.agents.spec import (
     SPEC_VERSION,
     AgentSpec,
     AlertAudience,
     AlertSpec,
+    CodeModeSpec,
+    LoopGuardSpec,
     NotificationSpec,
+    SkillBindingSpec,
+    SpecialistSpec,
+    VoiceSpec,
 )
+from app.agents.tool_repair import CountedRepair
 from app.core.exceptions import BadRequestError
 from app.core.secret_kinds import ApiKeySecret
 
@@ -101,6 +120,62 @@ class TestSpecContract:
 
         assert loaded == spec
 
+    def test_an_mcp_binding_stored_before_per_tool_approval_dumps_unchanged(self):
+        """A routine's reviewed sources and an eval's baseline are fingerprints of
+        the dumped spec: a `tool_approval: {}` on every stored binding would change
+        both for an agent nobody touched (#2884)."""
+        stored = [
+            {
+                "account": "organization",
+                "connection_id": str(uuid.uuid4()),
+                "allowed_tools": ["search"],
+                "approval": "writes",
+            },
+            {
+                "account": "personal",
+                "catalog_key": "notion",
+                "allowed_tools": None,
+                "approval": "all",
+            },
+        ]
+
+        spec = AgentSpec.model_validate({"name": "x", "mcp_servers": stored})
+
+        assert spec.model_dump(mode="json")["mcp_servers"] == stored
+        assert "tool_approval" not in spec.to_yaml()
+
+    def test_per_tool_mcp_approval_is_stored_sorted_and_only_where_decided(self):
+        """Sorted because JSONB reorders keys and the Builder compares what it saved
+        with what it reads back; `default` is the same as no entry at all."""
+        spec = AgentSpec(
+            name="x",
+            mcp_servers=[
+                {
+                    "account": "personal",
+                    "catalog_key": "notion",
+                    "approval": "writes",
+                    "tool_approval": {"search": "never", "fetch": "default", "delete": "required"},
+                }
+            ],
+        )
+
+        (dumped,) = spec.model_dump(mode="json")["mcp_servers"]
+        assert list(dumped["tool_approval"].items()) == [
+            ("delete", "required"),
+            ("search", "never"),
+        ]
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+    @pytest.mark.security
+    def test_the_platform_server_takes_no_approval_per_tool(self):
+        """Its calls act with the asker's own authority and never drop below
+        `writes`; a tool's `never` would be the way under that floor."""
+        with pytest.raises(ValueError, match="tool_approval"):
+            AgentSpec(
+                name="x",
+                mcp_servers=[{"account": "platform", "tool_approval": {"publish_agent": "never"}}],
+            )
+
     def test_a_tool_cannot_be_bound_twice(self):
         """A duplicate would silently shadow itself in the toolset."""
         with pytest.raises(ValueError, match="more than once"):
@@ -151,6 +226,133 @@ class TestSpecContract:
             AgentSpec(name="x", budget={"max_per_run_usd": 1})
 
 
+class TestSpeechToTextOverride:
+    """The agent's optional speech-to-text block (#1797).
+
+    An optional field with a default, so no `SPEC_VERSION` bump: the free row of
+    the agent-spec skill's table. What is guarded is that it stays free.
+    """
+
+    def test_a_spec_stored_before_the_field_existed_loads_with_no_override(self):
+        """A verbatim document from before the field - not one built from the
+        current model, which could not fail."""
+        stored = {
+            "spec_version": 12,
+            "name": "Support",
+            "instructions": "Be brief.",
+            "model_settings": {},
+            "capabilities": [],
+            "collection_ids": [],
+            "skill_ids": [],
+            "context_ids": [],
+            "mcp_servers": [],
+            "subagents": [],
+            "budget": None,
+            "observability": None,
+        }
+
+        assert AgentSpec.model_validate(stored).speech_to_text is None
+
+    def test_the_override_survives_a_yaml_round_trip(self):
+        spec = AgentSpec(
+            name="Support",
+            speech_to_text={"provider": "openai", "model": "whisper-1", "language": "pl"},
+        )
+
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+        assert spec.speech_to_text is not None
+        assert spec.speech_to_text.language == "pl"
+
+    def test_a_language_alone_is_a_valid_draft(self):
+        """The organization's provider, this agent's language."""
+        spec = AgentSpec(name="Support", speech_to_text={"language": "pl"})
+
+        assert spec.speech_to_text is not None
+        assert spec.speech_to_text.provider is None
+
+    def test_a_half_chosen_pair_is_still_a_draft_that_saves(self):
+        """The pair rule is publish's, so a draft between two clicks is not a 422."""
+        spec = AgentSpec(name="Support", speech_to_text={"provider": "openai"})
+
+        assert spec.speech_to_text is not None
+        assert spec.speech_to_text.model is None
+
+    def test_a_block_with_nothing_in_it_is_stored_as_absent(self):
+        """One spelling for "inherit everything", so a card returned to inherit
+        does not read as an unpublished change."""
+        spec = AgentSpec(
+            name="Support",
+            speech_to_text={"provider": None, "model": None, "language": None},
+        )
+
+        assert spec.speech_to_text is None
+
+    def test_the_dictation_switch_alone_is_a_block_and_off_alone_is_none(self):
+        """On, it is the whole point of the block - the organization's pair, sent to
+        its provider. Off with nothing else is the default, so it collapses too."""
+        on = AgentSpec(name="Support", speech_to_text={"dictation": True})
+        off = AgentSpec(name="Support", speech_to_text={"dictation": False, "language": None})
+
+        assert on.speech_to_text is not None and on.speech_to_text.dictation
+        assert off.speech_to_text is None
+
+    def test_an_unknown_key_in_the_block_is_refused(self):
+        """`extra="forbid"`, like every other block: a typo must not be dropped."""
+        with pytest.raises(ValidationError):
+            AgentSpec(name="Support", speech_to_text={"lang": "pl"})
+
+
+class TestStarters:
+    """First messages an empty chat offers (#2301)."""
+
+    def test_a_spec_written_before_them_has_none(self):
+        assert AgentSpec.model_validate({"name": "Support"}).starters == []
+
+    def test_old_specs_need_no_icons_and_new_icons_round_trip(self) -> None:
+        assert (
+            AgentSpec.model_validate({"name": "Support", "starters": ["Help"]}).starter_icons == {}
+        )
+        spec = AgentSpec(
+            name="Support",
+            starters=["Help"],
+            starter_icons={"Help": "compass"},
+            starter_titles={"Help": "Get help"},
+        )
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+        assert spec.model_dump()["starter_icons"] == {"Help": "compass"}
+
+    def test_title_metadata_is_optional_bounded_and_trimmed(self) -> None:
+        assert AgentSpec(name="Support").starter_titles == {}
+        assert AgentSpec(
+            name="Support", starter_titles={"Help": "  Get help  "}
+        ).starter_titles == {"Help": "Get help"}
+        with pytest.raises(ValidationError):
+            AgentSpec(name="Support", starter_titles={"Help": "x" * 81})
+
+    @pytest.mark.parametrize("icons", [{"Help": "unknown"}, {str(i): "mail" for i in range(5)}])
+    def test_invalid_or_unbounded_icon_metadata_is_refused(self, icons: dict[str, str]) -> None:
+        with pytest.raises(ValidationError):
+            AgentSpec.model_validate({"name": "Support", "starter_icons": icons})
+
+    def test_a_blank_one_is_dropped_and_the_rest_trimmed(self):
+        """The Builder saves as it is typed; a starter cleared to retype it is not an error."""
+        spec = AgentSpec(name="Support", starters=["  What can you do?  ", "", "   "])
+
+        assert spec.starters == ["What can you do?"]
+
+    @pytest.mark.parametrize(
+        "starters", [["a"] * 5, ["x" * 201]], ids=["more-than-four", "longer-than-a-line"]
+    )
+    def test_more_than_a_chat_shows_is_refused(self, starters):
+        with pytest.raises(ValidationError):
+            AgentSpec(name="Support", starters=starters)
+
+    def test_they_survive_the_yaml_round_trip(self):
+        spec = AgentSpec(name="Support", starters=["What can you do?"])
+
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+
 class TestFactory:
     def test_builds_an_agent_with_its_tools(self):
         spec = AgentSpec(
@@ -167,6 +369,38 @@ class TestFactory:
         )
         assert built.model_label == "GPT-4.1 (prod)"
         assert [type(c).__name__ for c in built.capabilities] == ["Clock", "Knowledge"]
+
+    def test_the_workflows_an_agent_binds_reach_page_publishing(self):
+        """A page's actions are checked against what the spec binds, never what the model
+        says: the factory hands the Workflows binding's ids to the Artifacts capability."""
+        bound = uuid.uuid4()
+        spec = AgentSpec(
+            name="Clerk",
+            capabilities=[
+                {"id": "workflows", "config": {"workflow_ids": [str(bound)]}},
+                {"id": "artifacts"},
+            ],
+        )
+
+        built = build_agent(
+            spec,
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+            granted_scopes=frozenset({"workflows:run"}),
+        )
+
+        [artifacts] = [c for c in built.capabilities if type(c).__name__ == "Artifacts"]
+        assert artifacts.workflow_ids == frozenset({bound})
+
+    def test_an_agent_without_workflows_hands_publishing_none(self):
+        built = build_agent(
+            AgentSpec(name="Clerk", capabilities=[{"id": "artifacts"}]),
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+        )
+
+        [artifacts] = [c for c in built.capabilities if type(c).__name__ == "Artifacts"]
+        assert artifacts.workflow_ids == frozenset()
 
     def _audience_agent(self, *, capability: str | None = "memory_files", **identity):
         capabilities = (
@@ -290,36 +524,42 @@ class TestFactory:
         assert settings["temperature"] == 0.9
         assert settings["max_tokens"] == 100
 
-    @pytest.mark.parametrize(
-        ("provider", "setting"),
-        [("anthropic", "anthropic_cache_messages"), ("openrouter", "openrouter_cache_messages")],
-    )
-    def test_a_provider_that_caches_prompts_is_asked_to_by_default(
-        self, provider: str, setting: str
-    ):
+    @pytest.mark.parametrize("provider", ["anthropic", "openrouter", "bedrock", "openai", "google"])
+    def test_every_provider_is_asked_to_cache_prompts_by_default(self, provider: str):
         """A long history re-sent uncached on every request is what drained an
-        OpenRouter account mid-run; a profile can still switch it off."""
-        on = build_agent(
+        OpenRouter account mid-run. The setting is provider-neutral, so Bedrock and
+        OpenAI are cached too, and a provider that caches implicitly ignores it (#2169)."""
+        built = build_agent(
             AgentSpec(name="x"),
             replace(_model_spec(), provider=provider),
             organization_id=uuid.uuid4(),
         )
-        off = build_agent(
+
+        assert built.agent.model_settings is not None
+        assert built.agent.model_settings.get("cache") is True
+        assert not [key for key in built.agent.model_settings if key.endswith("_cache_messages")]
+
+    @pytest.mark.parametrize(
+        ("params", "setting", "value"),
+        [
+            ({"cache": False}, "cache", False),
+            ({"cache": {"messages": False}}, "cache", {"messages": False}),
+            # A profile written against the old per-provider flags keeps them; Pydantic
+            # AI lets a provider-specific flag override the neutral setting.
+            ({"anthropic_cache_messages": False}, "anthropic_cache_messages", False),
+        ],
+    )
+    def test_a_profile_still_decides_its_own_caching(
+        self, params: dict[str, object], setting: str, value: object
+    ):
+        built = build_agent(
             AgentSpec(name="x"),
-            replace(_model_spec({setting: False}), provider=provider),
+            replace(_model_spec(params), provider="anthropic"),
             organization_id=uuid.uuid4(),
         )
 
-        assert on.agent.model_settings is not None
-        assert on.agent.model_settings.get(setting) is True
-        assert off.agent.model_settings is not None
-        assert off.agent.model_settings.get(setting) is False
-
-    def test_a_provider_without_prompt_caching_is_sent_none_of_it(self):
-        built = build_agent(AgentSpec(name="x"), _model_spec(), organization_id=uuid.uuid4())
-
         assert built.agent.model_settings is not None
-        assert not [key for key in built.agent.model_settings if "cache" in key]
+        assert built.agent.model_settings.get(setting) == value
 
     def test_ungranted_scope_stops_the_build(self):
         spec = AgentSpec(name="x", capabilities=[{"id": "knowledge"}])
@@ -525,6 +765,38 @@ class TestToolSearchDefersMcp:
         approval.assert_not_awaited()
 
     @pytest.mark.anyio
+    async def test_asking_about_everything_does_not_ask_about_the_computer(self):
+        """`request_computer_access` is itself the question, like `connect_account`."""
+        asked: list[str] = []
+
+        async def request_access(request: ComputerAccessRequest) -> bool:
+            asked.append(request.reason)
+            return False
+
+        approval = AsyncMock()
+        built = build_agent(
+            AgentSpec(name="x"),
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+            gate_every_tool=True,
+            request_approval=approval,
+            extra_capabilities=[RequestComputerOnUse(request_access=request_access)],
+        )
+
+        async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if len(messages) == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart("request_computer_access", {"reason": "README"})]
+                )
+            return ModelResponse(parts=[TextPart("done")])
+
+        with built.agent.override(model=FunctionModel(respond)):
+            await built.agent.run("hello", deps=built.deps)
+
+        assert asked == ["README"]
+        approval.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_every_mcp_schema_is_visible_when_it_is_not_bound(self):
         """The other direction: with nothing to defer to, every MCP schema is in
         front of the model on the first request and there is no `search_tools`."""
@@ -553,6 +825,25 @@ class TestBudgetComposition:
     @staticmethod
     def _lookups(built) -> dict[BudgetScope, object]:
         return {limit.scope: limit.period_spend for limit in built.budget.limits}
+
+    def test_a_run_s_own_ceiling_is_the_narrowest_and_meters_only_the_run(self):
+        """A workflow step's `max_cost_usd`: first, so a run under several spent
+        ceilings names its own, and with no period lookup - this run's ledger only."""
+        built = build_agent(
+            AgentSpec(name="x", budget={"monthly_usd": 10}),
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+            org_monthly_budget_usd=Decimal("40"),
+            run_limit_usd=Decimal("0.5"),
+        )
+
+        assert self._limits(built) == [
+            (BudgetScope.RUN, Decimal("0.5")),
+            (BudgetScope.AGENT, Decimal("10")),
+            (BudgetScope.ORGANIZATION, Decimal("40")),
+        ]
+        assert self._lookups(built)[BudgetScope.RUN] is None
+        assert BudgetScope.RUN.label == "This run's"
 
     def test_org_limit_applies_when_the_agent_sets_none(self):
         built = build_agent(
@@ -658,6 +949,156 @@ class TestBudgetComposition:
         )
 
         assert self._lookups(built)[BudgetScope.AGENT] is None
+
+
+class TestRepairingToolArguments:
+    """Every agent repairs malformed tool-call arguments, first of all (#2105)."""
+
+    def test_the_repair_runs_before_every_other_hook_and_counts_on_the_built_agent(self):
+        built = build_agent(AgentSpec(name="Clerk"), _model_spec(), organization_id=uuid.uuid4())
+        attached: list[object] = []
+        built.agent.root_capability.apply(attached.append)
+
+        repair = next(one for one in attached if isinstance(one, CountedRepair))
+        gate = next(one for one in attached if isinstance(one, ApprovalGate))
+        assert attached.index(repair) < attached.index(gate)
+        assert repair.tally is built.repairs
+        assert built.repairs.count == 0
+
+
+class TestStoppingToolLoops:
+    """Every agent has the loop guard, on by default (#2086)."""
+
+    def test_a_spec_written_before_it_existed_loads_with_it_on(self):
+        spec = AgentSpec.from_yaml("name: Clerk\ninstructions: Answer briefly.\n")
+        assert spec.loop_guard == LoopGuardSpec(enabled=True, repeats=4, cycles=3)
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+    def test_the_factory_attaches_it_with_the_agents_thresholds_and_not_when_off(self):
+        def guards(spec: AgentSpec) -> list[LoopGuard]:
+            built = build_agent(spec, _model_spec(), organization_id=uuid.uuid4())
+            attached: list[object] = []
+            built.agent.root_capability.apply(attached.append)
+            return [one for one in attached if isinstance(one, LoopGuard)]
+
+        (guard,) = guards(AgentSpec(name="Clerk", loop_guard=LoopGuardSpec(repeats=6, cycles=2)))
+        assert (guard.repeats, guard.cycles) == (6, 2)
+        assert guards(AgentSpec(name="Clerk", loop_guard=LoopGuardSpec(enabled=False))) == []
+
+    @pytest.mark.parametrize("field", [{"repeats": 1}, {"cycles": 11}, {"other": 1}])
+    def test_a_threshold_out_of_range_is_refused(self, field: dict[str, int]):
+        with pytest.raises(ValidationError):
+            LoopGuardSpec.model_validate(field)
+
+
+class TestRunReviewers:
+    """A second model that reviews the run while it goes (#2106)."""
+
+    def test_a_spec_written_before_reviewers_loads_with_none(self):
+        spec = AgentSpec.from_yaml("name: Clerk\ninstructions: Answer briefly.\n")
+        assert spec.reviewers == []
+
+    def test_two_reviewers_with_one_name_are_refused(self):
+        reviewer = {"name": "sources", "model_profile_id": str(uuid.uuid4()), "instructions": "x"}
+        with pytest.raises(ValidationError, match="Reviewer named more than once"):
+            AgentSpec(name="Clerk", reviewers=[reviewer, reviewer])
+
+    def _reviewers(self, spec: AgentSpec, models: dict | None = None) -> list[RunReviewer]:
+        built = build_agent(
+            spec, _model_spec(), organization_id=uuid.uuid4(), reviewer_models=models or {}
+        )
+        attached: list[object] = []
+        built.agent.root_capability.apply(attached.append)
+        return [one for one in attached if isinstance(one, RunReviewer)]
+
+    def test_an_agent_without_one_gets_no_reviewer(self):
+        assert self._reviewers(AgentSpec(name="Clerk")) == []
+
+    def test_each_reviewer_runs_on_the_model_resolved_for_it(self, caplog):
+        resolved, missing = uuid.uuid4(), uuid.uuid4()
+        model = MagicMock(params={"temperature": 0.0}, context_length=None)
+        spec = AgentSpec(
+            name="Clerk",
+            reviewers=[
+                {
+                    "name": "sources",
+                    "model_profile_id": str(resolved),
+                    "instructions": "x",
+                    "every": 4,
+                },
+                {"name": "scope", "model_profile_id": str(missing), "instructions": "y"},
+                {"name": "draft", "model_profile_id": str(resolved)},
+            ],
+        )
+
+        (reviewer,) = self._reviewers(spec, {resolved: model})
+
+        assert (reviewer.name, reviewer.every, reviewer.model) == ("sources", 4, model.build())
+        assert reviewer.model_settings == {"temperature": 0.0}
+        assert reviewer.screen is None
+        assert "scope is incomplete or unresolved" in caplog.text
+        assert "draft is incomplete or unresolved" in caplog.text
+
+    def test_the_window_is_held_to_what_the_reviewers_model_can_read(self):
+        profile = uuid.uuid4()
+        small = MagicMock(params={}, context_length=8_000)
+        spec = AgentSpec(
+            name="Clerk",
+            reviewers=[
+                {
+                    "name": "a",
+                    "model_profile_id": str(profile),
+                    "instructions": "x",
+                    "window": 20_000,
+                }
+            ],
+        )
+
+        (reviewer,) = self._reviewers(spec, {profile: small})
+
+        assert reviewer.window == 6_000
+
+    def test_corrections_are_screened_by_the_agents_input_guardrail(self):
+        profile = uuid.uuid4()
+        spec = AgentSpec(
+            name="Clerk",
+            capabilities=[{"id": "guardrails", "config": {"redact_secrets_in": True}}],
+            reviewers=[{"name": "a", "model_profile_id": str(profile), "instructions": "x"}],
+        )
+
+        (reviewer,) = self._reviewers(spec, {profile: MagicMock(params={}, context_length=None)})
+
+        assert reviewer.screen is not None
+
+
+class TestCodeMode:
+    """Many tool calls from one sandboxed script, when the spec asks for it (#2107)."""
+
+    def test_a_spec_written_before_it_existed_loads_with_it_off(self):
+        spec = AgentSpec.from_yaml("name: Clerk\ninstructions: Answer briefly.\n")
+        assert spec.code_mode == CodeModeSpec(enabled=False, max_tool_calls=100)
+
+    @staticmethod
+    def _attached(spec: AgentSpec, **kwargs: Any) -> list[object]:
+        built = build_agent(spec, _model_spec(), organization_id=uuid.uuid4(), **kwargs)
+        attached: list[object] = []
+        built.agent.root_capability.apply(attached.append)
+        return attached
+
+    def test_it_is_added_only_when_the_spec_asks(self):
+        on = AgentSpec(name="Clerk", code_mode=CodeModeSpec(enabled=True, max_tool_calls=25))
+
+        assert not [
+            one for one in self._attached(AgentSpec(name="Clerk")) if isinstance(one, CodeMode)
+        ]
+        (mode,) = [one for one in self._attached(on) if isinstance(one, CodeMode)]
+        assert mode.max_tool_calls == 25
+        assert [one for one in self._attached(on) if isinstance(one, CodeCalls)]
+
+    def test_a_session_that_asks_before_every_tool_gets_no_code_mode(self):
+        on = AgentSpec(name="Clerk", code_mode=CodeModeSpec(enabled=True))
+        attached = self._attached(on, gate_every_tool=True)
+        assert not [one for one in attached if isinstance(one, CodeMode | CodeCalls)]
 
 
 class TestAskingAboutEveryTool:
@@ -867,3 +1308,296 @@ class TestWhoHearsAboutAnAgent:
         )
 
         assert "@" not in spec.to_yaml()
+
+
+_SCORE = {
+    "type": "object",
+    "properties": {"score": {"type": "integer"}, "tier": {"type": "string"}},
+    "required": ["score"],
+    "additionalProperties": False,
+}
+
+
+class TestAStructuredAnswer:
+    def test_a_spec_from_before_answers_in_text(self):
+        """A verbatim stored document with no `output_schema` still loads, as prose."""
+        spec = AgentSpec.from_yaml("spec_version: 12\nname: Old\ninstructions: Be brief.\n")
+        assert spec.output_schema is None
+
+    def test_an_object_schema_round_trips_through_yaml(self):
+        spec = AgentSpec(name="Scorer", output_schema=_SCORE)
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+    @pytest.mark.parametrize(
+        ("schema", "message"),
+        [
+            ({"type": 42}, "not a valid JSON Schema"),
+            ({"type": "array", "items": {"type": "string"}}, 'needs "type": "object"'),
+            (
+                {"type": "object", "description": "x" * 20_000},
+                "over 16384 bytes",
+            ),
+        ],
+        ids=["invalid", "not-an-object", "too-large"],
+    )
+    def test_a_schema_that_cannot_shape_an_answer_is_refused(self, schema, message):
+        with pytest.raises(ValidationError, match=message):
+            AgentSpec(name="Scorer", output_schema=schema)
+
+    @pytest.mark.anyio
+    async def test_the_agent_answers_with_an_object_of_the_schema(self):
+        built = build_agent(
+            AgentSpec(name="Scorer", output_schema=_SCORE),
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+        )
+        with built.agent.override(model=TestModel(custom_output_args={"score": 87})):
+            result = await built.agent.run("Score this lead", deps=built.deps)
+        assert result.output == {"score": 87}
+
+    @pytest.mark.anyio
+    async def test_an_answer_that_breaks_the_schema_is_sent_back_once_more(self):
+        answers = iter([{"score": "high"}, {"score": 91, "tier": "hot"}])
+        seen: list[str] = []
+
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            for message in messages:
+                for part in getattr(message, "parts", []):
+                    if part.part_kind in {"retry-prompt", "retry-feedback"} or (
+                        part.part_kind == "tool-return" and part.outcome == "retried"
+                    ):
+                        seen.append(str(part.content))
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=next(answers))]
+            )
+
+        built = build_agent(
+            AgentSpec(name="Scorer", output_schema=_SCORE),
+            _model_spec(),
+            organization_id=uuid.uuid4(),
+        )
+        with built.agent.override(model=FunctionModel(respond)):
+            result = await built.agent.run("Score this lead", deps=built.deps)
+
+        assert result.output == {"score": 91, "tier": "hot"}
+        assert result.usage.requests == 2
+        assert any("score" in text for text in seen), seen
+
+    def test_a_parked_run_passes_the_schema_check_untouched(self):
+        """What a parked run ends with is not an answer, and is handed on untouched."""
+        parked = DeferredToolRequests()
+        assert _fits_schema(_SCORE)(parked) is parked
+
+    def test_a_free_text_agent_answers_in_text(self):
+        built = build_agent(AgentSpec(name="Writer"), _model_spec(), organization_id=uuid.uuid4())
+        assert built.agent.output_type == [str, DeferredToolRequests]
+
+    def test_an_object_is_shown_as_a_json_block_and_prose_as_itself(self):
+        assert answer_text("Plain.") == "Plain."
+        assert answer_text({"tier": "wärm"}) == '```json\n{\n  "tier": "wärm"\n}\n```'
+
+
+class TestVoiceSpec:
+    def test_a_spec_written_before_voice_existed_still_loads(self):
+        old = {"spec_version": 12, "name": "Support", "instructions": "Help.", "capabilities": []}
+        assert AgentSpec.model_validate(old).voice is None
+
+    def test_an_all_null_voice_block_is_stored_as_absent(self):
+        spec = AgentSpec(name="a", voice=VoiceSpec())
+        assert spec.voice is None
+
+    def test_voice_round_trips_through_yaml(self):
+        spec = AgentSpec(
+            name="a",
+            voice=VoiceSpec(
+                provider="openai",
+                model="gpt-realtime",
+                secret_id=uuid.uuid4(),
+                voice="marin",
+                max_call_seconds=300,
+                voice_note="Spell names back.",
+            ),
+        )
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+    def test_a_call_longer_than_fifty_minutes_is_refused(self):
+        with pytest.raises(ValidationError):
+            VoiceSpec(max_call_seconds=3001)
+
+    def test_the_spec_version_did_not_move(self):
+        # 15 is the skill binding; an optional section with a default adds none.
+        assert SPEC_VERSION == 15
+
+
+class TestSkillBindings:
+    """Which version of a bound skill an agent reads - main's newest unless it says."""
+
+    SKILL = uuid.UUID("2f1d0c6e-5b4a-4c3d-9e8f-7a6b5c4d3e2f")
+    FORK = uuid.UUID("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
+
+    def test_a_version_14_document_reads_every_skill_from_main(self):
+        """Stored before skills had versions, and loaded exactly as it was written."""
+        spec = AgentSpec.from_yaml(
+            "spec_version: 14\n"
+            "name: Clerk\n"
+            "instructions: Answer briefly.\n"
+            f"skill_ids:\n  - {self.SKILL}\n"
+        )
+
+        assert spec.skill_ids == [self.SKILL]
+        assert spec.skill_bindings == []
+
+    def test_a_pin_and_a_fork_survive_the_round_trip(self):
+        spec = AgentSpec(
+            name="Clerk",
+            skill_ids=[self.SKILL, self.FORK],
+            skill_bindings=[
+                SkillBindingSpec(skill_id=self.SKILL, version=7),
+                SkillBindingSpec(skill_id=self.FORK, fork_id=self.FORK),
+            ],
+        )
+
+        assert AgentSpec.from_yaml(spec.to_yaml()) == spec
+
+    @pytest.mark.parametrize("line", [{}, {"version": 3, "fork_id": FORK}])
+    def test_a_binding_names_a_version_or_a_fork(self, line):
+        with pytest.raises(ValidationError, match="one of the two"):
+            SkillBindingSpec(skill_id=self.SKILL, **line)
+
+    def test_a_skill_bound_to_two_versions_is_refused(self):
+        with pytest.raises(ValidationError, match="more than one version"):
+            AgentSpec(
+                name="Clerk",
+                skill_ids=[self.SKILL],
+                skill_bindings=[
+                    SkillBindingSpec(skill_id=self.SKILL, version=1),
+                    SkillBindingSpec(skill_id=self.SKILL, version=2),
+                ],
+            )
+
+    def test_unbinding_a_skill_drops_its_version_and_reading_it_again_changes_nothing(self):
+        """The Builder saves a draft as it is; an unticked skill's pin goes with it."""
+        spec = AgentSpec(
+            name="Clerk",
+            skill_ids=[self.FORK],
+            skill_bindings=[SkillBindingSpec(skill_id=self.SKILL, version=7)],
+        )
+
+        assert spec.skill_bindings == []
+        assert AgentSpec.model_validate(spec.model_dump(mode="json")) == spec
+
+    def test_a_specialist_binds_its_own_skills_the_same_way(self):
+        specialist = SpecialistSpec(
+            name="returns",
+            description="Handles returns.",
+            instructions="Handle returns.",
+            skill_ids=[self.SKILL],
+            skill_bindings=[
+                SkillBindingSpec(skill_id=self.SKILL, fork_id=self.FORK),
+                SkillBindingSpec(skill_id=self.FORK, version=2),
+            ],
+        )
+
+        assert specialist.skill_bindings == [
+            SkillBindingSpec(skill_id=self.SKILL, fork_id=self.FORK)
+        ]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("browser_use", "system_reminders", "compaction"),
+        ("compaction", "browser_use", "system_reminders"),
+    ],
+)
+@pytest.mark.parametrize("override", ["none", "name", "description"])
+def test_browser_history_pruning_runs_after_compaction_and_before_reminders(
+    order: tuple[str, ...],
+    override: str,
+) -> None:
+    from app.agents.capabilities.browser_use import WebBrowser
+    from app.agents.capabilities.compaction import MeteredCompaction
+    from app.agents.capabilities.system_reminders import SystemReminders
+
+    spec = AgentSpec(
+        name="Browser",
+        capabilities=[
+            {
+                "id": name,
+                "tool_overrides": {"browser_click": {"name": "press"}}
+                if override == "name" and name == "browser_use"
+                else {"browser_click": {"description": "Press an element"}}
+                if override == "description" and name == "browser_use"
+                else {},
+                "config": {"reminders": [{"content": "Stay on task"}]}
+                if name == "system_reminders"
+                else {},
+            }
+            for name in order
+        ],
+    )
+    built = build_agent(
+        spec, _model_spec(), organization_id=uuid.uuid4(), granted_scopes=frozenset({"web:browse"})
+    )
+    from app.agents.capabilities._overrides import ToolOverrides
+
+    types = [
+        type(capability.wrapped if isinstance(capability, ToolOverrides) else capability)
+        for capability in built.capabilities
+    ]
+    assert types.index(MeteredCompaction) < types.index(WebBrowser) < types.index(SystemReminders)
+    browser = next(
+        capability.wrapped if isinstance(capability, ToolOverrides) else capability
+        for capability in built.capabilities
+        if isinstance(
+            capability.wrapped if isinstance(capability, ToolOverrides) else capability, WebBrowser
+        )
+    )
+    assert isinstance(browser, WebBrowser)
+    assert ("press" in browser.report_tool_names) is (override == "name")
+
+
+def test_the_factory_hands_guardrails_the_tools_whose_arguments_are_the_answer():
+    from app.agents.capabilities.guardrails._capability import ScreenedToolArgs
+
+    spec = AgentSpec(
+        name="Writer",
+        capabilities=[
+            {"id": "drafts"},
+            {"id": "guardrails", "config": {"redact_secrets_out": True}},
+        ],
+    )
+
+    built = build_agent(spec, _model_spec(), organization_id=uuid.uuid4())
+
+    (guardrails,) = [c for c in built.capabilities if type(c).__name__ == "CombinedCapability"]
+    (answer,) = [c for c in guardrails.capabilities if isinstance(c, ScreenedToolArgs)]
+    assert answer.tools == frozenset({"write_draft"})
+
+
+@pytest.mark.anyio
+async def test_routine_tool_policy_is_bound_to_the_exact_agent_and_published_spec() -> None:
+    from pydantic_ai.tools import ToolDefinition
+
+    from app.agents.routine_actions import RoutineToolDecision
+    from app.core.exceptions import BadRequestError
+
+    spec = AgentSpec(name="Routine")
+    policy = AsyncMock(return_value=RoutineToolDecision(required=True))
+    with pytest.raises(BadRequestError, match="agent identity"):
+        build_agent(spec, _model_spec(), organization_id=uuid.uuid4(), routine_action_check=policy)
+    agent_id = uuid.uuid4()
+    built = build_agent(
+        spec,
+        _model_spec(),
+        organization_id=uuid.uuid4(),
+        agent_id=agent_id,
+        routine_action_check=policy,
+    )
+    attached: list[object] = []
+    built.agent.root_capability.apply(attached.append)
+    gate = next(one for one in attached if isinstance(one, ApprovalGate))
+    assert gate.routine_policy is not None
+    tool = ToolDefinition(name="send", parameters_json_schema={})
+    assert (await gate.routine_policy(tool)).required
+    policy.assert_awaited_once_with(agent_id, spec, tool)

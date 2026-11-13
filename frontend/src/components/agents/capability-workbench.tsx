@@ -5,26 +5,41 @@ import type { ReactNode } from "react";
 
 import { CapabilityDetail } from "@/components/agents/capability-settings";
 import { ImageGenerationSection } from "@/components/agents/image-generation-section";
+import { MirageSection } from "@/components/agents/mirage-section";
+import { WorkflowsSection } from "@/components/agents/workflows-section";
+import { TextToSpeechSection } from "@/components/agents/text-to-speech-section";
+import { VideoGenerationSection } from "@/components/agents/video-generation-section";
 import {
   CapabilityResources,
   resourceTabKey,
   type AgentResources,
 } from "@/components/agents/capability-resources";
 import { SubagentsSection } from "@/components/agents/subagents-section";
+import type { SystemAgentSearch } from "@/components/agents/system-agent-knowledge";
 import { WorkspaceSection } from "@/components/agents/workspace-section";
 import { SearchInput } from "@/components/ui";
+import { ContextHelp } from "@/components/ui/context-help";
 import { CapabilityGallery } from "@/components/agents/capability-art/capability-gallery";
 import { ClearAgentMemory } from "@/components/memory/clear-agent-memory";
 import {
   IMAGE_GENERATION_ID,
+  WORKFLOWS_ID,
   MEMORY_FILES_ID,
-  MEMORY_MEM0_ID,
+  MIRAGE_ID,
   SANDBOX_ID,
   SUBAGENTS_ID,
+  TEXT_TO_SPEECH_ID,
+  VIDEO_GENERATION_ID,
   unboundBinding,
 } from "@/lib/agent-spec";
 import type { FieldProblem } from "@/lib/api-error";
-import type { CapabilityBindingSpec, CapabilityCatalogEntry, SubagentRef } from "@/types/agents";
+import type {
+  CapabilityBindingSpec,
+  CapabilityCatalogEntry,
+  ExternalAgentRef,
+  SubagentRef,
+} from "@/types/agents";
+import { contextSettings } from "@/lib/context-settings";
 import { useTranslations } from "next-intl";
 
 /**
@@ -51,8 +66,10 @@ interface CapabilityWorkbenchProps {
    * Only one panel needs it - memory, whose notes are cleared from inside the
    * capability that keeps them, because there is no browsing surface for them
    * anywhere else (#1470). Everything else here edits a spec and needs no id.
+   * Null for a spec no agent row holds yet - a workflow step's, before its first
+   * run - which has no notes to clear.
    */
-  agentId: string;
+  agentId: string | null;
   catalog: CapabilityCatalogEntry[];
   selected: CapabilityBindingSpec[];
   onToggle: (capabilityId: string) => void;
@@ -67,6 +84,9 @@ interface CapabilityWorkbenchProps {
    */
   subagents: SubagentRef[];
   onSubagentsChange: (subagents: SubagentRef[]) => void;
+  /** `spec.external_agents`, the remote A2A delegates, for the same reason (#2092). */
+  externalAgents: ExternalAgentRef[];
+  onExternalAgentsChange: (externalAgents: ExternalAgentRef[]) => void;
   /**
    * What the organization owns and this agent may be given - context files,
    * collections, skills.
@@ -90,6 +110,16 @@ interface CapabilityWorkbenchProps {
    * reason `validate_spec` reports fields as well as sentences (#882).
    */
   configProblems?: readonly FieldProblem[];
+  /**
+   * Set when the agent is a system agent, which only the platform runs.
+   *
+   * Nobody is there to approve anything while it works, so no capability here
+   * offers an approval; and the platform picks the knowledge bases of each run,
+   * so the Knowledge panel sets how many steps a search takes in place of a
+   * collections picker. The catalog it is handed is already narrowed to what a
+   * system agent may bind.
+   */
+  system?: SystemAgentSearch;
 }
 
 /**
@@ -123,10 +153,13 @@ export function CapabilityWorkbench({
   onChange,
   subagents,
   onSubagentsChange,
+  externalAgents,
+  onExternalAgentsChange,
   resources,
   modelProfileId,
   disabled,
   configProblems,
+  system,
 }: CapabilityWorkbenchProps) {
   const t = useTranslations("agents");
   const tc = useTranslations("capabilityCategories");
@@ -141,14 +174,18 @@ export function CapabilityWorkbench({
   const [query, setQuery] = useState("");
   const categories = useMemo(() => {
     const needle = query.trim().toLowerCase();
+    // Stored workflow bindings remain editable; new tools use platform MCP.
+    const offered = catalog.filter(
+      (entry) => entry.id !== "workflows" || selected.some((binding) => binding.id === entry.id),
+    );
     const matching = needle
-      ? catalog.filter(
+      ? offered.filter(
           (entry) =>
             entry.name.toLowerCase().includes(needle) ||
             entry.description.toLowerCase().includes(needle) ||
             entry.tools.some((tool) => tool.name.toLowerCase().includes(needle)),
         )
-      : catalog;
+      : offered;
     const groupOf = (entry: CapabilityCatalogEntry) =>
       ADVANCED_CAPABILITIES.has(entry.id) ? ADVANCED : entry.category;
     const names = [...new Set(matching.map(groupOf))].filter((name) => name !== ADVANCED).sort();
@@ -157,7 +194,7 @@ export function CapabilityWorkbench({
       name,
       entries: matching.filter((entry) => groupOf(entry) === name),
     }));
-  }, [catalog, query]);
+  }, [catalog, query, selected]);
 
   const focused = catalog.find((entry) => entry.id === openedId);
   const bound = selected.find((entry) => entry.id === focused?.id);
@@ -205,6 +242,46 @@ export function CapabilityWorkbench({
               disabled={disabled || !isOn}
               readOnly={disabled}
             />
+          ) : focused.id === MIRAGE_ID ? (
+            <MirageSection
+              definition={focused}
+              binding={bound ?? unboundBinding(focused.id)}
+              onToggleEnabled={() => onToggle(focused.id)}
+              onChange={onChange}
+              configProblems={configProblems}
+              disabled={disabled || !isOn}
+              readOnly={disabled}
+            />
+          ) : focused.id === WORKFLOWS_ID ? (
+            <WorkflowsSection
+              definition={focused}
+              binding={bound ?? unboundBinding(focused.id)}
+              onToggleEnabled={() => onToggle(focused.id)}
+              onChange={onChange}
+              configProblems={configProblems}
+              disabled={disabled || !isOn}
+              readOnly={disabled}
+            />
+          ) : focused.id === TEXT_TO_SPEECH_ID ? (
+            <TextToSpeechSection
+              definition={focused}
+              binding={bound ?? unboundBinding(focused.id)}
+              onToggleEnabled={() => onToggle(focused.id)}
+              onChange={onChange}
+              configProblems={configProblems}
+              disabled={disabled || !isOn}
+              readOnly={disabled}
+            />
+          ) : focused.id === VIDEO_GENERATION_ID ? (
+            <VideoGenerationSection
+              definition={focused}
+              binding={bound ?? unboundBinding(focused.id)}
+              onToggleEnabled={() => onToggle(focused.id)}
+              onChange={onChange}
+              configProblems={configProblems}
+              disabled={disabled || !isOn}
+              readOnly={disabled}
+            />
           ) : focused.id === SUBAGENTS_ID ? (
             <SubagentsSection
               definition={focused}
@@ -216,6 +293,8 @@ export function CapabilityWorkbench({
               subagents={subagents}
               onChange={onChange}
               onSubagentsChange={onSubagentsChange}
+              externalAgents={externalAgents}
+              onExternalAgentsChange={onExternalAgentsChange}
               disabled={disabled || !isOn}
               readOnly={disabled}
             />
@@ -229,27 +308,33 @@ export function CapabilityWorkbench({
               // What this capability reads of the organization's, where it
               // reads anything: the files, the collections, the skills. It gets
               // the first tab and the panel opens on it.
-              resources={panelResources(focused.id, t, () => (
+              resources={panelResources(focused.id, system !== undefined, t, () => (
                 <CapabilityResources
+                  fileSettings={contextSettings(bound?.config.file_settings)}
+                  onFileSettingsChange={
+                    bound === undefined
+                      ? undefined
+                      : (file_settings) =>
+                          onChange({
+                            ...bound,
+                            config: { ...bound.config, file_settings },
+                          })
+                  }
                   capabilityId={focused.id}
                   enabled={isOn}
                   resources={resources}
                   disabled={disabled || !isOn}
+                  system={system}
                 />
               ))}
+              approvals={system === undefined}
               // The one action on this panel that is not configuration: the
               // agent's notes are emptied from inside the capability that keeps
               // them, because nothing anywhere else in the console reads or
               // writes them.
               settingsFooter={
-                focused.id === MEMORY_FILES_ID && isOn ? (
-                  <ClearAgentMemory
-                    agentId={agentId}
-                    usesMem0={selected.some(
-                      (binding) => binding.id === MEMORY_MEM0_ID && binding.enabled !== false,
-                    )}
-                    disabled={disabled}
-                  />
+                focused.id === MEMORY_FILES_ID && isOn && agentId !== null ? (
+                  <ClearAgentMemory agentId={agentId} disabled={disabled} />
                 ) : undefined
               }
               // A capability nobody granted has nothing to configure yet, so
@@ -275,8 +360,9 @@ export function CapabilityWorkbench({
           value={query}
           onChange={setQuery}
           placeholder={t("searchCapabilities")}
-          className="w-full sm:w-72"
+          className="min-w-0 flex-1 sm:w-72 sm:flex-none"
         />
+        <ContextHelp>{t("workflowTablesViaMcp")}</ContextHelp>
       </div>
       {categories.length === 0 ? (
         <p className="text-muted-foreground px-1 py-6 text-sm">
@@ -313,9 +399,10 @@ export function CapabilityWorkbench({
  */
 function panelResources(
   capabilityId: string,
+  system: boolean,
   t: (key: string) => string,
   content: () => ReactNode,
 ): { label: string; content: ReactNode } | undefined {
-  const key = resourceTabKey(capabilityId);
+  const key = resourceTabKey(capabilityId, system);
   return key === undefined ? undefined : { label: t(key), content: content() };
 }

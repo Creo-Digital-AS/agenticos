@@ -10,6 +10,9 @@ the half of the bill no run carries - and a run a retention sweep hard-deleted
 leaves its month's figure on `purged_run_spend`, because a bill that fell as
 history was retired would be a cap that stopped enforcing (#1420).
 
+Direct workflow decision and embedding fees are recorded separately from agent
+runs, once per attempt, and survive workflow retention as well.
+
 `assert_organization_within_budget` is the same decision
 :class:`~app.agents.capabilities.budget.BudgetGuard` makes before a model
 request, made before work that spends outside a run - accepting a document
@@ -18,7 +21,7 @@ raises the same :class:`~app.agents.capabilities.budget.BudgetExceeded` so a
 refusal reads identically wherever it surfaces.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -31,6 +34,9 @@ from app.repositories import (
     organization_repo,
     retention_repo,
 )
+from app.repositories import (
+    workflow_run as workflow_run_repo,
+)
 
 
 def month_start(now: datetime | None = None) -> datetime:
@@ -42,6 +48,19 @@ def month_start(now: datetime | None = None) -> datetime:
     """
     moment = now or datetime.now(UTC)
     return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def budget_window(started_at: datetime | None) -> tuple[datetime, datetime]:
+    """The month a run's spend is checked against: the one it started in, `None` being now.
+
+    A run's whole cost is booked to the month it started, so a run resumed after
+    the first, or a call still talking past midnight on the last day, is weighed
+    against that month's spend, as every report counts it, rather than against a
+    month that never saw its earlier cost. The window is closed at the next first
+    so a baseline read again later stays that month's.
+    """
+    started = month_start(started_at)
+    return started, month_start(started.replace(day=28) + timedelta(days=4))
 
 
 async def organization_spend_since(
@@ -88,7 +107,10 @@ async def organization_spend_since(
     purged_spend = await retention_repo.sum_purged_cost_since(
         db, organization_id=organization_id, since=since, until=until
     )
-    return run_spend + ingestion_spend + purged_spend
+    workflow_spend = await workflow_run_repo.node_spend_since(
+        db, organization_id=organization_id, since=since, until=until
+    )
+    return run_spend + ingestion_spend + purged_spend + workflow_spend
 
 
 async def organization_monthly_spend(

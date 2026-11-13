@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NAV_GROUPS, SidebarNav, isActive } from "./app-sidebar";
 
@@ -17,11 +17,27 @@ vi.mock("next-intl", async () => ({
   useTranslations: (await import("@/test-utils/intl")).keyTranslations(),
 }));
 vi.mock("@/hooks/use-permissions", () => ({ usePermissions: () => ({ can }) }));
-const sidebar = { openGroups: [] as string[], toggleGroup: vi.fn<(key: string) => void>() };
+const recentProjects = vi.fn<() => { id: string; name: string; has_unread_chats?: boolean }[]>(
+  () => [],
+);
+vi.mock("@/hooks/use-projects", () => ({
+  useProjects: () => ({ projects: recentProjects() }),
+}));
+const waiting = vi.fn<() => { id: string }[]>(() => []);
+vi.mock("@/hooks/use-suggestions", () => ({ useSuggestions: () => ({ suggestions: waiting() }) }));
+const sidebar = {
+  openGroups: [] as string[],
+  closedGroups: [] as string[],
+  toggleGroup: vi.fn<(key: string) => void>(),
+};
 vi.mock("@/stores", () => ({
   useAuthStore: () => ({ user: currentUser() }),
   useSidebarStore: <T,>(select: (state: typeof sidebar) => T) => select(sidebar),
 }));
+
+beforeEach(() => {
+  sidebar.closedGroups = [];
+});
 
 function renderNav() {
   return render(<SidebarNav />);
@@ -80,6 +96,7 @@ describe("isActive", () => {
 describe("SidebarNav", () => {
   it("shows every destination the caller is entitled to", () => {
     can.mockReturnValue(true);
+    sidebar.openGroups = ["knowledge", "monitoring"];
 
     renderNav();
 
@@ -131,13 +148,13 @@ describe("SidebarNav", () => {
     expect(screen.getByRole("link", { name: "dashboard" })).toBeInTheDocument();
   });
 
-  it("drops a group heading when nothing in it survives the filter", () => {
+  it("keeps the overview available without management permissions", () => {
     // A "Build" label above empty space reads as a broken page.
     can.mockReturnValue(false);
 
     renderNav();
 
-    expect(screen.queryByText("build")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "dashboard" })).toBeInTheDocument();
   });
 
   it("keeps the admin group for platform admins only", () => {
@@ -203,6 +220,78 @@ describe("SidebarNav", () => {
     );
   });
 
+  it("lists the reader's recent projects above all of them, lighting the one open", () => {
+    can.mockReturnValue(true);
+    currentPath.mockReturnValue("/projects/p-2");
+    recentProjects.mockReturnValue([
+      { id: "p-1", name: "Q3 launch" },
+      { id: "p-2", name: "treasury" },
+    ]);
+
+    renderNav();
+
+    expect(screen.getByRole("link", { name: /Q3 launch/ })).toHaveAttribute(
+      "href",
+      "/projects/p-1",
+    );
+    expect(screen.getByRole("link", { name: /treasury/ })).toHaveAttribute("aria-current", "page");
+    // The list entry lights on its own page only, not under every project.
+    expect(screen.getByRole("link", { name: "allProjects" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByText("T")).toBeInTheDocument();
+    recentProjects.mockReturnValue([]);
+  });
+
+  it("limits recent projects to three and marks unseen answers in the column and rail", () => {
+    can.mockReturnValue(true);
+    recentProjects.mockReturnValue([
+      { id: "p-1", name: "Newest", has_unread_chats: true },
+      { id: "p-2", name: "Second" },
+      { id: "p-3", name: "Third" },
+      { id: "p-4", name: "Older" },
+    ]);
+    const { unmount } = renderNav();
+    expect(screen.getByRole("link", { name: /Newest/ })).toBeInTheDocument();
+    expect(screen.queryByText("Older")).toBeNull();
+    expect(screen.getByRole("img", { name: "unread" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "allProjects" })).toBeInTheDocument();
+    unmount();
+    render(<SidebarNav collapsed />);
+    expect(screen.getByRole("link", { name: "Newest · unread" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "unread" })).toBeInTheDocument();
+    recentProjects.mockReturnValue([]);
+  });
+
+  it("draws the rail as the same list without its words", () => {
+    // Folded groups stay folded, so the rail offers what the column does and
+    // its fold control opens the same group; a project is named by its title.
+    can.mockReturnValue(true);
+    currentPath.mockReturnValue("/projects");
+    sidebar.openGroups = [];
+    recentProjects.mockReturnValue([{ id: "p-1", name: "Q3 launch" }]);
+
+    render(<SidebarNav collapsed />);
+
+    expect(screen.queryByRole("link", { name: "mcpServers" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "connections" }));
+    expect(sidebar.toggleGroup).toHaveBeenCalledWith("connections");
+    expect(screen.getByRole("link", { name: "Q3 launch" })).toHaveAttribute("title", "Q3 launch");
+    expect(screen.getByRole("link", { name: "allProjects" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    recentProjects.mockReturnValue([]);
+  });
+
+  it("draws a group that never folds as a rule on the rail", () => {
+    can.mockReturnValue(true);
+    currentPath.mockReturnValue("/dashboard");
+
+    render(<SidebarNav collapsed />);
+
+    expect(screen.queryByText("build")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "agents" })).toBeInTheDocument();
+  });
+
   it("runs the caller's callback on navigation, so the drawer can close", () => {
     can.mockReturnValue(true);
     const onNavigate = vi.fn();
@@ -249,13 +338,86 @@ describe("the navigation definition", () => {
     // and the backend narrows it to what they are part of - a permission here
     // would hide somebody's own files behind an operator's authority. Groups too:
     // any member reads them, because a group is what somebody shares with (#2072).
+    // The inbox holds only what was brought to the person looking (#2301).
     // Everything else must state what it needs, or a Viewer is shown pages that
     // will refuse them.
-    const open = new Set(["dashboard", "chat", "organizations", "groups", "documents"]);
+    const open = new Set([
+      "dashboard",
+      "chat",
+      "inbox",
+      "backgroundWork",
+      "organizations",
+      "groups",
+      "documents",
+    ]);
     const unguarded = NAV_GROUPS.filter((group) => !group.adminOnly)
       .flatMap((group) => group.items)
       .filter((item) => !item.permission && !open.has(item.labelKey));
 
     expect(unguarded).toEqual([]);
+  });
+});
+
+describe("the inbox count (#2301)", () => {
+  it("says how many wait, as a number in the column and a dot on the rail", () => {
+    can.mockReturnValue(true);
+    waiting.mockReturnValue([{ id: "s1" }, { id: "s2" }]);
+    const { unmount } = render(<SidebarNav />);
+    expect(screen.getByLabelText("inboxCount")).toHaveTextContent("2");
+    unmount();
+
+    render(<SidebarNav collapsed />);
+    expect(screen.getByLabelText("inboxCount")).toBeEmptyDOMElement();
+  });
+
+  it("shows nothing when nothing waits", () => {
+    can.mockReturnValue(true);
+    waiting.mockReturnValue([]);
+    render(<SidebarNav />);
+    expect(screen.queryByLabelText("inboxCount")).toBeNull();
+  });
+});
+
+describe("daily-work navigation", () => {
+  it("keeps the overview first and automation directly below agents", () => {
+    can.mockReturnValue(true);
+    currentPath.mockReturnValue("/chat");
+    sidebar.openGroups = [];
+    renderNav();
+    const hrefs = screen.getAllByRole("link").map((link) => link.getAttribute("href"));
+    expect(hrefs.slice(0, 6)).toEqual([
+      "/dashboard",
+      "/chat",
+      "/inbox",
+      "/agents",
+      "/workflows",
+      "/routines",
+    ]);
+    expect(screen.queryByRole("link", { name: "backgroundWork" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "monitoring" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(hrefs.indexOf("/documents")).toBeGreaterThan(hrefs.indexOf("/rag"));
+    expect(screen.queryByRole("button", { name: "build" })).not.toBeInTheDocument();
+  });
+
+  it("opens knowledge by default but respects an explicit saved closure", () => {
+    can.mockReturnValue(true);
+    currentPath.mockReturnValue("/chat");
+    sidebar.openGroups = [];
+    const { rerender } = renderNav();
+    expect(screen.getByRole("button", { name: "knowledge" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("link", { name: "skills" })).toBeInTheDocument();
+    sidebar.closedGroups = ["knowledge"];
+    rerender(<SidebarNav />);
+    expect(screen.getByRole("button", { name: "knowledge" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByRole("link", { name: "skills" })).not.toBeInTheDocument();
   });
 });

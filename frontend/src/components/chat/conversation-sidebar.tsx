@@ -1,5 +1,7 @@
 "use client";
 
+import { ProjectAvatar } from "@/components/projects/project-avatar";
+
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
@@ -8,6 +10,7 @@ import { ConversationSearchDialog } from "@/components/chat/conversation-search-
 import { Button, Skeleton } from "@/components/ui";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui";
 import { IconButton } from "@/components/ui";
+import { useConversationAgentLabel } from "@/hooks/use-conversation-agent-label";
 import { ConversationAgents } from "@/components/agents/conversation-agents";
 import { cn, setUrlParam, timeAgo } from "@/lib/utils";
 import {
@@ -17,16 +20,22 @@ import {
   useWorkingStore,
 } from "@/stores";
 import { DEFAULT_COLLAPSED_BANDS, LONG_LIST } from "@/stores/chat-sidebar-store";
+import { useProjects } from "@/hooks/use-projects";
 import {
+  useLeaveSharedConversation,
+  useSharedConversations,
+} from "@/hooks/use-conversation-shares";
+import {
+  RefreshCw,
   Archive,
   ArchiveRestore,
   Star,
   ChevronLeft,
   ChevronDown,
   ChevronRight,
-  Inbox,
+  LogOut,
+  Users,
   Loader2,
-  MessageSquare,
   MoreVertical,
   Pencil,
   Search,
@@ -35,6 +44,7 @@ import {
   SquarePen,
   Trash2,
 } from "lucide-react";
+import { InboxIcon as Inbox, ChatIcon as MessageSquare } from "@/components/icons/product-icons";
 import type { Conversation } from "@/types";
 import {
   ConversationFilters,
@@ -57,6 +67,10 @@ interface ConversationItemProps {
   onRename: (title: string) => void;
   onShare: () => void;
   onFavourite: (favourite: boolean) => void;
+  /** Somebody else's thread shared with the reader: theirs to rename, share, archive or delete. */
+  shared?: boolean;
+  /** Take a shared thread out of the reader's chats. */
+  onLeave?: () => void;
 }
 
 /** How long a thread left mid-answer keeps its mark when the listing never shows
@@ -73,10 +87,11 @@ function ConversationItem({
   onRename,
   onShare,
   onFavourite,
+  shared = false,
+  onLeave,
 }: ConversationItemProps) {
   const t = useTranslations("chat");
   const tTime = useTranslations("time");
-  const tAgents = useTranslations("agents");
   const locale = useLocale();
   const [showMenu, setShowMenu] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -116,7 +131,19 @@ function ConversationItem({
   // can begin and end between two listings, and the thread asked in must not
   // look idle for it.
   const workingHere = useWorkingStore((state) => state.since[conversation.id]);
-  const runningSince = conversation.running_since ?? workingHere ?? null;
+  const waiting = useWorkingStore((state) => state.waiting[conversation.id]);
+  const tTools = useTranslations("pages.runs");
+  const finishedAt = useWorkingStore((state) => state.finishedAt[conversation.id]);
+  const finishedRuns = useWorkingStore((state) => state.finishedRuns[conversation.id]);
+  const serverSince = conversation.running_since;
+  const listedSince =
+    serverSince &&
+    (conversation.running_run_ids !== undefined
+      ? conversation.running_run_ids.some((id) => !finishedRuns?.[id])
+      : !finishedAt || Date.parse(serverSince) > Date.parse(finishedAt))
+      ? serverSince
+      : null;
+  const runningSince = workingHere ?? listedSince;
   // A thread this tab left mid-answer keeps its own mark until the listing has
   // the run - then the listing speaks for it, and polls it to its end - or until
   // long enough that a turn the listing never saw has surely finished.
@@ -132,12 +159,21 @@ function ConversationItem({
     const timer = setTimeout(() => settleWorking(conversation.id), HANDOFF_GRACE_MS);
     return () => clearTimeout(timer);
   }, [handedOff, listed, conversation.id, settleWorking]);
-  const agentLabel =
-    agents.length === 0
-      ? null
-      : agents.length === 1
-        ? agents[0]!.name
-        : tAgents("agentCount", { count: agents.length });
+  const agentLabel = useConversationAgentLabel(agents, conversation.coding_agents ?? []);
+
+  const favouriteAction = (
+    <button
+      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+      onClick={(e) => {
+        e.stopPropagation();
+        onFavourite(conversation.is_favourite !== true);
+        setShowMenu(false);
+      }}
+    >
+      <Star className={cn("h-4 w-4", conversation.is_favourite && "text-warning fill-current")} />
+      {conversation.is_favourite ? t("unfavourite") : t("favourite")}
+    </button>
+  );
 
   return (
     <div
@@ -145,18 +181,27 @@ function ConversationItem({
         // The open row is a fill, as the main sidebar's is - a hairline border
         // and a bar at its edge read as two thin lines around one choice.
         "group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1 transition-colors",
-        isActive ? "bg-accent" : "hover:bg-accent/60",
+        isActive ? "bg-accent" : "hover:bg-foreground/5",
+        // Over the rows below while its menu is open: their agent faces are
+        // stacked up to `z-30`, and drew over the menu's first line.
+        showMenu && "z-40",
       )}
       onClick={onSelect}
     >
       {/* Which agent the thread is with leads the row - the face people pick a
           thread by. */}
       <span className="relative shrink-0">
-        {agents.length > 0 ? (
-          <ConversationAgents agents={agents} showName={false} />
+        {agents.length > 0 || conversation.coding_agents?.length ? (
+          <ConversationAgents
+            agents={agents}
+            codingAgents={conversation.coding_agents}
+            showName={false}
+            size="md"
+            unframed
+          />
         ) : (
           // A box the size of a face, so every title starts at the same x.
-          <span className="block size-6" aria-hidden />
+          <span className="block size-9" aria-hidden />
         )}
         {/* An answer arrived while the reader was elsewhere: a badge on the face,
             as a count sits on an app icon - part of the row's own mark rather
@@ -180,7 +225,7 @@ function ConversationItem({
             if (e.key === "Enter") handleRename();
             if (e.key === "Escape") setIsEditing(false);
           }}
-          className="text-foreground min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none"
+          className="text-foreground min-w-0 flex-1 bg-transparent text-base font-medium outline-none md:text-[13px]"
           autoFocus
           onClick={(e) => e.stopPropagation()}
         />
@@ -193,8 +238,10 @@ function ConversationItem({
             {/* At work, the line says so and for how long, in place of who and
                 when: beside the agent's name it was cut to nothing. The face
                 still says who. */}
-            {runningSince ? (
-              <RunningFor since={runningSince} />
+            {waiting ? (
+              tTools("toolState", { status: waiting })
+            ) : runningSince ? (
+              <RunningFor key={runningSince} since={runningSince} />
             ) : (
               <>
                 {agentLabel && <>{agentLabel} · </>}
@@ -261,86 +308,107 @@ function ConversationItem({
 
         {showMenu && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
+            {/* Inside the row, so a click that only closes the menu must not
+                reach the row and open its conversation. */}
+            <div
+              className="fixed inset-0 z-10"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMenu(false);
+              }}
+            />
             {/* Drawn like every other menu in the console: one line per item,
                 read from the left, as wide as its longest label. */}
-            <div className="panel absolute top-8 right-0 z-20 w-max min-w-44 rounded-xl p-1 shadow-lg">
-              <button
-                className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsEditing(true);
-                  setShowMenu(false);
-                }}
-              >
-                <Pencil className="h-4 w-4" />
-                {t("rename")}
-              </button>
-              <button
-                className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onShare();
-                  setShowMenu(false);
-                }}
-              >
-                <Share2 className="h-4 w-4" />
-                {t("share")}
-              </button>
-              {/* In the menu as well as on the row: the hover control does not
-                  exist on a touch screen until something is long-pressed. */}
-              <button
-                className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFavourite(conversation.is_favourite !== true);
-                  setShowMenu(false);
-                }}
-              >
-                <Star
-                  className={cn(
-                    "h-4 w-4",
-                    conversation.is_favourite && "text-warning fill-current",
-                  )}
-                />
-                {conversation.is_favourite ? t("unfavourite") : t("favourite")}
-              </button>
-              {conversation.is_archived ? (
-                <button
-                  className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onUnarchive();
-                    setShowMenu(false);
-                  }}
-                >
-                  <ArchiveRestore className="h-4 w-4" />
-                  {t("restore")}
-                </button>
+            <div
+              className="panel absolute top-8 right-0 z-20 w-max min-w-44 rounded-xl p-1 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Somebody else's thread: renaming, sharing, archiving and
+                    deleting are theirs, and leaving is the reader's own. */}
+              {shared ? (
+                <>
+                  {favouriteAction}
+                  <button
+                    className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onLeave?.();
+                      setShowMenu(false);
+                    }}
+                  >
+                    <LogOut className="h-4 w-4" />
+                    {t("leaveShared")}
+                  </button>
+                </>
               ) : (
-                <button
-                  className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onArchive();
-                    setShowMenu(false);
-                  }}
-                >
-                  <Archive className="h-4 w-4" />
-                  {t("archive")}
-                </button>
+                <>
+                  <button
+                    className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsEditing(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Pencil className="h-4 w-4" />
+                    {t("rename")}
+                  </button>
+                  {/* Not for a project's chat: who reads it is the project's to say,
+                  and the server refuses a share of one. */}
+                  {!conversation.project_id && (
+                    <button
+                      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onShare();
+                        setShowMenu(false);
+                      }}
+                    >
+                      <Share2 className="h-4 w-4" />
+                      {t("share")}
+                    </button>
+                  )}
+                  {/* In the menu as well as on the row: the hover control does not
+                  exist on a touch screen until something is long-pressed. */}
+                  {favouriteAction}
+                  {conversation.is_archived ? (
+                    <button
+                      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUnarchive();
+                        setShowMenu(false);
+                      }}
+                    >
+                      <ArchiveRestore className="h-4 w-4" />
+                      {t("restore")}
+                    </button>
+                  ) : (
+                    <button
+                      className="hover:bg-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onArchive();
+                        setShowMenu(false);
+                      }}
+                    >
+                      <Archive className="h-4 w-4" />
+                      {t("archive")}
+                    </button>
+                  )}
+                  <button
+                    className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete();
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t("delete")}
+                  </button>
+                </>
               )}
-              <button
-                className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap max-md:min-h-11 [&_svg]:shrink-0"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete();
-                  setShowMenu(false);
-                }}
-              >
-                <Trash2 className="h-4 w-4" />
-                {t("delete")}
-              </button>
             </div>
           </>
         )}
@@ -371,13 +439,16 @@ interface ConversationListProps {
   onLoadMore?: () => void;
   /** Whether the list is newest-activity first, so it can be read by day. */
   datedOrder: boolean;
+  /** Other people's threads shared with the reader. */
+  shared?: Conversation[];
+  onLeaveShared?: (id: string) => void;
 }
 
 /**
  * A thread at work, in place of when it last moved: a spinner and how long the
  * run has been going, counted here between the listing's reads.
  */
-function RunningFor({ since }: { since: string }) {
+export function RunningFor({ since }: { since: string }) {
   const t = useTranslations("chat.steps");
   const started = useMemo(() => new Date(since), [since]);
   const elapsed = useTurnElapsed(started, true);
@@ -390,7 +461,8 @@ function RunningFor({ since }: { since: string }) {
 }
 
 /** An icon in the list's header: square, quiet until pointed at. */
-const HEADER_ICON = "text-muted-foreground hover:text-foreground h-8 w-8 rounded-lg [&_svg]:size-4";
+const HEADER_ICON =
+  "text-foreground/85 hover:text-foreground touch:min-h-11 touch:min-w-11 size-8 shrink-0 rounded-lg [&_svg]:size-4";
 
 /** The bands a dated list falls into, newest first. */
 const AGES = ["today", "yesterday", "week", "month", "older"] as const;
@@ -428,8 +500,40 @@ export function byAge(
 interface Band {
   key: string;
   heading: string | null;
-  icon: "star" | "unread" | null;
+  icon: "star" | "unread" | "shared" | "project" | null;
   rows: Conversation[];
+}
+
+/**
+ * The threads started in a project, one band per project, in the order the list
+ * reached them - so the project worked in most recently comes first.
+ *
+ * A project the reader can no longer see still heads its threads, under a
+ * generic name: they are the reader's own chats, and hiding them would lose them.
+ */
+export function byProject(
+  conversations: Conversation[],
+  names: ReadonlyMap<string, string>,
+  unnamed: string,
+): { inProjects: Band[]; outside: Conversation[] } {
+  const bands = new Map<string, Band>();
+  const outside: Conversation[] = [];
+  for (const conversation of conversations) {
+    const projectId = conversation.project_id;
+    if (!projectId) {
+      outside.push(conversation);
+      continue;
+    }
+    const band = bands.get(projectId) ?? {
+      key: `project:${projectId}`,
+      heading: names.get(projectId) ?? unnamed,
+      icon: "project" as const,
+      rows: [],
+    };
+    band.rows.push(conversation);
+    bands.set(projectId, band);
+  }
+  return { inProjects: [...bands.values()], outside };
 }
 
 /**
@@ -453,25 +557,45 @@ function useBands(
   currentConversationId: string | null,
   isArchivedView: boolean,
   datedOrder: boolean,
+  shared: Conversation[] = [],
 ): Band[] {
   const t = useTranslations("chat");
   const ts = useTranslations("chat.sidebar");
+  // The names a project band is headed with. Every project the reader works in
+  // fits one page; one they lost access to is headed generically by `byProject`.
+  const { projects } = useProjects({ limit: 100 });
+  const names = useMemo(
+    () => new Map(projects.map((project) => [project.id, project.name])),
+    [projects],
+  );
   return useMemo((): Band[] => {
-    // Threads with an answer the reader has not seen lead the list, as an inbox
-    // does, and leave the band they would otherwise sit in. Not the open one,
-    // which is being read, nor in the archive.
+    // Channel participation can also put a direct share in the ordinary list.
+    // Use the shared row once, retaining its reader controls in every band.
+    const sharedRows = isArchivedView ? [] : shared;
+    const sharedIds = new Set(sharedRows.map((conversation) => conversation.id));
+    const listedRows = conversations.filter((conversation) => !sharedIds.has(conversation.id));
     const unread = isArchivedView
       ? []
-      : conversations.filter(
+      : [...listedRows, ...sharedRows].filter(
           (conversation) =>
             conversation.unread === true && conversation.id !== currentConversationId,
         );
-    const remaining = conversations.filter((conversation) => !unread.includes(conversation));
+    const remaining = listedRows.filter((conversation) => !unread.includes(conversation));
+    const sharedRemaining = sharedRows.filter((conversation) => !unread.includes(conversation));
     const firstOther = remaining.findIndex((conversation) => conversation.is_favourite !== true);
-    const starred = isArchivedView
+    const ownStarred = isArchivedView
       ? []
       : remaining.slice(0, firstOther === -1 ? remaining.length : firstOther);
-    const rest = remaining.slice(starred.length);
+    const starred = [
+      ...ownStarred,
+      ...sharedRemaining.filter((conversation) => conversation.is_favourite === true),
+    ];
+    const ordinaryShared = sharedRemaining.filter(
+      (conversation) => conversation.is_favourite !== true,
+    );
+    const { inProjects, outside: rest } = isArchivedView
+      ? { inProjects: [], outside: remaining.slice(ownStarred.length) }
+      : byProject(remaining.slice(ownStarred.length), names, ts("unnamedProject"));
     return [
       ...(unread.length > 0
         ? [{ key: "unread", heading: ts("unreadHeading"), icon: "unread" as const, rows: unread }]
@@ -479,6 +603,19 @@ function useBands(
       ...(starred.length > 0
         ? [{ key: "favourites", heading: t("favourites"), icon: "star" as const, rows: starred }]
         : []),
+      // Remaining direct shares, after unread and favourite rows. The archive
+      // remains the reader's own listing.
+      ...(!isArchivedView && ordinaryShared.length > 0
+        ? [
+            {
+              key: "shared",
+              heading: ts("sharedHeading"),
+              icon: "shared" as const,
+              rows: ordinaryShared,
+            },
+          ]
+        : []),
+      ...inProjects,
       // Under the date they were last active, the way a chat product's history
       // reads, when the list is in that order; any other order has no dates to
       // fall into, so it stays one run.
@@ -493,7 +630,7 @@ function useBands(
           ? [{ key: "rest", heading: null, icon: null, rows: rest }]
           : []),
     ];
-  }, [conversations, currentConversationId, isArchivedView, datedOrder, t, ts]);
+  }, [conversations, currentConversationId, isArchivedView, datedOrder, shared, names, t, ts]);
 }
 
 /**
@@ -535,6 +672,8 @@ function ConversationList({
   onNavigate,
   onLoadMore,
   datedOrder,
+  shared,
+  onLeaveShared,
 }: ConversationListProps) {
   const t = useTranslations("chat");
   const ts = useTranslations("chat.sidebar");
@@ -546,7 +685,7 @@ function ConversationList({
   };
 
   const isArchivedView = view === "archived";
-  const bands = useBands(conversations, currentConversationId, isArchivedView, datedOrder);
+  const bands = useBands(conversations, currentConversationId, isArchivedView, datedOrder, shared);
   const { isFolded, flip } = useBandFolds(bands, conversations.length);
   const foldedKeys = bands
     .filter((band) => isFolded(band.key))
@@ -607,7 +746,7 @@ function ConversationList({
 
       <div
         ref={scrollerRef}
-        className="flex-1 scrollbar-thin overflow-y-auto px-3 pb-3"
+        className="min-h-0 flex-1 scrollbar-thin overflow-y-auto px-3 pb-3"
         onScroll={(e) => {
           const el = e.currentTarget;
           if (!isLoading && el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
@@ -621,7 +760,7 @@ function ConversationList({
               <Skeleton key={i} className="h-9 w-full rounded-md" />
             ))}
           </div>
-        ) : conversations.length === 0 ? (
+        ) : conversations.length === 0 && (shared?.length ?? 0) === 0 ? (
           /* Three sentences, not one. "You have no conversations", "you have
              none archived" and "none of them match this filter" are three
              different situations, and the last one is the only one with an
@@ -682,6 +821,8 @@ function ConversationList({
                   >
                     {icon === "star" && <Star className="h-3.5 w-3.5" aria-hidden />}
                     {icon === "unread" && <Inbox className="h-3.5 w-3.5" aria-hidden />}
+                    {icon === "shared" && <Users className="h-3.5 w-3.5" aria-hidden />}
+                    {icon === "project" && <ProjectAvatar name={heading} />}
                     <span>{heading}</span>
                     {isFolded(key) && (
                       <span className="text-muted-foreground/70 tabular-nums">{rows.length}</span>
@@ -708,6 +849,8 @@ function ConversationList({
                       onFavourite={(favourite) => onFavourite(conversation.id, favourite)}
                       onRename={(title) => onRename(conversation.id, title)}
                       onShare={() => setShareConversationId(conversation.id)}
+                      shared={shared?.some((entry) => entry.id === conversation.id) === true}
+                      onLeave={() => onLeaveShared?.(conversation.id)}
                     />
                   ))}
               </div>
@@ -717,6 +860,7 @@ function ConversationList({
       </div>
       {shareConversationId && (
         <ShareDialog
+          key={shareConversationId}
           conversationId={shareConversationId}
           open={!!shareConversationId}
           onOpenChange={(open) => {
@@ -778,8 +922,20 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
   });
 
   useEffect(() => {
-    fetchConversations();
+    const controller = new AbortController();
+    void fetchConversations(controller.signal);
+    return () => controller.abort();
   }, [fetchConversations]);
+
+  // Only on the plain active list: an agent filter narrows the reader's own
+  // threads, and a shared band beside it would ignore that filter.
+  const sharedState = useSharedConversations(view === "active" && agentId === null);
+  const shared = sharedState.items;
+  const leaveShared = useLeaveSharedConversation();
+  const leave = async (id: string) => {
+    // A thread left while it is open is one the reader can no longer read.
+    if ((await leaveShared(id)) && id === currentConversationId) startNewChat();
+  };
 
   // A link to another thread followed from this page - the inbox's "answered
   // while you were away" - is a same-page navigation: nothing remounts, so the
@@ -836,6 +992,8 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
     onRename: renameConversation,
     onLoadMore: fetchMoreConversations,
     datedOrder: sort === DEFAULT_SORT,
+    shared,
+    onLeaveShared: (id: string) => void leave(id),
   };
 
   // The list's own controls, in its header beside the title the way a chat
@@ -844,8 +1002,34 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
   // button before that, sat between the title and the first conversation.
   // The rail stands the same three in a column, in the same order, so collapsing
   // the list changes its width and nothing a hand has learned.
+  const filters = (beside = false) => (
+    <ConversationFilters
+      agentId={agentId}
+      onAgentChange={changeAgent}
+      sort={sort}
+      onSortChange={changeSort}
+      hideApi={hideApi}
+      onHideApiChange={changeHideApi}
+      view={view}
+      onViewChange={changeView}
+      beside={beside}
+    />
+  );
+  const sharedNotice = sharedState.failed ? (
+    <div role="alert" className="text-muted-foreground space-y-1 px-4 py-2 text-xs">
+      <p>{ts("sharedFailed")}</p>
+      <Button variant="ghost" size="sm" onClick={sharedState.retry}>
+        {ts("retryShared")}
+      </Button>
+    </div>
+  ) : sharedState.isLoading ? (
+    <p role="status" className="text-muted-foreground flex items-center gap-2 px-4 py-2 text-xs">
+      <Loader2 className="size-3 animate-spin motion-reduce:animate-none" aria-hidden />
+      {ts("sharedLoading")}
+    </p>
+  ) : null;
   const toolbar = (afterNewChat?: () => void, column = false) => (
-    <div className={cn("flex items-center gap-0.5", column && "flex-col")}>
+    <div className={cn("flex shrink-0 items-center gap-0.5", column && "flex-col")}>
       <IconButton
         size="icon"
         aria-label={ts("searchLabel")}
@@ -855,17 +1039,18 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
       >
         <Search />
       </IconButton>
-      <ConversationFilters
-        agentId={agentId}
-        onAgentChange={changeAgent}
-        sort={sort}
-        onSortChange={changeSort}
-        hideApi={hideApi}
-        onHideApiChange={changeHideApi}
-        view={view}
-        onViewChange={changeView}
-        beside={column}
-      />
+      {column && filters(true)}
+      {column && sharedState.failed && (
+        <IconButton
+          size="icon"
+          aria-label={ts("retryShared")}
+          title={ts("sharedFailed")}
+          onClick={sharedState.retry}
+          className={HEADER_ICON}
+        >
+          <RefreshCw />
+        </IconButton>
+      )}
       <IconButton
         size="icon"
         data-tour="chat-start"
@@ -908,9 +1093,19 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
 
   return (
     <>
-      <aside className={cn("bg-sidebar hidden w-64 shrink-0 flex-col border-r md:flex", className)}>
-        <div className="flex h-12 items-center gap-1 border-b pr-2 pl-4">
-          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{ts("title")}</h2>
+      <aside
+        className={cn(
+          "bg-sidebar-secondary hidden min-h-0 w-64 shrink-0 flex-col md:flex",
+          className,
+        )}
+      >
+        <div
+          className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4"
+          data-tauri-drag-region="deep"
+        >
+          <h2 data-tauri-drag-region className="min-w-0 flex-1 truncate text-sm font-semibold">
+            {ts("title")}
+          </h2>
           {toolbar()}
           <IconButton
             size="icon"
@@ -922,6 +1117,8 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
             <ChevronLeft />
           </IconButton>
         </div>
+        <div className="shrink-0 px-3 py-2">{filters()}</div>
+        {sharedNotice}
         <ConversationList {...listProps} />
       </aside>
 
@@ -935,6 +1132,8 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
             <SheetClose onClick={close} />
           </SheetHeader>
           <div className="flex h-[calc(100%-48px)] flex-col">
+            <div className="shrink-0 px-3 py-2">{filters()}</div>
+            {sharedNotice}
             <ConversationList {...listProps} onNavigate={close} />
           </div>
         </SheetContent>
@@ -963,6 +1162,7 @@ function CollapsedSidebar({
   onSelect,
   onLoadMore,
   datedOrder,
+  shared,
   toolbar,
   onExpand,
   className,
@@ -975,6 +1175,7 @@ function CollapsedSidebar({
   | "onSelect"
   | "onLoadMore"
   | "datedOrder"
+  | "shared"
 > & {
   toolbar: ReactNode;
   onExpand: () => void;
@@ -983,13 +1184,13 @@ function CollapsedSidebar({
   const t = useTranslations("chat");
   const ts = useTranslations("chat.sidebar");
   const isArchivedView = view === "archived";
-  const bands = useBands(conversations, currentConversationId, isArchivedView, datedOrder);
+  const bands = useBands(conversations, currentConversationId, isArchivedView, datedOrder, shared);
   const { isFolded, flip } = useBandFolds(bands, conversations.length);
 
   return (
-    <div className={cn("bg-sidebar hidden w-12 shrink-0 flex-col border-r md:flex", className)}>
+    <div className={cn("bg-sidebar-secondary hidden w-12 shrink-0 flex-col md:flex", className)}>
       {/* The same 48px header the list has, with its chevron where the list's is. */}
-      <div className="flex h-12 shrink-0 items-center justify-center border-b">
+      <div className="flex h-12 shrink-0 items-center justify-center" data-tauri-drag-region="deep">
         <IconButton
           size="icon"
           onClick={onExpand}
@@ -1042,6 +1243,10 @@ function CollapsedSidebar({
                     <Star className="h-3.5 w-3.5" aria-hidden />
                   ) : icon === "unread" ? (
                     <Inbox className="h-3.5 w-3.5" aria-hidden />
+                  ) : icon === "shared" ? (
+                    <Users className="h-3.5 w-3.5" aria-hidden />
+                  ) : icon === "project" ? (
+                    <ProjectAvatar name={heading} />
                   ) : (
                     <span
                       aria-hidden
@@ -1068,12 +1273,19 @@ function CollapsedSidebar({
                       aria-current={isActive ? "true" : undefined}
                       className={cn(
                         "relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors",
-                        isActive ? "bg-accent" : "hover:bg-accent/60",
+                        isActive ? "bg-accent" : "hover:bg-foreground/5",
                       )}
                     >
                       <span className="relative">
-                        {conversation.agents && conversation.agents.length > 0 ? (
-                          <ConversationAgents agents={conversation.agents} showName={false} />
+                        {conversation.agents?.length || conversation.coding_agents?.length ? (
+                          <ConversationAgents
+                            agents={conversation.agents}
+                            codingAgents={conversation.coding_agents}
+                            showName={false}
+                            size="md"
+                            compact
+                            unframed
+                          />
                         ) : (
                           <span className="flex size-6 items-center justify-center">
                             <MessageSquare className="text-muted-foreground h-4 w-4" aria-hidden />

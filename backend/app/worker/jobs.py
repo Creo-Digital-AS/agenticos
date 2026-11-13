@@ -1,0 +1,897 @@
+"""Every kind of background job, what it carries and where it runs (#2219).
+
+A service enqueues one of these with `app.services.background_jobs.enqueue`;
+a worker runs it with the handler `app/worker/handlers.py` binds to its kind.
+The split is deliberate: this module imports Pydantic and nothing else, so a
+route that queues an ingestion does not import the parser that will run it.
+
+Attempts follow one rule (decided for #2219): three by default, two for
+ingestion - a parse that failed twice will fail a third time, and each try
+costs embeddings - and one for a scheduled sweep, whose next tick is its retry.
+An attempt is spent at the claim, so a job that kills its worker spends one
+too; see `app.db.models.background_job`.
+"""
+
+import enum
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Literal, Self
+from uuid import UUID, uuid5
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+class Pool(enum.StrEnum):
+    """Which workers run a job. Each pool has its own concurrency, so one cannot starve another."""
+
+    AGENT = "agent"
+    """Agent runs: long, waiting on models, cheap in memory."""
+    EVAL = "eval"
+    """Eval runs: hours over a large dataset, so they never hold a slot an agent run needs."""
+    INGEST = "ingest"
+    """Parsing and embedding: CPU and memory heavy, each job in a child process."""
+    SYSTEM = "system"
+    """Sweeps, cleanups and reports: short, and nearly always idle."""
+    WORKFLOW = "workflow"
+    """Workflow nodes: HTTP, file and sandbox steps, mostly waiting, some holding a large file."""
+
+
+class Priority(enum.IntEnum):
+    """Within a pool, lower goes first."""
+
+    INTERACTIVE = 0
+    SCHEDULED = 1
+    BULK = 2
+
+
+class Payload(BaseModel):
+    """What a job carries: identifiers and primitives, never a row or a session."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class WakeTask(Payload):
+    organization_id: UUID
+    task_id: UUID
+    revision: int = Field(ge=1)
+
+
+class MoveProjectWorkspacePayload(Payload):
+    transfer_id: UUID
+    project_id: UUID
+    organization_id: UUID
+    user_id: UUID
+    api_key_id: UUID | None = None
+    source_backend: Literal["state", "service"]
+    source_connection_id: UUID | None
+    source_generation: UUID | None
+    source_workspace_id: UUID | None
+    target_backend: Literal["state", "service"]
+    target_connection_id: UUID | None
+    target_runtime: str | None
+    target_name: str
+
+
+def project_move_generation(transfer_id: UUID, attempt: int) -> UUID:
+    """Isolate each attempt, so a lost worker cannot write into the activated copy."""
+    return uuid5(transfer_id, str(attempt))
+
+
+class ChannelDelivery(Payload):
+    organization_id: UUID
+    bot_id: UUID
+    platform: Literal["sms", "imessage"]
+    payload: dict[str, JsonValue]
+
+
+class EmailDelivery(Payload):
+    organization_id: UUID
+    bot_id: UUID
+    body: str = Field(max_length=25 * 1024 * 1024)
+    attachment_handles: list[str] = Field(default_factory=list, max_length=10)
+
+
+class ChannelHandbackCall(Payload):
+    tool_id: str | None = None
+    presentation_kind: Literal["draft", "generic", "platform"] | None = None
+    tool_call_id: str
+    tool_name: str
+    args: dict[str, JsonValue]
+    result: str | None = None
+
+
+class ChannelHandback(Payload):
+    organization_id: UUID
+    run_id: UUID
+    bot_id: UUID
+    platform_chat_id: str
+    private_chat: bool
+    output: str
+    tool_calls: list[ChannelHandbackCall] = Field(default_factory=list)
+    generated_files: frozenset[str] = frozenset()
+    notice: bool = False
+
+
+class NoPayload(Payload):
+    """For a job whose work is to look at the current state."""
+
+
+class Tick(Payload):
+    """A scheduled job: the occurrence it was fired for, the same on every attempt."""
+
+    scheduled_for: datetime
+
+
+class IngestDocument(Payload):
+    rag_document_id: UUID
+    collection_name: str
+    filepath: str
+    source_path: str
+    replace: bool
+    attempt: int
+    """Which dispatch of the document this is (#1598) - not the job's attempt."""
+
+
+class SyncCollection(Payload):
+    sync_log_id: UUID
+    source: str
+    collection_name: str
+    mode: str
+    path: str
+    knowledge_base_id: UUID | None
+
+
+class SyncConnectorSource(Payload):
+    source_id: UUID
+    sync_log_id: UUID | None
+
+
+def sync_source_key(source_id: UUID) -> str:
+    """What every sync of one source shares: one queued at a time, one running at a time."""
+    return f"sync-source:{source_id}"
+
+
+class DialPhone(Payload):
+    call_id: UUID
+
+
+class FireTrigger(Payload):
+    trigger_id: UUID
+    source_policy_id: UUID | None = None
+    activation_id: UUID | None = None
+    event_context: str | None = None
+    claimed_at: datetime | None = None
+    """The `fire_in_flight_since` the scheduled claim stamped - its claim ticket."""
+
+
+class DeliverRoutineAnswer(Payload):
+    organization_id: UUID
+    run_id: UUID
+
+
+class ConversationTaskJob(Payload):
+    task_id: UUID
+    organization_id: UUID
+
+
+class RunAgent(Payload):
+    """An asynchronous `POST /agents/{id}/run`: who asked, and what they sent."""
+
+    agent_id: UUID
+    organization_id: UUID
+    user_id: UUID
+    api_key_id: UUID | None
+    """The key that asked, so the worker re-establishes its narrowed context; `None` for a session."""
+    prompt: str
+    conversation_id: UUID
+    environment_id: UUID | None
+    file_ids: list[UUID]
+    digest: str
+    """The request's fingerprint: an idempotent retry must send the same one."""
+
+
+class AdvanceImprovement(Payload):
+    """One short, restartable transition; paid work runs in its own child job."""
+
+    run_id: UUID
+    organization_id: UUID
+
+
+class AdvanceSkillImprovement(Payload):
+    """One short, restartable step of a session on a skill line; paid work runs in a child."""
+
+    run_id: UUID
+    organization_id: UUID
+
+
+class AdvanceSkillCheck(Payload):
+    """Move a skill check's agents on once their runs have settled."""
+
+    check_id: UUID
+    organization_id: UUID
+
+
+class RunEval(Payload):
+    """One eval run, answered, scored and compared case by case."""
+
+    eval_run_id: UUID
+    organization_id: UUID
+
+
+class GenerateCases(Payload):
+    """One case generation, drafted by the case generator."""
+
+    generation_id: UUID
+    organization_id: UUID
+
+
+class RunAuthoring(Payload):
+    """One Improve or Verify the authoring assistant was asked for."""
+
+    request_id: UUID
+    organization_id: UUID
+
+
+class ClassifyGaps(Payload):
+    """Answers read for the knowledge gaps of these knowledge bases, as the person who asked.
+
+    Without `message_ids`, a knowledge base's newest unread answers, as its
+    Knowledge gaps tab asks; with them, those answers alone, as an improvement
+    session sorts the answers it found bad.
+    """
+
+    organization_id: UUID
+    knowledge_base_ids: list[UUID] = Field(max_length=50)
+    user_id: UUID
+    message_ids: list[UUID] | None = Field(default=None, max_length=500)
+    improvement_run_id: UUID | None = None
+
+
+class DraftTopic(Payload):
+    """One knowledge gap topic drafted, as the person - or through the key - that asked."""
+
+    organization_id: UUID
+    topic_id: UUID
+    user_id: UUID | None
+    api_key_id: UUID | None = None
+
+
+class DispatchWorkflowNode(Payload):
+    """One node attempt of a workflow run, named by the outbox row's node run.
+
+    No organization id: the job row carries it, and the dispatcher takes its scope
+    from the run row rather than from a payload.
+    """
+
+    workflow_run_id: UUID
+    node_run_id: UUID
+
+
+class DispatchOutcome(Payload):
+    """What a dispatch tick did, kept on the job for Admin -> Background jobs."""
+
+    status: Literal["nothing_to_claim", "not_dispatched", "settled"]
+
+
+class ThinkForPerson(Payload):
+    """One person in one organization, for the platform's nightly look at their week (#2301)."""
+
+    organization_id: UUID
+    user_id: UUID
+
+
+class ExtractMemory(Payload):
+    """One finished chat run, to be read for what a later conversation should remember (#2090)."""
+
+    organization_id: UUID
+    run_id: UUID
+    audience_user_id: UUID | None = None
+    """The runner's admitted person; absent on jobs queued before audience capture existed."""
+    audience_room_key: str | None = Field(default=None, max_length=200, pattern=r"^room:[^:]+:.+$")
+
+    @model_validator(mode="after")
+    def _room_has_an_admitted_person(self) -> Self:
+        if self.audience_room_key is not None and self.audience_user_id is None:
+            raise ValueError("Room capture requires the runner's admitted person")
+        return self
+
+
+class LookThroughWatch(Payload):
+    """One person's watch over one of their connections, due for a look (#2301)."""
+
+    watch_id: UUID
+    scheduled_for: datetime | None = None
+
+
+class InstallRolePack(Payload):
+    """The routines of a role pack, to create for the person who accepted it (#2301)."""
+
+    organization_id: UUID
+    user_id: UUID
+    pack_id: str
+
+
+class WelcomeMember(Payload):
+    """Somebody who just joined, to greet in the chat apps the organization connected (#2301)."""
+
+    organization_id: UUID
+    user_id: UUID
+
+
+class Restamp(Payload):
+    collection: str
+    organization_id: UUID
+    knowledge_base_id: UUID
+
+
+class BasePurge(Payload):
+    """A deleted knowledge base whose collection's table stays (#2537, #2747)."""
+
+    collection: str
+    knowledge_base_id: UUID
+    vector_document_ids: list[str] | None = Field(
+        default=None, exclude_if=lambda vector_document_ids: vector_document_ids is None
+    )
+    """Only these documents' chunks, for a base that is kept: a cleared default
+    takes uploads again under the same id once its drop commits, so a purge of
+    every chunk filed under it would take theirs too (#2560). `None` purges the
+    whole base. Left out of the dump when `None`, as `prefixes` is."""
+    takes_unfiled: bool = Field(default=False, exclude_if=lambda takes_unfiled: not takes_unfiled)
+    """With `vector_document_ids`, also those documents' unfiled chunks of
+    `tenant`: the base's unfiled document rows went with it, since no other base
+    on the name takes them (#2560). Left out of the dump when off."""
+    tenant: UUID | None = Field(default=None, exclude_if=lambda tenant: tenant is None)
+    """The base's vector tenant, which an unfiled chunk is matched by - `None`
+    for the deployment-wide one."""
+
+
+class DiscardVectorDocument(Payload):
+    """Chunks an ingest wrote for a document deleted while it indexed (#2565).
+
+    The tracking row is gone, so this is the only record of them. `tenant` and
+    `knowledge_base_id` are the scope the chunks were stamped with."""
+
+    collection: str
+    vector_document_id: str
+    tenant: UUID | None
+    knowledge_base_id: UUID | None
+
+
+class CleanupExternalState(Payload):
+    storage_paths: list[str]
+    collections: list[str]
+    restamps: list[Restamp]
+    # Defaulted, so a job queued by a release before it existed still parses; and
+    # left out of the dump when empty, so a worker from that release (whose payload
+    # forbids extra fields) still runs every cleanup that carries none. Only an
+    # organization purge carries prefixes, and only a current worker runs it.
+    prefixes: list[str] = Field(default_factory=list, exclude_if=lambda prefixes: not prefixes)
+    """Storage prefixes removed whole - an organization's generated media (#2310)."""
+    required_paths: list[str] = Field(
+        default_factory=list, exclude_if=lambda required_paths: not required_paths
+    )
+    """Files whose failed unlink fails the job, so it is retried - generated media
+    whose rows went with the delete that queued this (#2310). Defaulted and left
+    out of the dump when empty, as `prefixes` is. A previous-release worker
+    refuses a job that carries them; a current one runs it."""
+    base_purges: list[BasePurge] = Field(
+        default_factory=list, exclude_if=lambda base_purges: not base_purges
+    )
+    """Deleted bases whose chunks go from a table that is kept, because another
+    base still holds its name (#2537). Defaulted and left out of the dump when
+    empty, as `prefixes` is."""
+
+
+class SettleLater(Exception):
+    """A settler that cannot close what its job left yet - a worker still holds it.
+
+    The worker logs it without a traceback and leaves the end owed, so the
+    rescuer's next pass runs the settler again.
+    """
+
+
+@dataclass(frozen=True)
+class TaskKind:
+    """What a worker needs to know about a claimed job: where it runs, for how long, how often."""
+
+    kind: str
+    payload_type: type[Payload]
+    pool: Pool
+    max_attempts: int
+    timeout: timedelta
+    priority: Priority
+    # Whether an administrator may withdraw a queued job of this kind. Not when a
+    # row outside the queue - a document, a sync log - waits in `processing` for
+    # the job to settle it: cancelled, nothing ever would.
+    cancellable: bool = True
+    uncancellable_because: str = (
+        "its document or sync would stay in progress with nothing left to finish it. "
+        "Pause the kind instead."
+    )
+    """What the panel says when `cancellable` is false: why, and what to do instead."""
+    # Whether a worker that died under a job of this kind counts toward pausing the
+    # kind. Not when something else already stops a job that keeps killing its
+    # worker, and a crash takes down every job the worker held at once.
+    counts_deaths: bool = True
+    retry_refusal: str | None = None
+    """Why a dead job needs a new domain request instead of queue-level replay."""
+
+
+@dataclass(frozen=True)
+class Task[P: Payload](TaskKind):
+    """One kind of job, typed by its payload, as a service enqueues it."""
+
+    payload_type: type[P]
+
+    def dump(self, payload: P) -> dict[str, JsonValue]:
+        return payload.model_dump(mode="json")
+
+    def load(self, raw: dict[str, JsonValue]) -> P:
+        return self.payload_type.model_validate(raw)
+
+
+def _sweep(
+    kind: str, *, timeout: timedelta = timedelta(minutes=15), max_attempts: int = 1
+) -> Task[Tick]:
+    return Task(
+        kind=kind,
+        payload_type=Tick,
+        pool=Pool.SYSTEM,
+        max_attempts=max_attempts,
+        timeout=timeout,
+        priority=Priority.SCHEDULED,
+    )
+
+
+INGEST_DOCUMENT = Task(
+    kind="ingest-document",
+    payload_type=IngestDocument,
+    pool=Pool.INGEST,
+    max_attempts=2,
+    timeout=timedelta(hours=1),
+    priority=Priority.INTERACTIVE,
+    cancellable=False,
+)
+SYNC_COLLECTION = Task(
+    kind="sync-collection",
+    payload_type=SyncCollection,
+    pool=Pool.INGEST,
+    max_attempts=2,
+    timeout=timedelta(hours=4),
+    priority=Priority.BULK,
+    cancellable=False,
+)
+SYNC_SOURCE = Task(
+    kind="sync-source",
+    payload_type=SyncConnectorSource,
+    pool=Pool.INGEST,
+    max_attempts=2,
+    timeout=timedelta(hours=4),
+    priority=Priority.BULK,
+    cancellable=False,
+)
+# One attempt, for the reason `RUN_AGENT` below has one: a fire is an agent run,
+# and a worker that died under it may already have paid for its model calls and
+# made its tools' side effects. The dead job waits on Admin -> Background jobs,
+# where somebody who knows what the run did can retry it.
+WAKE_TASK = Task(
+    kind="wake-task",
+    payload_type=WakeTask,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(seconds=60),
+    priority=Priority.SCHEDULED,
+)
+FIRE_TRIGGER = Task(
+    kind="fire-trigger",
+    payload_type=FireTrigger,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=3),
+    priority=Priority.SCHEDULED,
+)
+DIAL_PHONE = Task(
+    kind="dial-phone",
+    payload_type=DialPhone,
+    pool=Pool.SYSTEM,
+    max_attempts=1,
+    timeout=timedelta(seconds=60),
+    priority=Priority.INTERACTIVE,
+)
+
+END_PHONE = Task(
+    kind="end-phone",
+    payload_type=DialPhone,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(seconds=60),
+    priority=Priority.INTERACTIVE,
+)
+
+DELIVER_ROUTINE_ANSWER = Task(
+    kind="deliver-routine-answer",
+    payload_type=DeliverRoutineAnswer,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+
+RUN_CONVERSATION_TASK = Task(
+    kind="run-conversation-task",
+    payload_type=ConversationTaskJob,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=3),
+    priority=Priority.INTERACTIVE,
+)
+RETURN_CONVERSATION_TASK = Task(
+    kind="return-conversation-task",
+    payload_type=ConversationTaskJob,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=3),
+    priority=Priority.INTERACTIVE,
+)
+
+# One attempt: a run a worker died under has already spent, and a second would
+# run the agent again - its model calls and its tools' side effects with it. The
+# caller reads `failed` and decides; that is what idempotency keys are for.
+RUN_AGENT = Task(
+    kind="run-agent",
+    payload_type=RunAgent,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=3),
+    priority=Priority.INTERACTIVE,
+)
+# One attempt, for `RUN_AGENT`'s reason: the cases a dead worker answered were
+# paid for. A job that ends for good - withdrawn, timed out, its worker dead -
+# closes its run through the kind's settler, which frees the organization's eval
+# slots it held; `REAP_ABANDONED_EVALS` is the ceiling when that settler cannot
+# run. A pool of its own, because a run holds its slot for as long as it lasts -
+# waiting on the organization's eval slots included - and in a shared pool enough
+# of them would leave a person's API run and every trigger fire with no slot at
+# all.
+RUN_EVAL = Task(
+    kind="run-eval",
+    retry_refusal="Start a new eval run from Evals; a failed eval has already been settled",
+    payload_type=RunEval,
+    pool=Pool.EVAL,
+    max_attempts=1,
+    timeout=timedelta(hours=12),
+    priority=Priority.BULK,
+)
+# One attempt: each improver call is billed. A job that ends for good fails its
+# request through the kind's settler, and the request's own staleness check, when
+# it is next read, is the ceiling when that settler cannot run.
+RUN_AUTHORING = Task(
+    kind="run-authoring",
+    payload_type=RunAuthoring,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=1),
+    priority=Priority.INTERACTIVE,
+)
+# One attempt each: every classifying and drafting call is billed, and what one
+# recorded stays recorded, so a session or a topic reads the job's end.
+CLASSIFY_GAPS = Task(
+    kind="classify-gaps",
+    payload_type=ClassifyGaps,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=10),
+    priority=Priority.INTERACTIVE,
+)
+DRAFT_TOPIC = Task(
+    kind="draft-knowledge-gap",
+    payload_type=DraftTopic,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=10),
+    priority=Priority.INTERACTIVE,
+)
+# One attempt: the generator's call is billed. A job that ends without the
+# handler finishing the generation - its worker killed - fails the generation
+# through its settler, so nothing waits on it for ever.
+GENERATE_CASES = Task(
+    kind="generate-cases",
+    payload_type=GenerateCases,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=30),
+    priority=Priority.INTERACTIVE,
+    cancellable=False,
+)
+# One attempt, like `RUN_AGENT`: `dispatch_outbox`, not the job, holds a node's
+# position, and a second attempt of the same job could only find its claim held.
+# Re-running a node is the workflow reconciler's call, made from `node_attempts`.
+# A queued job is not withdrawn from the panel: it would only delay the node until
+# the poll backstop queues it again - cancel the run instead. Its own pool, so a
+# fan-out cannot hold the agent pool's slots, and an agent waiting on a workflow
+# cannot wait on a slot of its own pool. A worker's death is not counted toward the
+# breaker: one crash ends every node the worker held, and `WORKFLOW_RETRY_CEILING`
+# already stops a node that keeps killing its worker.
+WORKFLOW_DISPATCH_NODE = Task(
+    kind="workflow-dispatch-node",
+    payload_type=DispatchWorkflowNode,
+    pool=Pool.WORKFLOW,
+    max_attempts=1,
+    timeout=timedelta(hours=3),
+    priority=Priority.SCHEDULED,
+    cancellable=False,
+    uncancellable_because=(
+        "the node would only wait until the poll queues it again. Cancel the workflow run instead."
+    ),
+    counts_deaths=False,
+)
+# One attempt: it is a model call booked to the person's proactivity limit, and
+# the next night is the retry - nothing a person asked for waits on it.
+THINK_FOR_PERSON = Task(
+    kind="think-for-person",
+    payload_type=ThinkForPerson,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=10),
+    priority=Priority.BULK,
+)
+# One attempt: a model call on the maintenance role's budget for one finished run.
+# The conversation is not lost if it fails - the agent can still `remember` - and a
+# retry would pay for the same read twice.
+EXTRACT_MEMORY = Task(
+    kind="extract-memory",
+    payload_type=ExtractMemory,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=5),
+    priority=Priority.BULK,
+)
+# One attempt, like the nightly look: a model call on the person's limit, and the
+# watch's next look is the retry.
+LOOK_THROUGH_WATCH = Task(
+    kind="look-through-watch",
+    payload_type=LookThroughWatch,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=10),
+    priority=Priority.BULK,
+)
+# One attempt, like the welcome: a direct message sent twice is worse than one
+# the next morning's briefing catches up on.
+BRIEF_PERSON = Task(
+    kind="brief-person",
+    payload_type=ThinkForPerson,
+    pool=Pool.SYSTEM,
+    max_attempts=1,
+    timeout=timedelta(minutes=5),
+    priority=Priority.SCHEDULED,
+)
+# Three: creating a routine is idempotent per pack (a routine already made from
+# the same template is not made twice), and the person clicked and is waiting.
+INSTALL_ROLE_PACK = Task(
+    kind="install-role-pack",
+    payload_type=InstallRolePack,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=5),
+    priority=Priority.INTERACTIVE,
+)
+# One: a greeting is best-effort, and a retry would greet the person a second
+# time on every platform that had already succeeded. A platform that fails is
+# logged and the others still try, inside the one attempt.
+WELCOME_MEMBER = Task(
+    kind="welcome-member",
+    payload_type=WelcomeMember,
+    pool=Pool.SYSTEM,
+    max_attempts=1,
+    timeout=timedelta(minutes=5),
+    priority=Priority.SCHEDULED,
+)
+CLEANUP_EXTERNAL_STATE = Task(
+    kind="cleanup-external-state",
+    payload_type=CleanupExternalState,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=30),
+    priority=Priority.SCHEDULED,
+)
+# Three: the delete is idempotent, and the chunks stay searchable until it runs.
+DISCARD_VECTOR_DOCUMENT = Task(
+    kind="discard-vector-document",
+    payload_type=DiscardVectorDocument,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=5),
+    priority=Priority.SCHEDULED,
+)
+
+ADVANCE_IMPROVEMENT = Task(
+    kind="advance-improvement",
+    payload_type=AdvanceImprovement,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+SWEEP_IMPROVEMENTS = _sweep("sweep-improvements")
+ADVANCE_SKILL_IMPROVEMENT = Task(
+    kind="advance-skill-improvement",
+    payload_type=AdvanceSkillImprovement,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+SWEEP_SKILL_IMPROVEMENTS = _sweep("sweep-skill-improvements")
+
+ADVANCE_SKILL_CHECK = Task(
+    kind="advance-skill-check",
+    payload_type=AdvanceSkillCheck,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+SWEEP_SKILL_CHECKS = _sweep("sweep-skill-checks")
+
+ADVANCE_SKILL_CHECK = Task(
+    kind="advance-skill-check",
+    payload_type=AdvanceSkillCheck,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+SWEEP_SKILL_CHECKS = _sweep("sweep-skill-checks")
+
+CHECK_AGENT_TRIGGERS = _sweep("check-agent-triggers")
+POLL_PORTAL_GRANTS = _sweep("poll-portal-grants")
+DELIVER_NOTIFICATIONS = _sweep("deliver-notifications")
+DISPATCH_DUE_SYNCS = _sweep("dispatch-due-syncs")
+RETRY_SANDBOX_DESTROYS = _sweep("retry-sandbox-destroys")
+SWEEP_SANDBOX_OPERATIONS = _sweep("sweep-sandbox-operations")
+SWEEP_MCP_CONNECTIONS = _sweep("sweep-mcp-connections")
+SYNC_DISCORD_ROLES = _sweep("sync-discord-roles")
+EXPIRE_APPROVALS = _sweep("expire-approvals")
+EXPIRE_INVITATIONS = _sweep("expire-invitations")
+REAP_STALE_RUNS = _sweep("reap-stale-runs")
+SWEEP_TEARDOWN_RESERVATIONS = _sweep("sweep-teardown-reservations")
+SWEEP_RAG_SCRATCH = _sweep("sweep-rag-scratch")
+APPLY_RETENTION = _sweep("apply-retention", timeout=timedelta(hours=2))
+SWEEP_NOTIFICATIONS = _sweep("sweep-notifications")
+SWEEP_BACKGROUND_JOBS = _sweep("sweep-background-jobs")
+CONSOLIDATE_MEMORY = _sweep("consolidate-memory", timeout=timedelta(minutes=10))
+REAP_VOICE_CALLS = _sweep("reap-voice-calls")
+CHECK_EVAL_SUITES = _sweep("check-eval-suites")
+REAP_ABANDONED_EVALS = _sweep("reap-abandoned-evals")
+GROUP_KNOWLEDGE_GAPS = _sweep("group-knowledge-gaps")
+WORKFLOW_DISPATCH_POLL = _sweep("workflow-dispatch-poll", timeout=timedelta(minutes=2))
+WORKFLOW_RECONCILE = _sweep("workflow-reconcile", timeout=timedelta(minutes=5))
+WORKFLOW_SCHEDULES_CHECK = _sweep("workflow-schedules-check", timeout=timedelta(minutes=5))
+WORKFLOW_TABLE_TRIGGERS = _sweep("workflow-table-triggers", timeout=timedelta(minutes=5))
+WORKFLOW_RUN_RETENTION = _sweep("workflow-run-retention", timeout=timedelta(hours=2))
+WORKFLOW_LOG_ALERTS = _sweep("workflow-log-alerts", timeout=timedelta(minutes=5))
+RECONCILE_CONVERSATION_TASKS = _sweep("reconcile-conversation-tasks", timeout=timedelta(seconds=30))
+SWEEP_GENERATED_MEDIA = _sweep("sweep-generated-media")
+SEND_DIAGNOSTICS = _sweep("send-diagnostics", timeout=timedelta(seconds=60))
+PROACTIVE_SWEEP = _sweep("proactive-sweep")
+WATCH_SWEEP = _sweep("watch-sweep")
+# Three attempts, unlike the sweeps above: a sweep's next tick is the same work
+# again, but the next report is a week or a month away and covers another window,
+# so an occurrence lost to a deploy or an outage was never sent. Each occurrence
+# is idempotent across attempts (Codex, #2248).
+WEEKLY_USAGE_REPORT = _sweep("weekly-usage-report", timeout=timedelta(hours=1), max_attempts=3)
+MONTHLY_USAGE_REPORT = _sweep("monthly-usage-report", timeout=timedelta(hours=1), max_attempts=3)
+
+MOVE_PROJECT_WORKSPACE = Task(
+    retry_refusal="Start a new transfer in the project's sandbox settings; retired transfer copies cannot be reused",
+    kind="move-project-workspace",
+    payload_type=MoveProjectWorkspacePayload,
+    pool=Pool.INGEST,
+    max_attempts=3,
+    timeout=timedelta(minutes=30),
+    priority=Priority.INTERACTIVE,
+)
+
+PROCESS_CHANNEL_DELIVERY = Task(
+    kind="process-channel-delivery",
+    payload_type=ChannelDelivery,
+    pool=Pool.AGENT,
+    max_attempts=3,
+    timeout=timedelta(hours=1),
+    priority=Priority.INTERACTIVE,
+)
+
+PROCESS_EMAIL_DELIVERY = Task(
+    kind="process-email-delivery",
+    payload_type=EmailDelivery,
+    pool=Pool.AGENT,
+    max_attempts=3,
+    timeout=timedelta(hours=1),
+    priority=Priority.INTERACTIVE,
+)
+
+DELIVER_CHANNEL_HANDBACK = Task(
+    kind="deliver-channel-handback",
+    payload_type=ChannelHandback,
+    pool=Pool.SYSTEM,
+    max_attempts=3,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+)
+
+TASKS: dict[str, TaskKind] = {
+    task.kind: task
+    for task in (
+        PROCESS_CHANNEL_DELIVERY,
+        PROCESS_EMAIL_DELIVERY,
+        DELIVER_CHANNEL_HANDBACK,
+        MOVE_PROJECT_WORKSPACE,
+        INGEST_DOCUMENT,
+        SYNC_COLLECTION,
+        SYNC_SOURCE,
+        FIRE_TRIGGER,
+        WAKE_TASK,
+        DIAL_PHONE,
+        END_PHONE,
+        DELIVER_ROUTINE_ANSWER,
+        RUN_AGENT,
+        RUN_EVAL,
+        RUN_AUTHORING,
+        ADVANCE_IMPROVEMENT,
+        SWEEP_IMPROVEMENTS,
+        ADVANCE_SKILL_IMPROVEMENT,
+        SWEEP_SKILL_IMPROVEMENTS,
+        ADVANCE_SKILL_CHECK,
+        SWEEP_SKILL_CHECKS,
+        CLASSIFY_GAPS,
+        DRAFT_TOPIC,
+        GENERATE_CASES,
+        RUN_CONVERSATION_TASK,
+        RETURN_CONVERSATION_TASK,
+        RECONCILE_CONVERSATION_TASKS,
+        WORKFLOW_DISPATCH_NODE,
+        THINK_FOR_PERSON,
+        EXTRACT_MEMORY,
+        LOOK_THROUGH_WATCH,
+        BRIEF_PERSON,
+        INSTALL_ROLE_PACK,
+        WELCOME_MEMBER,
+        CLEANUP_EXTERNAL_STATE,
+        DISCARD_VECTOR_DOCUMENT,
+        CHECK_AGENT_TRIGGERS,
+        POLL_PORTAL_GRANTS,
+        DELIVER_NOTIFICATIONS,
+        DISPATCH_DUE_SYNCS,
+        RETRY_SANDBOX_DESTROYS,
+        SWEEP_SANDBOX_OPERATIONS,
+        SWEEP_MCP_CONNECTIONS,
+        SYNC_DISCORD_ROLES,
+        EXPIRE_APPROVALS,
+        EXPIRE_INVITATIONS,
+        REAP_STALE_RUNS,
+        SWEEP_TEARDOWN_RESERVATIONS,
+        SWEEP_RAG_SCRATCH,
+        APPLY_RETENTION,
+        SWEEP_NOTIFICATIONS,
+        SWEEP_BACKGROUND_JOBS,
+        CONSOLIDATE_MEMORY,
+        REAP_VOICE_CALLS,
+        CHECK_EVAL_SUITES,
+        REAP_ABANDONED_EVALS,
+        GROUP_KNOWLEDGE_GAPS,
+        WORKFLOW_DISPATCH_POLL,
+        WORKFLOW_RECONCILE,
+        WORKFLOW_SCHEDULES_CHECK,
+        WORKFLOW_TABLE_TRIGGERS,
+        WORKFLOW_RUN_RETENTION,
+        WORKFLOW_LOG_ALERTS,
+        SWEEP_GENERATED_MEDIA,
+        SEND_DIAGNOSTICS,
+        PROACTIVE_SWEEP,
+        WATCH_SWEEP,
+        WEEKLY_USAGE_REPORT,
+        MONTHLY_USAGE_REPORT,
+    )
+}
+"""Every kind, by name: what a worker looks a claimed job up in."""

@@ -1,5 +1,5 @@
 ---
-source_sha: "0b5ae075ae8b"
+source_sha: "bfe431b65940"
 ---
 
 # Modele i providery { #models-and-providers }
@@ -40,7 +40,182 @@ Spec agenta wskazuje jeden przez `model_profile_id`, a run go rozwiązuje.
     rozgrzana, a pole, które nie potrafi wyrazić „o ten”, to pole, które ludzie
     obchodzą, edytując speca ręcznie.
 
+### Profil, na którym agent nie może działać { #a-profile-an-agent-cannot-run-on }
+
+Profil może wskazywać model, który nie prowadzi rozmowy: model zamiany tekstu na
+mowę, taki jak `gpt-4o-mini-tts`, model rozmów głosowych realtime, model
+transkrypcji, model obrazów, model wideo
+albo model embeddingów. Agent na takim modelu zawodzi już przy pierwszej turze.
+Zamiana tekstu na mowę, generowanie obrazów i transkrypcja nie korzystają z
+profili: każda z tych funkcji wskazuje własnego providera i model.
+
+Platforma zna te modele z własnych katalogów (list modeli rozmów realtime, zamiany tekstu na mowę,
+transkrypcji, obrazów, wideo i embeddingów). `GET /providers/model-profiles`
+oznacza każdy profil polami `chat_capable` i `output_modalities`, a
+`GET /providers/{provider}/models` oznacza każdą sugestię polem `chat_capable`.
+Te dwa pola czytają też listing providera, który podaje, co emituje każdy model
+(robią to OpenRouter i router Hugging Face), jeśli proces API już go pobrał. Ten
+listing zmienia tylko to, co oferuje picker. Nigdy nie odrzuca publikacji, bo inny
+proces API mógł go nie pobrać. Konsola aktualizuje też zapisane profile po
+późniejszym nadejściu listingu. Aliasy providerów, takie jak `openai_codex`
+i `google_cloud`, korzystają z katalogów odpowiednich dostawców. Wtedy:
+
+- Panel modelu w Builderze, pickery recenzenta i specjalisty, pola modelu
+  kolejnych kroków i modelu kroków przeglądarki oraz picker modelu do opisywania
+  obrazów w bazie wiedzy nie oferują takiego modelu. Jeśli agent już go wskazuje,
+  Builder nadal go pokazuje, oznaczony jako model, który nie jest modelem czatu.
+  Członkowi, który zarządza połączeniami, Builder wymienia też pozostałe takie
+  modele, oznaczone i bez możliwości wyboru, żeby dało się je usunąć.
+- Picker modelu w czacie i formularz dodawania modelu w Builderze nie podpowiadają
+  takiego modelu i odrzucają wpisany ręcznie.
+- Publikacja odrzuca taki model jako model agenta, recenzenta, specjalisty, model
+  kroków przeglądarki albo model kolejnych kroków i podaje jego nazwę. Odrzuca też
+  profil, którego fallbacki obejmują taki model. To samo sprawdzenie działa przy
+  powrocie do wersji, przy sprawdzaniu szkicu, przy testowym uruchomieniu w
+  Builderze i przy włączaniu capability z czatu. Zapisana wersja na takim modelu
+  nadal się wczytuje, ale nie można jej przywrócić, dopóki jej profil wskazuje
+  model, który nie jest modelem czatu, albo wymienia go jako fallback. Wskaż w tym
+  profilu model czatu albo opublikuj nową wersję.
+- Run pomija taki fallback w swoim łańcuchu, tak jak usunięty, jeśli dodano go do
+  profilu po publikacji.
+- Rozmowa, która wskazuje taki model zamiast modelu agenta, z czatu albo przez
+  API, jest odrzucana, zanim run się zacznie.
+- Model, którego katalogi nie klasyfikują, taki jak model w Ollamie albo model
+  wydany dziś rano, jest dozwolony. Nieznany model nie jest odmową. Profil z
+  własnym endpointem (`base_url`) nigdy nie jest klasyfikowany, niezależnie od id
+  modelu: katalogi opisują własne API providera, a serwer zgodny z OpenAI może
+  serwować model czatu pod dowolną nazwą.
+
+Picker modelu proaktywności stosuje tę samą zasadę. Sprawdzenie stałych katalogów
+działa też przy konfiguracji proaktywności i przy rozwiązywaniu profilu do zwykłego
+żądania tekstowego, w tym przy konfiguracji opisu obrazów i w workerze. Stare
+konfiguracje nadal się wczytują; przed użyciem trzeba zastąpić niezgodny model.
+Wyłączenie funkcji pozostaje możliwe. Nazwy wdrożeń Azure nie są klasyfikowane
+na podstawie identyfikatorów modeli bazowych z katalogu.
+
+### Model, na którym startuje nowy agent { #the-model-a-new-agent-starts-on }
+
+Nie ma domyślnego modelu dla całej organizacji. Spec agenta wskazuje jego model, a
+publikacja odrzuca spec, który żadnego nie wskazuje.
+
+Nowy agent, który nie wskazuje modelu, startuje na modelu organizacji, gdy
+organizacja ma dokładnie jeden model, na którym agent może działać. To model czatowy
+z kluczem albo model self-hosted zapisany do działania bez klucza, który publikacja
+przyjmuje w obecnej postaci, razem z fallbackami. Dotyczy to każdego sposobu
+tworzenia agenta: **Nowy agent** w konsoli, `POST /agents` bez `model_profile_id`,
+szablonu, kopii szkicu bez modelu oraz wypromowanego specjalisty.
+
+Architekt, asystent organizacji, sam wybiera swój model przy publikacji: pierwszy
+model czatu, który publikacja przyjmuje, i nigdy model na [logowaniu do
+ChatGPT](#running-on-a-chatgpt-subscription). Architekt służy całej organizacji, a
+logowanie to subskrypcja jednej osoby: uruchomienia członków, którzy nie widzą go w
+vault, są odrzucane, a uruchomienia tych, którzy je widzą, na przykład właścicieli i
+administratorów organizacji, zużywają tę subskrypcję. Gdy jest tylko logowanie,
+Architekt czeka na inny model.
+
+Logowanie wybrane przez kogoś w szkicu Architekta, albo model z fallbackiem na
+logowanie, zostaje w nim, ale jest publikowane dopiero wtedy, gdy opublikuje je w Builderze ktoś, kto może zmieniać
+ustawienia organizacji. Architekt opublikowany już wcześniej na logowaniu zachowuje
+ten model, dopóki ktoś, kto może zmieniać ustawienia organizacji, nie wybierze
+innego w **Budowa > Model** (Build > Model) i go nie opublikuje.
+
+Model jest zapisywany w szkicu, więc agent publikuje się bez otwierania sekcji
+**Model**, a jego historia pokazuje, na jakim modelu został opublikowany. Spec,
+który wskazuje model, zachowuje go. Szkic liczy się wtedy jako użycie modelu: modelu
+nie da się usunąć, dopóki agent nie przejdzie na inny model albo nie zostanie
+usunięty; archiwizacja nie wystarczy. Aby zmienić tylko klucz lub endpoint modelu,
+edytuj go w miejscu ([Zmiana klucza lub endpointu
+profilu](#changing-a-profiles-key-or-endpoint)).
+
+Szkic zostaje bez modelu, gdy organizacja nie ma żadnego modelu albo ma więcej niż
+jeden. Profile, na których agent nie może działać, nie są liczone: profil bez
+klucza, model text-to-speech i pozostałe modele z sekcji [Profil, na którym agent
+nie może działać](#a-profile-an-agent-cannot-run-on), ani profil, który publikacja by
+odrzuciła, na przykład taki z fallbackiem na taki model. Model na [logowaniu
+ChatGPT](#running-on-a-chatgpt-subscription) nigdy nie jest wybierany za kogoś, bo
+to subskrypcja jednej osoby, ale jest liczony jako model.
+
+Nie jest też wybierany model, którego fallbacki zawierają logowanie wśród
+pierwszych trzech, czyli tych, których próbuje run: gdy model zawiedzie, run
+każdego, kto widzi to logowanie, przeszedłby na tę subskrypcję. Architekt też
+nie wybiera takiego modelu. Autor nadal może świadomie wybrać taki
+model i go opublikować.
+
+Publikacja odrzuca wtedy szkic komunikatem *No model selected - pick one under
+Build > Model before publishing*. Odmowa oznacza też pole (`model_profile_id` w
+`details.fields`), a konsola pokazuje obok niej **Przejdź do sekcji Model**, co
+otwiera zakładkę **Budowa** na karcie **Model**.
+
+### Zmiana klucza lub endpointu profilu { #changing-a-profiles-key-or-endpoint }
+
+Agenci wskazują profil po jego id. Aby przenieść model na inny klucz, inny
+endpoint albo drugie API OpenAI, edytuj profil w miejscu:
+`PATCH /providers/model-profiles/{id}` zmienia `secret_id`, `base_url`, `api`,
+`params` lub `label` i zachowuje id. Każdy agent na tym profilu używa zmiany od
+następnego runu. Nikt nie musi niczego ponownie publikować.
+
+W panelu modelu w Builderze zmień klucz, endpoint lub API używanego modelu.
+Przycisk zmienia się wtedy na **Zaktualizuj model**, a panel mówi, że każdy agent
+na tym modelu przełączy się razem z nim. **Dodaj model** pozostaje przyciskiem dla
+innego providera lub modelu oraz dla modelu, któremu nadajesz własną nazwę. Użyj
+**Nazwij to inaczej**, aby dać tylko temu agentowi osobny model.
+
+Edycja podlega tym samym regułom co tworzenie i wymaga tego samego uprawnienia
+`connections:manage`. Nowy klucz musi być w vaulcie tej organizacji, musi być dla
+ciebie widoczny i musi być zapisany dla providera profilu. Nowy endpoint sprawdza
+zapisany klucz w ten sam sposób, bo to do endpointu klucz jest wysyłany.
+Provider, który wymaga klucza, nie może go stracić. Provider bez klucza
+(keyless) bez klucza zachowuje endpoint. Etykieta musi pozostać unikalna.
+
+Jeśli zmienisz endpoint i nie wyślesz `api`, API, które było tylko domyślnym dla starego
+endpointu, przechodzi na domyślne dla nowego, a API wybrane przez kogoś zostaje.
+Log audytu zapisuje `model_profile.updated` z nazwami zmienionych pól, nie z ich
+wartościami. Nie możesz zmienić providera ani id modelu. Inny model to inny
+profil.
+
+`connections:manage` jest więc uprawnieniem do przeniesienia każdego agenta na
+danym modelu, także agentów, których nie możesz edytować: nowy endpoint dostaje
+ich zapytania od następnego runu. Nadaj je osobom, które zarządzają modelami
+organizacji.
+
+### Profil bez klucza { #a-profile-without-a-key }
+
+Jeśli usuniesz klucz z vaulta, jego profile zostają z `secret_id` ustawionym na
+null, a `GET /providers/model-profiles` oznacza je jako `missing_key: true`.
+Profil zapisany bez klucza celowo to co innego: model hostowany samodzielnie
+albo gateway, który niczego nie uwierzytelnia, na providerze keyless z
+endpointem, na przykład Ollama w twojej sieci albo serwer zgodny z OpenAI.
+Zapisuje to jako `runs_without_key` i dalej działa. Profil przed gatewayem, który
+miał klucz i go stracił, jest oznaczany `missing_key` jak każdy inny. Wtedy:
+
+- Pickery modelu agenta i czatu go nie oferują. Jeśli agent już go wskazuje,
+  Builder pokazuje go z oznaczeniem **brak klucza** i prosi o przypisanie klucza.
+- Publikacja go odrzuca i podaje nazwę modelu. Odrzuca też profil, którego
+  pierwsze trzy fallbacki obejmują profil bez klucza, bo run by go pominął. Run na nim kończy się błędem
+  „no key configured”.
+- Aby go naprawić, otwórz agenta na tym modelu, wybierz klucz w sekcji **Model** i
+  naciśnij **Zaktualizuj model**. Każdy agent na tym modelu znów działa.
+
+### Usuwanie profilu { #deleting-a-profile }
+
+`DELETE /providers/model-profiles/{id}` odrzuca profil, którego używają agenci.
+Odpowiedź to `409 IN_USE`, a `details.agents` wymienia każdego agenta, którego
+widzisz, z id i nazwą. `details.hidden_agents` liczy agentów, których nie widzisz.
+Profil jest w użyciu, gdy szkic agenta, jego serwowana wersja albo wersja
+przypięta przez środowisko wskazuje ten profil gdziekolwiek: jako model agenta,
+recenzenta lub specjalisty albo w capability, na przykład model follow-upów lub
+model kroków przeglądarki.
+
+Zarchiwizowani agenci się liczą, bo przywrócenie z
+archiwum przywraca wersję, którą serwowali. Odmowa oznacza ich jako `archived`:
+zarchiwizowany agent nie może publikować, więc usuń go albo przywróć i przenieś.
+Stare wersje, których nic nie serwuje, się nie liczą. Pozostałych agentów
+najpierw przenieś na inny model. Aby zmienić
+tylko klucz, edytuj profil.
+
 ### Fallbacki { #fallbacks }
+
+Runner używa tylko pierwszych trzech fallbacków; tylko te są sprawdzane przy publikacji.
 
 Profil może wymienić profile zapasowe, wypróbowywane po kolei. Awaria jednego
 providera nie powinna kłaść agentów organizacji, gdy ma ona drugi klucz albo
@@ -62,12 +237,16 @@ Per profil, nadpisywalne per agent przez `model_settings` w specu:
 `temperature`, `top_p`, `max_tokens`, `parallel_tool_calls`, `timeout`. Zobacz
 [referencję speca](reference/spec.md#model-settings).
 
-**Cache'owanie promptu jest domyślnie włączone** dla profili Anthropic i
-OpenRouter. Każde żądanie runu wysyła ponownie instrukcje, schematy narzędzi i całą
-historię, więc każde żądanie oznacza instrukcje, narzędzia i swoją ostatnią
-wiadomość jako punkty cache i czyta poprzednie żądanie z cache. Profil wyłącza
-dowolny z nich, ustawiając go na `false` - `anthropic_cache_messages`,
-`openrouter_cache_instructions` i tak dalej.
+**Cache'owanie promptu jest domyślnie włączone**, przez neutralne wobec dostawcy
+ustawienie `cache` z Pydantic AI. Każde żądanie runu wysyła ponownie instrukcje,
+schematy narzędzi i całą historię, więc stały prefiks i rozmowa są oznaczane jako
+punkty cache, a każde żądanie czyta poprzednie z cache. Działa wszędzie, gdzie
+dostawca przyjmuje jawne cache'owanie - Anthropic, modele Anthropic i Nova w
+Bedrock, modele Anthropic i Gemini w OpenRouter, OpenAI od GPT-5.6 - i niczego
+nie zmienia u dostawcy, który cache'uje sam, jak Google. Profil wyłącza je
+ustawieniem `cache: false` albo cache'uje tylko instrukcje i narzędzia przez
+`cache: {"messages": false}`. Flaga konkretnego dostawcy, którą profil już
+ustawia, np. `anthropic_cache_messages`, nadal ma dla niego pierwszeństwo.
 
 Nakładu rozumowania **nie** ma tutaj. Jest nim
 [capability `thinking`](reference/capabilities.md#thinking), bo „myśl mocniej” to
@@ -77,8 +256,8 @@ zmianie modelu.
 
 ### Responses czy Chat Completions { #responses-or-chat-completions }
 
-OpenAI publikuje dwa API dla tych samych modeli, a profil na `openai` lub `azure`
-zapisuje, do którego z nich idą jego żądania: `responses` albo `chat`. Każdy inny
+OpenAI publikuje dwa API dla tych samych modeli, a profil na `openai`, `azure`
+lub `stav` zapisuje, do którego z nich idą jego żądania: `responses` albo `chat`. Każdy inny
 provider obsługuje jedno API i nic tu nie zapisuje.
 
 Żadne nie jest właściwe wszędzie. Najnowsze modele OpenAI są serwowane wyłącznie
@@ -92,6 +271,7 @@ a formularz startuje od wartości domyślnej:
 | `openai` bez endpointu (własne API OpenAI) | `responses` |
 | `openai` z endpointem | `chat` |
 | `azure` | `chat`, bo Responses API wymaga nowej `api_version`, a sekret może przypinać starszą |
+| `stav` | z modelu: `chat`, gdzie jest obsługiwany, w przeciwnym razie `responses` |
 
 Wartość domyślna to tylko punkt startowy formularza. Regionalny endpoint OpenAI,
 taki jak `https://eu.api.openai.com/v1`, jest endpointem obsługującym Responses,
@@ -105,15 +285,40 @@ Completions domyślnie nie zapisuje niczego, więc model na Responses wysyła
 przez zapisany identyfikator odpowiedzi, więc nic nie potrzebuje zapisanej kopii.
 Profil, który jej chce, ustawia w swoich ustawieniach `openai_store` na `true`.
 
+### Gdzie działają żądania profilu Stav { #where-a-stav-profiles-requests-run }
+
+Profil na `stav` zapisuje region: `eu`, `eea` albo `global`. Stav odpowiada tylko
+z endpointów, które liczą w tym regionie, przełącza się awaryjnie tylko w jego
+obrębie i odrzuca żądanie, którego nie może tam obsłużyć. `global` nie ustawia
+własnego limitu. Region tylko zawęża to, na co pozwala polityka workspace'u w
+Stav.
+
+Ustawia się go w **Agents → add a model → Region**. Formularz startuje od `eu`, a
+pominięty region zapisywany jest jako `eu`, więc profil opuszcza UE tylko wtedy,
+gdy zapisano go z `eea` lub `global`.
+
+Region jest wysyłany przy każdym żądaniu jako nagłówek `X-Stav-Runs-In`, a nie w
+treści, więc `extra_body` w ustawieniach profilu nie może go zastąpić.
+
+Własny katalog Stav używa klucza wybranego w formularzu. Użytkownik musi mieć do niego dostęp; aplikacja nie wybiera ukrytego klucza organizacji dla własnego adresu URL. Cache uwierzytelnionych katalogów jest rozdzielony według poświadczeń. `extra_headers` w ustawieniach żądania nie może nadpisać ograniczenia profilu do EU lub EEA.
+
+### Bramka Otari { #otari-gateway }
+
+Wybierz **Otari** przy dodawaniu modelu, zapisz klucz API Otari w vaulcie i wybierz go w profilu. **Endpoint** jest wymagany: dla hostowanego Otari wpisz `https://api.otari.ai/api/v1`. Dla konta Otari w regionie UE ustaw `https://eu.api.otari.ai/api/v1`; dla własnej bramki podaj jej adres API zakończony `/api/v1`, dostępny z API i workerów.
+
+Po wybraniu endpointu i klucza kliknij **Pobierz modele**. Zmiana któregokolwiek z nich wymaga ponownego potwierdzenia; samo wpisywanie adresu nie wysyła klucza.
+
+Podpowiedzi modeli pochodzą z uwierzytelnionego endpointu `/models` tej bramki i używają wybranego klucza. Własny endpoint wymaga `connections:manage` i dostępu do tego klucza. Cache katalogu jest rozdzielony według endpointu i poświadczeń; awaria własnego katalogu nie zastępuje go katalogiem hostowanym. Pole modelu przyjmuje też selektor, np. `anthropic:claude-sonnet-4-6`, lub alias/politykę routingu skonfigurowaną w Otari.
+
+Integracja używa [`pydantic-ai-otari`](https://github.com/mozilla-ai/otari/tree/main/integrations/pydantic-ai-otari): `OtariProvider` przekazuje profil rodziny modelu do modelu Chat Completions z Pydantic AI, tak jak `OtariModel`. Żądania zawsze używają Chat Completions; formularz nie oferuje Responses ani kontroli regionu Stav. Klucz i endpoint pochodzą jawnie z profilu, bez pobierania zastępczych wartości ze zmiennych `OTARI_*` lub `OPENAI_API_KEY`. Budżety i routing bramki Otari są dodatkową warstwą; AgenticOS nadal stosuje własne budżety i zatwierdzenia.
+
+Bezpośrednie selektory `provider:model` korzystają w budżetach AgenticOS z katalogowej ceny modelu dostawcy; aliasy routingu bez prefiksu i nieznane modele pozostają jawnie częściowo wycenione. Są to szacunki według cen dostawcy: opłaty bramki sprawdzaj w widoku użycia Otari.
+
 ## Providery { #providers }
 
-Dwadzieścia siedem, czyli wszystko, co Pydantic AI dostarcza i na co profil
-czatowy może wskazać.
+Providery czatu obsługiwane przez Pydantic AI oraz Otari przez jego pakiet integracyjny i Stav z routingiem regionalnym.
 
-Nie ma tutaj buildera per provider. Pydantic AI wnioskuje klasę providera i
-opakowanie modelu z id, a tym, co ta platforma wciąż musi wiedzieć, jest to,
-czego wnioskowanie wiedzieć nie może: **jakiego kształtu poświadczenia chce dany
-provider.**
+Standardowe providery korzystają z wnioskowania modeli i providerów w Pydantic AI. Platforma opisuje kształt poświadczeń i w razie potrzeby integruje pakiety providerów.
 
 !!! info "Co znaczy Custom URL"
 
@@ -136,7 +341,8 @@ provider.**
 | OpenAI | `openai` | klucz API albo brak | ✓ |
 | Anthropic | `anthropic` | klucz API | ✓ |
 | Google Gemini | `google` | klucz API | ✓ |
-| OpenRouter | `openrouter` | klucz API | |
+| OpenRouter | `openrouter` | klucz API |  ✓ |
+| Otari | `otari` | klucz API | ✓ |
 | Alibaba Cloud | `alibaba` | klucz API | ✓ |
 | Cerebras | `cerebras` | klucz API | |
 | DeepSeek | `deepseek` | klucz API | |
@@ -149,6 +355,7 @@ provider.**
 | Nebius AI Studio | `nebius` | klucz API | |
 | OVHcloud AI Endpoints | `ovhcloud` | klucz API | |
 | SambaNova | `sambanova` | klucz API | ✓ |
+| Stav.ai | `stav` | klucz API | ✓ |
 | Together AI | `together` | klucz API | |
 | Vercel AI Gateway | `vercel` | klucz API | |
 | Z.AI | `zai` | klucz API | |
@@ -194,8 +401,9 @@ ani nic, czym się uwierzytelnić.
 | Azure OpenAI | `azure` | klucz **+** endpoint **+** przypięta wersja API |
 | AWS Bedrock | `bedrock` | access key id, klucz tajny, region, opcjonalny token sesji |
 | Google Vertex AI | `google_cloud` | JSON konta serwisowego |
+| ChatGPT (Codex subscription) | `openai_codex` | logowanie do ChatGPT, zapisywane przez zalogowanie się, a nie wpisywane |
 
-Te trzy są powodem, dla którego sekret w ogóle ma *rodzaj*. Formularz, który
+Pierwsze trzy są powodem, dla którego sekret w ogóle ma *rodzaj*. Formularz, który
 zbierałby dla Azure jeden nieprzejrzysty token, zbierałby coś, co da się wypełnić
 poprawnie, a i tak zawiedzie przy pierwszym runie. Zobacz
 [rodzaje sekretów](secrets.md#kinds).
@@ -209,6 +417,68 @@ poprawnie, a i tak zawiedzie przy pierwszym runie. Zobacz
 
     `google_cloud` budowany jest jako `google-cloud`. Żadne z nich nie zmienia
     tego, co zapisujesz.
+
+### Uruchamianie na subskrypcji ChatGPT { #running-on-a-chatgpt-subscription }
+
+`openai_codex` uruchamia modele OpenAI na backendzie Codex w ramach subskrypcji
+ChatGPT, a nie przez rozliczany za użycie klucz API. Jest przeznaczony do
+**użytku osobistego**: logowanie to subskrypcja jednej osoby, a każdy run na
+profilu, który go używa, wlicza się do limitów ChatGPT tej osoby.
+
+Nikt nie może wpisać tego poświadczenia. Zamiast tego logujesz się do ChatGPT:
+
+1. W **Vault → add a secret** (albo w **Agents → add a model**, z wybranym
+   **ChatGPT (Codex subscription)**) wybierz **Sign in with ChatGPT**. Logowanie
+   do ChatGPT otwiera się w nowej karcie.
+2. Zatwierdź je. ChatGPT przekieruje wtedy przeglądarkę na
+   `http://localhost:1455/...`, który się nie załaduje. Tak ma być: OpenAI
+   przypina ten adres dla każdego klienta poza własnym.
+3. Skopiuj cały adres z paska adresu i wklej go z powrotem do formularza.
+
+Kod w tym adresie działa raz, tylko dla osoby, która rozpoczęła logowanie,
+i tylko przez 15 minut.
+
+Token dostępu wygasa i jest odświeżany w trakcie działania modeli. Każde
+odświeżenie zużywa refresh token, więc nowa para jest od razu zapieczętowywana
+z powrotem w tym samym sekrecie w vault. Dwa runy odświeżające w tej samej
+chwili wciąż mogą się ścigać. Ten, który przegra, zostaje odrzucony, a
+rozwiązaniem jest **Reconnect** na sekrecie, który loguje ponownie bez zmiany
+jego id.
+
+!!! warning "Czym logowanie do ChatGPT nie jest"
+
+    - **To nie jest `auth.json` z Codex CLI.** Ten plik przechowuje własny grant
+      CLI. Refresh tokeny są jednorazowe, więc to z nich, które odświeżyłoby się
+      pierwsze, wylogowałoby drugie.
+    - **To nie jest poświadczenie organizacji.** Sekret jest domyślnie tworzony jako
+      prywatny, a model na nim działa tylko dla kogoś, kto może zobaczyć to
+      logowanie w vault i sam pyta. Dla każdego innego - odwiedzającego publiczną
+      stronę lub embed, wywołującego z kluczem API - i dla pracy w tle, jak
+      opisywanie obrazów z dokumentu, model jest odrzucany, a fallback na nim
+      pomijany.
+    - **Nie każdy może na nim publikować.** Publikacja, rollback do wersji lub
+      promocja wersji agenta jest odrzucana dla kogoś, kto nie widzi logowania w
+      vault, gdy działa na nim model, do którego docierają runy agenta: model
+      agenta, recenzenta, wbudowanego specjalisty albo włączonej capability,
+      model [przypiętego delegata](reference/capabilities.md#delegation) i tego,
+      do czego ten delegat dociera dalej, lub jeden z pierwszych trzech
+      fallbacków któregokolwiek z nich. Mogą to zrobić osoba, do której należy
+      logowanie, właściciele (owner) i administratorzy (admin) organizacji oraz
+      każdy, komu je udostępniono. Klucz API nie może, niezależnie od tego, co
+      widzi jego wystawca, bo run pod kluczem nigdy nie wydaje logowania.
+      Wersja opublikowana na nim wcześniej działa dalej.
+    - **Nie jest oferowane specjaliście, którego wymyśla model.** Przy
+      [`allow_dynamic`](reference/capabilities.md#delegation) model runu może
+      wybrać model specjalisty spośród profili organizacji. Profil na logowaniu
+      albo taki, którego pierwsze trzy fallbacki do niego docierają, jest na tej
+      liście tylko wtedy, gdy spec agenta nazywa dokładnie ten profil jako jeden
+      z modeli wymienionych wyżej.
+    - **Pokazany wydatek to nie twój rachunek.** Run jest wyceniany według
+      stawek API OpenAI dla tego samego modelu, bo to na tym może opierać się
+      [budżet](governance.md#budgets). Samą subskrypcję OpenAI rozlicza według
+      stałej stawki.
+    - **Niektóre ustawienia są ignorowane.** Backend Codex pomija `max_tokens`,
+      `temperature` i `top_p`.
 
 ### Celowo nieobecne { #deliberately-absent }
 
@@ -247,13 +517,14 @@ wywiedzione są wszystkie pozostałe, jest pierwsza:
 
 Każdy klucz w którymkolwiek z plików katalogu musi nazywać providera, którego ma
 `PROVIDERS`. Tak samo każdy wpis w katalogu obrazów. I każdy provider musi pojawić
-się na tej stronie. Dodanie dwudziestego ósmego to jedna edycja plus to, o co
+się na tej stronie. Dodanie dwudziestego dziewiątego to jedna edycja plus to, o co
 poprosi wtedy ten test.
 
 Dwa przejścia warto znać, bo są to wyszukania, które mogą nie odpowiedzieć niczym:
 
-- Migawka cen zapisuje trzech providerów inaczej — `xai` to `x-ai`, `bedrock` to
-  `aws`, `google_cloud` to `google` — a `_PRICE_PROVIDER_ALIASES` je mostkuje.
+- Migawka cen zapisuje czterech providerów inaczej — `xai` to `x-ai`, `bedrock`
+  to `aws`, `google_cloud` to `google`, a `openai_codex` wyceniany jest jako
+  `openai` — a `_PRICE_PROVIDER_ALIASES` je mostkuje.
 - Katalog obrazów niesie własną parę `provider` i `prefix`, co jest już trzecim
   słownictwem.
 
@@ -331,6 +602,7 @@ nie wycenia, po prostu nie ma okna, co jest nullem opisanym poniżej.
 |---|---|
 | `anthropic` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-haiku-4-5` |
 | `openai` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex` |
+| `openai_codex` | te same cztery co `openai` |
 | `google` | `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` |
 | `deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | `xai` | `grok-4.5`, `grok-4.3` |
@@ -434,17 +706,59 @@ Wiersz runa potomnego, który zapisuje delegacja, nazywa model, który na nią
 odpowiedział, więc dashboard kosztów grupuje delegowaną turę pod modelem, który
 faktycznie zadziałał, a nie pod modelem rodzica.
 
+## Modele realtime { #realtime-models }
+
+[Rozmowa głosowa](voice.md) nie używa profilu modelu. Jej model wybiera się z
+katalogu, który dostarcza to wdrożenie,
+`backend/app/core/catalog/realtime_models.json`, czytanego przez
+`backend/app/services/realtime_models.py` i serwowanego Builderowi pod
+`GET /api/v1/providers/realtime-models`. Klucz wskazuje sekcja Głos agenta jako
+sekret z vaultu, a nie profil. To ten sam kształt, którego używa mowa na tekst:
+wybór z katalogu plus jawny klucz.
+
+Każdy wpis nazywa providera, jego modele i dla każdego modelu:
+
+| Pole | O czym decyduje |
+|---|---|
+| `transport` | `webrtc` (przeglądarka rozmawia z providerem; to wdrożenie trzyma połączenie sideband) albo `relay` (dźwięk przechodzi przez gniazdo tego wdrożenia) |
+| `input_sample_rate`, `output_sample_rate` | Częstotliwości PCM, z którymi przeglądarka nagrywa i odtwarza dźwięk przez relay |
+| `voices`, `default_voice` | Co oferuje sekcja Głos i co oznacza pusty wybór |
+| `supports_thinking` | Czy capability thinking agenta przekłada się na własne ustawienie rozumowania modelu |
+| `context_window` | Gdzie ponowne połączenie przechodzi z odtwarzania tur na podsumowanie starszych |
+| `pricing` | `kind` (`tokens` albo `per_minute`), `worst_case_usd_per_minute` do sprawdzenia przed rozmową i `usd_per_minute` dla modelu rozliczanego za minutę |
+
+Rodzina `gpt-realtime` od OpenAI działa przez WebRTC i jest jedynym providerem
+przetestowanym na żywo. Azure OpenAI, Gemini Live i xAI działają przez relay i
+**nie zostały zweryfikowane na żywo**. GPT-Live nie ma w katalogu: nie przyjmuje
+historii po rozpoczęciu sesji, więc ponowne połączenie nie mogłoby kontynuować
+rozmowy.
+
+**Azure to wdrożenie plus model bazowy.** Nazwę wdrożenia wybiera jego
+właściciel i nic ona nie mówi o tym, co wdrożenie uruchamia, więc sekcja Głos
+przyjmuje nazwę wdrożenia jako wolny tekst, a model z katalogu, który ono
+uruchamia, jako `base_model`. Model bazowy decyduje o głosach i cenie: tokeny
+rozmowy przez Azure wyceniane są jak ten model w OpenAI. Endpoint i wersja API
+pochodzą z sekretu `azure_openai`.
+
+**Ceny.** Modele wyceniane za tokeny są wyceniane per odpowiedź z tej samej
+dołączonej migawki co runy tekstowe. Model rozliczany za minutę (xAI) jest
+obciążany za czas połączenia według `usd_per_minute` z katalogu. Model wyceniany
+za tokeny, którego migawka nie potrafi wycenić, jest odrzucany przy starcie
+rozmowy, zamiast działać z budżetem, którego nie da się egzekwować.
+
 ## Podsumowanie { #recap }
 
 - **Profil** to nazwany model plus nazwany klucz, a agenci wskazują na profile, żeby
   zrotowanie jednego albo drugiego dotykało jednego wiersza.
-- **27 providerów**, a jedyne, co ta platforma wie o każdym z nich, to kształt
+- **28 providerów**, a jedyne, co ta platforma wie o każdym z nich, to kształt
   poświadczenia — konstruowanie to zadanie Pydantic AI.
 - Id modelu jest **wolnym tekstem**, bo żadna lista nie jest autorytatywna.
 - **Długość kontekstu** czytana jest raz i zapisywana, bo migawka cen myli się co do
   niej w kierunku, który psuje run.
 - **Koszt** pochodzi z dołączonej migawki, nieznany model zapisywany jest jako
   niewyceniony, a nie darmowy, a provider bez klucza nie zapisuje wydatku w ogóle.
+- **Modele realtime** do rozmów głosowych to wybór z katalogu plus nazwany klucz,
+  bez profilu; tylko modele OpenAI są zweryfikowane na żywo.
 
 ## Jak go skonfigurować { #setting-one-up }
 
@@ -457,3 +771,11 @@ make platform-bootstrap BOOTSTRAP_API_KEY=sk-...
 ```
 
 robi wszystkie trzy rzeczy dla nowego deploymentu.
+
+Aby użyć regionalnego API OpenRouter, pozostaw dostawcę **OpenRouter** i wpisz `https://eu.openrouter.ai/api/v1` w polu **Endpoint** formularza modelu. Profil zachowuje klucz OpenRouter z sejfu, natywną obsługę modeli i ustawienia pamięci podręcznej. Lista modeli pochodzi z tego endpointu i ma osobną pamięć podręczną; awaria regionalnej listy nie przełącza jej na globalny katalog. W bazach wiedzy ustaw **Endpoint** embeddingów osobno podczas tworzenia kolekcji lub edycji dostawcy embeddingów. Istniejące konfiguracje zachowują globalny endpoint. Routing EU wymaga odpowiedniego planu OpenRouter Business lub Enterprise; [routing regionalny](https://openrouter.ai/docs/guides/get-started/sovereign-ai) i ZDR są osobnymi politykami OpenRouter.
+
+Endpoint regionalny obsługuje mniej modeli embeddingów niż globalny: `eu.openrouter.ai` obsługuje `mistralai/mistral-embed-2312`, `mistralai/codestral-embed-2505` i `google/gemini-embedding-2`, a żadnego z modeli OpenAI. Formularz tworzenia proponuje tylko modele, które endpoint wymienia, a kolekcja, której modelu endpoint nie obsługuje, jest odrzucana zarówno przy tworzeniu, jak i przy przenoszeniu na ten endpoint. Dwóch modeli Mistral nie ma w dołączonym snapshocie cen, więc ich koszt zapisuje się jako wyceniony częściowo.
+
+Przed ustawieniem regionalnych endpointów zaktualizuj wszystkie procesy API i workerów. Starsze wersje ignorują nadpisanie endpointu OpenRouter.
+
+Aby użyć innego endpointu z tym samym dostawcą i modelem, wybierz w Builderze **Dodaj osobny model**. Automatyczna nazwa zawiera endpoint, a istniejący profil pozostaje bez zmian. **Aktualizuj model** edytuje wspólny profil. Pobieranie niestandardowego katalogu ma limit 2 MiB, 2048 modeli i długości pól; proces przechowuje maksymalnie 16 katalogów. Skompresowana lub zbyt duża odpowiedź pozostawia możliwość wpisania identyfikatora modelu bez przechodzenia na globalną listę.

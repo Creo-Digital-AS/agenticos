@@ -21,8 +21,7 @@ edit.
 scope is rejected when saved, so a broken agent never reaches a conversation.
 """
 
-from __future__ import annotations
-
+import json
 import logging
 from collections import Counter
 from enum import StrEnum
@@ -30,16 +29,21 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import yaml
+from jsonschema import exceptions as jsonschema_errors
+from jsonschema import validators
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     field_validator,
     model_serializer,
     model_validator,
 )
 
 from app.agents.capabilities import LOAD_CAPABILITY, CapabilityBinding, ToolOverride
+from app.agents.table_bindings import TableGrant
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +85,42 @@ logger = logging.getLogger(__name__)
 # settings of the engine it no longer runs (`mode`, `headless`) and keeps
 # `use_vision` as `vision`. A spec that bound both keeps the step-by-step one,
 # which was the one that could run.
-SPEC_VERSION = 13
+#
+# 14 withdraws the Tables capability. Table grants remain app-binding data;
+# agent operations use the platform MCP, which must be explicitly connected.
+#
+# 15 versions skills. `skill_bindings` says, for a bound skill that should not
+# read its main line's newest version, which main version to stay on or which
+# fork to follow. Nothing migrates: a spec without the field reads main, latest,
+# which is what every agent did before skills had versions.
+SPEC_VERSION = 15
+
+
+MAX_STARTERS = 4
+"""How many first messages an agent offers - what an empty chat shows at once."""
+
+Starter = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
+"""One first message: a line somebody sends with a click, so short. A blank one
+is dropped by `AgentSpec` rather than refused - the Builder saves as it is typed,
+and a starter cleared to retype it is not an invalid draft."""
+
+StarterIcon = Literal[
+    "message",
+    "compass",
+    "search",
+    "calendar",
+    "mail",
+    "code",
+    "chart",
+    "file",
+    "lightbulb",
+    "check",
+    "globe",
+    "sparkles",
+]
+StarterIcons = Annotated[dict[Starter, StarterIcon], Field(max_length=MAX_STARTERS)]
+StarterTitle = Annotated[str, StringConstraints(strip_whitespace=True, max_length=80)]
+StarterTitles = Annotated[dict[Starter, StarterTitle], Field(max_length=MAX_STARTERS)]
 
 ApprovalMode = Literal["default", "required", "never"]
 
@@ -116,12 +155,41 @@ _THINKING_CAPABILITY = "thinking"
 _SKILLS_CAPABILITY = "skills"
 _LOAD_SKILL = "load_skill"
 _WITHDRAWN_SKILL_TOOLS = frozenset({"list_skills", _LOAD_SKILL})
+_TABLES_CAPABILITY = "virtual_tables"
 _BROWSER = "browser_use"
 _FOLDED_BROWSER = "browser_choice"
 _FOLDED_BROWSER_TOOL = ("browse_page", "browse_web")
 _WITHDRAWN_BROWSER_CONFIG = frozenset(
     {"decision_model", "decision_base_url", "min_confidence", "mode", "headless", "use_vision"}
 )
+
+
+class _WithdrawnTablesConfig(BaseModel):
+    tables: list[TableGrant] = Field(default_factory=list)
+
+
+def _without_table_capability(data: Any, *, keep_grants: bool) -> Any:
+    if not isinstance(data, dict) or not isinstance(data.get("capabilities"), list):
+        return data
+    items = [
+        item.model_dump(mode="json") if isinstance(item, CapabilityBindingSpec) else item
+        for item in data["capabilities"]
+    ]
+    legacy = [
+        item for item in items if isinstance(item, dict) and item.get("id") == _TABLES_CAPABILITY
+    ]
+    if not legacy:
+        return data
+    migrated = {**data, "capabilities": [item for item in items if item not in legacy]}
+    if keep_grants and "table_bindings" not in data:
+        migrated["table_bindings"] = [
+            grant.model_dump(mode="json")
+            for item in legacy
+            if item.get("enabled", True)
+            for grant in _WithdrawnTablesConfig.model_validate(item.get("config", {})).tables
+        ]
+    logger.warning("Removing withdrawn Tables capability; use AgenticOS MCP for table operations")
+    return migrated
 
 
 def _one_browser(data: Any) -> Any:
@@ -195,7 +263,7 @@ class CapabilityBindingSpec(BaseModel):
         default="default",
         description=(
             "The default for every tool this capability contributes; "
-            "'default' follows the capability's side_effecting flag"
+            "'default' leaves tools ungated unless a per-tool override requires approval"
         ),
     )
     tool_approval: dict[str, ApprovalMode] = Field(
@@ -305,8 +373,8 @@ class CapabilityBindingSpec(BaseModel):
                 kept.setdefault(LOAD_CAPABILITY, carried)
             logger.warning(
                 "Migrating `%s` for skills tools this spec version no longer exposes: %s. "
-                "A skill is opened with `load_capability` now, which is what its approval "
-                "moves to.",
+                "A skill is opened with `read_skill`; its approval retains the stable "
+                "`load_capability` key.",
                 key,
                 ", ".join(sorted(withdrawn)),
             )
@@ -378,6 +446,96 @@ class BudgetSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     monthly_usd: float | None = Field(default=None, gt=0)
+
+
+class LoopGuardSpec(BaseModel):
+    """How this agent is stopped when it loops on its tool calls (#2086).
+
+    On for every agent, including one published before it existed: a run that
+    calls the same tool with the same arguments again and again spends its
+    budget and returns nothing. The first loop is a warning to the model; a loop
+    after the warning ends the run as `loop_stopped`, with the reason. Calls
+    with different arguments are never a loop. See `app/agents/loop_guard.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    repeats: int = Field(
+        default=4,
+        ge=2,
+        le=20,
+        description="How many identical calls in a row - same tool, same arguments - are a loop.",
+    )
+    cycles: int = Field(
+        default=3,
+        ge=2,
+        le=10,
+        description="How many times a cycle of two or three different calls may repeat.",
+    )
+
+
+class RunReviewerSpec(BaseModel):
+    """A second model that reads a run while it goes, and steers it (#2106).
+
+    Every `every` model requests it reads the most recent `window` tokens of the
+    run and either lets it be or sends one short correction, which the run's model
+    receives on its next request, attributed to the reviewer by `name`. Its calls
+    are checked against the budget and booked on the run like any other; one
+    refused for budget is skipped, never failing the run. See
+    `app/agents/run_reviewer.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9_-]{0,39}$",
+        description="What its steering is attributed to, in the run history and to the model.",
+    )
+    model_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The model it reviews with - usually a cheaper one than the agent's own. "
+            "Optional in a draft, required to publish."
+        ),
+    )
+    instructions: str = Field(
+        default="",
+        max_length=4000,
+        description=(
+            "What to look for, such as claims without a source, or work nobody asked "
+            "for. Optional in a draft, required to publish."
+        ),
+    )
+    every: int = Field(default=10, ge=1, le=100, description="Review every N model requests.")
+    window: int = Field(
+        default=20_000,
+        ge=1_000,
+        le=200_000,
+        description="How many tokens of the most recent run each review reads.",
+    )
+
+
+class CodeModeSpec(BaseModel):
+    """Whether the agent calls its tools from one sandboxed script (#2107).
+
+    Off by default: it changes how the model works, from one call per turn to a
+    `run_code` script that calls many, which pays off for an agent that works
+    through records or fans out over an MCP server and is noise for one that calls
+    a tool now and then. Approval-controlled calls suspend and resume the script
+    from a server-owned checkpoint without replaying completed effects.
+    See `app/agents/code_mode.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    max_tool_calls: int = Field(
+        default=100,
+        ge=1,
+        le=500,
+        description="How many tool calls one script may make.",
+    )
 
 
 class AlertAudience(StrEnum):
@@ -575,6 +733,125 @@ class ObservabilitySpec(BaseModel):
     )
 
 
+class SpeechToTextSpec(BaseModel):
+    """Which engine turns speech into text for this agent, where it differs.
+
+    An override on the organization's speech-to-text settings, read wherever a
+    recording reaches this agent: dictation in the `/chat` composer, and voice
+    notes sent to a channel bot whose own pair is left to inherit. Unset fields
+    inherit - the pair from the organization, the language from the
+    organization and then the engine's own detection - so an agent can pin
+    `language: pl` and keep the organization's provider.
+
+    **The provider and model are a pair, both or neither.** A provider with no
+    model has nothing to call and a model with no provider has nowhere to go.
+    The rule is enforced at publish rather than here, together with the
+    catalog and language checks: the Builder autosaves a draft on every
+    change, and a validator on this model would refuse the draft between
+    picking a provider and picking its model.
+
+    **The key travels with the pair.** `secret_id` names the vault key the
+    pair is sent with - an `api_key` whose purpose is the provider, which the
+    publisher must be able to view, since binding a key lends it to everyone
+    who can run the agent. A pair without a key is refused at publish; a key
+    without a pair would be a key for nothing. An agent that overrides only the
+    language names neither, and keeps the organization's pair *and* its key.
+    The spec carries the id, never the key, so it stays safe to export.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str | None = Field(
+        default=None,
+        max_length=32,
+        description="A provider from the speech-to-text catalog, e.g. `openai`",
+    )
+    model: str | None = Field(
+        default=None,
+        max_length=255,
+        description="One of that provider's transcription models",
+    )
+    language: str | None = Field(
+        default=None,
+        max_length=8,
+        description=(
+            "An ISO-639-1 code to pin recordings to, e.g. `pl`. Null inherits the "
+            "organization's language, and then the engine detects it."
+        ),
+    )
+    secret_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The vault key the pair is sent with: an API key whose purpose is the "
+            "provider. Set with the pair, and only with it."
+        ),
+    )
+    dictation: bool = Field(
+        default=False,
+        description=(
+            "Send dictation in the `/chat` composer to the provider this block resolves to. "
+            "Off - and on while no pair or key resolves - the browser's own speech "
+            "recognition transcribes it, which costs nothing"
+        ),
+    )
+
+
+class VoiceSpec(BaseModel):
+    """How this agent holds a spoken conversation (#54).
+
+    A pick from the realtime catalog and the vault key it is held with - the
+    same A+ shape as speech to text. For Azure, `deployment` is the deployment
+    name (free text) and `base_model` the catalog model it runs, which decides
+    the voices and the price; the endpoint and API version come from the
+    `azure_openai` secret.
+
+    **Every rule that spans fields is checked at publish, not here**, for the
+    reason `SpeechToTextSpec` gives: the Builder autosaves a draft between
+    picking a provider and picking its model.
+
+    Capabilities a realtime session cannot carry do not block publishing; a
+    call hands them to the agent's text model (`app/agents/hand_off.py`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str | None = Field(
+        default=None, max_length=32, description="A provider from the realtime catalog"
+    )
+    model: str | None = Field(
+        default=None, max_length=255, description="A realtime model of that provider"
+    )
+    deployment: str | None = Field(
+        default=None, max_length=255, description="Azure only: the deployment name calls go to"
+    )
+    base_model: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Azure only: the catalog model the deployment runs",
+    )
+    secret_id: UUID | None = Field(
+        default=None,
+        description="The vault key calls are held with: its purpose is the provider, and its kind the provider's",
+    )
+    voice: str | None = Field(
+        default=None, max_length=64, description="One of the model's voices; null is its default"
+    )
+    language: str | None = Field(
+        default=None,
+        max_length=8,
+        description="An ISO-639-1 code the agent speaks; null follows the caller",
+    )
+    max_call_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        le=3000,
+        description="The longest call, 60-3000 s; null is 600 s (10 minutes)",
+    )
+    voice_note: str | None = Field(
+        default=None, max_length=1000, description="Extra spoken-style guidance appended in calls"
+    )
+
+
 class ModelSettingsSpec(BaseModel):
     """How this agent asks its model to behave.
 
@@ -676,6 +953,35 @@ answer it.
 """
 
 
+def _decided_tools(approvals: dict[str, ApprovalMode]) -> dict[str, ApprovalMode]:
+    """The tools with an approval of their own, sorted by name.
+
+    `default` is the same statement as a missing key, so it is dropped. Sorted
+    because JSONB does not keep the order keys were written in, and the Builder
+    compares the draft it edited with the one it reads back, key order included.
+    """
+    return {tool: mode for tool, mode in sorted(approvals.items()) if mode != "default"}
+
+
+McpToolApproval = Annotated[dict[str, ApprovalMode], AfterValidator(_decided_tools)]
+"""Approval per MCP tool, keyed by the name the server gives the tool (#2884).
+
+What `tool_approval` is on a capability binding, for a server's tools: the
+binding's `approval` decides every tool this does not name. A server that
+marks no tool `readOnlyHint` makes `writes` ask before every one of them, and
+this is how its reads run anyway - and how one write a server marks correctly
+runs without `none` letting every other one run too.
+"""
+
+_TOOL_APPROVAL_DESCRIPTION = (
+    "Per-tool overrides on top of `approval`, keyed by the name the server gives "
+    "the tool - the names `allowed_tools` holds. `required` asks before that tool "
+    "and `never` lets it run, whatever `approval` and the server's read-only hint "
+    "say; in a chat app a tool the server does not mark read-only asks all the "
+    "same. Left out of the stored spec while no tool has one."
+)
+
+
 class OrgMcpServerRef(BaseModel):
     """One of the organization's MCP connections, used by every run of this agent.
 
@@ -712,6 +1018,13 @@ class OrgMcpServerRef(BaseModel):
             "Which of the server's tools wait for a person to approve the call: "
             "`writes` (those the server does not mark read-only), `all`, or `none`"
         ),
+    )
+    # Absent while empty: a stored spec dumps as it was written, so the
+    # fingerprints a routine's review and an eval's baseline hold stay valid.
+    tool_approval: McpToolApproval = Field(
+        default_factory=dict,
+        exclude_if=lambda decided: not decided,
+        description=_TOOL_APPROVAL_DESCRIPTION,
     )
 
 
@@ -780,6 +1093,11 @@ class PersonalMcpServerRef(BaseModel):
             "Which of the server's tools wait for a person to approve the call: "
             "`writes` (those the server does not mark read-only), `all`, or `none`"
         ),
+    )
+    tool_approval: McpToolApproval = Field(
+        default_factory=dict,
+        exclude_if=lambda decided: not decided,
+        description=_TOOL_APPROVAL_DESCRIPTION,
     )
 
 
@@ -860,6 +1178,70 @@ class SubagentRef(BaseModel):
             "specialist is the case: the parent can carry on while it works."
         ),
     )
+
+
+class ExternalAgentRef(BaseModel):
+    """A remote agent this agent may delegate to over A2A (#2092).
+
+    Another vendor's agent, registered in the organization by the URL of its agent
+    card. Nothing about it is versioned or pinned here: its owner changes it on
+    their side, and the reference names the registration, so each run reads that
+    registration's current endpoint and credential - a refreshed card that moves
+    the endpoint applies from the next run, and a removed registration refuses
+    the run. Called by the same delegation tool as a published delegate, under
+    the same budget, and addressed by its registration's handle.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_agent_id: UUID = Field(description="The registered remote agent.")
+    preferred_mode: DelegationMode | None = Field(
+        default=None,
+        description="Override the capability's mode for this delegate alone.",
+    )
+
+
+class SkillBindingSpec(BaseModel):
+    """Which line of a bound skill an agent reads, when not main's newest version.
+
+    A skill in `skill_ids` with no entry here reads main, latest - every binding
+    written before skills had versions does. An entry stays on one main version, by
+    its number, or follows a fork's newest version. Checked at publish: the version
+    must be on that skill's main line, and the fork one of that skill's that is not
+    archived.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: UUID
+    version: int | None = Field(
+        default=None, ge=1, description="A main version to stay on, by its number"
+    )
+    fork_id: UUID | None = Field(default=None, description="A fork whose newest version to read")
+
+    @model_validator(mode="after")
+    def _one_line(self) -> SkillBindingSpec:
+        if (self.version is None) == (self.fork_id is None):
+            raise ValueError(
+                "A skill binding names either a main version or a fork - one of the two"
+            )
+        return self
+
+
+def _bindings_still_bound(
+    bindings: list[SkillBindingSpec], skill_ids: list[UUID]
+) -> list[SkillBindingSpec]:
+    """The bindings of skills that are still bound; a skill bound twice is refused.
+
+    Unticking a skill leaves its binding behind in a draft the Builder saves as it
+    is, so a binding for a skill no longer bound is dropped rather than refused.
+    """
+    counts = Counter(binding.skill_id for binding in bindings)
+    duplicates = sorted(str(skill_id) for skill_id, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"Skill bound to more than one version: {', '.join(duplicates)}")
+    bound = set(skill_ids)
+    return [binding for binding in bindings if binding.skill_id in bound]
 
 
 class SpecialistSpec(BaseModel):
@@ -962,6 +1344,10 @@ class SpecialistSpec(BaseModel):
             "wrote, and a private one bound here would be read by every run."
         ),
     )
+    skill_bindings: list[SkillBindingSpec] = Field(
+        default_factory=list,
+        description="Which version of each skill it reads, where not main's newest",
+    )
     context_ids: list[UUID] = Field(
         default_factory=list,
         description=(
@@ -988,6 +1374,11 @@ class SpecialistSpec(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _withdraw_tables_capability(cls, data: Any) -> Any:
+        return _without_table_capability(data, keep_grants=False)
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_version_12_browsers(cls, data: Any) -> Any:
         """A specialist that bound both browsers keeps one - see :func:`_one_browser`."""
         return _one_browser(data)
@@ -1009,6 +1400,12 @@ class SpecialistSpec(BaseModel):
         if duplicates:
             raise ValueError(f"Capability bound more than once: {', '.join(duplicates)}")
         return capabilities
+
+    @model_validator(mode="after")
+    def _bindings_of_bound_skills(self) -> SpecialistSpec:
+        """A skill bound twice is refused; a binding of one no longer bound is dropped."""
+        self.skill_bindings = _bindings_still_bound(self.skill_bindings, self.skill_ids)
+        return self
 
     def bindings(self) -> list[CapabilityBinding]:
         """The specialist's capabilities as the registry consumes them."""
@@ -1060,6 +1457,7 @@ class SpecialistSpec(BaseModel):
             capabilities=self.capabilities,
             collection_ids=self.collection_ids,
             skill_ids=self.skill_ids,
+            skill_bindings=self.skill_bindings,
             context_ids=self.context_ids,
             max_steps=self.max_steps,
             observability=trace_content_block(trace_content),
@@ -1091,6 +1489,36 @@ def _with_thinking_binding(data: Any, effort: Any) -> Any:
         }
     )
     return {**data, "capabilities": capabilities}
+
+
+MAX_OUTPUT_SCHEMA_BYTES = 16_384
+"""How large an answer's JSON Schema may be, as compact JSON. It is sent to the
+model with every request, so a bigger one costs every run and rarely helps."""
+
+
+def checked_output_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`schema` if it can shape an answer: a valid JSON Schema for one object.
+
+    An object because the model hands a structured answer back as the arguments
+    of one call, and arguments are an object; a bare string or list has a field
+    of its own to go in. Shared by `AgentSpec.output_schema` and the `agent.run`
+    step's override, so both refuse the same things with the same words.
+
+    Raises:
+        ValueError: Not a JSON Schema, not an object's, or over
+            `MAX_OUTPUT_SCHEMA_BYTES`.
+    """
+    if schema is None:
+        return None
+    try:
+        validators.validator_for(schema).check_schema(schema)
+    except jsonschema_errors.SchemaError as exc:
+        raise ValueError(f"This is not a valid JSON Schema: {exc.message}") from exc
+    if schema.get("type") != "object":
+        raise ValueError('A structured answer is an object: the schema needs "type": "object"')
+    if len(json.dumps(schema, separators=(",", ":"))) > MAX_OUTPUT_SCHEMA_BYTES:
+        raise ValueError(f"The schema is over {MAX_OUTPUT_SCHEMA_BYTES} bytes as JSON")
+    return schema
 
 
 class PromptVariableSpec(BaseModel):
@@ -1145,6 +1573,32 @@ class AgentSpec(BaseModel):
         default_factory=list,
         description="Custom variables the instructions may use as `{{name}}`",
     )
+    starters: list[Starter] = Field(
+        default_factory=list,
+        max_length=MAX_STARTERS,
+        description=(
+            "First messages the chat offers whoever opens this agent with nothing "
+            "said yet - one click sends one. Up to four; none shows the chat's own"
+        ),
+    )
+    starter_titles: StarterTitles = Field(
+        default_factory=dict,
+        description=(
+            "Optional short titles for chat opener cards, keyed by the exact trimmed "
+            "starter text. With a title, the starter message is shown underneath as the "
+            "description and is still the exact message sent on click. Without a title, "
+            "existing starters keep their message-only presentation."
+        ),
+    )
+    starter_icons: StarterIcons = Field(
+        default_factory=dict,
+        description=(
+            "Optional chat opener icons, keyed by the exact trimmed text in starters. "
+            "Missing entries use the message icon. Entries without a matching starter "
+            "are not displayed. Keys follow starter text limits; at most four entries. "
+            "Stored and published with the spec, including YAML export."
+        ),
+    )
     time_zone: str = Field(
         default="system",
         max_length=64,
@@ -1165,6 +1619,12 @@ class AgentSpec(BaseModel):
     )
 
     capabilities: list[CapabilityBindingSpec] = Field(default_factory=list)
+    table_bindings: list[TableGrant] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Table operations this agent may bind in published apps; not agent tools",
+    )
+
     collection_ids: list[UUID] = Field(
         default_factory=list,
         description="Knowledge collections this agent may search",
@@ -1176,6 +1636,13 @@ class AgentSpec(BaseModel):
             "publisher's own access: binding a skill hands its body and its files "
             "to every run of the agent, so it can only lend what the publisher "
             "could read themselves."
+        ),
+    )
+    skill_bindings: list[SkillBindingSpec] = Field(
+        default_factory=list,
+        description=(
+            "Which version of each bound skill this agent reads, where not its main "
+            "line's newest: a main version it stays on, or a fork it follows"
         ),
     )
     context_ids: list[UUID] = Field(
@@ -1214,6 +1681,15 @@ class AgentSpec(BaseModel):
         ),
     )
 
+    external_agents: list[ExternalAgentRef] = Field(
+        default_factory=list,
+        description=(
+            "Remote agents this agent may delegate to over A2A, each a registration "
+            "in this organization. Top level for the reason `subagents` is: a "
+            "reference to another row, walked at publish."
+        ),
+    )
+
     max_steps: int | None = Field(
         default=None,
         ge=1,
@@ -1221,6 +1697,42 @@ class AgentSpec(BaseModel):
         description=(
             "How many model requests one run may make before it is stopped. "
             "Null uses the platform default; a tool loop is what this catches."
+        ),
+    )
+
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The JSON Schema of the agent's answer, when it answers with data "
+            "rather than prose. The model is asked for an object of this shape "
+            "and its answer is validated against it before the run ends, on every "
+            "surface: the API returns it as `structured`, the chat shows it, and "
+            "an `agent.run` step hands it on. Null is a free-text answer."
+        ),
+    )
+
+    loop_guard: LoopGuardSpec = Field(
+        default_factory=LoopGuardSpec,
+        description=(
+            "When a run that loops on its tool calls is warned and then stopped. "
+            "Defaulted, so every agent has it; switch it off or change the thresholds here."
+        ),
+    )
+
+    reviewers: list[RunReviewerSpec] = Field(
+        default_factory=list,
+        max_length=5,
+        description=(
+            "Second models that review the run while it goes and steer it - one per "
+            "concern. Empty, so an agent without one makes no extra model calls."
+        ),
+    )
+
+    code_mode: CodeModeSpec = Field(
+        default_factory=CodeModeSpec,
+        description=(
+            "Whether the agent calls its tools from one sandboxed `run_code` script. "
+            "Defaulted off, so a spec written before it existed is unchanged."
         ),
     )
 
@@ -1241,6 +1753,21 @@ class AgentSpec(BaseModel):
         description="Send this agent's traces to a Logfire project of its own",
     )
 
+    speech_to_text: SpeechToTextSpec | None = Field(
+        default=None,
+        description=(
+            "Transcribe this agent's dictation and channel voice notes on another "
+            "engine or language than the organization's. Null inherits all of it"
+        ),
+    )
+
+    voice: VoiceSpec | None = Field(
+        default=None,
+        description="Hold voice conversations: the realtime model, its key, the voice and limits. Null: no calls",
+    )
+
+    _output_schema = field_validator("output_schema")(checked_output_schema)
+
     @property
     def trace_content(self) -> TraceContent:
         """How much of a run this agent's spans may carry.
@@ -1252,6 +1779,16 @@ class AgentSpec(BaseModel):
         specialist with content on.
         """
         return self.observability.content if self.observability else "full"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _withdraw_tables_capability(cls, data: Any) -> Any:
+        """Keep old app grants while removing the withdrawn table tools.
+
+        Never add MCP authority automatically: old agents without platform MCP
+        must have it connected explicitly. Existing MCP policies are unchanged.
+        """
+        return _without_table_capability(data, keep_grants=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -1368,6 +1905,12 @@ class AgentSpec(BaseModel):
         }
         return _with_thinking_binding(migrated, settings.get(_THINKING_SETTING))
 
+    @field_validator("starters")
+    @classmethod
+    def _blank_starters_are_none(cls, starters: list[str]) -> list[str]:
+        """A starter cleared to nothing is dropped, not refused - see `Starter`."""
+        return [starter for starter in starters if starter]
+
     @field_validator("capabilities")
     @classmethod
     def _ids_are_unique(
@@ -1379,6 +1922,60 @@ class AgentSpec(BaseModel):
         if duplicates:
             raise ValueError(f"Capability bound more than once: {', '.join(duplicates)}")
         return capabilities
+
+    @field_validator("speech_to_text")
+    @classmethod
+    def _an_empty_override_is_no_override(
+        cls, value: SpeechToTextSpec | None
+    ) -> SpeechToTextSpec | None:
+        """A block with every field at its default says nothing, so it is stored as absent.
+
+        The Builder's Voice card writes every field explicitly and sends the
+        block back with nulls when somebody returns everything to "inherit".
+        Collapsing it here keeps one spelling for "inherits everything", so a
+        draft that went there and back compares equal to the version it started
+        from rather than showing as an unpublished change.
+        """
+        if value is None or value.model_dump(exclude_defaults=True):
+            return value
+        return None
+
+    @field_validator("voice")
+    @classmethod
+    def _an_empty_voice_block_is_no_voice(cls, value: VoiceSpec | None) -> VoiceSpec | None:
+        """One spelling for "no voice section", for the reason `speech_to_text` has one."""
+        if value is None or value.model_dump(exclude_none=True):
+            return value
+        return None
+
+    @field_validator("table_bindings")
+    @classmethod
+    def _one_binding_per_table(cls, value: list[TableGrant]) -> list[TableGrant]:
+        if len({grant.table_id for grant in value}) != len(value):
+            raise ValueError("Bind each table once")
+        return value
+
+    @field_validator("external_agents")
+    @classmethod
+    def _one_reference_per_remote_agent(
+        cls, external_agents: list[ExternalAgentRef]
+    ) -> list[ExternalAgentRef]:
+        """The same remote agent cannot be delegated to twice - it has one handle."""
+        counts = Counter(ref.external_agent_id for ref in external_agents)
+        duplicates = sorted(str(ref_id) for ref_id, count in counts.items() if count > 1)
+        if duplicates:
+            raise ValueError(f"Remote agent named more than once: {', '.join(duplicates)}")
+        return external_agents
+
+    @field_validator("reviewers")
+    @classmethod
+    def _one_reviewer_per_name(cls, reviewers: list[RunReviewerSpec]) -> list[RunReviewerSpec]:
+        """Steering is attributed by name, so two reviewers cannot share one."""
+        counts = Counter(reviewer.name for reviewer in reviewers)
+        duplicates = sorted(name for name, count in counts.items() if count > 1)
+        if duplicates:
+            raise ValueError(f"Reviewer named more than once: {', '.join(duplicates)}")
+        return reviewers
 
     @field_validator("subagents")
     @classmethod
@@ -1397,6 +1994,12 @@ class AgentSpec(BaseModel):
         if duplicates:
             raise ValueError(f"Agent delegated to more than once: {', '.join(duplicates)}")
         return subagents
+
+    @model_validator(mode="after")
+    def _bindings_of_bound_skills(self) -> AgentSpec:
+        """A skill bound twice is refused; a binding of one no longer bound is dropped."""
+        self.skill_bindings = _bindings_still_bound(self.skill_bindings, self.skill_ids)
+        return self
 
     def bindings(self) -> list[CapabilityBinding]:
         """The spec's capabilities as the registry consumes them."""

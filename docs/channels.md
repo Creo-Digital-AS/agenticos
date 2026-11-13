@@ -107,6 +107,9 @@ In the Builder, open the agent → **Availability** → *Website widget*. You ch
   pricing page"*, *"Answer in German"*. It never replaces the agent's own
   instructions, which belong to the published version.
 - **Rate limit** — messages per visitor per minute.
+- **Voice input** — `off`, `browser` or `server`, which decides where a
+  visitor's voice goes. See
+  [dictation on a widget or a hosted page](#dictation-on-a-widget-or-a-hosted-page).
 
 !!! danger "An empty origin list allows nothing, and that is on purpose"
 
@@ -250,6 +253,13 @@ sequenceDiagram
 That is the whole inbound vocabulary, plus `context` (what the page says about the
 visitor) and `file_ids` (what they attached, on a page that takes files).
 
+Every `message` frame counts toward a per-connection limit, including empty or
+malformed messages. Valid messages also spend the existing visitor allowance;
+malformed input cannot exhaust a bucket shared with other anonymous visitors.
+A frame may name at most three file IDs; oversized lists are refused before
+parsing. Invalid IDs in a bounded list are dropped and recorded as one aggregate
+log entry without their values.
+
 **It deliberately does not include the three fields the dashboard's own frame
 carries:** the agent, the model profile and the environment.
 
@@ -363,19 +373,21 @@ the differences were decisions.
 They are now. Every "no" below has a reason, and a reason is either "this would
 be wrong here" or "this is not built yet" — never silence.
 
-| | `/chat` (dashboard) | Raw WebSocket | The public API |
-|---|---|---|---|
-| Streaming | yes | yes, filtered by what the operator shows | **no** — the POST is the non-streaming path; an SSE variant is a separate question |
-| Attachments | yes | yes (`file_ids`) **on a hosted page** — the upload endpoint resolves the key through `find_page`, so a widget or a raw socket has no route that would produce an id | yes (`file_ids`), and they route the way they do everywhere else |
-| Conversation continuity | yes | yes (`continuity_key`), on a hosted page with an anonymous visitor | yes (`conversation_id`) |
-| `environment_id` | yes | **no, deliberately** — see below | yes |
-| Model override | yes | **no, deliberately**: a public surface must not let its visitor choose what they are spending | **no**: the request carries no `model_profile_id`. Which version runs is still the caller's through `environment_id`, and an environment can pin one that was never the default |
-| `ask_user` | yes | **no, not yet** — see below | **no, correctly**: nobody is waiting on an HTTP request to answer a question |
-| Compaction notice | yes | yes | n/a — nothing is streaming to tell |
-| Delegation frames | yes | **no, deliberately**: attaching a sink makes the library open a *streamed* request per child, so a delegate whose provider cannot stream breaks the moment somebody watches it |
-| Approvals: parks the run | yes | yes | yes |
-| Approvals: a path to the decision | yes (`/runs`) | one sentence, deliberately: a stranger holding a link is not shown a URL into somebody's console | yes — the result carries `parked`, naming what is waiting and the approval to post to |
-| `@`-mentions | yes (`mentions`) | **no, not yet**: a widget has no menu to pick from, and a visitor's mention would need the same as-them check | **no, not yet**: a script names what to use in the message itself |
+The last column is Teams (#1985), standing for the chat platforms beside them.
+
+| | `/chat` (dashboard) | Raw WebSocket | The public API | Teams |
+|---|---|---|---|---|
+| Streaming | yes | yes, filtered by what the operator shows | **no** — the POST is the non-streaming path; an SSE variant is a separate question | a message rewritten as the answer arrives |
+| Attachments | yes | yes (`file_ids`) **on a hosted page** — the upload endpoint resolves the key through `find_page`, so a widget or a raw socket has no route that would produce an id | yes (`file_ids`), and they route the way they do everywhere else | yes, from a personal chat; a file goes back through Teams' consent card |
+| Conversation continuity | yes | yes (`continuity_key`), on a hosted page with an anonymous visitor | yes (`conversation_id`) | a chat, or a channel thread |
+| `environment_id` | yes | **no, deliberately** — see below | yes | **no** — the binding decides, as on every chat platform |
+| Model override | yes | **no, deliberately**: a public surface must not let its visitor choose what they are spending | **no**: the request carries no `model_profile_id`. Which version runs is still the caller's through `environment_id`, and an environment can pin one that was never the default | **no**, as on every chat platform |
+| `ask_user` | yes | **no, not yet** — see below | **no, correctly**: nobody is waiting on an HTTP request to answer a question | yes, as an Adaptive Card |
+| Compaction notice | yes | yes | n/a — nothing is streaming to tell | no — the answer arrives when it is done |
+| Delegation frames | yes | **no, deliberately**: attaching a sink makes the library open a *streamed* request per child, so a delegate whose provider cannot stream breaks the moment somebody watches it | n/a — nothing is streaming to draw them in | **no** — the answer arrives when it is done, its steps undrawn |
+| Approvals: parks the run | yes | yes | yes | yes |
+| Approvals: a path to the decision | yes (`/runs`) | one sentence, deliberately: a stranger holding a link is not shown a URL into somebody's console | yes — the result carries `parked`, naming what is waiting and the approval to post to | yes — an Adaptive Card, decided by the member who presses it |
+| `@`-mentions | yes (`mentions`) | **no, not yet**: a widget has no menu to pick from, and a visitor's mention would need the same as-them check | **no, not yet**: a script names what to use in the message itself | **no**, as on every chat platform |
 
 ### `environment_id` on the socket, and why it is the publisher's
 
@@ -512,18 +524,18 @@ will not load.
 
 ### What it offers
 
-Two switches, and both are the operator's rather than the page's — a capability
-a page turned on for itself would be one nobody could turn off.
+Three choices, and every one is the operator's rather than the page's — a
+capability a page turned on for itself would be one nobody could turn off.
 
 - **A button to start a fresh thread**, on by default. It mints a new continuity
   key, so the old thread is not deleted: it stops being the one that browser
   resumes.
-- **A microphone in the composer**, off by default. It dictates into the box
-  using the *visitor's own browser*, so no audio reaches this deployment and
-  nothing is transcribed here — but a browser that offers speech recognition
-  hands the audio to its vendor, which is the half worth reading before turning
-  it on for the public. A browser without one is shown no microphone rather than
-  a button that does nothing.
+- **Voice input**, off by default: `browser` dictates with the visitor's own
+  browser, and `server` with the organization's speech-to-text provider. Which
+  one decides where a visitor's voice goes - see
+  [dictation on a widget or a hosted page](#dictation-on-a-widget-or-a-hosted-page).
+  A page published before the choice existed keeps what it had: its old
+  *microphone in the composer* became `browser`, and no microphone became `off`.
 - **A way to attach a file**, off by default. See below: it is the only thing on
   this surface that lets a stranger *store* something.
 
@@ -621,6 +633,26 @@ named *Linear · Create issue* in the dashboard and by a humanized name here,
 because the mapping is the organization's list of connections and reading it needs a
 session.
 
+**A generated image, clip of speech or video plays on the page too** (#2309).
+The console reads one through `/api/v1/generated/{filename}`, which needs a
+session, and a visitor has none. So as the socket sends a generated image,
+speech or video result naming a file that this run's own tools stored, it adds
+a `token`, and the page reads the file through
+`/api/embed/<key>/generated/<file>?token=…`, which streams it and passes byte
+ranges through for a player.
+
+The token is an HMAC, under the deployment's `SECRET_KEY`, of the page's key, that
+one file and an expiry six hours away. It opens nothing else: not another
+conversation's file, not another organization's, not any other name. A bad,
+expired or missing token gets the same 404 as a missing file. It is added as the
+frame leaves, so the transcript stores none, and the card is that step's result —
+it shows only where *What each step returned* is on. A socket integration finds
+the same address in the payload's `url`, as an API path.
+
+A result that names a file this run did not store gets no token, whatever the
+tool that returned it is called. One link may be fetched 120 times a minute, room
+for a player's byte ranges, and a link past that is answered 429.
+
 **A widget and a raw socket carry no switches and get these defaults**, read off
 `PageConfig` rather than repeated — a second copy of "off by default" is a copy
 that can disagree with the one somebody reads in the Builder. What `widget.js`
@@ -696,6 +728,237 @@ that follows one has published it.
 
 ---
 
+## Dictation on a widget or a hosted page
+
+A widget and a hosted page each have a `dictation` setting: `off`, `browser` or
+`server`. **`browser`** uses the visitor's own browser to recognise speech, so
+the audio goes to the browser's vendor - Google for Chrome, Apple for Safari -
+and nothing reaches this deployment. A browser without a recogniser, Firefox
+among them, is shown no microphone. **`server`** records in the page and sends
+the audio here, where the organization's speech-to-text provider transcribes it:
+the agent's override and its key if it has one, the organization's default and
+its key otherwise - the same resolution as
+[dictation in chat](ml-services.md#dictation-in-chat).
+
+The organization's engine for `/chat` has no say over either surface. An
+organization that keeps its members on the browser's recogniser can still give
+a public page `server` dictation, and the other way round.
+
+**Switching `server` on is refused** while no provider with a usable key
+resolves for the agent, and the embed form shows the choice disabled with the
+reason. Only the switch is checked, so a page whose key was deleted later can
+still be renamed. While nothing resolves, its public config says `off` and
+visitors see no microphone rather than one that fails. The agent must also be
+published: a recording for an agent nobody runs is refused before anything is
+paid for.
+
+**The hosted page** uses the console composer's own recorder: the recording bar
+with its waveform and timer, the hints under the box, and the voice glow. Its
+copy follows the visitor's language and names no administrator or setting.
+**The widget** has a plain-JavaScript recorder of its own: a microphone button,
+a level bar in the accent colour, a timer, Stop and Cancel, and one line under
+the box when something goes wrong. Its copy is English, like the rest of the
+widget, and it has no glow. On both, the text lands in the box and is never
+sent by itself; Enter stops a recording and Escape discards it.
+
+Both record in the format the server advertises in the public config's
+`dictation_format`: 16 kHz mono 16-bit PCM WAV, built from the microphone's
+samples, unless the deployment
+[accepts compressed audio](deployment.md#what-a-dictation-may-be-uploaded-as)
+and the provider takes what `MediaRecorder` makes - WebM, Ogg or MP4. Mistral,
+which documents neither WebM nor Opus, gets WAV either way.
+
+### The endpoint
+
+`POST /api/v1/embed/{public_key}/dictation` takes a multipart `file` and an
+optional `duration`, and answers `{"text": ...}`. Admission follows the surface.
+A **widget** is admitted as its socket is: the `Origin` has to be on its
+allow-list, and in `jwt` mode the visitor's token travels as a form field named
+`token` - never in the URL, which lands in access logs, and never in a header,
+which would need a CORS preflight that somebody else's site does not pass. A
+**hosted page** sends its continuity key in `X-Visitor-Key`, a custom header
+that only this deployment's own origin may send. A **raw socket** has nothing
+to dictate into and is answered 404.
+
+Refusals carry the same `details.reason` as the
+[composer's route](ml-services.md#dictation-in-chat): 400 `empty`,
+`unsupported_type` or `too_large`, 503 `not_configured`, `provider_error` or
+`timeout`. Unlike the composer's route, a compressed recording whose length
+cannot be read is refused here, as `unsupported_type`
+([below](#what-it-costs-and-what-bounds-it)).
+Anything about the embed itself - unknown, paused, not on `server`,
+an origin it does not allow - is 404. Once a widget is admitted, every answer
+carries its origin in `Access-Control-Allow-Origin`, refusals included;
+otherwise a browser hides the reason and a recording that was too long would
+read to the visitor as being offline.
+
+### What it costs, and what bounds it
+
+A transcription is **outside every model budget**: the embed's budget counts
+the runs, not the dictations. What bounds a stranger's spend is two rate limits
+and the organization's longest dictation. Each address may send
+`RATE_LIMIT_EMBED_DICTATION_PER_MINUTE` recordings a minute (6 by default), and
+so may each visitor of a `jwt` widget, by the token's subject. Each page or
+widget accepts `RATE_LIMIT_EMBED_DICTATION_PER_LINK_PER_MINUTE` a minute (10 by
+default) from everybody together, however many addresses a script rotates
+through.
+
+The address is counted before the link is looked up, so a refused request
+spends its own address's minute. The link's ten are spent only once the visitor
+is admitted, so a caller with no valid `jwt` token cannot use them up for the
+visitors who have one. On a hosted page or a public widget everybody is
+admitted, so anybody holding the link can still spend its minute; that costs
+the organization nothing beyond those ten recordings.
+
+While the deployment's Redis cannot be reached, these limits **do not open**:
+each worker counts the same allowances in its own memory until Redis is back.
+The ceiling is then the allowance times the number of API workers, rather than
+no ceiling at all. A voice call's start limits behave the same way.
+
+**The length is measured before the provider is called**, and a recording
+longer than `dictation_max_seconds` is refused as `too_large`, with three
+seconds' grace for the browser's once-a-second stop. By default a recording is
+raw PCM and its length is its size - the server counts the samples, so the
+figure cannot be anything but true. Where the deployment accepts compressed
+audio, a WebM, Ogg or MP4 recording's length is read from its own header - the
+last Ogg page, the WebM block timestamps, the MP4 movie or fragment headers -
+and one whose length cannot be read is refused as `unsupported_type`. A byte
+cap alone would not do: Opus at a low bitrate fits hours into the bytes of a
+five-minute recording.
+
+!!! danger "The worst case for a leaked or public link"
+
+    The link's limit times the longest dictation: 10 recordings a minute of up
+    to 300 seconds each is 50 minutes of audio every minute. At about
+    $0.006 a minute, which is `whisper-1`'s list price, that is near $0.30 a
+    minute, $18 an hour, or $430 a day, billed to the organization's provider
+    account. Lower `dictation_max_seconds` or the link limit, pause the embed, or
+    keep it on `browser` where that is too much.
+
+    With the default, raw PCM, that is exact: no file can hold more seconds
+    than its size says. Where the deployment accepts compressed audio it holds
+    only for a file whose header states its true length, as every browser's
+    does. A file built by hand to understate its length is bounded by the byte
+    cap instead - `dictation_max_seconds` plus three seconds at 32,000 bytes a
+    second - which low-bitrate audio can fill with up to about forty times as
+    many seconds. That is the risk the administrator accepts when turning it on.
+
+Every attempt that reaches the provider leaves a usage record with the surface
+(`hosted` or `widget`) and the agent, and **no person**: a visitor is not a
+member, and the call is not the publisher's. The audio is never stored.
+
+**The microphone prompt is the customer's site's.** The browser asks on behalf
+of the page the widget runs on, so a site that sends
+`Permissions-Policy: microphone=()`, an `<iframe>` without `allow="microphone"`,
+or plain HTTP blocks it. The widget says so under its box rather than failing
+silently.
+
+## Voice calls on a widget or a hosted page
+
+A widget and a hosted page each have a **Voice calls** switch
+(`voice_conversation`), off by default and separate from dictation. With it on,
+visitors can hold a [voice call](voice.md) with the agent: the same call a member
+makes from `/chat`, with the same limits, run under the publisher's context and
+recorded with the `embed` surface.
+
+**Switching it on is refused** while the agent has no published Voice section a
+call can be held with. Only the switch is
+checked, so an embed whose agent loses its voice later can still be edited.
+While a call would not start, the public config says `voice_conversation: false`
+and visitors are offered no call; when it would, the config also says which
+transport the call uses (`voice_transport`).
+
+**On a hosted page**, a call button appears in the composer, and the call
+runs in the console's own [call bar](console.md#voice-calls): the state, the time
+against the call's limit, the waveform, mute, push to talk and End, with captions
+inside the message being spoken. It is cut to what a visitor needs: no approval
+controls, no count of the organization's minutes, and endings and refusals in a
+visitor's words. Each saved turn joins the page's thread, so the visitor can
+carry on typing; **New chat** hangs the call up.
+
+**In the widget**, the call is a separate script, `voice.js`, fetched the first
+time a visitor opens the panel and only when the public config offers calls, so
+the script every visitor downloads stays small. It is served at
+`/api/v1/embed/{public_key}/voice.js` on the widget script's counter, and its URL
+carries a hash of the script, so a cached copy never pairs with a newer widget.
+
+The widget's input row becomes a cut-down call bar - a level meter in the widget's
+accent, the state, the time against the limit, Mute and End - with no
+push-to-talk and no approval card. Captions land in the message list and give
+way to the saved turns, and a refusal, a limit or a busy line shows as one line
+under the bar. End, closing the panel, leaving the page or a connection that
+fails to set up ends the call and releases the microphone, the audio and the
+connection; a connection that drops mid-call is retried once, within eight
+seconds. The widget's call copy is English, like the rest of it.
+
+**A widget call is a conversation of its own.** The widget's typed chat keeps
+no visitor key - each page load starts afresh - so the turns of a call are saved
+to a conversation of the call's, and a message typed after it starts another.
+On the screen they share one list; to the agent, what was said in the call is
+not context for what is typed next. The hosted page has a visitor key, and there
+the call and the typing are one thread.
+
+**A visitor cannot approve anything.** Tools that need an approval are left out
+of a visitor's call entirely, so the agent never reaches for one; it says
+plainly when it cannot do something there. A call also gets the embed's
+placement note and the page's declared variables, exactly as a typed message
+does, so the agent behaves the same in both.
+
+**A visitor is told only what a visitor needs.** The switches under [what the
+visitor sees of the work](#what-the-visitor-sees-of-the-work) filter a call's
+frames as they filter typed replies: without *What the agent is doing* a visitor
+is not told a tool ran, and without *What each step returned* a step does not
+carry what a tool was called with or what came back. The limit a visitor sees is
+the call's own, and a refusal about the operator's setup, price or budget says
+only that calls are not available right now. Pausing the embed, switching its calls off or pointing it
+at another agent ends the calls on it within a heartbeat. The frames are in [the
+API page](api.md#voice-calls).
+
+### The call socket
+
+`/api/v1/embed/{public_key}/voice/ws` speaks the same frames as the console's
+`/api/v1/ws/voice` ([API](api.md#voice-calls)). Admission follows the surface,
+as the chat socket's does. A **widget** is admitted by its allow-list and, in
+`jwt` mode, the customer's token in `?token=`. A **hosted page** is admitted by
+this deployment's own origin and the continuity key in `?visitor=`, and the call
+lands in the thread that key holds, so a dropped call can resume there. A **raw
+socket** has nothing to call from.
+
+The socket closes with `4029` past a rate limit and with `4003` for anything
+about the embed - unknown, paused, a raw socket, calls switched off, an origin
+it does not allow - without saying which. Everything after admission is the
+call's own refusal, sent as an `ended` frame with its reason.
+
+### What a call costs a public link
+
+Calls are inside the budgets: each is a run, metered on the agent's and the
+organization's budgets, and at most the agent's longest call. On top of that, a
+public link has limits of its own:
+
+| Limit | Default | Counted |
+|---|---|---|
+| `RATE_LIMIT_EMBED_VOICE_PER_MINUTE` | 3 | Call starts per address, and per visitor's token subject on a `jwt` widget |
+| `RATE_LIMIT_EMBED_VOICE_PER_LINK_PER_MINUTE` | 6 | Call starts on one page or widget, from everybody together |
+| `VOICE_MAX_CALLS_PER_EMBED` | 3 | Calls open on one embed at once; the next caller is refused as `line_busy` |
+
+The embed's own `rate_limit_per_minute` counts **messages**, not call starts, so
+it does not bound calls. The address is counted before the key is looked up, so
+a refused start spends its address's minute; the link's starts are spent only
+once the visitor is admitted. The `jwt` subject limit is a start rate, not a cap
+on open calls; the open calls are bounded with everybody's by the embed's.
+
+!!! danger "The worst case for a leaked link"
+
+    Three calls open at once, each at most the agent's longest call - 10
+    minutes by default, 50 at most - spends at most three call-minutes a minute,
+    on the organization's provider account. The agent's and the organization's
+    budgets are what end it: each call is checked against what is left before it
+    starts, and ended when the budget runs out, members' runs included. Give the
+    agent a budget of its own, pause the embed, or switch its calls off if that
+    is too much.
+
+---
+
 ## The public API
 
 No frontend at all, and no browser. One request, one answer:
@@ -719,7 +982,147 @@ in the approvals queue, and it continues when somebody decides.
 Limited per caller rather than per address — an office behind one NAT is not one
 caller — at `RATE_LIMIT_RUN_PER_MINUTE`.
 
+## Other agents, over A2A { #a2a }
+
+Another system's agent can send an agent tasks over the
+[Agent2Agent protocol](https://a2a-protocol.org). It is off for every agent until
+somebody who may publish it turns on **Agent2Agent (A2A)** on its **Availability**
+tab, which shows the two addresses to give the other side:
+
+- the **agent card**, at `/api/v1/a2a/{agent_id}/.well-known/agent-card.json`,
+  readable without a key — the agent's name, description, version, its one skill
+  and how to authenticate;
+- the **endpoint** for tasks, `POST /api/v1/a2a/{agent_id}`, JSON-RPC 2.0.
+
+The caller sends an organization API key, or an OAuth access token this deployment
+issued, as a bearer token, and it must be allowed to run the agent: one that is not
+is refused with HTTP `403`, or `404` when it may not see the agent at all, as A2A
+leaves authorization to the transport. `message/send` takes text parts only, and
+refuses a message with a data or file part with `-32005`, rather than run it on
+its text alone.
+
+`message/send` runs the published version as an ordinary run stamped `a2a`, so the budget, the
+approval gate, the audit trail and Activity all apply. The task's id is the run's
+id and its `contextId` is the conversation the run files under, so sending it again
+continues that conversation. A run that stops for an approval answers
+`input-required`; it is decided in the console, and `tasks/get` reads where it
+stands since.
+
+A task is read by whoever sent it, or by somebody who may read every
+run (`runs:view`); to anyone else its id is unknown. A message naming a `taskId`
+is refused rather than run beside the waiting task: send without it, in the same
+`contextId`, to ask something new.
+
+Answered synchronously: `message/stream`, push notifications and `tasks/cancel` are
+refused by name, and the card says streaming is not offered. An agent that is not
+served — off, unpublished, archived or another organization's — answers `404`, card
+and endpoint alike.
+
 ---
+
+## SMS { #sms }
+
+A text to a Twilio number reaches an agent the way a direct message does on any other
+platform: through the same router, linked identity, access policy and budgets (#2082).
+Only the transport is new.
+
+**Add the bot** under Channels → SMS (Twilio). Its token is the Twilio account SID, the
+auth token and the number it sends from, joined with colons:
+`ACxxxxxxxx:auth_token:+15551234567`. An SMS bot is webhook-only; after saving, paste
+the webhook URL shown for it into the number's incoming-message setting in the Twilio
+console. The address Twilio signs is built from `PUBLIC_BASE_URL`, so that setting has to be the address Twilio actually calls: behind a proxy that rewrites it, every text is refused.
+
+**Who is texting.** A request is accepted only with a valid Twilio signature - HMAC-SHA1
+of the address Twilio called and its fields, under the auth token - and anything else is
+a 403 before a word of it is read. A valid signature proves the request came from Twilio.
+It does not prove who the sender is: the number is a claim, so a person acts with their
+own permissions only once they have linked that number to their account like any other
+channel identity. The link lapses after `SMS_LINK_MAX_AGE_DAYS` (90 by default, `0` keeps it for ever), because a number can be reassigned or taken over; the person links again.
+
+**What comes back.** The webhook answers at once and the agent replies through Twilio's
+API when it has an answer. A reply is plain text - markdown markers are removed and a link
+is written out in full - and is cut at about 1,500 characters with a note that the rest is
+in AgenticOS, so one question costs a few segments, not a dozen. SMS cannot stream, edit a
+message or press a button, so an approval or a question arrives as numbered lines and is
+answered by texting the number. A lone number that names a choice
+of a prompt sent to that number is the answer. Prompts waiting at once never share numbers - the second carries on where the first stopped, so 3 and 4 follow 1 and 2 - and deciding one leaves the other open. A prompt stays open for a day, so a multi-select takes several numbers; any other text is an ordinary message. Numbers run to 999 and then start again at 1, skipping any still open and any handed out in the last week, so a reply to an old text cannot decide a newer request unless it is more than a week late.
+
+Incoming MMS files, including messages with no text, use the ordinary channel
+attachment pipeline after identity and access checks. Up to ten files are read;
+their media URLs must name the bot's Twilio account and the incoming message.
+Authenticated downloads reject redirects, stop at `CHAT_MAX_UPLOAD_SIZE_MB` and
+have a 30-second total deadline. The shared upload path validates type and
+content and stores each accepted file in the conversation. A number sent with a
+file is a message, not a numbered approval.
+
+Outbound replies can send explicit workspace files and charts as MMS, including
+media-only replies. The ordinary channel file tool still controls which file is
+sent and where. The adapter refuses unsupported types, empty files, more than ten
+attachments, or over 5 MB of text and media combined. JPEG/PNG/GIF images can use
+that total; other accepted types, including PDF and CSV, are capped at 500 KB.
+Carrier and destination support still applies; provider refusal remains an error.
+
+MMS needs a publicly reachable HTTPS `PUBLIC_BASE_URL` and shared Redis. Only
+copies explicitly handed to the outbound adapter are staged, each under a random
+fetch credential for 15 minutes. Twilio's GET and HEAD requests use that credential;
+the original authenticated file store is never exposed. Its outgoing queue is
+limited to ten minutes, shorter than the copy's lifetime. These links are not
+written to chat or returned to the model. The API accepting a message means it
+was submitted, not that the carrier delivered it. See [Twilio's accepted media
+and limits](https://www.twilio.com/docs/messaging/guides/accepted-mime-types).
+
+## Email { #email }
+
+A mail to an address reaches an agent the way a direct message does on any other platform:
+through the same router, linked identity, access policy and budgets (#2082). Only the transport
+is new.
+
+**Add the bot** under Channels → Email. Its token is the address the bot answers from, for example
+`agent@mail.example.com`, and replies leave through the deployment's own e-mail provider, so
+`EMAIL_PROVIDER` must be one that delivers - a bot on the `log` provider refuses to answer rather than
+pretend it did. An e-mail bot is webhook-only and needs a secret: use Generate, then copy it into the relay.
+
+**The relay.** Mail is not polled. Whatever receives it - a Cloudflare Email Worker, a Postmark or
+Mailgun inbound route, a script on a mail server - POSTs one JSON document per message to the
+URL shown for the bot after saving:
+
+```json
+{"from": "ada@acme.com", "subject": "Invoice", "text": "Please send it",
+ "sender_authentication": {"dmarc": "pass", "from": "ada@acme.com"},
+ "message_id": "<1@acme>", "in_reply_to": "<0@acme>", "references": ["<0@acme>"],
+ "attachments": [{"filename": "a.pdf", "content_type": "application/pdf",
+                  "content_base64": "..."}]}
+```
+
+and signs it with two headers: `X-AgenticOS-Timestamp` (unix seconds) and `X-AgenticOS-Signature`,
+`sha256=` plus the hex HMAC-SHA256 of `timestamp.body` under the secret. A request with no valid
+signature, or one more than five minutes off, is a 403 before a word of it is read, and a bot with no
+secret refuses everything. The body is capped at 25 MB, up to ten attachments are read, and a message id
+seen before is ignored, so a relay's retry runs the agent once.
+
+Inbound attachments share a live cache limit of 64 MiB of encoded data and 1,024 files per bot. Each delivery is stored atomically; exhaustion returns 429 with Retry-After before any file or thread is cached. Reading or discarding files releases their capacity immediately. Unread files expire after 15 minutes, and the next cache operation reclaims their capacity. Processing failures also discard unused attachments. Replies and prompts retain the thread of their own inbound message even when another message arrives meanwhile.
+
+The webhook commits a `process-email-delivery` job before returning 200. The job retains the validated message body, including attachments, so an API restart or an expired cache cannot erase accepted work. Message-ID deduplication commits with that job; a rolled-back request remains retriable. Workers recheck the bot and organization, serialize deliveries to the same correspondent, and record failed attempts in Admin → Background jobs. Finished job payloads follow `BACKGROUND_JOB_RETENTION_DAYS`; deployment administrators can inspect them.
+
+SMS and iMessage webhooks commit a `process-channel-delivery` job before acknowledging a valid message. The payload and Message-ID receipt share one database transaction, so rollback permits retry and API restarts preserve accepted work. Workers recheck the bot’s organization, platform and active state, then resolve numbered replies against current prompts; expired SMS identities cannot approve old requests. Delivery payloads follow the background-job retention policy and are visible to deployment administrators.
+
+**Who is writing.** The signature proves the relay sent the request, not who wrote the mail: an
+address is a claim. A person acts with their own permissions only once they have linked that address to
+their account like any other channel identity. Every message must include
+`sender_authentication: {"dmarc": "pass", "from": "ada@acme.com"}`, attesting to an aligned DMARC
+pass for that exact header From address. The relay must derive this verdict from its trusted receiving
+mail server, never from authentication headers supplied by the sender. Missing, failed or mismatched
+attestations are ignored before account lookup, attachment storage or approval processing. Existing
+relays must add this field before upgrading; an HMAC signature alone no longer admits a message.
+
+**What comes back.** The webhook answers at once and the agent replies by mail as the answer to the
+sender's last message: `Re:` and the same subject, with `In-Reply-To` and `References` set so a mail client
+files it in the thread, and any files the agent produced attached. History quoted under a reply is
+cut before the agent reads it. An approval or a question arrives as numbered lines and is answered by
+replying with just the number; the numbers behave as on SMS, and a prompt stays open for a day.
+
+Inbound `references` must be a list of strings without CR or LF; retained entries must not exceed 998 characters. Malformed references are ignored before processing the message. Folded subjects are unfolded before reply headers are created.
+
 
 ## Slack
 
@@ -868,12 +1271,13 @@ question, or turn streaming off, which falls back to a reply edited once a
 second. Streaming also falls back on its own where Slack refuses to start one.
 
 A Markdown table in the answer is drawn as a Slack table, and a chart arrives as
-an image, as it always did. If the finished answer is not what was streamed - an
+an image, as it always did. So does a [visual](reference/capabilities.md#visuals), drawn by
+the deployment's browser when `VISUAL_RENDER_CDP_URL` names one. If the finished answer is not what was streamed - an
 output guardrail redacted something - the streamed message is rewritten whole.
 
 ### Scopes and events
 
-Thirteen bot token scopes, each earning its place by a call the adapter makes:
+Fourteen bot token scopes, each earning its place by a call the adapter makes:
 
 | Scope | What needs it |
 |---|---|
@@ -885,6 +1289,7 @@ Thirteen bot token scopes, each earning its place by a call the adapter makes:
 | `channels:read`, `groups:read` | `conversations.info`, `.list` and `.members` — the channel lookups an agent may call |
 | `im:read`, `mpim:read` | `conversations.members` on a direct message. Easy to leave out and quiet when you do: the membership check fails closed, so a conversation nobody could be confirmed in **disappears from the conversation list** rather than erroring |
 | `users:read` | `users.info`, which turns member ids into people |
+| `users:read.email` | `users.lookupByEmail`, which finds a new member to [welcome](#a-welcome-for-a-new-member). A Slack app installed before it was added keeps working without it, and welcomes nobody until it is reinstalled from the new manifest |
 
 Five bot events: `app_mention`, `message.channels`, `message.groups`,
 `message.im`, `message.mpim`.
@@ -1118,10 +1523,186 @@ Mattermost, *Integrations → Slash Commands → Add Slash Command*: trigger wor
 then shows a token; paste it into the bot's **Slash command token**. Every
 request carries it, and a bot without one refuses them all.
 
+## Microsoft Teams
+
+A Teams bot is an **Azure Bot** resource, created **single-tenant** in your Entra
+tenant — Microsoft stopped creating multi-tenant bot resources in July 2025 — and
+reached over the Bot Connector's own protocol rather than an SDK (#1985).
+
+1. In the Azure portal, create an **Azure Bot**, type *Single Tenant*. Under
+   *Configuration*, copy the **Microsoft App ID** and the tenant, and under the
+   app registration's *Certificates & secrets*, create a **client secret**.
+2. Register it: **Channels → Add channel**, platform `teams`, with the secret as
+   the token and the app and tenant IDs beside it.
+3. Paste the **messaging endpoint** the bot's settings show into the Azure Bot's
+   configuration, and turn on its **Microsoft Teams** channel.
+4. **Download the app package** from the bot's settings — the manifest and its two
+   icons, built for this bot — and upload it to your tenant's Teams app catalog.
+   Add the app to a personal chat, a group chat or a team.
+
+**Every activity is verified before it is read.** The Connector signs each one
+with a JWT: its signature is checked against the keys the issuer publishes, the
+issuer must be the Bot Framework or your own tenant, the audience must be this
+bot's app ID, it must not have expired, and the service it names must be the
+activity's own. A request that fails any of these is a 401. The bot is
+single-tenant, so an activity from another tenant is refused as well, and the
+bot's token is only ever sent to a Bot Connector address.
+
+| Where | When it answers |
+|---|---|
+| A personal chat | Every message. The chat is one conversation |
+| A group chat | When it is @mentioned |
+| A channel | When it is @mentioned, in the thread it was asked in — each thread its own conversation |
+
+**Who is speaking** is the member's Entra object ID, which is the same in every
+chat of the tenant. Where this deployment signs people in with Entra in the same
+tenant, an unlinked Teams account is linked to the member who signs in with the
+address Teams' roster gives it, with no link to click; anywhere else the link
+flow applies as on every platform, and `require_link` decides as it does there.
+
+**Approvals and questions are Adaptive Cards.** A press is decided as the member
+who pressed it, and the card is replaced with what was chosen. A file the agent
+sends reaches a personal chat through Teams' consent card; in a group chat or a
+channel the answer names it instead, because Teams does not take a file from a
+bot there. A chart is drawn into the message.
+
+**A trigger can post its answer into Teams.** Each conversation the bot is in is
+remembered, and a trigger can name one of the organization's team channels or
+group chats: every fire's answer is then posted there as a new message, under the
+trigger's name. A personal chat is never offered — it is somebody's own.
+
+## Discord
+
+A Discord bot is an application in the Discord Developer Portal, spoken to over
+Discord's own Gateway and REST API with no library between (#2079). Messages,
+slash commands and button presses all arrive over the bot's one Gateway
+connection, so **a deployment needs no public address for Discord**, and a
+Discord bot has no webhook mode.
+
+1. In the [Developer Portal](https://discord.com/developers/applications), create
+   an application. Under **Bot**, reset and copy the **token**, and switch on
+   **Message Content Intent**. Without it Discord refuses the connection, and the
+   bot's row says which switch to turn on. Under **Installation**, set **Install
+   Link** to *None*, then switch off **Public Bot** under **Bot**. Anyone can add
+   a public bot to their own server, so the bot
+   refuses to connect while it is public. One made public while connected stops
+   the next time it is added to a server.
+2. Under **OAuth2 → URL Generator**, tick the `bot` and `applications.commands`
+   scopes and the permissions **View Channels**, **Send Messages**, **Send
+   Messages in Threads**, **Create Public Threads**, **Read Message History** and
+   **Attach Files**, then open the URL to add the bot to a server. Without
+   **Attach Files** a file or chart the agent sends is refused, and the text
+   posted with it is lost too.
+3. Register it: **Channels → Add channel**, platform `discord`, with the token.
+
+**Approve servers explicitly.** In the add/edit bot form, enter **Approved Discord server IDs**. Enable Discord's Developer Mode, copy each server's ID and separate IDs with commas or spaces. For the CLI, pass `--discord-guild 123456789012345678` to `channel-add-bot`; repeat the option for several servers. An empty list permits DMs only. Installations announced by READY are not approvals, and removal/re-add cannot bypass the list.
+
+`/ask` acknowledges privately before channel lookups or database admission. Only an admitted sender's question is posted publicly; refusals and account-link invitations stay private. Link invitations consume the sender's rate limit. Server approval chooses locations; `jwt_linked` or `require_link` still controls whether an organization account is required. Console access to a stored transcript requires both **View Channel** and **Read Message History**, plus membership for a private thread.
+
+The bot registers its commands when it connects: `/ask`, `/agents`, `/new`,
+`/link`, `/unlink` and `/help`, and **Ask the agent** under *Apps* on any message.
+Discord can take a while to show new commands in every server.
+
+| Where | When it answers |
+|---|---|
+| A direct message | Every message. The direct message is one conversation, and `/new` starts it over |
+| A server channel | When it is @mentioned or a message replies to it. The answer opens a thread on the question, and the thread is the conversation |
+| A thread the bot opened | Every message in it |
+| `/ask` | Anywhere: the question, up to 2,000 characters, is posted and the answer is threaded under it |
+| *Apps → Ask the agent* | On any message: the agent is asked about that message, in a thread on it |
+
+`/agents`, `/link` and the other commands answer privately, to whoever ran them.
+`/new` starts a thread's conversation over; in a server channel, where every
+mention already starts a new one, it says so instead.
+In a channel where the bot may not open threads, the answer is a reply to the
+question instead, and replying to the answer continues that conversation.
+
+**The answer is written in place.** The bot posts one message and edits it as the
+answer streams, running past 2,000 characters into further messages. Only text the
+guardrails have already screened is written, so a redacted secret is never shown,
+even for a moment. Nothing the bot posts can ping anybody: `@everyone` and role
+mentions in an answer stay plain text.
+
+**Approvals and questions are buttons**, or selects for a question with more than
+25 options. Thumbs go under every answer, and a thumbs-down opens a Discord form
+asking what was wrong. Discord has no reaction on the question.
+
+**Who is speaking** is the Discord user ID, linked to a member with `/link` as on
+every platform. A conversation from a server channel is shown in the console to
+those who can still see that channel, by the server's roles and the channel's
+permission overwrites, which is what being in a channel means on Discord. A
+private thread is invite-only, so it is a room of its own: a conversation from
+it is shown only to those still in that thread, and the notes the agent keeps
+there are not shared with the channel.
+
+**A thread the bot is brought into partway is read first.** The last messages in
+it, with who wrote them and when, and the files people posted there, reach the
+agent before it answers, as on Slack and Mattermost; files the bot posted itself
+are left out. It needs **Read Message History**, and `read_channel_history` reads
+a thread or a channel the same way where the binding allows it.
+
+### A server's roles as groups { #discord-roles }
+
+An administrator can map a role in one of the bot's servers to a group of the
+organization (#2569). Open **Channels**, then the **Discord roles** action on the bot's
+row. The server and the role are chosen from what the bot itself reads from Discord,
+so `@everyone` and the roles Discord manages for a bot are not offered. Mapping one
+takes `members:manage`, and the routes take `channels:manage` as well.
+
+A linked member who holds the role is placed in the group before each message they
+send to any of the organization's Discord bots, and again by the `sync-discord-roles` job
+every 15 minutes. They leave the group when the role is taken away, and the job is
+what notices that for somebody who has stopped writing to the bot. The bot asks
+Discord for one member's roles at a time, so it needs no privileged intent, and a
+new mapping places people at their next message rather than at once.
+
+Those checks before a message count against the sender's `rate_limit_rpm` on an
+allowance of their own, commands such as `/help` included. A sender past it is
+asked to slow down, and Discord is not asked again until the minute is over.
+
+A mapping can also name an organization role. A linked holder who is not a member
+yet then joins the organization with that role, which spares inviting everybody in
+a community server one at a time. Naming a role takes `roles:manage`, and only a
+role the caller's own strictly outranks. The order between several matching roles,
+and the rules about what the sync never touches, are the ones the
+[directory sync](directory.md#what-the-sync-never-touches) follows:
+
+- Only a linked account counts. A Discord user who never ran `/link` is placed
+  nowhere, whatever roles they hold.
+- A role matches only in the server the mapping names, read by the bot that holds
+  the mapping. The same role ID in another bot's server matches nothing.
+- The sync changes only rows it made, marked **Discord** on the members page and
+  in a group. A group membership added by hand stays when the role is taken away,
+  a membership an administrator made keeps its role, and an owner is never
+  demoted or removed. Somebody the sync admitted to the organization leaves all of
+  its groups when the sync removes them, as somebody removed by hand does.
+- If a server cannot be read, its mapped groups remain. Its possible organization roles can retain only authority the person already held; an unread `viewer` mapping cannot preserve `admin`. Confirmed grants still apply.
+
+Each reconciliation shares a ten-second network deadline. REST lookups share the bot’s `rate_limit_rpm` per linked user across all their accounts, separately from the per-user message-check allowance. Removing a mapped group also requires `channels:manage`.
+
+Server discovery permits one concurrent request per organization, shares a ten-second deadline across pagination and role reads, and reads roles for at most eight servers concurrently. Discovery stops above the supported 2,500-server limit; an incomplete response fails explicitly.
+
+Unlinking the Discord account takes back what its roles gave, unless another linked
+Discord account still earns it. Deleting a mapping takes back what it gave at each
+person's next message or the next job run. Deleting the bot or a mapped group, or
+giving the bot a new token, takes back the same, so it needs what deleting each of
+those mappings needs. Every change is in the audit log as
+`discord.member_added`, `discord.role_changed`, `discord.member_removed`,
+`discord.group_joined` or `discord.group_left`, and making or deleting a mapping
+as `discord.mapping_created` or `discord.mapping_deleted`.
+
+Not yet: one connection serves a bot in at most 2,500 servers, past which Discord
+asks for sharding and the bot stops with that reason. The channel members, details
+and search tools are not offered on Discord.
+
+Directory access takes priority when both sources grant membership. At sign-in,
+a directory grant takes over the Discord-managed row; when it ends, a remaining
+Discord grant takes over without revoking credentials. See [membership handover](directory.md#what-the-sync-never-touches).
+
 ## A bot that cannot start stops, rather than retrying
 
-Telegram polling, Slack Socket Mode and the Mattermost event stream all run
-under one supervisor that reconnects a dropped session. A missing or rejected
+Telegram polling, Slack Socket Mode, the Mattermost event stream and the Discord
+Gateway all run under one supervisor that reconnects a dropped session. A missing or rejected
 configuration value is not a dropped session, and the supervisor treats it
 differently: it records the bot as down with the reason, logs once and stops.
 Nothing it does would change the row — an operator has to add the Slack `xapp-`
@@ -1140,13 +1721,13 @@ A dropped session is different: that one is retried, waiting five seconds and
 doubling to a minute, so a server down for an hour is not hammered 720 times by
 every bot on it. A session that ended cleanly starts the ladder over. The line
 logged before each wait names the delay it is about to wait, and the same loop
-serves all three platforms, so the policy cannot drift between them.
+serves every one of these platforms, so the policy cannot drift between them.
 
 ---
 
 ## Approvals and questions as buttons
 
-A run started in Slack, Telegram or Mattermost can stop for a person: a gated
+A run started in Slack, Telegram, Mattermost, Teams or Discord can stop for a person: a gated
 tool call waits for a decision, or the agent asks an `ask_user` question. The
 chat is offered the choices where it is — a message per approval with
 **Approve** and **Reject**, a message per question with its options and **Skip**.
@@ -1179,7 +1760,8 @@ line and folds the others behind **Details**.
 
 A press acts as the person who pressed it, through their linked account: deciding
 needs `approvals:decide`, and only the person a question was put to can answer
-it. An unlinked presser is told to send `/link`. A run waits for an answer for
+it. A decision made somewhere else acts as the person who made it, an app admin
+included ([below](#decided-outside-the-chat)). An unlinked presser is told to send `/link`. A run waits for an answer for
 `QUESTION_EXPIRY_HOURS` and for a decision for `APPROVAL_EXPIRY_HOURS`, as
 anywhere else. Slack signs its presses; Mattermost signs nothing, so each button
 carries this deployment's own signature over its value and a press without it is
@@ -1197,7 +1779,86 @@ changes to *Needs you* and says what for, and names who has the browser while a
 person holds it. The link opens the console, so taking over needs a console account:
 the person the run is for, or someone who may edit the agent.
 
+### Decided outside the chat { #decided-outside-the-chat }
+
+A request put in a chat can also be decided in the console's **Approvals**, in
+the web chat or over the HTTP API. When a person does that and it settles the
+last thing the run waits for, the server continues the run as them and posts the
+answer in the chat it was asked in. The console says so instead of resuming the
+run itself, so the run is continued once. A question works the same way when the
+person it was put to answers it in the console.
+
+A decision made with an API key is recorded and does not continue the run: a run
+a person started is continued only by a person. Over the API, `continues_in_chat`
+tells a client which case it is in (see [Running an agent](api.md#running-an-agent)).
+
+Three endings that happen outside the chat each post one fixed message there, so
+nobody is left waiting on buttons that no longer do anything. The chat's open
+buttons are settled at the same time.
+
+| Ending | The chat is told |
+|---|---|
+| The run expires, after `APPROVAL_EXPIRY_HOURS` for a decision or `QUESTION_EXPIRY_HOURS` for a question | "This request expired without a decision." |
+| Someone presses **Stop** in the console | "This run was stopped from the console." |
+| A run was decided and nothing continued it within about an hour | "A decision was recorded, but the run could not continue." |
+
+The last one is a safety net. It stays quiet in two cases: when the decision is
+more than 7 days old, and when the chat was already told that the run could not
+continue. A chat hears at most one notice each time a run parks.
+
+A button pressed after the request was answered elsewhere replies "That has
+already been answered." and changes nothing.
+
+A continuation can be refused: for example when the chat started over since the
+question, its access policy now refuses the person who asked, the person who
+decided can no longer decide approvals, the bot was removed from the agent, or
+the agent can no longer be built. The chat is told once: "That was decided
+outside the chat, but the run could not continue." **Resume** on the run's page
+still works, within about an hour of the last decision. It runs as before, without the room check, and posts the
+answer only in a chat that still admits the asker. A membership check the
+platform cannot answer does not stop a continuation.
+
+A run parked before 1.29.0 has no chat recorded, so the console continues it as
+it always did. If nobody resumes it within about an hour of its last decision,
+the safety net ends it, without a message.
+
+The worker sends required replies and ending notices from durable jobs saved in
+the same transaction as the result or ending. A restart or transient send failure
+retries delivery up to three times without repeating the agent or approved tools.
+The bot, chat session and access policy are checked again before sending. A
+revoked destination receives nothing. Platforms without send idempotency can
+show a duplicate if a send succeeded but its acknowledgement was lost; this is
+at-least-once delivery, not a promise of exactly-once messages. Exhausted attempts
+are visible in **Admin → Background jobs** (`deliver-channel-handback`).
+
+### Next steps as buttons { #next-steps-as-buttons }
+
+An answer from an agent with [Follow-ups](reference/capabilities.md#follow-ups)
+that offered next steps is followed by a message of buttons, one per step -
+*Make it a table*, *Do this every Monday*. A press is the presser saying that
+step: it is answered as their next message in that chat, held to everything a
+typed one is - the link, the bot's access policy, the rate limit - and the
+pressed message then reads the step instead of its buttons.
+
+Each message is pressed once; anyone in the room may press it, and the answer is theirs. An
+answer that stopped for an approval or a question offers those instead. The setup
+cards an agent can propose are drawn in the console only.
+
+## A welcome for a new member { #a-welcome-for-a-new-member }
+
+When somebody joins the organization - by an invitation, by joining the default
+organization, or through directory sync - each active Slack, Mattermost and
+Teams bot of the organization looks them up by their email address and, where it
+finds them, sends one direct message in their console's language: who it is,
+that they can ask it right there, and the console's address. It is a background
+job tried once; a bot that cannot find them, or a platform that refuses, costs
+nothing else. Slack needs the
+`users:read.email` scope for the lookup; Teams finds them in the tenant's roster.
+
 ## Reactions and ratings
+
+New bots acknowledge questions with 👀 (`eyes`) on Slack, Telegram and Mattermost, or the native `emphasize` tapback on iMessage. Answer ratings start disabled. Both settings can be changed; existing bots keep their saved choices. Mattermost approval and question cards retain the request and show the final decision after their buttons are removed. Repeated clicks on an answered request are acknowledged silently. A mention added by an edit can start a turn only for a post observed and ignored within the last 15 minutes; already handled or older posts never start a new turn from an edit, and unavailable shared receipts disable edit admission.
+
 
 Two touches every chat platform here shares, both switched in the bot's
 settings:
@@ -1213,10 +1874,17 @@ settings:
   asks **what was wrong?** in a Slack modal or a Mattermost dialog; the reply is
   kept as the rating's comment. Telegram takes the thumbs without the question.
 
-A rating needs a linked member, as a press on an approval does; an unlinked
-person's thumbs are not counted. The dashboard's *Answer quality* card splits
-the share of good answers by surface once more than one has been rated, so an
-agent that does well in the console and badly in Slack shows it.
+**Mattermost does not require an AgenticOS account to rate.** The server-signed
+participant identity owns the vote. Each participant can change their vote;
+buttons stay available to everybody, and confirmation is private. A thumbs-down
+comment belongs to the same participant. Slack and Telegram retain their
+linked-member requirement; approving a tool call still requires membership.
+Channel-authored ratings have a null `user_id` in API responses, rather than
+being attributed to the bot owner. Upgrade the database before enabling this
+version. A downgrade removes channel-authored ratings and keeps account votes.
+
+The dashboard's *Answer quality* card includes these votes and splits them by
+surface, so a difference between the console and Mattermost remains visible.
 
 ## What every channel shares
 
@@ -1301,7 +1969,7 @@ agent that does well in the console and badly in Slack shows it.
     operator two minutes and makes the chat say which agent it is talking to,
     which no amount of routing can. `@slug` still parses — as an alias for the
     agent behind this bot, refused when it names any other.
-- **A voice message is transcribed, where a bot has been given a model.** It is
+- **A voice message is transcribed, unless the bot is switched off.** It is
   the one attachment an agent cannot be handed as a file: it reads a PDF and
   looks at a screenshot, and an `audio/ogg` blob is a byte count.
 
@@ -1314,14 +1982,103 @@ agent that does well in the console and badly in Slack shows it.
     typed. A voice note with a caption stays one message, because that is what
     somebody sent.
 
-    Which model is a **pair on the bot** — a provider and one of its models, from
-    `app/core/catalog/speech_to_text_models.json` — chosen under **Channels**, and
-    null by default: transcription spends the organization's provider credit on
-    every recording, so it is opted into. The key is the one already configured
-    for that provider in the organization's model profiles; there is nothing new
-    to store. A bot with no model chosen says it cannot listen rather than
-    dropping the recording, because a voice note that produces no reaction is
-    indistinguishable from a broken bot.
+    Each bot's form under **Channels** offers three answers. **Inherit**, the
+    default, uses the provider and model of the agent the bot serves, then the
+    organization's, and the language of the agent, then the organization's
+    ([the order](ml-services.md#which-engine-a-recording-reaches)). **Choose**
+    names the bot's own pair - a provider and one of its models, from
+    `app/core/catalog/speech_to_text_models.json` - and the vault key it is sent
+    with. **Off** never transcribes, whatever the agent or the organization say.
+    Inherit beside the choice names what it resolves to, which of the two chose
+    it, and whether that level still needs a key.
+
+    **The bot's own pair needs its own key**: an API key whose purpose is the
+    provider, and one **visible to the whole organization**, because a bot's
+    voice notes are paid for on behalf of whoever writes to it. A member's
+    private key is refused when the bot is saved, and one made private later
+    stops being used. The picker offers only keys that fit, says when a
+    provider has none, and links to the vault to add one. An inheriting bot
+    takes the inherited level's key together with its pair, never a key of its
+    own. Deleting the key leaves the pair asking for another, and the bot
+    transcribes nothing until somebody chooses one.
+
+    Inheriting costs nothing until somebody sets a provider up: with none on the
+    agent or the organization, nothing is transcribed, so spending the
+    organization's provider credit stays the organization's decision. A bot
+    registered from the CLI, or by a client that sends no switch, inherits.
+
+    **A voice note is held to the organization's longest dictation** before any
+    provider is paid: its length is read off the file where the container says
+    (Ogg, WebM, MP4, WAV, MP3), else as the platform reported it. A longer note
+    is refused with a line saying so, and so is one whose length neither states -
+    a Mattermost MP3 with more than a tag after its last frame, say. Bytes alone
+    do not bound it - 25 MB of low-bitrate audio is hours - and the sender's
+    limit counts messages, not minutes. Its usage records the provider's length,
+    else the one measured here.
+
+    A bot that cannot listen says so rather than dropping the recording, because
+    a voice note that produces no reaction is indistinguishable from a broken
+    bot - and it says which reason, because different people fix them: the bot
+    is switched off, or nobody has set up a provider. A bot with no agent bound,
+    or whose agent is archived or has no version to run, transcribes nothing at
+    all, since the message is refused anyway.
+
+    Every recording sent to the provider leaves a
+    [usage record](ml-services.md#what-is-recorded) naming the bot, its agent and
+    the person the sender is linked to - while that person is still a member of
+    the organization - with the recording's length where Telegram, Slack or the
+    provider states it.
+
+    !!! note "Upgrading: a bot that did not transcribe still does not"
+
+        Before this switch existed, a bot with no pair was a bot that did not
+        transcribe, and the API cleared the pair to turn transcription off.
+        Migration `0151_bot_transcription_switch.py` switches every such bot
+        **off**, so none of them starts sending audio to a provider on upgrade;
+        a bot with a pair keeps it. From then on a client that clears the pair
+        gets **inherit**, and **off** is `transcribe_voice_notes: false`, which
+        also clears the pair. The organization's or the agent's language now
+        reaches a bot with its own pair too.
+
+        A bot with a pair used to transcribe on the first model profile, by
+        label, holding a key for its provider. The same migration writes that
+        key down as the bot's own, where it is an organization-visible API key
+        for the provider and the profile has no `base_url` of its own. A bot
+        with no such profile keeps its pair with no key: its form says "choose
+        a key", and it transcribes nothing until somebody does.
+
+    What counts as a voice message is read off the file's type, and each
+    platform types its files differently. A Telegram voice note or audio file
+    always counts. On Slack, an audio clip recorded in the composer counts
+    whatever type Slack gives it - a clip from the phone app can arrive as
+    `video/mp4` - and so does any uploaded audio file. A file the platform left
+    untyped counts when its extension names audio: `.m4a`, `.mp3`, `.ogg`,
+    `.oga`, `.opus`, `.webm` or `.wav`. An untyped `.mp4` that Slack did not
+    mark as a clip stays an ordinary file: it is far more often a video, and
+    transcribing it would bill a soundtrack.
+
+    On Mattermost any audio upload counts, by its type or its extension. An
+    outgoing webhook sends only each file's id, so for a bot in webhook mode the
+    router first looks the file up with `GET /api/v4/files/{id}/info`; a lookup
+    that fails leaves it an ordinary attachment. A Slack clip that arrives before
+    Slack has finished processing it has no download URL yet and is skipped,
+    since the bot does not subscribe to the `file_shared` event that follows.
+    The backend logs both, and logs every recording it routes to transcription
+    with its type and file name - the line to read when one is not heard.
+
+    The provider is sent the recording as `voice.<ext>`, named from its type
+    rather than from what somebody called the file: OpenAI and Groq choose the
+    decoder from the name, and refuse `.opus` or a name with no extension for
+    audio they can read. A Telegram voice note is Ogg/Opus and a clip recorded
+    in Slack's desktop app is WebM, and Mistral lists neither as a format it
+    accepts, so a Telegram or Slack bot reaching Mistral - chosen or inherited -
+    may fail to transcribe; the form says so.
+
+    Voice messages posted in a thread before the bot joined it are not
+    transcribed. The first mention reads the thread's earlier files, and
+    transcribing every recording among them would bill a whole thread's audio
+    for one question. Each one is named in the reply instead: "Voice messages
+    sent before I joined this thread are not transcribed - send it again here."
 
     Three providers ship: OpenAI, Groq and Mistral, all serving OpenAI's
     `POST /audio/transcriptions`. Adding a model is an entry in that file. Every
@@ -1393,6 +2150,8 @@ agent that does well in the console and badly in Slack shows it.
     somebody, with no backfill: the turn points at the chat account and the
     account gains a person.
 
+    **The `/chat` list leaves channel threads out by default.** `GET /conversations` takes `hide_channels`, true by default, so the sidebar does not fill with threads a bot answers in; they still open from their link, and `hide_channels=false` lists them again.
+
     **Speaking is a claim; the platform decides whether it still holds.** The
     turn record says who *spoke*, and before [#641][641] that was the whole
     check — somebody removed from the channel kept reading the thread,
@@ -1452,13 +2211,12 @@ agent that does well in the console and badly in Slack shows it.
   rewritten one step at a time instead, and each step is posted only after it
   has been checked.
 - **Every binding carries its own extra instructions**, added to the agent's on
-  that surface alone. A new one opens holding what that client actually renders:
-  Slack draws no Markdown and writes a link as `<url|text>`, Mattermost renders
-  headings and tables, Telegram rejects a message whose `*` is unclosed — plus
-  how to give a link there, led with an emoji when it is an action or a
-  destination. It is the binding's text from then on: change it, add to it, or
-  clear it. It shapes how an answer is delivered and can never replace what the
-  agent is for — that belongs to the published version.
+  that surface alone. Current formatting defaults come from the deployment:
+  Slack writes links as `<url|text>`, Mattermost renders headings and tables,
+  and Telegram rejects messages with unclosed formatting. A new binding stores
+  no copy of those defaults. Add, edit or clear custom instructions without
+  freezing the platform guidance at the version installed that day. This
+  shapes delivery; the agent's purpose belongs to its published version.
 - **A bot answers as soon as it is registered.** A polling bot - Telegram
   long-polling, Slack Socket Mode, a Mattermost event stream - is reached over a
   connection the API process holds, and that connection is opened when the row
@@ -1475,26 +2233,36 @@ agent that does well in the console and badly in Slack shows it.
   and one that dies within about 40. An edit served by another worker opens the
   new connection at once, and the old one closes at its holder's next renewal.
   With Redis unreachable, every worker connects, as before.
-- **A binding's instructions may name what only the platform knows.**
-  `{channel_name}`, `{channel_purpose}`, `{channel_topic}`, `{member_count}`,
-  `{member_list}` - filled in when a run starts, from the same calls the channel
-  lookups use, so Telegram offers all five even though it offers two of the four
-  tools. The Builder lists the ones this platform can answer under the box and
-  inserts one at the cursor, each with the tool's real description - what the
-  model reads before deciding to call it, not the catalog's shortened
-  paraphrase, minus the markup the model itself uses to tell the summary from
-  the answer's shape.
+- **A second Telegram poller is noticed, not fought.** When Telegram ends a
+  bot's poll because another process polls the same token, a worker that does
+  not hold the bot's lease closes its copy at once. The holder keeps polling and
+  marks the bot down on the channels page: "another process is polling this
+  bot's token". That process is outside the deployment, usually a second
+  deployment or a script with the same token, and only its owner can stop it.
+- **Channel context is supplied automatically on every run.** Mattermost, Slack, Teams and Telegram runs receive the channel's name, purpose, topic, visibility, reported member count and a bounded visible roster, including on existing or cleared binding prompts. `{channel_members}` is the readable name for the roster; `{member_list}` remains an alias. The other placeholders are `{channel_name}`, `{channel_purpose}`, `{channel_topic}`, `{channel_visibility}` and `{member_count}`.
 
-    Resolved per run and never cached: a channel's membership changes, and a
-    stale list in a prompt is worse than none because the agent states it as
-    fact. Only what the prose asks for is fetched, so a binding that names no
-    placeholder costs nothing. A placeholder the platform could not answer
-    becomes `(unavailable)` rather than costing somebody their reply.
+    Context is resolved once per source per run, not cached between turns: at most 50 visible members and 2000 characters per value. Telegram returns administrators, not the whole membership. Each source has a five-second timeout; unavailable values stay unknown. Values are flattened and delivered as untrusted conversation data, outside system instructions. Slack supplies native member IDs without per-person profile requests. The binding's editable text adds guidance alongside this runtime context.
 
-    A prompt that filled any of them gains a sentence saying the substituted
-    values are information rather than orders, and every value has its line
-    breaks and braces flattened. A channel's `purpose` is editable by whoever
-    can edit the channel, and it is being pasted into an agent's instructions.
+- **Choose whether group mentions start a run.** In the bot's create or edit dialog, *Respond to group mentions* is off by default. Direct invocations continue to work. Enabling it also admits Mattermost `@all`, `@here` and `@channel`, Slack's native room mentions, and structured Teams channel/team mentions. Sender identity, access checks and rate limits still apply. Quoted code and unrelated users' mentions do not count.
+
+    Teams requires the updated app package to be installed or upgraded in the target team or chat, with owner consent to `ChannelMessage.Read.Group` and `ChatMessage.Read.Chat`. Those grants are requested only when this switch is on. Telegram uses explicit text aliases `@all`, `@here`, `@channel` and `@everyone`; these do not notify the group. Telegram must deliver group messages to the bot, so check BotFather privacy mode. Own mentions, commands and replies are resolved against the bot's actual Telegram identity. Discord counts `@everyone` and `@here` only when the sender may ping them, which is when Discord notifies the room.
+
+- **Requested workspace-file delivery also requires approval.** Granting `send_channel_file` makes it available; a request still waits for explicit confirmation before bytes are posted.
+- **Linked senders use the same MCP approval settings as web chat.** The binding’s policy and each tool’s override apply, including Run freely for a tool without a read-only annotation. Required approvals still ask. Platform connections keep their platform-wide minimum policy. This applies to personal and organization connections, delegates and resumed calls. Personal connections belong to the current sender; linking does not grant additional permissions. Unlinked participants still require approval for every MCP call. Channel reference metadata is sent after tool results, including after repeated approval resumptions.
+
+The full room history remains available, including messages from other participants. Run freely therefore also permits tool calls influenced by that context; choose it only for trusted tools and rooms, and use Ask first when each write needs confirmation.
+
+Channel messages store only the sender’s text. Author labels are resolved from channel identities immediately before model dispatch, outside system instructions. The console and copy, pin and shortcut actions receive the plain body. Persisted histories and paused runs keep opaque identity references, and manifests omit the injected channel reference parts. Deleting an account removes its channel identities, so future requests cannot resolve that person’s platform labels; shared message bodies remain.
+
+Editable channel names, topics, purposes and author labels pass the configured input checks before reaching the model. Redacted values replace the originals; blocked reference values are withheld while an otherwise allowed question can continue. Fixed envelope syntax, platform identifiers and chat-type enums are not screened as question text.
+
+Author reference data is supplied separately from the current message, so input guardrails screen the actual question. Unlinked channel participants still need approval for every MCP call, including organization reads.
+
+Both explicit `@slug` invocations and default replies receive the saved conversation history together with the initial channel thread context.
+
+Published Apps can be revised from another conversation without the original sandbox. Use `read_artifact` to recover the stored source and `publish_artifact` with the same name and edits or replacement content. The app keeps its link and version history. Viewing an app does not grant editing access; the existing permission checks still apply.
+
+- **The agent is told where it is answering and whose account is available.** Runtime guidance identifies the communicator and deployment console, explains that tools use a managed workspace, and distinguishes organization MCP connections from personal services. Personal services require both a linked sender identity and that person's authorized connection. Linking uses plain `link` in a direct message; the private connection URL never belongs in a channel. The agent reports actual tool results and gives one concrete next step when authentication or a capability is missing.
 - **A redelivered message is answered once.** Every platform delivers
   at-least-once: the webhook routes answer 200 before any work so a slow handler
   never triggers a retry, but a 200 lost on the wire — a proxy drops it, the pod
@@ -1559,6 +2327,7 @@ is stored is what its reader actually saw.
 | `@mention` on a channel | The same, with the handle stripped from the recorded prompt |
 | Embedded widget | The same. The visitor is anonymous; the run and the turns belong to the widget's owner |
 | HTTP API | The same when the call carries a `conversation_id`. Nothing without one — there is no thread to write a turn into, and the run row is still the record that it happened |
+| A2A | The same. Every task files under a conversation, a new one or the one its `contextId` names |
 | A run resumed after an approval | Its continuation — the answer and the calls it made, and the calls even when there is no answer, which is what a continuation that parks again on a second gated call has. No user turn: it picks up at the call it stopped on, and inventing a question would put words in somebody's mouth |
 
 **What is recorded is what the person wrote, not the prompt assembled around it.**
@@ -1882,6 +2651,7 @@ why an attachment arrives as a handle rather than as content:
 | Slack | The private URL on the event, fetched with the bot token. Slack answers **200 with a sign-in page** rather than 401 when the token cannot read a file, so the content type is checked — otherwise a login page would be stored as the user's spreadsheet |
 | Telegram | `getFile` resolves a `file_id` to a path that expires, then the file API. A photo arrives as several sizes; the largest is the one kept |
 | Mattermost | `/files/{id}` on that bot's own server. A bot whose server is not recorded says so rather than guessing which company's server to send a token to |
+| Teams | A file in a personal chat carries a download URL Teams has already authorised; a picture pasted into a message is fetched from the Bot Connector with the bot's token, which goes nowhere else |
 
 **Recordings are not supported yet.** Telegram puts each kind of media in its own
 field, so a voice note arrives with no text at all — and until this change it parsed
@@ -1910,18 +2680,7 @@ not that succeeded
 A turn that actually ran keeps its files — they fed it, and the run is in the
 transcript.
 
-**Outbound** is what the agent wrote this turn, compared against a snapshot taken
-when the workspace opened. Not a diff of everything: `/uploads` is the user's own
-file — posting it back is quoting somebody their own attachment — and `/skills` is
-know-how the platform materialised, not the agent's work. A file it *overwrote* is
-not sent either: rewriting a script it is iterating on is ordinary, and posting it
-every turn would fill the channel with the same attachment.
-
-**If that snapshot could not be taken, nothing is posted.** The comparison is
-"everything now, minus everything then", so treating an unreadable workspace as an
-empty one would make every file already in it read as this turn's output — and under
-`agent` or `channel` scope those files belong to other people. A missing attachment
-is the failure worth having; a colleague's spreadsheet in a shared channel is not.
+**Outbound** files are sent only through `send_channel_file`, when the user asks to receive or download a file. Creating, reading or editing a workspace file does not attach it. Grant the tool per bot binding under *Where this agent is available*. Existing bindings keep their chosen tools; enable this action explicitly after upgrading. The tool is side-effecting and follows the normal approval policy. It sends only the named workspace file, refuses internal paths and files over 8 MB, and permits at most three attempts per turn. Platform failures are reported instead of claiming delivery. Teams may require acceptance in a personal chat. Charts and requested visuals keep their separate picture delivery.
 
 Each file carries the type its name implies rather than a flat
 `application/octet-stream`, so a chart an agent wrote arrives as a picture on the
@@ -2004,7 +2763,8 @@ channel footer does not:
   which is most of them. It names whose files these are, because under `agent` scope
   one workspace is shared and finding a file you never created reads as a leak until
   something on screen explains it. A file is a tile, and opening one opens the same
-  viewer the Workspaces screen uses — a picture, a PDF, markdown as preview or
+  viewer the Workspaces screen uses — a picture, a PDF, a player for audio and
+  video, markdown as preview or
   source, and always a download — reading `…/workspace/file` for text and
   `…/workspace/raw` for bytes. Through the *conversation* rather than the
   workspace id, deliberately: that is what keeps these files reachable for
@@ -2036,15 +2796,22 @@ up for, or what was said in it ten minutes ago — so *"who should I ask about
 billing?"* and *"summarise what we decided above"* are questions it can only
 answer by guessing.
 
-Four tools change that, and each is granted **per binding**, under
+Five tools change that, and each is granted **per binding**, under
 *Where this agent is available*:
 
-| Tool | Answers | Slack | Telegram | Mattermost |
-|---|---|:-:|:-:|:-:|
-| `get_channel_info` | Name, purpose, topic, size | ✅ | ✅ | ✅ |
-| `list_channel_members` | Who is here | ✅ | admins only | ✅ |
-| `search_channels` | Which other channels exist | ✅ | — | ✅ |
-| `read_channel_history` | What was said recently, **in the thread it is answering in** | ✅ | — | ✅ |
+| Tool | Answers | Slack | Telegram | Mattermost | Teams |
+|---|---|:-:|:-:|:-:|:-:|
+| `get_channel_info` | Name, purpose, topic, size | ✅ | ✅ | ✅ | ✅ |
+| `list_channel_members` | Who is here | ✅ | admins only | ✅ | ✅ |
+| `search_channels` | Which other channels exist | ✅ | — | ✅ | — |
+| `read_channel_history` | Recent messages in this channel, or `scope="thread"` for this thread | ✅ | — | ✅ | — |
+| `send_channel_file` | Send a requested workspace file | ✅ | ✅ | ✅ | ✅ |
+
+Use a direct message containing plain `link` (without a slash) to connect an account. Open the private connection link while signed in to AgenticOS, then return to the channel. When earlier thread files require linking, the bot explains this without downloading them and retries after connection. Channel pictures use twice the CSS resolution; very wide horizontal Mermaid flowcharts receive a vertical layout for the PNG only.
+
+Images requested through `generate_image` are attached to replies on all four chat platforms, alongside the existing chart and diagram support. Stored images are read within the run's organization, limited to 8 MiB and 16 megapixels, and converted to PNG; missing, invalid or oversized images produce a delivery notice. Teams additionally fits inline pictures to its own limits. Creating an ordinary workspace file still does not send it: that requires `send_channel_file`. Thread context preserves the original message timestamps; relative times refer to those timestamps, not to when the agent joins the thread.
+
+Only files recorded as generated by the run's own tools are attached. A tool name or result text cannot authorize access to another conversation's media. Rejecting image generation approval does not trigger a missing-image notice. Existing threads refresh text once without downloading earlier attachments again.
 
 Per binding rather than per agent, because an organization can bind one agent to
 two Mattermost servers and three Slack workspaces — and *"may it read what was
@@ -2064,22 +2831,23 @@ Three things worth knowing before granting them:
 - **The bot's membership is the whole permission boundary.** Every call goes
   through the bot's own token, so the agent sees exactly what the bot sees. There
   is no allow-list of ours to get out of step with the platform's own.
-- **The model never names a channel, or a thread.** The tools are bound
-  server-side to the channel the message arrived in, and `read_channel_history`
-  to the thread as well: a thread and its channel are two transcripts, and the
-  one the agent was spoken to in is the thread. Bound to the channel alone,
-  *"summarise what we decided above"* summarised whatever else the room had been
-  saying. An argument for either would turn *"who is in this channel"* into
-  *"read any channel this bot is in"*, asked from a conversation somewhere else.
+- **The model never names a channel or thread ID.** `read_channel_history` defaults to `scope="channel"` for recent messages in the current channel; `scope="thread"` reads only the bound thread. Neither can read a different channel. Results are a bounded recent window, not evidence that older messages do not exist. Automatic context backfill remains thread-only.
 - **`read_channel_history` is the one worth gating.** It is a read, so it does
   not ask by default, but it puts other people's messages into a run transcript
   somebody reads weeks later. A `tool_approval` override on the binding is how
   you make it ask.
 
-This is deliberately *not* the same thing as putting the channel's member list
-and purpose into every system prompt. That is a different feature with a
-different failure mode — a `purpose` written by whoever can edit the channel,
-pasted into the instructions, is a prompt injection with a public edit button.
+Automatic channel context includes the name, purpose and a bounded visible roster, marked as data rather than instructions. These per-binding tools grant additional lookups and explicit file delivery; clearing a tool grant does not remove the automatic context.
+
+## A bot whose messages start a workflow { #a-bot-whose-messages-start-a-workflow }
+
+A workflow with a **Channel message** trigger takes a bot's messages in its agent's
+place. Only the messages the agent would have answered reach it, and of those only
+the ones that fit the trigger's filter: a message naming another agent by `@handle`
+still goes there, and one the filter leaves is answered by the bot's agent as
+before. The workflow answers with its own **Send a message** step, into the thread
+the message came from. See
+[From a channel message](workflows.md#from-a-channel-message).
 
 ## Choosing
 
@@ -2087,7 +2855,7 @@ pasted into the instructions, is a prompt injection with a public edit button.
 flowchart TD
     A{a site of your own?} -->|no| L{a link will do?}
     L -->|yes| H[a hosted page]
-    L -->|no| T[Slack, Telegram or Mattermost]
+    L -->|no| T[Slack, Teams, Telegram or Mattermost]
     A -->|yes| U{your own interface?}
     U -->|yes| WS[the raw WebSocket]
     U -->|no| P{visitors signed in to your product?}
@@ -2100,7 +2868,7 @@ flowchart TD
 - Inside your product, per-user → **widget, `jwt` mode**.
 - Your own interface entirely → **WebSocket**.
 - No site of your own, and a link will do → **a hosted page**.
-- Where the team already talks → **Slack, Telegram or Mattermost**.
+- Where the team already talks → **Slack, Teams, Telegram or Mattermost**.
 - Another system entirely → the REST API (`POST /api/v1/agents/{id}/run`).
 
 !!! success "The first four are one object"
@@ -2113,8 +2881,8 @@ flowchart TD
 ## Recap
 
 - **One runner behind every surface.** Web chat, a hosted page, a widget, the API,
-  Slack, Telegram and Mattermost all reach the same code, so governance is not
-  something a caller can route around.
+  Slack, Teams, Telegram and Mattermost all reach the same code, so governance is
+  not something a caller can route around.
 - A bot answers as **one agent**, and a mention runs as **the sender** — never as
   the bot.
 - What a **stranger** may do, they may do at a rate: the public surfaces carry
@@ -2122,3 +2890,52 @@ flowchart TD
 - What is recorded is **what the person wrote**, not the prompt assembled around it.
 - A **delegation is a panel**, not a pause — and attaching a handler to one changes
   the transport, so it is attached only where a sink exists.
+
+A channel post containing only the bot mention or whitespace is ignored after mention removal, before claiming delivery or starting a run. This avoids sending an empty user message to model APIs that drop it and then reject the preceding assistant answer as prefill. A post containing only attachments still follows the attachment pipeline.
+
+## Current channel defaults
+
+Channel formatting and conversation guidance come from the current deployment on every run. A binding prompt stores only custom additions. Upgrades remove exact recognized copies of previously shipped defaults while preserving surrounding custom text; edited or unknown text is left alone. Clearing the custom prompt keeps the platform defaults and channel context. No runtime compatibility rewrite of old prompt strings is needed.
+
+Downgrading restores the preceding release’s stored channel defaults while preserving custom additions, including bindings created after the upgrade. Other surfaces remain unchanged.
+
+## Notifications through linked channels { #linked-notifications }
+
+Choose a private destination per platform and organization in **Settings →
+Notifications**: Slack, Telegram, Mattermost, Teams, Discord, SMS and iMessage use the existing linked
+bot account. Email and push keep their own setup. Event preferences and routine
+overrides apply at send time, together with resource permissions and the shared
+case's current state. Linking a chat account alone does not enable delivery.
+
+Slack receives plain-text Block Kit notices with a link to the existing case.
+Opening the link uses normal console authorization. Acknowledging or resolving
+the case stops pending external notices across channels. A message's sent status
+records platform acceptance; the case retains its own acknowledgement state.
+
+A confirmed [Slack HTTP 429](https://docs.slack.dev/apis/web-api/rate-limits/)
+permits a bounded retry after `Retry-After`. The notification client disables
+[SDK retries](https://docs.slack.dev/tools/python-slack-sdk/web/), so timeouts and
+unknown outcomes remain visible failures instead of duplicate submissions. See
+[notification policy](governance.md) for route revocation, approval degradation
+and migration details.
+
+## iMessage through a company Mac { #imessage }
+
+A company-owned Mac running Messages and [BlueBubbles](https://docs.bluebubbles.app/server/developer-guides/rest-api-and-webhooks) provides this transport. Keep it signed in and online, grant BlueBubbles the macOS permissions it requests, and enable its REST API. In **Channels**, register **iMessage** with the bridge's HTTP URL and its server password as the bot token. The password is sealed in the organization's vault; the URL must contain no credentials, query or fragment.
+
+Bind the published agent, then edit the channel and choose **Register iMessage webhook** after saving any changes. Replacing the endpoint or password revokes the previous callback credential; register again. AgenticOS registers only `new-message` at `/api/v1/imessage/{bot_id}/webhook`. It generates a separate callback credential and registers it as HTTP Basic authentication. Configure HTTPS for traffic crossing an untrusted network. If AgenticOS has a private address, the BlueBubbles administrator must explicitly allow API webhooks to reach local addresses. Removing the webhook removes only callbacks naming this bot on this deployment.
+
+Text and files use BlueBubbles' AppleScript transport. Optional tapback acknowledgements need its Private API. Linked private senders get a separate channel conversation; linking an identity does not grant a bot or bridge access to existing private console history; groups retain their separate conversation and require the usual agent mention. Approvals use the existing numbered prompts: answer with the displayed number. Self echoes, tapbacks and system events do not start another turn. Incoming attachments are fetched only by GUID from the configured bridge and remain subject to the upload limit.
+
+Select the linked private conversation in **Settings → Notifications** to opt in. A group is never a private notification destination. Bridge acceptance records submission, not Apple's delivery or the recipient's acknowledgement. An offline bridge produces a visible failure; an uncertain submission is not retried automatically.
+
+[Apple Messages for Business](https://www.apple.com/legal/privacy/data/en/messages-for-business/) is a separate business service. Its [provider setup](https://learn.microsoft.com/en-us/dynamics365/customer-service/administer/configure-apple-messages-for-business-channel) requires a Messages for Business account and messaging provider; this Mac adapter does not provision that integration.
+
+
+SMS webhook forms are capped at 64 KiB and a ten-second read deadline before signature verification. Numbered SMS and iMessage replies claim the provider message ID before dispatch, so a duplicate delivery cannot toggle a pending selection twice.
+
+
+Inbound email is read as a bounded stream (25 MiB maximum) before signature verification, including requests without an honest Content-Length.
+
+
+Before durable email admission, each organization is limited to 4,096 retained delivery jobs and 256 MiB of retained bodies, including completed and failed deliveries. Admission is serialized across workers; duplicate Message-IDs remain idempotent. A full quota returns HTTP 429 before retaining another body; retention cleanup or deletion of retained jobs releases capacity.

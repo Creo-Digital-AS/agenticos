@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.exceptions import BadRequestError
+from app.db.vector_tables import VectorScope
 from app.services.rag.filters import (
     AppScope,
     RetrievalFilters,
@@ -64,7 +65,6 @@ class TestTheLegacyFilterShim:
 class TestThreadingScopeAndFiltersToTheStore:
     async def test_scope_and_filters_reach_the_store_typed(self):
         store = MagicMock()
-        store.resolve_tenant = AsyncMock(return_value=None)
         store.search = AsyncMock(return_value=[SearchResult(content="chunk", score=0.5)])
         org = uuid4()
 
@@ -82,7 +82,6 @@ class TestThreadingScopeAndFiltersToTheStore:
 
     async def test_no_filters_still_carries_the_scope(self):
         store = MagicMock()
-        store.resolve_tenant = AsyncMock(return_value=None)
         store.search = AsyncMock(return_value=[])
 
         await _retrieval_over(store).retrieve(
@@ -116,6 +115,25 @@ class TestThreadingScopeAndFiltersToTheStore:
         # The removed probe means get_documents is never consulted.
         assert not store.get_documents.called
 
+    async def test_a_hybrid_result_keeps_the_vector_similarity_of_its_chunk(self):
+        store = MagicMock()
+        store.search = AsyncMock(
+            return_value=[
+                SearchResult(content="term here", score=0.37, similarity=0.37),
+                SearchResult(content="something else", score=0.31, similarity=0.31),
+                SearchResult(content="unrelated text", score=0.30, similarity=0.30),
+            ]
+        )
+
+        results = await _retrieval_over(store, hybrid=True).retrieve(
+            query="term",
+            collection_name="handbook",
+            scope=TenantScope(organization_id=uuid4()),
+        )
+
+        assert results[0].score != pytest.approx(0.37)
+        assert results[0].similarity == 0.37
+
     async def test_retrieve_multi_carries_scope_to_every_collection(self):
         store = MagicMock()
         store.search = AsyncMock(return_value=[])
@@ -139,32 +157,50 @@ class TestThreadingScopeAndFiltersToTheStore:
 @pytest.mark.security
 class TestResolvingScopePerCollection:
     """A caller that holds only a name - the agent capability, the CLI - resolves
-    its scope through the store's own `resolve_tenant` (#1684) and the matching
-    scope shape (FA-039): `AppScope` for an app-scoped base every organization
-    reads, `TenantScope` for an org one. Built from the *base's* resolved tenant,
+    its scope through the store's own `resolve_scope` (#1684, #2537) and the
+    matching scope shape (FA-039): `AppScope` for an app-scoped base every
+    organization reads, `TenantScope` for an org one, each naming the resolved
+    base. Built from the *base's* resolved tenant,
     never from the caller's own organization id, which cannot match an app-scoped
     base's untagged rows - the gap a naive FA-039/#1684 merge reopened."""
 
     async def test_resolve_scope_maps_a_resolved_tenant_to_tenant_scope(self):
-        resolved = uuid.uuid4()
+        resolved, kb = uuid.uuid4(), uuid.uuid4()
         store = MagicMock()
-        store.resolve_tenant = AsyncMock(return_value=resolved)
+        store.resolve_scope = AsyncMock(
+            return_value=VectorScope(tenant=resolved, knowledge_base_id=kb)
+        )
 
         scope = await _retrieval_over(store).resolve_scope("handbook", uuid.uuid4())
 
-        store.resolve_tenant.assert_awaited_once()
-        assert scope == TenantScope(organization_id=resolved)
+        store.resolve_scope.assert_awaited_once()
+        assert scope == TenantScope(organization_id=resolved, knowledge_base_id=kb)
 
     async def test_resolve_scope_maps_no_tenant_to_app_scope(self):
         """The disclosure case: the resolved base is app-scoped, so its tenant is
         `None`; the scope must read the untagged rows, not one that matches
         nothing."""
         store = MagicMock()
-        store.resolve_tenant = AsyncMock(return_value=None)
+        store.resolve_scope = AsyncMock(
+            return_value=VectorScope(tenant=None, operator_unfiled_only=True)
+        )
 
         scope = await _retrieval_over(store).resolve_scope("handbook", uuid.uuid4())
 
         assert scope == AppScope()
+
+    async def test_a_base_with_no_tenant_that_takes_no_unfiled_rows_keeps_that(self):
+        """A personal base outside any organization resolves to `AppScope` - its
+        tenant is `None` - but must not read the app scope's unfiled rows (#2537)."""
+        kb = uuid.uuid4()
+        store = MagicMock()
+        store.resolve_scope = AsyncMock(
+            return_value=VectorScope(tenant=None, knowledge_base_id=kb, takes_unfiled=False)
+        )
+
+        scope = await _retrieval_over(store).resolve_scope("handbook", uuid.uuid4())
+
+        assert scope == AppScope(knowledge_base_id=kb, takes_unfiled=False)
 
     async def test_retrieve_multi_reads_each_collection_under_its_own_scope(self):
         """A caller that already resolved and authorized each base - the
@@ -205,3 +241,39 @@ class TestResolvingScopePerCollection:
 
         # Refused before the first collection is read, not part-way through.
         assert not store.search.called
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.security
+async def test_retrieval_stops_before_another_embedding_once_the_ambient_budget_is_spent(hybrid):
+    from decimal import Decimal
+
+    from app.agents.capabilities.budget import (
+        BudgetExceeded,
+        BudgetGuard,
+        BudgetScope,
+        SpendLedger,
+        SpendLimit,
+        guarded_by,
+        metered_by,
+        record_ambient_cost,
+    )
+
+    store = MagicMock()
+
+    async def search(**_kwargs):
+        record_ambient_cost("embedding", Decimal("0.02"))
+        return [SearchResult(content="one", score=0.9)]
+
+    store.search = AsyncMock(side_effect=search)
+    ledger = SpendLedger()
+    guard = BudgetGuard(
+        ledger=ledger, limits=[SpendLimit(scope=BudgetScope.RUN, limit_usd=Decimal("0.01"))]
+    )
+    service = _retrieval_over(store, hybrid=hybrid)
+    with metered_by(ledger), guarded_by(guard), pytest.raises(BudgetExceeded):
+        await service.retrieve_multi(
+            query="policy", collection_names=["a", "b"], scopes={"a": AppScope(), "b": AppScope()}
+        )
+    assert store.search.await_count == 1
+    assert ledger.total_usd == Decimal("0.02")

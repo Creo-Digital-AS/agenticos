@@ -1,3 +1,4 @@
+import { toolLookupName } from "@/lib/tool-identity";
 /**
  * The agent's own checklist, read back out of the calls it made to keep it.
  *
@@ -164,7 +165,7 @@ function fold(steps: readonly PlanStep[], call: ToolCall): readonly PlanStep[] {
   // a turn later. Only in flight: a write the turn ended without answering, or
   // one that failed, never reached the store, and its arguments are a plan that
   // does not exist (#2149).
-  if (text === "" && call.name === "write_plan") {
+  if (text === "" && toolLookupName(call) === "write_plan") {
     const inFlight = call.status === "running" || call.status === "pending";
     return inFlight ? (stepsFromArgs(call.args) ?? steps) : steps;
   }
@@ -200,7 +201,7 @@ function planningCalls(messages: readonly ChatMessage[]): ToolCall[] {
     // A replayed turn carries its calls in `parts`; a live one is assembled into
     // both, so reading each is one call twice. Parts win where a turn has them.
     for (const call of fromParts.length > 0 ? fromParts : (message.toolCalls ?? [])) {
-      if (PLANNING_TOOLS.has(call.name)) calls.push(call);
+      if (PLANNING_TOOLS.has(toolLookupName(call))) calls.push(call);
     }
   }
   return calls;
@@ -232,4 +233,21 @@ export function planProgress(messages: readonly ChatMessage[]): PlanProgress | n
   let steps: readonly PlanStep[] = [];
   for (const call of planningCalls(messages)) steps = fold(steps, call);
   return steps.length === 0 ? null : progressOf(steps);
+}
+
+/**
+ * The plan the dock above the composer shows, or none.
+ *
+ * A plan with steps still to do stays there from turn to turn - it is written in
+ * one and worked through over the next several, which is the dock's whole point.
+ * A finished one stays only while the turn that finished it is still being
+ * written: after that "every step is done" said nothing about where the agent
+ * is, and sat over every later message for the rest of the conversation. Its
+ * checklist is still in that turn's steps (#2301).
+ */
+export function dockedPlan(messages: readonly ChatMessage[]): PlanProgress | null {
+  const plan = planProgress(messages);
+  if (plan === null || !plan.finished) return plan;
+  const last = messages.findLast((message) => planningCalls([message]).length > 0);
+  return last?.isStreaming ? plan : null;
 }

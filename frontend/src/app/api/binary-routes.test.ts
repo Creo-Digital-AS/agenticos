@@ -10,6 +10,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST as uploadFile } from "./files/upload/route";
+import { GET as readTableImage } from "./tables/[tableId]/media/[mediaId]/route";
 import { GET as readFile } from "./files/[id]/route";
 import { GET as readGeneratedImage } from "./generated/[filename]/route";
 import { GET as callback } from "./me/mcp-connections/oauth/callback/route";
@@ -18,6 +19,8 @@ import { GET as hostedLogo } from "./embed/[publicKey]/logo/route";
 import { GET as userAvatar } from "./users/avatar/[userId]/route";
 import { POST as setOwnAvatar } from "./users/me/avatar/route";
 import { backendFetch } from "@/lib/server-api";
+import { ACCESS_TOKEN_COOKIE } from "@/lib/session-cookie";
+import { ACCOUNT_OAUTH_COOKIE } from "@/lib/connected-account-oauth";
 
 vi.mock("@/lib/server-api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/server-api")>("@/lib/server-api");
@@ -41,13 +44,15 @@ function request(
   { signedIn = true, form }: { signedIn?: boolean; form?: FormData } = {},
 ): NextRequest {
   if (!form) {
-    return new NextRequest(url, { headers: signedIn ? { cookie: "access_token=at" } : {} });
+    return new NextRequest(url, {
+      headers: signedIn ? { cookie: "agenticos_access_token=at" } : {},
+    });
   }
   // Built as a plain `Request` first so the multipart boundary lands in the
   // content type; a `formData()` call with no boundary never resolves.
   const withBody = new Request(url, { method: "POST", body: form });
   const headers = new Headers(withBody.headers);
-  if (signedIn) headers.set("cookie", "access_token=at");
+  if (signedIn) headers.set("cookie", "agenticos_access_token=at");
   return new NextRequest(new Request(withBody, { headers }));
 }
 
@@ -272,6 +277,97 @@ describe("reading a generated image back", () => {
     expect(response.headers.get("content-type")).toBe("image/png");
     expect(response.headers.get("x-frame-options")).toBe("SAMEORIGIN");
     await expect(response.text()).resolves.toBe("\x89PNG");
+  });
+
+  it("passes a player's byte range through, both ways", async () => {
+    // WebKit - Safari, and the desktop app - plays an MP4 only from ranged answers.
+    serve("0123", {
+      status: 206,
+      headers: { "content-type": "video/mp4", "content-range": "bytes 0-3/10" },
+    });
+    const ranged = new NextRequest("http://localhost:3000/api/generated/abc123_video.mp4", {
+      headers: { cookie: "agenticos_access_token=at", range: "bytes=0-3" },
+    });
+
+    const response = await readGeneratedImage(ranged, params);
+
+    const sent = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect((sent.headers as Record<string, string>).Range).toBe("bytes=0-3");
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 0-3/10");
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
+  });
+
+  it("streams the body through rather than holding the whole clip", async () => {
+    // An upstream that has sent one chunk and not finished: a route that read the
+    // body whole would never answer, which is the clip held once per request (#2310).
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("0123"));
+      },
+    });
+    fetchMock = vi.fn().mockResolvedValue(
+      new Response(upstream, {
+        status: 206,
+        headers: {
+          "content-type": "video/mp4",
+          "content-range": "bytes 0-3/300000000",
+          "content-length": "4",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const ranged = new NextRequest("http://localhost:3000/api/generated/abc123_video.mp4", {
+      headers: { cookie: "agenticos_access_token=at", range: "bytes=0-3" },
+    });
+
+    const response = await readGeneratedImage(ranged, params);
+
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-length")).toBe("4");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("0123");
+    await reader.cancel();
+  });
+
+  it("states no length for a body fetch decoded on the way in", async () => {
+    // The upstream length counts the encoded bytes; the decoded body is longer.
+    serve("bytes", {
+      headers: { "content-type": "image/png", "content-encoding": "gzip", "content-length": "3" },
+    });
+
+    const response = await readGeneratedImage(
+      request("http://localhost:3000/api/generated/abc123_image.png"),
+      params,
+    );
+
+    expect(response.headers.get("content-length")).toBeNull();
+  });
+
+  it("passes a range the file cannot satisfy back as 416 with its length", async () => {
+    serve(null, { status: 416, headers: { "content-range": "bytes */4" } });
+    const ranged = new NextRequest("http://localhost:3000/api/generated/abc123_video.mp4", {
+      headers: { cookie: "agenticos_access_token=at", range: "bytes=9-" },
+    });
+
+    const response = await readGeneratedImage(ranged, params);
+
+    expect(response.status).toBe(416);
+    expect(response.headers.get("content-range")).toBe("bytes */4");
+  });
+
+  it("asks for the whole file when the browser asked for no range", async () => {
+    serve("bytes", { headers: { "content-type": "image/png" } });
+
+    await readGeneratedImage(
+      request("http://localhost:3000/api/generated/abc123_image.png"),
+      params,
+    );
+
+    const sent = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect((sent.headers as Record<string, string>).Range).toBeUndefined();
   });
 
   it("forwards the download flag and falls back to a generic type", async () => {
@@ -893,5 +989,66 @@ describe("coming back from an MCP OAuth consent to where it started", () => {
     expect(new URL(response.headers.get("location")!, "https://agenticos.example").pathname).toBe(
       "/mcp-servers",
     );
+  });
+});
+
+it("serves pasted table images with the explicit tenant and session cookie", async () => {
+  serve(new Uint8Array([137, 80, 78, 71]), {
+    headers: { "content-type": "image/png", "cache-control": "private, no-store" },
+  });
+  const response = await readTableImage(
+    request("http://localhost:3000/api/tables/table/media/image?organization_id=org"),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  const [, options] = fetchMock.mock.calls[0]!;
+  expect(options.headers["X-Organization-Id"]).toBe("org");
+  expect(options.headers.Authorization).toBe("Bearer at");
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
+});
+
+describe("connected-account callback identity", () => {
+  it.each([true, false])(
+    "forwards the signed-in browser only with its account nonce: %s",
+    async (hasNonce) => {
+      vi.mocked(backendFetch).mockResolvedValue({
+        ok: true,
+        connection_name: "Google",
+        error: null,
+      });
+      const cookie = `${ACCESS_TOKEN_COOKIE}=initiating-session${hasNonce ? `; ${ACCOUNT_OAUTH_COOKIE}=browser-nonce` : ""}`;
+      const response = await callback(
+        new NextRequest(
+          "http://localhost:3000/api/me/mcp-connections/oauth/callback?code=abc&state=xyz",
+          { headers: { cookie } },
+        ),
+      );
+      expect(backendFetch).toHaveBeenCalledWith("/api/v1/me/mcp-connections/oauth/callback", {
+        method: "POST",
+        ...(hasNonce ? { headers: { Authorization: "Bearer initiating-session" } } : {}),
+        body: JSON.stringify({
+          code: "abc",
+          state: "xyz",
+          ...(hasNonce ? { browser_nonce: "browser-nonce" } : {}),
+        }),
+      });
+      expect(response.headers.get("set-cookie")).toContain(`${ACCOUNT_OAUTH_COOKIE}=`);
+      expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    },
+  );
+
+  it("keeps the backend refusal when the initiating session is absent", async () => {
+    vi.mocked(backendFetch).mockResolvedValue({ ok: false, error: "Restart account consent" });
+    const response = await callback(
+      new NextRequest(
+        "http://localhost:3000/api/me/mcp-connections/oauth/callback?code=abc&state=xyz",
+        { headers: { cookie: `${ACCOUNT_OAUTH_COOKIE}=browser-nonce` } },
+      ),
+    );
+    expect(backendFetch).toHaveBeenCalledWith("/api/v1/me/mcp-connections/oauth/callback", {
+      method: "POST",
+      body: JSON.stringify({ code: "abc", state: "xyz", browser_nonce: "browser-nonce" }),
+    });
+    expect(response.headers.get("location")).toContain("mcp_oauth=error");
   });
 });

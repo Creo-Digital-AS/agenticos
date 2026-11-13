@@ -46,11 +46,18 @@ class NotificationChannelPreference(Base, TimestampMixin):
             "'ingestion_completed', 'ingestion_failed', 'usage_report', "
             "'agent_usage_report', 'security_event', 'configuration_changed', "
             "'announcement', 'artifact_version_published', 'resource_shared', "
-            "'budget_warning', 'mcp_server_down', 'mcp_server_recovered')",
+            "'budget_warning', 'mcp_server_down', 'mcp_server_recovered', "
+            "'background_task_paused', 'eval_suite_failed', 'promotion_overridden', "
+            "'shared_change_applied', 'workflow_notification', "
+            "'artifact_owner_changed', 'artifact_share_requested', "
+            "'capability_requested', 'suggestion', 'finding', 'improvement_finished', "
+            "'eval_suite_reevaluated', 'eval_run_finished', 'case_generation_finished', "
+            "'workflow_log_alert')",
             name="ck_notification_preferences_event_type",
         ),
         CheckConstraint(
-            "channel IN ('in_app', 'email')", name="ck_notification_preferences_channel"
+            "channel IN ('in_app', 'email', 'push', 'slack', 'telegram', 'mattermost', 'teams', 'sms', 'imessage', 'discord')",
+            name="ck_notification_preferences_channel",
         ),
         # `PATCH` is an upsert against this constraint (`INSERT ... ON CONFLICT
         # ... DO UPDATE`), never a plain insert - without it, two concurrent

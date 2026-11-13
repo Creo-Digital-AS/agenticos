@@ -1,6 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
+import { getErrorMessage } from "@/lib/api-error";
 import { AlertTriangle } from "lucide-react";
 
 import { Button, Input } from "@/components/ui";
@@ -36,6 +39,9 @@ interface RetentionFormProps {
  */
 export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionFormProps) {
   const t = useTranslations("pages.retention");
+  const tErrors = useTranslations("errors");
+  const form = useRef<HTMLFormElement>(null);
+  const guardId = useId();
   const [draft, setDraft] = useState<Record<string, string>>(() => asText(policy.requested));
   const [shown, setShown] = useState(policy.requested);
   // Which rows the person actually touched. An empty box means two different
@@ -43,7 +49,7 @@ export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionForm
   // default" and "keep for ever, deliberately" - and only the typing tells them
   // apart. Sending `null` for every empty box turned opening the page and saving
   // one row into overriding every default with "for ever" (#1420 review).
-  const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
+  const [touched, setTouched] = useState<ReadonlySet<RetentionClass>>(new Set());
 
   // A save answers with the resolved policy, so the boxes follow what the server
   // stored rather than what was typed at it. Adjusted during render rather than
@@ -60,18 +66,46 @@ export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionForm
     setTouched((current) => new Set(current).add(name));
   };
 
-  const submit = async () => {
+  const dirty = [...touched].some((name) => {
+    const raw = draft[name]?.trim() ?? "";
+    return raw === "" ? policy.requested[name] !== null : Number(raw) !== policy.requested[name];
+  });
+
+  const submit = async (): Promise<boolean> => {
+    if (isSaving || !form.current?.reportValidity()) return false;
     const days: RetentionDays = {};
     for (const name of RETENTION_CLASSES) {
       if (!touched.has(name)) continue;
       const raw = draft[name]?.trim() ?? "";
       days[name] = raw === "" ? null : Number(raw);
     }
-    await onSave(days);
+    try {
+      await onSave(days);
+      return true;
+    } catch (error) {
+      toast.error(getErrorMessage(error, tErrors));
+      return false;
+    }
   };
 
+  useUnsavedChanges(`org-retention:${guardId}`, {
+    dirty,
+    save: submit,
+    discard: () => {
+      setDraft(asText(policy.requested));
+      setTouched(new Set());
+    },
+  });
+
   return (
-    <div className="space-y-5">
+    <form
+      ref={form}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+      className="space-y-5"
+    >
       {policy.conflicts.length > 0 ? (
         <p className="border-destructive/40 text-destructive flex items-start gap-2 rounded-md border p-3 text-xs">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -80,20 +114,34 @@ export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionForm
       ) : null}
 
       <div className="-mx-1 overflow-x-auto px-1">
-        <table className="w-full min-w-[34rem] text-sm">
-          <thead>
+        <table className="w-full text-sm md:min-w-[34rem]">
+          <thead className="hidden md:table-header-group">
             <tr className="border-b">
               <th className="py-2 pr-4 text-left font-medium">{t("dataClass")}</th>
               <th className="px-3 py-2 text-left font-medium">{t("keepForDays")}</th>
               <th className="px-3 py-2 text-left font-medium">{t("whatSweeps")}</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block md:table-row-group">
             {RETENTION_CLASSES.map((name) => (
-              <tr key={name} className="border-b last:border-0">
-                <td className="py-2 pr-4">{t(`classes.${name}`)}</td>
-                <td className="px-3 py-2">
+              <tr
+                key={name}
+                className="block space-y-2 border-b py-4 last:border-0 md:table-row md:space-y-0 md:py-0"
+              >
+                <td className="block font-medium md:table-cell md:py-2 md:pr-4 md:font-normal">
+                  {t(`classes.${name}`)}
+                </td>
+                <td className="flex items-center justify-between gap-3 md:table-cell md:px-3 md:py-2">
+                  <label
+                    className="text-muted-foreground text-xs md:hidden"
+                    htmlFor={`retention-${name}`}
+                  >
+                    {t("keepForDays")}
+                  </label>
                   <Input
+                    id={`retention-${name}`}
+                    aria-describedby={`retention-${name}-effective`}
+                    disabled={isSaving}
                     type="number"
                     min={1}
                     inputMode="numeric"
@@ -104,7 +152,11 @@ export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionForm
                     onChange={(event) => edit(name, event.target.value)}
                   />
                 </td>
-                <td className="text-muted-foreground px-3 py-2 text-xs">
+                <td
+                  className="text-muted-foreground block text-xs md:table-cell md:px-3 md:py-2"
+                  id={`retention-${name}-effective`}
+                >
+                  <span className="mr-2 font-medium md:hidden">{t("whatSweeps")}</span>
                   {describe(policy, name, t)}
                 </td>
               </tr>
@@ -114,14 +166,16 @@ export function RetentionForm({ policy, isSaving, saved, onSave }: RetentionForm
       </div>
 
       <div className="flex items-center gap-3">
-        <Button onClick={submit} disabled={isSaving}>
+        <Button type="submit" disabled={isSaving}>
           {isSaving ? t("saving") : t("save")}
         </Button>
-        {saved ? <span className="text-muted-foreground text-xs">{t("saved")}</span> : null}
+        {saved && !dirty ? (
+          <span className="text-muted-foreground text-xs">{t("saved")}</span>
+        ) : null}
       </div>
 
       <p className="text-muted-foreground text-xs">{t("hardDeleteNotice")}</p>
-    </div>
+    </form>
   );
 }
 

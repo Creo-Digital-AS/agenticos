@@ -1,5 +1,5 @@
 ---
-source_sha: "cf1f7216bba3"
+source_sha: "107659f9bab3"
 ---
 
 # Permisos { #permissions }
@@ -65,8 +65,10 @@ efectos:
    organización, y ninguna puede expresar "cada organización"
    ([Governance](governance.md#alerts)).
 2. **Un bypass en `AuthContext.permissions`**, que devuelve todos los permisos
-   con `Scope.ALL` - en todas las organizaciones, incluidas aquellas en las que
-   no tiene membresía alguna.
+   con `Scope.ALL` - en todas las organizaciones de las que es miembro. No llega
+   a una en la que no tiene membresía: la organización activa se resuelve antes
+   de leer ningún permiso, y eso rechaza a quien no es miembro, incluido un app
+   admin.
 
 El bypass es deliberado y el docstring dice por qué: una persona así administra
 el despliegue y ya tiene acceso a la base de datos, así que fingir lo contrario
@@ -97,8 +99,15 @@ Dos clases de permiso, y se comportan de forma distinta.
 
 Los permisos **globales** son binarios y valen para toda la organización:
 `members:view`, `members:manage`, `roles:manage`, `org:settings`, `org:delete`,
-`budgets:manage`, `approvals:decide`, `connections:view`, `connections:manage`,
-`channels:manage`, `runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`.
+`budgets:manage`, `approvals:decide`, `promotions:override`, `connections:view`, `connections:manage`,
+`channels:manage`, `runs:view`, `audit:read`, `ml:invoke`, `api_keys:create`, `api_keys:manage`, `personal:consent`.
+
+Aprobar rutinas y watches personales requiere el scope explícito `personal:consent`, seleccionado en **Custom** al emitir una clave o autorizar un cliente MCP. Se excluye de todos los preajustes, incluido **Full access**. La confirmación permite a la credencial aprobar rutinas y watches persistentes que usan tus conexiones y datos personales; los scopes habituales `agents:run` y `runs:view` no lo permiten. Las claves y autorizaciones MCP existentes no obtienen consentimiento personal automáticamente.
+
+`promotions:override` promociona una versión a un
+[entorno que guardan sus suites de evals](environments.md#guarding-a-promotion-with-evals)
+aunque no hayan pasado en ella, y cambia qué suites guardan uno. Lo tienen
+owners y admins; promocionar en sí sigue siendo `agents:publish` sobre el agent.
 
 `api_keys:create` permite a un miembro emitir [claves de
 API](api.md#organization-api-keys) para sí mismo; `api_keys:manage` lista y
@@ -130,8 +139,26 @@ de lo que su emisor tiene ahora.
     concedieran también crear, editar y borrar. Aquí nada implica un permiso a
     partir de otro, así que un rol que gestiona conexiones tiene los dos.
 
+    `connections:manage` también edita perfiles de modelo, y una edición mueve a
+    cada agent sobre el perfil, incluidos los que quien edita no puede editar: un
+    endpoint nuevo recibe sus peticiones desde el siguiente run. La clave sigue
+    protegida. Poner la clave de un perfil, o mover el endpoint de un perfil que
+    tiene clave, requiere `secrets:view` sobre esa clave
+    ([Modelos](models.md#changing-a-profiles-key-or-endpoint)).
+
+    `connections:manage` es también lo que lista las integraciones de
+    sincronización de la organización: las fuentes de todas las bases, con su
+    configuración, el secreto del vault que usa cada una y su último error, y las
+    fuentes sin asignar. `/org/integrations` y `GET /rag/sync/sources` devuelven
+    esa lista, y la oferta del asistente de la base de conocimiento de reutilizar
+    una (`GET /kb/{kb_id}/sync-sources/org-integrations`) la devuelve sin la base
+    en la que está abierta. Leer una base, o tener una concesión sobre ella, no
+    abre esa lista. Sin el permiso,
+    `GET /rag/sync/sources` lista solo las fuentes que alimentan una base que lee
+    quien llama, y el asistente omite la oferta.
+
 Los permisos de **recurso** llevan un `Scope`, porque responden a la segunda
-pregunta que un rol no puede: no "¿puede este rol tocar agents?" sino *qué*
+pregunta que un rol no puede: no "¿puede este rol tocar agents?" sino _qué_
 agents.
 
 `mcp:manage` es uno de ellos: un servidor MCP de la organización se puede limitar
@@ -145,7 +172,7 @@ a grupos o personas, como un skill
 Ordenado `NONE < OWN < SHARED < TEAM < ALL`.
 
 | Scope | Alcanza |
-|---|---|
+| --- | --- |
 | `NONE` | nada |
 | `OWN` | las filas que esta persona posee |
 | `SHARED` | las suyas, más lo que sea visible para la organización |
@@ -165,7 +192,7 @@ Hoy `TEAM` no lo usa ningún rol integrado; existe para los roles personalizados
 ### Los roles integrados { #the-built-in-roles }
 
 | Rol | Idea | Agents | Secretos | Globales |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `owner` | posee la organización | todos `ALL` | `ALL` | todo, incluido `org:delete` |
 | `admin` | la lleva en el día a día | todos `ALL` | `ALL` | todo **menos** `org:delete` |
 | `builder` | construye, y aprende de toda la organización | `view`/`run` `ALL`, `edit`/`publish` `SHARED` | `view` `SHARED`, `edit` `OWN` | `mcp:manage` `SHARED`, `connections:view`+`connections:manage`, `runs:view`, `ml:invoke`, `api_keys:create`, `members:view` |
@@ -189,7 +216,7 @@ resuelve a ningún permiso en lugar de a los de otro.
 
 ### Quién puede repartir qué rol { #who-may-hand-out-which-role }
 
-Tener `roles:manage` dice que un miembro puede cambiar roles; no dice *cuáles*.
+Tener `roles:manage` dice que un miembro puede cambiar roles; no dice _cuáles_.
 `assignable_roles` responde eso a partir del catálogo: un rol puede asignar otro
 cuya autoridad excede estrictamente - cada permiso que tiene el rol ofrecido,
 sostenido al menos igual de ampliamente por quien asigna, más algo que quien
@@ -221,7 +248,7 @@ organización, así que esa página tenía dos nociones de "qué tenant".
 
 Ahora son una. El `ActiveOrgGuard` del dashboard adopta la organización que
 nombra una ruta, antes de que la página pregunte nada, así que lo que quien llama
-puede hacer allí es lo que puede hacer *allí* (#1032).
+puede hacer allí es lo que puede hacer _allí_ (#1032).
 
 **Una invitación es un enlace, y quien la envía siempre se queda con una copia.**
 
@@ -245,7 +272,7 @@ ofrece lo que responde `assignableRoles` en
 `GET /roles/catalog` ya devuelve con los permisos de cada rol.
 
 Es aritmética en el cliente por la misma razón que lo es en el servidor: un
-selector que llevaba una *lista* ofrecía todos los roles menos `owner` a
+selector que llevaba una _lista_ ofrecía todos los roles menos `owner` a
 quienquiera que preguntara, así que a un Admin se le ofrecía Admin y se le
 rechazaba después de teclear la dirección de correo (#1028).
 
@@ -262,7 +289,7 @@ Todo recurso compartible lleva un `owner_user_id` y una `visibility` (`private` 
 `team` | `org`). Encima de eso, `resource_grants` guarda una fila por cada cosa
 compartida: un recurso, una persona o un [grupo](directory.md#groups), un nivel.
 Una fila así es una **concesión**
-(*grant*).
+(_grant_).
 
 **Un agent nuevo es `org` salvo que su autora diga otra cosa**, y el diálogo que
 lo crea lo pregunta. Un agent es algo que una empresa construye, así que la
@@ -273,17 +300,19 @@ decía que no existía. Un borrador no puede ejecutarse igualmente y ninguna
 exposición lo alcanza, así que esto decide quién lo ve, no lo que hace.
 
 | Nivel | Permite |
-|---|---|
+| --- | --- |
 | `read` | ver la configuración |
 | `use` | además ejecutarlo o adjuntarlo |
 | `edit` | además cambiarlo |
+| `edit_data` | además cambiar qué datos muestra la página - [solo páginas](#a-page-that-reads-data) |
 
 En la consola es un solo diálogo, como se comparte un documento: el botón
 **Share** de un agent, un skill, una base de conocimiento o un archivo de contexto
+
 - en cualquier momento después de crearlo, no solo al crearlo - añade una persona
-o un grupo con un nivel, lista quién tiene
-acceso con el propietario primero y fija el **acceso general** - *Only people with
-access* es `private`, *Everyone in the organization* es `org`.
+  o un grupo con un nivel, lista quién tiene
+  acceso con el propietario primero y fija el **acceso general** - _Only people with
+  access_ es `private`, _Everyone in the organization_ es `org`.
 
 Una concesión a un grupo alcanza a quien esté en el grupo en el momento en que se
 comprueba el acceso, así que entrar en el grupo es ganar el acceso y salir de él
@@ -294,7 +323,7 @@ organización no alcanza a nadie aquí aunque una fila lo nombrara.
 
 La tabla es deliberadamente genérica - `resource_type` + `resource_id`, sin clave
 foránea al objetivo - porque los agents, las colecciones, los skills, los
-archivos de contexto y las claves guardadas comparten todos las mismas reglas. La
+archivos de contexto, las [tablas](virtual-tables.md), los workflows y las claves guardadas comparten todos las mismas reglas. La
 contrapartida es que la base de datos no puede borrar en cascada una concesión
 cuando su objetivo desaparece, así que los servicios borran las concesiones junto
 al recurso.
@@ -344,7 +373,7 @@ resuelve a qué puede llegar el agent.
 La respuesta es **quien publicó la superficie**, y el respaldo es la parte que
 conviene conocer: `viewer` cuando esa persona ya no es miembro, `viewer` cuando
 su cuenta ha sido desactivada, y `viewer` cuando no se registró publicador
-alguno. Una salida no debe *ampliar* en silencio a lo que llega una superficie
+alguno. Una salida no debe _ampliar_ en silencio a lo que llega una superficie
 pública, y un widget en el sitio de un cliente sobrevive a la persona que lo
 pegó.
 
@@ -373,15 +402,27 @@ hace falta filtrar") y una **lista vacía** para un contexto sin sujeto. Son
 opuestos, así que confundirlos ampliaría un listado a toda la organización
 justo en el momento en que debería estrecharse a nada.
 
-`accessible_ids` es la contraparte por lotes de `resolve_access`: dada una página
-de filas ya cargadas, devuelve el subconjunto sobre el que quien llama puede
-ejercer un permiso. Aplica la misma regla `max(role scope, grant)` por fila, pero
-lee todas las concesiones en una consulta en vez de una por fila, y ninguna
-cuando el rol alcanza todo. Es lo que rellena las banderas de capacidad de un
-listado - `AgentRead.can_run`, el suelo para ofrecer "new trigger" en una tarjeta
-- así que un Viewer con concesión de run ve el control ahí y en ningún otro
-sitio. Un contexto sin sujeto, y una entrada vacía, se resuelven al conjunto
-vacío antes de consultar.
+`accessible_ids` es la contraparte por lotes de `resolve_access`: dada una
+página de filas ya cargadas, devuelve el subconjunto sobre el que quien llama
+puede ejercer un permiso. Aplica la misma regla `max(role scope, grant)` por
+fila, pero lee todas las concesiones en una consulta en vez de una por fila, y
+ninguna cuando el rol alcanza todo.
+
+`accessible_ids` es lo que rellena las banderas de capacidad
+de un listado - `AgentRead.can_run`, el suelo para ofrecer "new trigger" en una
+tarjeta, `AgentRead.can_edit`, con el que la consola ofrece la edición en la
+página del agent, probar un borrador o detener un eval run, y
+`AgentRead.can_publish`, para publicar - así que un Viewer con concesión de run
+ve el control ahí y en ningún otro sitio.
+
+Un contexto sin sujeto, y una entrada vacía, se resuelven al conjunto vacío
+antes de consultar.
+
+Las listas de contextos, skills y secretos incluyen `can_edit` por recurso.
+La consola usa ese acceso efectivo para editar, borrar, compartir y rotar claves.
+Un Viewer con concesión de edición obtiene los controles; un Builder con solo
+lectura sobre un recurso privado ajeno no. Crear recursos sigue dependiendo del
+permiso del rol. El servidor vuelve a comprobar cada escritura.
 
 Los listados de agents, skills y kb aceptan además `?shared_with_me=true`: solo
 las filas compartidas deliberadamente con quien llama - visibles para la
@@ -391,7 +432,78 @@ cuidado: un rol que alcanza todo nunca busca sus concesiones para un listado
 normal, así que el filtro las trae de todas formas - sin eso, el "compartido
 conmigo" de un Builder degeneraría en "toda la organización menos lo mío". Para
 kb excluye además las filas personales (las de quien llama, por construcción) y
-las de ámbito de aplicación (las del despliegue - nunca compartidas *con* nadie).
+las de ámbito de aplicación (las del despliegue - nunca compartidas _con_ nadie).
+
+### Runs de workflows { #workflow-runs }
+
+Un run no tiene visibilidad propia: hereda la de su workflow. Iniciar uno exige
+`workflows:run` sobre el workflow, y un run `test` del borrador sin publicar
+exige además `workflows:edit`. Leer un run y sus eventos exige
+`workflows:view`, y la lista sin filtro muestra los runs de los workflows que el
+llamante puede ver - los suyos, los visibles para la organización y los
+compartidos con él. Un run que el llamante no puede ver responde exactamente
+igual que un run que no existe.
+
+**Cancelar es más estricto que iniciar.** Quien inició un run puede cancelarlo
+mientras siga pudiendo ejecutar el workflow, y cualquiera que pueda editar el
+workflow puede cancelar cualquiera de sus runs. Un Member que puede ejecutar un
+workflow visible para la organización detiene sus propios runs, no los de un
+compañero; ver el run sin ninguno de los dos derechos se rechaza con `403`.
+Reintentar un run cancelado requiere el mismo derecho, así que un run que alguien
+detuvo no lo vuelve a iniciar un miembro que no podía detenerlo.
+
+**Un run actúa en nombre de quien lo inició, y eso se comprueba de nuevo en cada
+nodo.** Un nodo puede despacharse días después de que empezara el run, así que
+cada despacho exige que la cuenta siga activa, siga siendo miembro de la
+organización - también un app admin, como en cada solicitud - y siga teniendo
+`workflows:run` sobre el workflow, y además `workflows:edit` en un run `test`.
+Si algo de eso
+ha cambiado, el run falla con `PRINCIPAL_REVOKED` antes de que se ejecute el
+handler del nodo. Un run necesita a una persona en cuyo nombre actuar, así que
+un contexto sin sujeto no puede iniciarlo.
+
+## Una página que lee datos { #a-page-that-reads-data }
+
+Una [página publicada vinculada a datos de tabla](artifacts.md#live-data) es el único sitio
+donde una persona lee una tabla **con la autoridad de otra**. A cada lector se le sirven los
+registros de la página mediante sus page queries, leídos con el acceso del **propietario** de
+la página, sea cual sea su propio rol o sus concesiones sobre la tabla. Así, las capas de arriba
+deciden quién puede abrir la página, y un conjunto más de reglas decide quién puede ampliar eso.
+
+**El acceso del propietario respalda cada carga.** El propietario de la página debe ser un
+miembro activo y tener `read` sobre cada tabla que alcanzan las queries, en cada servicio; si
+no, los datos quedan `unavailable` (`creator_gone`, `creator_lost_access`). A quien publica
+también se le exige leer cada tabla, al publicar, para que nadie vincule lo que no puede leer.
+
+**El consentimiento lo comparte.** El acuerdo del propietario para compartir los datos de una
+versión es por versión, se da como él mismo (no bajo suplantación, no con una clave de API, nunca
+mediante una herramienta de agent) y se guarda con la membresía del propietario. Un Owner o
+Admin - `artifacts:edit` con alcance `ALL` - puede confirmar por el propietario, con auditoría
+como tal. Una concesión para editar la página no basta. Cualquier editor puede retirarlo, ya que
+retirar solo estrecha; además baja a `edit` cada concesión `edit_data` de la página.
+
+**`edit_data` es un nivel de concesión, no un rol.** «Can edit, including data» está por encima
+de `edit` y solo se acepta para páginas (una restricción de la base de datos lo rechaza en
+otros recursos). Es un consentimiento permanente para las republicaciones de esa persona o de
+ese grupo. Solo el propietario, o un Owner o Admin, como ellos mismos, lo concede o lo sube,
+tras confirmar lo que permite. Quien puede editar lo baja. Se lee como nivel de concesión
+(`grant_level`), nunca mediante `resolve_access`, y ningún alcance de rol lo implica.
+
+**La propiedad se cambia, nunca se reclama.** El propietario, o un Owner o Admin en cualquier
+página, la entrega a un miembro activo como ellos mismos; una concesión para editar no lo
+permite. El cambio anula todos los consentimientos, baja las concesiones `edit_data` a `edit`
+y desactiva el consentimiento automático. Tomar una página sin propietario haciéndola privada es
+el mismo acto y la misma regla.
+
+**Ampliar está vigilado.** Delante de las rutas genéricas de compartir hay una guarda para las
+páginas que leen datos: una visibilidad más amplia, una concesión nueva o un nivel más alto es
+decisión del propietario, o de un Owner o Admin por él, una vez confirmados los datos. Cualquier
+otro con `edit` recibe una [solicitud](artifacts.md#share-requests) en lugar de una negativa.
+Estrechar está abierto a todo editor, y una página que no lee datos conserva las reglas
+genéricas. Los admins actúan directamente en lugar de presentar una solicitud. Los tres permisos
+que usa una página son `artifacts:view`, `artifacts:edit` y, para las tablas, `tables:view`;
+Owner, Admin, Builder y Operator tienen el primero y el último con alcance `ALL`, por lo que
+forman parte de la audiencia de toda página.
 
 ## Dónde van las puertas { #where-the-gates-go }
 
@@ -437,6 +549,23 @@ los rechazos.
     lo que esperan sus sujetos solo es defendible si ellos pueden enterarse. Una
     respuesta más estrecha sería un permiso propio, no una ruta más callada.
 
+### Un agent de sistema es un ajuste de la organización { #system-agents }
+
+Un [agent de sistema](concepts.md#system-agents) - un juez, un generador de
+casos, un redactor o clasificador de lagunas, el asistente de mejora - califica,
+redacta o propone para todos los que usan lo que sirve. Por eso cambiarlo
+requiere `org:settings` además de `agents:edit` o `agents:publish` sobre la
+fila: su borrador, una importación YAML, una publicación, una restauración,
+archivarlo o borrarlo, sus entornos. De lo contrario un Builder llegaría a los
+sembrados a través de su visibilidad en toda la organización. Leer, ejecutar y
+crear uno mantienen sus permisos habituales; un juez que un Builder crea para un
+dataset se publica enseguida, y los cambios posteriores requieren un
+administrador.
+
+La comprobación está en `AgentRegistryService.get`, así que cada camino de
+escritura la cumple, y `can_edit`/`can_publish` valen false para quien no la
+tiene.
+
 ## La delegación no es una frontera de privilegio { #delegation-is-not-a-privilege-boundary }
 
 Un agent puede [delegar en otro agent](concepts.md#delegate-vs-inline-specialist),
@@ -456,7 +585,7 @@ Eso es deliberado, y la alternativa es peor. Volver a comprobar por cada quien
 llama haría que un agent publicado funcionara para un colega y no para otro,
 sobre la misma versión, con la diferencia visible en ninguna parte - y
 significaría que la respuesta de un agent de soporte dependiera de a cuáles de
-sus delegados le hubieran dado acceso *a quien pregunta*. Prestar un delegado es
+sus delegados le hubieran dado acceso _a quien pregunta_. Prestar un delegado es
 prestar lo que tienes, exactamente igual que atar una colección.
 
 !!! note "Un rechazo dice 'Agent not found'"
@@ -506,13 +635,13 @@ rastro de auditoría y la puerta de aprobación se indexan todos por uno.
 
 Las superficies abiertas a personas que este despliegue no puede nombrar no usan
 ese constructor. Una página alojada, un widget y un canal ejecutan cada uno el
-turno como quien lo *publicó* - el dueño del embed, o el binding que puso el
+turno como quien lo _publicó_ - el dueño del embed, o el binding que puso el
 agent en el bot - cayendo a `viewer` cuando esa persona ha dejado la organización
 o su cuenta ha sido desactivada, para que ninguna de las dos cosas pueda ampliar
 en silencio a lo que llega una superficie pública. El sujeto es por tanto uno
 real, y no es la persona que tecleó el mensaje.
 
-Quien envía por un canal y *sí* ha vinculado una cuenta de miembro se ejecuta
+Quien envía por un canal y _sí_ ha vinculado una cuenta de miembro se ejecuta
 como ese miembro — y la misma lectura unida decide si sigue siéndolo. La
 desactivación deja en su sitio tanto la fila de membresía como el vínculo de la
 cuenta de chat, así que un rol leído solo de la membresía mantenía a un Owner ya
@@ -533,7 +662,7 @@ por alguien que sí tenía un rol.
 ## Lo que lee el frontend { #what-the-frontend-reads }
 
 | Endpoint | Responde |
-|---|---|
+| --- | --- |
 | `GET /me/permissions` | el rol de quien llama, `is_app_admin`, y cada permiso con su scope |
 | `GET /roles/catalog` | el catálogo entero y lo que agrupa cada rol |
 
@@ -551,6 +680,9 @@ que ignore estas APIs no gana nada.
   amplía; nunca estrecha.**
 - `require(...)` va en las rutas de **colección**. Cualquier cosa que actúe sobre
   una fila le entrega la decisión a un servicio que llama a `resolve_access`.
+- Una página que lee datos de tabla se lee con el acceso de su **propietario** y solo se
+  comparte con el consentimiento del propietario; ampliarla es cosa del propietario, y
+  cualquier otro presenta una solicitud.
 - Una superficie sin nadie delante se ejecuta como **quien la publicó**, cayendo
   a `viewer` cuando esa persona se fue o fue desactivada.
 

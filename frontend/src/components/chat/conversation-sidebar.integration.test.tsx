@@ -14,15 +14,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { Conversation } from "@/types/conversation";
 import { ConversationSidebar } from "./conversation-sidebar";
 import { apiClient } from "@/lib/api-client";
+import { toast } from "sonner";
+import * as invalidation from "@/lib/coalesced-invalidation";
 import {
   useAgentSelectionStore,
   useChatBandsStore,
   useConversationStore,
   useWorkingStore,
+  useOrgStore,
 } from "@/stores";
 
 vi.mock("@/lib/api-client", () => ({
@@ -58,7 +62,10 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/chat",
 }));
 
-function conversation(id: string, title: string, favourite = false) {
+/** What `/conversations/shared-with-me` answers with: nothing, unless a test shares something. */
+let shared: Conversation[] = [];
+
+function conversation(id: string, title: string, favourite = false): Conversation {
   return {
     id,
     title,
@@ -74,6 +81,9 @@ function conversation(id: string, title: string, favourite = false) {
 function serve(items: ReturnType<typeof conversation>[], total = items.length) {
   vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
     if (path.includes("/messages")) return { items: [], total: 0 };
+    if (path.startsWith("/conversations/shared-with-me"))
+      return { items: shared, total: shared.length };
+    if (path === "/orgs") return { items: [{ id: "fallback", is_personal: true }], total: 1 };
     // The trigger-menu gate sweeps /agents itself for a runnable one.
     if (path === "/agents") return { items: mockAgents, total: mockAgents.length };
     return { items, total };
@@ -85,7 +95,13 @@ function listRequests(): string[] {
   return vi
     .mocked(apiClient.get)
     .mock.calls.map(([path]) => path as string)
-    .filter((path) => !path.includes("/messages") && path !== "/agents");
+    .filter(
+      (path) =>
+        !path.includes("/messages") &&
+        !path.startsWith("/conversations/shared-with-me") &&
+        path !== "/agents" &&
+        path !== "/orgs",
+    );
 }
 
 function mount() {
@@ -93,13 +109,15 @@ function mount() {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return render(<ConversationSidebar />, { wrapper });
+  return { ...render(<ConversationSidebar />, { wrapper }), client };
 }
 
 /** The desktop list. `ConversationSidebar` also renders a mobile sheet. */
 function list(): HTMLElement {
   return screen.getAllByRole("complementary")[0] as HTMLElement;
 }
+
+afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,6 +126,7 @@ beforeEach(() => {
   useConversationStore.getState().reset();
   useWorkingStore.getState().reset();
   useChatBandsStore.setState({ folded: [], opened: [] });
+  shared = [];
   mockAgents = [{ id: "a-1", name: "Analyst", status: "published", can_run: true }];
   serve([conversation("c-1", "Quarterly numbers")]);
 });
@@ -132,6 +151,103 @@ describe("the list the URL asks for", () => {
     mount();
 
     await waitFor(() => expect(listRequests().at(-1)).toContain("sort_by=updated_at"));
+  });
+});
+
+describe("a sidebar that leaves while refreshing", () => {
+  it("opens a deep link when the initial organization resolves during invalidation", async () => {
+    window.history.replaceState({}, "", "/chat?id=c-initial");
+    useOrgStore.setState({ activeOrgId: null });
+    let finish = () => {};
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockReturnValue(pending);
+    try {
+      mount();
+      await waitFor(() => expect(invalidate).toHaveBeenCalled());
+      await act(async () => useOrgStore.getState().setActiveOrgId("fallback"));
+      await act(async () => {
+        finish();
+        await pending;
+      });
+      await waitFor(() =>
+        expect(useConversationStore.getState().currentConversationId).toBe("c-initial"),
+      );
+    } finally {
+      invalidate.mockRestore();
+    }
+  });
+
+  it("loads the transcript again after leaving during its first request", async () => {
+    window.history.replaceState({}, "", "/chat?id=c-reopen");
+    const serveNormally = vi.mocked(apiClient.get).getMockImplementation();
+    let refuseFirst: (reason: unknown) => void = () => {};
+    let messagesRead = 0;
+    vi.mocked(apiClient.get).mockImplementation(async (path, options) => {
+      if (path === "/conversations/c-reopen/messages?latest=true&limit=101") {
+        messagesRead += 1;
+        if (messagesRead === 1)
+          return new Promise((_, reject) => {
+            refuseFirst = reject;
+          });
+        return {
+          items: [{ id: "m-restored", role: "assistant", content: "Already answered" }],
+          total: 1,
+        };
+      }
+      return serveNormally?.(path, options);
+    });
+    const first = mount();
+    await waitFor(() => expect(messagesRead).toBe(1));
+    first.unmount();
+    mount();
+    await waitFor(() => expect(messagesRead).toBe(2));
+    await act(async () => refuseFirst(new DOMException("cancelled", "AbortError")));
+    await waitFor(() =>
+      expect(useConversationStore.getState().currentMessages[0]?.id).toBe("m-restored"),
+    );
+    expect(useConversationStore.getState().currentConversationId).toBe("c-reopen");
+  });
+
+  it("does not restore a linked transcript after unmount during invalidation", async () => {
+    window.history.replaceState({}, "", "/chat?id=c-late");
+    let finish = () => {};
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let finishTranscript = (_: unknown) => {};
+    const transcript = new Promise((resolve) => {
+      finishTranscript = resolve;
+    });
+    const ordinaryGet = vi.mocked(apiClient.get).getMockImplementation();
+    vi.mocked(apiClient.get).mockImplementation(async (path, options) => {
+      if (path === "/conversations/c-late/messages?latest=true&limit=101") return transcript;
+      return ordinaryGet?.(path, options);
+    });
+    const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockReturnValue(pending);
+    try {
+      const { unmount } = mount();
+      await waitFor(() => expect(invalidate).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(vi.mocked(apiClient.get).mock.calls.map(([path]) => path)).toContain(
+          "/conversations/c-late/messages?latest=true&limit=101",
+        ),
+      );
+      unmount();
+      await act(async () => {
+        finish();
+        finishTranscript({
+          items: [{ id: "m-late", role: "assistant", content: "Late" }],
+          total: 1,
+        });
+        await Promise.all([pending, transcript]);
+      });
+      expect(useConversationStore.getState().currentConversationId).toBeNull();
+      expect(useConversationStore.getState().currentMessages).toEqual([]);
+    } finally {
+      invalidate.mockRestore();
+    }
   });
 });
 
@@ -183,6 +299,11 @@ describe("what the sidebar says about the list", () => {
     const other = within(list()).getByText("Other one").closest("[class*='group']") as HTMLElement;
     expect(within(other).queryByText(/Working/)).toBeNull();
 
+    act(() => useWorkingStore.getState().setWaiting("c-2", "awaiting_answer"));
+    expect(within(asked).getByText("Waiting for an answer")).toBeInTheDocument();
+    expect(within(asked).queryByText(/Working/)).toBeNull();
+    act(() => useWorkingStore.getState().setWaiting("c-2", null));
+    expect(within(asked).getByText(/Working/)).toBeInTheDocument();
     act(() => useWorkingStore.getState().stop("c-2"));
     expect(within(asked).queryByText(/Working/)).toBeNull();
   });
@@ -205,6 +326,65 @@ describe("what the sidebar says about the list", () => {
       .getByText("Left mid-answer")
       .closest("[class*='group']") as HTMLElement;
     expect(within(row).getByText(/Working/)).toBeInTheDocument();
+  });
+
+  it("keeps the local turn clock authoritative and ignores an already completed listed run", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const now = Date.now();
+    useWorkingStore.getState().start("c-2", new Date(now - 3_000).toISOString());
+    serve([
+      {
+        ...conversation("c-2", "Queued turns"),
+        running_since: new Date(now - 120_000).toISOString(),
+      },
+    ]);
+    const { client } = mount();
+    await screen.findAllByText("Queued turns");
+    const row = within(list()).getByText("Queued turns").closest("[class*='group']") as HTMLElement;
+    act(() => vi.advanceTimersByTime(1000));
+    expect(within(row).getByText(/Working for 4s/)).toBeInTheDocument();
+    act(() => {
+      useWorkingStore.getState().finish("c-2");
+      useWorkingStore.getState().stop("c-2");
+    });
+    expect(within(row).queryByText(/Working/)).not.toBeInTheDocument();
+    // A genuinely new server-side turn still appears after the local completion.
+    serve([
+      {
+        ...conversation("c-2", "Queued turns"),
+        running_since: new Date(Date.now() + 1_000).toISOString(),
+      },
+    ]);
+    await act(() => client.invalidateQueries());
+    await waitFor(() => expect(within(row).getByText(/Working/)).toBeInTheDocument());
+    vi.useRealTimers();
+  });
+
+  it("keeps an overlapping run visible after another run in that chat finishes", async () => {
+    const started = new Date(Date.now() - 120_000).toISOString();
+    serve([
+      {
+        ...conversation("c-2", "Overlapping work"),
+        running_since: started,
+        running_run_ids: ["done", "other"],
+      },
+    ]);
+    const { client } = mount();
+    await screen.findAllByText("Overlapping work");
+    const row = within(list())
+      .getByText("Overlapping work")
+      .closest("[class*='group']") as HTMLElement;
+    act(() => useWorkingStore.getState().finish("c-2", "done"));
+    expect(within(row).getByText(/Working/)).toBeInTheDocument();
+    serve([
+      {
+        ...conversation("c-2", "Overlapping work"),
+        running_since: started,
+        running_run_ids: ["done"],
+      },
+    ]);
+    await act(() => client.invalidateQueries());
+    await waitFor(() => expect(within(row).queryByText(/Working/)).not.toBeInTheDocument());
   });
 
   it("lets a handed-off mark go when the listing never shows the run", async () => {
@@ -261,6 +441,129 @@ describe("what the sidebar says about the list", () => {
     expect(within(list()).getByText("Today")).toBeInTheDocument();
     expect(within(list()).getByText("Older")).toBeInTheDocument();
     expect(within(list()).queryByText("214 conversations")).toBeNull();
+  });
+
+  it("files the threads started in a project under it, above the days", async () => {
+    vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+      if (path.includes("/messages")) return { items: [], total: 0 };
+      if (path === "/orgs") return { items: [{ id: "fallback", is_personal: true }], total: 1 };
+      if (path === "/agents") return { items: [], total: 0 };
+      if (path.startsWith("/projects"))
+        return { items: [{ id: "p-1", name: "Q3 launch" }], total: 1 };
+      if (path.startsWith("/conversations/shared-with-me")) return { items: [], total: 0 };
+      return {
+        items: [
+          { ...conversation("c-1", "Press release"), project_id: "p-1" },
+          { ...conversation("c-2", "Old brief"), project_id: "p-gone" },
+          { ...conversation("c-3", "Lunch ideas"), updated_at: new Date().toISOString() },
+        ],
+        total: 3,
+      };
+    });
+    mount();
+    await screen.findAllByText("Press release");
+
+    const headings = within(list())
+      .getAllByRole("button", { expanded: true })
+      .map((heading) => heading.textContent);
+    // Each project heading carries its initial's tile before the name.
+    expect(headings.slice(0, 3)).toEqual(["QQ3 launch", "AA project", "Today"]);
+  });
+
+  it("lists the threads shared with the reader under their own heading, leaving out the owner's actions", async () => {
+    shared = [{ ...conversation("c-shared", "Their pricing plan"), user_id: "someone-else" }];
+    mount();
+    await screen.findAllByText("Their pricing plan");
+
+    const band = within(list()).getByRole("button", { name: /Shared with you/ });
+    expect(band).toHaveAttribute("aria-expanded", "true");
+    // Rename, share, archive and delete are the owner's; leaving is the reader's own.
+    const row = within(list()).getByText("Their pricing plan").closest(".group") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+    expect(within(row).getByRole("button", { name: "Remove from my chats" })).toBeInTheDocument();
+    // Above the next row's agent faces, which stack up to z-30.
+    expect(row).toHaveClass("z-40");
+    expect(within(row).queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it("opens no conversation when its menu is opened, or closed by clicking away", async () => {
+    serve([conversation("c-1", "Quarterly numbers")]);
+    mount();
+    await screen.findAllByText("Quarterly numbers");
+    const row = within(list()).getByText("Quarterly numbers").closest(".group") as HTMLElement;
+
+    await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+    // The layer that closes the menu covers the page; a click anywhere lands on it.
+    await userEvent.click(row.querySelector(".fixed.inset-0") as HTMLElement);
+
+    expect(within(row).queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(useConversationStore.getState().currentConversationId).toBeNull();
+
+    // Nor a click on the menu itself, between its items.
+    await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Rename" }).parentElement!);
+    expect(useConversationStore.getState().currentConversationId).toBeNull();
+  });
+
+  it("takes a shared thread out of the reader's chats, and closes it if it was open", async () => {
+    shared = [conversation("c-shared", "Their pricing plan")];
+    vi.mocked(apiClient.delete).mockImplementation(async () => {
+      shared = [];
+      return undefined;
+    });
+    useConversationStore.getState().setCurrentConversationId("c-shared");
+    mount();
+    await screen.findAllByText("Their pricing plan");
+
+    const row = within(list()).getByText("Their pricing plan").closest(".group") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Remove from my chats" }));
+
+    expect(apiClient.delete).toHaveBeenCalledWith("/conversations/c-shared/shared-with-me");
+    await waitFor(() => expect(within(list()).queryByText("Their pricing plan")).toBeNull());
+    expect(useConversationStore.getState().currentConversationId).toBeNull();
+    expect(toast.success).toHaveBeenCalledWith("Removed from your chats");
+  });
+
+  it("says so when a shared thread could not be removed, and keeps it", async () => {
+    shared = [conversation("c-shared", "Their pricing plan")];
+    vi.mocked(apiClient.delete).mockRejectedValue("boom");
+    useConversationStore.getState().setCurrentConversationId("c-shared");
+    mount();
+    await screen.findAllByText("Their pricing plan");
+
+    const row = within(list()).getByText("Their pricing plan").closest(".group") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Remove from my chats" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Failed to remove the conversation"),
+    );
+    expect(useConversationStore.getState().currentConversationId).toBe("c-shared");
+  });
+
+  it("leaves out a shared thread its owner archived", async () => {
+    shared = [
+      conversation("c-live", "Their live plan"),
+      { ...conversation("c-old", "Their old plan"), is_archived: true },
+    ];
+    mount();
+    await screen.findAllByText("Their live plan");
+
+    expect(within(list()).queryByText("Their old plan")).toBeNull();
+  });
+
+  it("leaves the shared heading out of the archive and out of an agent filter", async () => {
+    shared = [conversation("c-shared", "Their pricing plan")];
+    urlParams = new URLSearchParams("view=archived");
+    mount();
+    await screen.findAllByText("Quarterly numbers");
+
+    expect(screen.queryByText("Their pricing plan")).toBeNull();
+    expect(vi.mocked(apiClient.get).mock.calls.map(([path]) => path)).not.toContain(
+      "/conversations/shared-with-me?skip=0&limit=50&include_archived=false",
+    );
   });
 
   it("keeps one run, without days, in an order that is not by date", async () => {
@@ -327,6 +630,15 @@ describe("the collapsed rail", () => {
     return screen.getByRole("button", { name: "Expand conversations sidebar" }).parentElement!
       .parentElement as HTMLElement;
   }
+
+  it("keeps the shared threads under their own mark", async () => {
+    shared = [conversation("c-shared", "Their pricing plan")];
+
+    const rail = await collapse();
+
+    expect(await within(rail).findByRole("button", { name: "Shared with you" })).toBeVisible();
+    expect(within(rail).getByRole("button", { name: "Their pricing plan" })).toBeVisible();
+  });
 
   it("offers the recent threads, named, without expanding", async () => {
     serve([conversation("c-1", "Quarterly numbers"), conversation("c-2", "Refund policy")]);
@@ -510,6 +822,23 @@ describe("the favourites band", () => {
     );
   });
 
+  it("offers no share on a project's chat - the project decides who reads it", async () => {
+    serve([
+      { ...conversation("c-1", "Launch plan"), project_id: "p-1" },
+      conversation("c-2", "My notes"),
+    ] as ReturnType<typeof conversation>[]);
+    mount();
+    await within(list()).findByText("Launch plan");
+
+    const [inProject, ownChat] = within(list()).getAllByRole("button", {
+      name: "Conversation actions",
+    });
+    await userEvent.click(inProject!);
+    expect(within(list()).queryByRole("button", { name: "Share" })).toBeNull();
+    await userEvent.click(ownChat!);
+    expect(within(list()).getByRole("button", { name: "Share" })).toBeInTheDocument();
+  });
+
   it("draws no star on a starred row, since the band it sits in says so", async () => {
     serve([conversation("c-1", "Rota cover", true)]);
     mount();
@@ -682,4 +1011,95 @@ describe("who a row is with", () => {
     const faces = within(list()).getAllByTestId("row-agents");
     expect(faces.map((face) => face.textContent)).toEqual(["Analyst"]);
   });
+});
+
+it("lets the chat header drag the desktop window while keeping its actions accessible", async () => {
+  mount();
+  await screen.findAllByText("Quarterly numbers");
+  const header = within(list()).getByRole("heading", { name: "Chats" }).parentElement;
+  expect(header).toHaveAttribute("data-tauri-drag-region", "deep");
+  await userEvent.click(within(list()).getByRole("button", { name: "Search conversations" }));
+  expect(await screen.findByRole("dialog", { name: "Search conversations" })).toBeVisible();
+});
+
+it("shows the coding harness kept by the list API after reopening the sidebar", async () => {
+  const saved: Conversation = {
+    ...conversation("coding-history", "Landing page"),
+    agents: [{ id: "assistant", slug: "assistant", name: "AgenticOS", has_avatar: false }],
+    coding_agents: ["claude_code"],
+  };
+  serve([saved]);
+  const view = mount();
+  expect(await screen.findByText(/AgenticOS · Claude Code/)).toBeVisible();
+  view.unmount();
+  mount();
+  expect(await screen.findByText(/AgenticOS · Claude Code/)).toBeVisible();
+});
+
+it("shows a failed shared list and retries without hiding the reader's own conversations", async () => {
+  const user = userEvent.setup();
+  const own = conversation("own", "My working notes");
+  vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+    if (path.startsWith("/conversations/shared-with-me")) throw new Error("Offline");
+    if (path === "/orgs") return { items: [{ id: "fallback", is_personal: true }], total: 1 };
+    return { items: [own], total: 1 };
+  });
+  mount();
+  expect(
+    await within(list()).findByText("Shared conversations could not be loaded."),
+  ).toBeVisible();
+  expect(within(list()).getByText("My working notes")).toBeVisible();
+  shared = [conversation("shared-recovered", "Team notes")];
+  serve([own]);
+  await user.click(within(list()).getByRole("button", { name: "Retry shared conversations" }));
+  expect(await within(list()).findByText("Team notes")).toBeVisible();
+  expect(
+    within(list()).queryByText("Shared conversations could not be loaded."),
+  ).not.toBeInTheDocument();
+});
+
+it("lets a reader favourite and unfavourite a shared conversation", async () => {
+  shared = [conversation("shared-favourite", "Team pricing")];
+  serve([]);
+  vi.mocked(apiClient.post).mockImplementation(async () => {
+    shared = [{ ...shared[0]!, is_favourite: true }];
+  });
+  vi.mocked(apiClient.delete).mockImplementation(async () => {
+    shared = [{ ...shared[0]!, is_favourite: false }];
+  });
+  mount();
+  await within(list()).findByText("Team pricing");
+  const row = () => within(list()).getByText("Team pricing").closest(".group") as HTMLElement;
+  await userEvent.click(within(row()).getByRole("button", { name: "Conversation actions" }));
+  await userEvent.click(within(row()).getByRole("button", { name: "Favourite" }));
+  await waitFor(() =>
+    expect(apiClient.post).toHaveBeenCalledWith("/conversations/shared-favourite/favourite", {}),
+  );
+  await userEvent.click(within(row()).getByRole("button", { name: "Conversation actions" }));
+  await userEvent.click(
+    await within(row()).findByRole("button", { name: "Remove from favourites" }),
+  );
+  await waitFor(() =>
+    expect(apiClient.delete).toHaveBeenCalledWith("/conversations/shared-favourite/favourite"),
+  );
+});
+
+it("lists a shared channel thread once even when channel participation also lists it", async () => {
+  const row = conversation("shared-channel", "Shared channel planning");
+  shared = [row];
+  serve([row]);
+  mount();
+  await within(list()).findByText("Shared with you");
+  expect(within(list()).getAllByText("Shared channel planning")).toHaveLength(1);
+});
+
+it("uses the usual favourite band for a starred shared thread while retaining its reader menu", async () => {
+  shared = [conversation("shared-starred", "Shared favourite", true)];
+  serve([]);
+  mount();
+  expect(await within(list()).findByRole("button", { name: "Favourites" })).toBeVisible();
+  const row = within(list()).getByText("Shared favourite").closest(".group") as HTMLElement;
+  await userEvent.click(within(row).getByRole("button", { name: "Conversation actions" }));
+  expect(within(row).getByRole("button", { name: "Remove from my chats" })).toBeVisible();
+  expect(within(row).queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
 });

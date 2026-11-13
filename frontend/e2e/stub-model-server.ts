@@ -25,8 +25,9 @@ import { createServer } from "node:http";
  *   accepted is the provider's business, and asserting on it here would be
  *   asserting on this file.
  * - **Call tools on its own initiative.** It answers in one turn unless the
- *   instructions it was sent ask for a delegation, which `delegation.spec.ts`
- *   needs and no other spec asks for - see `DELEGATE`. A stub that decided by
+ *   request asks for a delegation, which `delegation.spec.ts` needs - see
+ *   `DELEGATE` - or names a tool call outright, which
+ *   `artifact-live-data.spec.ts` needs - see `CALL_TOOL`. A stub that decided by
  *   itself which tools to call would be a stub that decides what the agent does,
  *   and the tool paths have their own specs.
  * - **Generate text.** It echoes the token it was told to say, which is the
@@ -37,6 +38,13 @@ import { createServer } from "node:http";
 
 /** Deliberately not 3000 or 8000: the frontend and the API own those. */
 const PORT = Number(process.env.E2E_STUB_MODEL_PORT ?? 4010);
+
+/**
+ * Where it listens. Loopback unless told otherwise: an API in a container cannot
+ * reach the host's `127.0.0.1`, so a run against one binds `0.0.0.0` and names
+ * the host's address in the model profile instead.
+ */
+const BIND = process.env.E2E_STUB_MODEL_BIND ?? "127.0.0.1";
 
 /**
  * What the caller asked to be said back.
@@ -84,14 +92,35 @@ const TASK_TOOL = "task";
  */
 const DELEGATED_TASK = "Say your line.";
 
+/**
+ * A tool call the request spells out in full: `CALL-TOOL:<tool>:<arguments>`,
+ * the arguments as base64url JSON.
+ *
+ * `DELEGATE`'s sibling, for a tool whose arguments are the spec's to choose - a
+ * page and the views it binds, which only the spec knows the ids of. The stub
+ * decides nothing: it decodes what it was given and calls the tool it was named,
+ * under the same two guards as a delegation (`toolCallFor`). base64url because
+ * the arguments are JSON holding HTML, and a prompt that carried them raw would
+ * be one quote away from a directive this pattern no longer matches.
+ */
+const CALL_TOOL = /\bCALL-TOOL:([A-Za-z0-9_]+):([A-Za-z0-9_-]+)/;
+
+/** One tool call this stub answers with: the tool, and its arguments as JSON text. */
+interface ToolCall {
+  name: string;
+  arguments: string;
+}
+
 interface ChatMessage {
   role?: string;
   content?: unknown;
+  tool_call_id?: string;
+  tool_calls?: { id?: string; function?: { name?: string } }[];
 }
 
 /** As much of a tool declaration as deciding whether to call one needs. */
 interface ChatTool {
-  function?: { name?: string };
+  function?: { name?: string; parameters?: { properties?: Record<string, unknown> } };
 }
 
 interface ChatRequest {
@@ -119,8 +148,155 @@ function allText(body: ChatRequest): string {
   return parts.join(" ");
 }
 
+/** How `system_agent_runner.output_contract` closes a system agent's prompt; the schema follows. */
+const OUTPUT_CONTRACT = "It must validate against this JSON schema:\n";
+
+/** The top-level properties of the answer a system agent was asked for, or `null`. */
+function contractProperties(body: ChatRequest): Record<string, object> | null {
+  const prompt = allText(body);
+  const at = prompt.lastIndexOf(OUTPUT_CONTRACT);
+  if (at < 0) return null;
+  // The contract closes the prompt, so the schema is what follows it up to its last brace.
+  const tail = prompt.slice(at + OUTPUT_CONTRACT.length);
+  try {
+    const schema: { properties?: Record<string, object> } = JSON.parse(
+      tail.slice(0, tail.lastIndexOf("}") + 1),
+    );
+    return schema.properties ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The marker `improvement.mobile.spec.ts` writes in its note to the helper; it is answered differently. */
+const TRY_AGAIN_NOTE = "E2E-NOTE";
+
+/** Fixed JSON answers only for the improvement journey's explicit fixture marker.
+ * The real API, worker, evidence builder and eval scorer still do all their work.
+ */
+function improvementReply(body: ChatRequest): string | null {
+  if (!allText(body).includes("E2E-IMPROVEMENT")) return null;
+  const properties = contractProperties(body);
+  if (properties === null) return null;
+  if ("summary" in properties && "expected_effect" in properties && "instructions" in properties) {
+    // Two changes, so one can be left out of a test; a person's note to the helper
+    // words the second apart, so the attempt it asks for is no repeat of the last.
+    const noted = allText(body).includes(TRY_AGAIN_NOTE);
+    return JSON.stringify({
+      summary: "The fixture answers with the old return policy.",
+      expected_effect: "Use the reviewed policy token for the test questions.",
+      instructions: [
+        {
+          old_text: "PONG-IMPROVEMENT-BEFORE",
+          new_text: "PONG-IMPROVEMENT-AFTER",
+          after: "",
+          rationale: "The deterministic checks expect the reviewed policy.",
+          evidence: [],
+        },
+        {
+          old_text: "and nothing else.",
+          new_text: noted
+            ? "and nothing else, as the note asks."
+            : "and nothing else, in one line.",
+          after: "",
+          rationale: "An answer of the token alone is what the checks compare.",
+          evidence: [],
+        },
+      ],
+      tools: [],
+      fields: [],
+      new_skills: [],
+    });
+  }
+  if ("findings" in properties) return JSON.stringify({ findings: [] });
+  return null;
+}
+
+/**
+ * Who an agent is to a shared skill, and what a question asks about it.
+ *
+ * `skill-improvement.spec.ts` checks one skill on several agents, so the answer
+ * has to come from the skill version the platform served rather than from the
+ * agent's own instructions. The agent opens the skill through `CALL-TOOL`, and
+ * once the skill has answered, its body holds one `<role>/<topic>: PONG-…` line
+ * per agent and topic. Nothing in the instructions names a token, so a check
+ * that measured the wrong version would see the wrong answer.
+ */
+const SKILL_ROLE = /\bE2E-SKILL-AS:([a-z]+)\b/;
+const SKILL_TOPIC = /\bTOPIC:([a-z]+)\b/;
+const SKILL_TOKEN = /^PONG-[A-Za-z0-9-]+/;
+
+/** The token the served skill gives this role on this topic, once the skill was opened. */
+function skillReply(body: ChatRequest): string | null {
+  if (!toolAnswered(body)) return null;
+  const text = allText(body);
+  const role = SKILL_ROLE.exec(text)?.[1];
+  const topic = SKILL_TOPIC.exec(text)?.[1];
+  if (role === undefined || topic === undefined) return null;
+  const line = `${role}/${topic}: `;
+  for (let at = text.indexOf(line); at >= 0; at = text.indexOf(line, at + 1)) {
+    // The tool's answer is JSON, so a line break arrives as the two characters `\n`.
+    const before = text.slice(Math.max(0, at - 2), at);
+    if (at === 0 || /\s$/.test(before) || before === "\\n") {
+      return SKILL_TOKEN.exec(text.slice(at + line.length))?.[0] ?? null;
+    }
+  }
+  return null;
+}
+
+/** The marker `skill-improvement.spec.ts` writes into its skill's description. */
+const SKILL_SESSION = "E2E-SKILL";
+
+/**
+ * The analyst's and the improver's answers in a skill session, for the shared-skill
+ * journey only. The edit follows from the body the session is at, so the first
+ * session turns every receipt line to a refund - which breaks the gift shop - and
+ * the next fixes the online desk's digital line alone.
+ */
+function skillSessionReply(body: ChatRequest): string | null {
+  const text = allText(body);
+  if (!text.includes(SKILL_SESSION)) return null;
+  const properties = contractProperties(body);
+  if (properties === null) return null;
+  if ("problems" in properties) {
+    return JSON.stringify({
+      problems: [
+        {
+          title: "Store rules answered from the old policy",
+          summary: "The skill gives the answers its agents' customers rate down.",
+          cause: "skill",
+          run_ids: [],
+          evidence: [],
+        },
+      ],
+    });
+  }
+  if (!("edits" in properties)) return null;
+  const current = /# Its current body\n<skill>\n([\s\S]*?)\n<\/skill>/.exec(text)?.[1] ?? "";
+  const edit = (old_text: string, new_text: string) => ({
+    old_text,
+    new_text,
+    after: "",
+    rationale: "The rated answers ask for this rule.",
+    evidence: [],
+  });
+  const edits = current.includes("online/receipt: PONG-SL-CREDIT")
+    ? [
+        edit("online/receipt: PONG-SL-CREDIT", "online/receipt: PONG-SL-REFUND"),
+        edit("counter/receipt: PONG-SL-CREDIT", "counter/receipt: PONG-SL-REFUND"),
+      ]
+    : [edit("online/digital: PONG-SL-NO\n", "online/digital: PONG-SL-NO-AFTER-DOWNLOAD\n")];
+  return JSON.stringify({
+    summary: "Refund on an order number; no refund after a download.",
+    expected_effect: "The online desk answers as its customers expect.",
+    edits,
+    description: null,
+    description_rationale: "",
+  });
+}
+
 function replyFor(body: ChatRequest): string {
-  return ECHO.exec(allText(body))?.[0] ?? FALLBACK;
+  return skillReply(body) ?? ECHO.exec(allText(body))?.[0] ?? FALLBACK;
 }
 
 /**
@@ -134,17 +310,73 @@ function replyFor(body: ChatRequest): string {
  *   resolved - without this a deployment where delegation was never wired up
  *   would answer a call to a tool it does not have, turning a missing feature
  *   into a model error two layers away from the cause;
- * - nothing has come back from a tool yet. The second request of a delegating
- *   turn carries the result, and answering it with the same call again is an
+ * - no business tool has answered yet. Discovery may precede delegation;
+ *   once the task has answered, calling it again would be an
  *   infinite loop rather than a fixture. It is also what makes the *delegate's*
  *   own request safe: it is sent with no delegation tool at all, so a delegate
  *   never delegates however its prompt reads.
  */
 function delegateFor(body: ChatRequest): string | null {
-  if ((body.messages ?? []).some((message) => message.role === "tool")) return null;
+  if (toolAnswered(body)) return null;
   const named = DELEGATE.exec(allText(body))?.[1];
   if (named === undefined) return null;
-  return (body.tools ?? []).some((tool) => tool.function?.name === TASK_TOOL) ? named : null;
+  return offers(body, TASK_TOOL) ? named : null;
+}
+
+/** Search results reveal tools; they do not complete the requested operation. */
+function toolAnswered(body: ChatRequest): boolean {
+  const discoveryIds = new Set(
+    (body.messages ?? [])
+      .flatMap((message) => message.tool_calls ?? [])
+      .filter((call) => call.function?.name === "search_tools")
+      .map((call) => call.id)
+      .filter((id): id is string => id !== undefined),
+  );
+  return (body.messages ?? []).some(
+    (message) =>
+      message.role === "tool" &&
+      (message.tool_call_id === undefined || !discoveryIds.has(message.tool_call_id)),
+  );
+}
+
+/** Discover only an explicitly requested tool, once; missing capabilities still fail. */
+function discoveryCallFor(body: ChatRequest): ToolCall | null {
+  if ((body.messages ?? []).some((message) => message.role === "tool")) return null;
+  const text = allText(body);
+  const name = DELEGATE.test(text) ? TASK_TOOL : CALL_TOOL.exec(text)?.[1];
+  if (name === undefined || offers(body, name) || !offers(body, "search_tools")) return null;
+  return { name: "search_tools", arguments: JSON.stringify({ queries: [name] }) };
+}
+
+/** The request offers this tool, so the capability behind it was bound. */
+function offers(body: ChatRequest, name: string): boolean {
+  return (body.tools ?? []).some((tool) => tool.function?.name === name);
+}
+
+/**
+ * The tool call a `CALL-TOOL` directive asks for, or `null`.
+ *
+ * The same two guards as `delegateFor`, for the same reasons: the named tool has
+ * to be on the request, so a capability that was never bound fails as a missing
+ * tool call rather than a model calling a tool it does not have; and no tool has
+ * answered yet, so the second request of the turn - which carries the result - is
+ * answered in prose. Arguments that do not decode to a JSON object are not a
+ * directive: the stub calls nothing rather than invent arguments.
+ */
+function toolCallFor(body: ChatRequest): ToolCall | null {
+  if (toolAnswered(body)) return null;
+  const match = CALL_TOOL.exec(allText(body));
+  if (match === null) return null;
+  const [, name = "", encoded = ""] = match;
+  if (!offers(body, name)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return { name, arguments: JSON.stringify(parsed) };
 }
 
 /**
@@ -163,8 +395,8 @@ function usageFor(prompt: string, answer: string): Record<string, number> {
 /** Fixed, because a chunk id that moved would be the only unstable thing here. */
 const COMPLETION_ID = "chatcmpl-e2e-stub";
 const CREATED = 1_700_000_000;
-/** One delegation per turn, so one id is enough and a fixed one reads plainly. */
-const TOOL_CALL_ID = "call-e2e-task";
+/** Discovery and the requested action must have distinct ids in the same history. */
+const TOOL_CALL_ID_PREFIX = "call-e2e";
 
 function completion(model: string, answer: string, usage: Record<string, number>): string {
   return JSON.stringify({
@@ -183,19 +415,23 @@ function completion(model: string, answer: string, usage: Record<string, number>
   });
 }
 
-/** The `task` arguments, as the library's own tool signature names them. */
-function taskArguments(subagent: string): string {
-  return JSON.stringify({ subagent_type: subagent, description: DELEGATED_TASK });
-}
-
 /**
- * A turn that delegates instead of answering.
+ * A delegation, as a call to `task` with the arguments the library's own tool
+ * signature names.
  *
  * `mode` is deliberately not sent. The platform replaces it on the way through
  * with the one the agent's author configured, and a stub that named a mode would
  * hide the turn where that replacement stopped happening.
  */
-function delegation(model: string, subagent: string, usage: Record<string, number>): string {
+function delegationCall(subagent: string): ToolCall {
+  return {
+    name: TASK_TOOL,
+    arguments: JSON.stringify({ subagent_type: subagent, description: DELEGATED_TASK }),
+  };
+}
+
+/** A turn that calls a tool instead of answering. */
+function toolCallCompletion(model: string, call: ToolCall, usage: Record<string, number>): string {
   return JSON.stringify({
     id: COMPLETION_ID,
     object: "chat.completion",
@@ -209,9 +445,9 @@ function delegation(model: string, subagent: string, usage: Record<string, numbe
           content: null,
           tool_calls: [
             {
-              id: TOOL_CALL_ID,
+              id: `${TOOL_CALL_ID_PREFIX}-${call.name}`,
               type: "function",
-              function: { name: TASK_TOOL, arguments: taskArguments(subagent) },
+              function: { name: call.name, arguments: call.arguments },
             },
           ],
         },
@@ -254,14 +490,14 @@ function* streamChunks(model: string, answer: string, usage: Record<string, numb
 }
 
 /**
- * The delegating turn, streamed.
+ * The tool-calling turn, streamed.
  *
  * The arguments arrive in a chunk of their own after the one that names the tool,
  * which is how a provider sends them and therefore the shape worth exercising: an
  * SDK that only assembled a tool call from a single frame would pass a
  * one-chunk stub and fail against OpenAI.
  */
-function* delegationChunks(model: string, subagent: string, usage: Record<string, number>) {
+function* toolCallChunks(model: string, call: ToolCall, usage: Record<string, number>) {
   yield chunk(model, [
     {
       index: 0,
@@ -270,9 +506,9 @@ function* delegationChunks(model: string, subagent: string, usage: Record<string
         tool_calls: [
           {
             index: 0,
-            id: TOOL_CALL_ID,
+            id: `${TOOL_CALL_ID_PREFIX}-${call.name}`,
             type: "function",
-            function: { name: TASK_TOOL, arguments: "" },
+            function: { name: call.name, arguments: "" },
           },
         ],
       },
@@ -282,7 +518,7 @@ function* delegationChunks(model: string, subagent: string, usage: Record<string
   yield chunk(model, [
     {
       index: 0,
-      delta: { tool_calls: [{ index: 0, function: { arguments: taskArguments(subagent) } }] },
+      delta: { tool_calls: [{ index: 0, function: { arguments: call.arguments } }] },
       finish_reason: null,
     },
   ]);
@@ -305,6 +541,51 @@ const server = createServer((request, response) => {
     response
       .writeHead(200, { "content-type": "application/json" })
       .end(JSON.stringify({ object: "list", data: [{ id: "gpt-4.1-mini", object: "model" }] }));
+    return;
+  }
+
+  // Lexical vectors exercise KB ingestion/search locally, without a provider key.
+  // They test the pipeline and source identity, not embedding-model quality.
+  if (request.method === "POST" && path.endsWith("/embeddings")) {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      let body: unknown;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+      const input =
+        typeof body === "object" && body !== null && "input" in body ? body.input : null;
+      const texts = typeof input === "string" ? [input] : input;
+      if (
+        !Array.isArray(texts) ||
+        !texts.every((item): item is string => typeof item === "string")
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      const data = texts.map((text, index) => {
+        const embedding: number[] = Array.from({ length: 768 }, () => 0);
+        for (const word of text.toLowerCase().match(/[a-z]+/g) ?? []) {
+          let slot = 0;
+          for (const char of word) slot = (slot * 31 + char.charCodeAt(0)) % 768;
+          embedding[slot] = (embedding[slot] ?? 0) + 1;
+        }
+        if (!embedding.some(Boolean)) embedding[0] = 1;
+        return { object: "embedding", index, embedding };
+      });
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          object: "list",
+          model: "nomic-embed-text",
+          data,
+          usage: { prompt_tokens: texts.length, total_tokens: texts.length },
+        }),
+      );
+    });
     return;
   }
 
@@ -332,10 +613,13 @@ const server = createServer((request, response) => {
 
     const model = body.model ?? "gpt-4.1-mini";
     const subagent = delegateFor(body);
-    // Empty on a delegating turn, which is what a provider sends beside a tool
-    // call: the parent has not said anything yet, and inventing prose for it
+    const call =
+      discoveryCallFor(body) ?? (subagent === null ? toolCallFor(body) : delegationCall(subagent));
+    // Empty on a tool-calling turn, which is what a provider sends beside a tool
+    // call: the agent has not said anything yet, and inventing prose for it
     // would put words in the transcript the agent never generated.
-    const answer = subagent === null ? replyFor(body) : "";
+    const answer =
+      call === null ? (skillSessionReply(body) ?? improvementReply(body) ?? replyFor(body)) : "";
     const usage = usageFor(allText(body), answer);
 
     if (body.stream === true) {
@@ -345,9 +629,7 @@ const server = createServer((request, response) => {
         connection: "keep-alive",
       });
       const frames =
-        subagent === null
-          ? streamChunks(model, answer, usage)
-          : delegationChunks(model, subagent, usage);
+        call === null ? streamChunks(model, answer, usage) : toolCallChunks(model, call, usage);
       for (const frame of frames) response.write(frame);
       response.end();
       return;
@@ -356,13 +638,13 @@ const server = createServer((request, response) => {
     response
       .writeHead(200, { "content-type": "application/json" })
       .end(
-        subagent === null ? completion(model, answer, usage) : delegation(model, subagent, usage),
+        call === null ? completion(model, answer, usage) : toolCallCompletion(model, call, usage),
       );
   });
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, BIND, () => {
   // Playwright waits on /health rather than on this line, but a server that
   // says nothing is one nobody can tell apart from a port already taken.
-  console.log(`stub model server listening on http://127.0.0.1:${PORT}`);
+  console.log(`stub model server listening on http://${BIND}:${PORT}`);
 });

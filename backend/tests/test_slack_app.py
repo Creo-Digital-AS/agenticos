@@ -1,7 +1,5 @@
 """A Slack bot as a Slack app: buttons, the assistant pane, App Home, `/agent` (#2067)."""
 
-from __future__ import annotations
-
 import json
 import uuid
 from typing import Any
@@ -211,7 +209,7 @@ class TestSurfaces:
         )
 
         text = json.dumps(client.views_publish.await_args.kwargs["view"])
-        assert "/link" in text and "Refunds" not in text
+        assert "`link` (without a slash)" in text and "Refunds" not in text
 
     async def test_app_home_with_nothing_waiting_says_so(self):
         client = await self._handle(

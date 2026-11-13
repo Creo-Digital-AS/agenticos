@@ -60,6 +60,8 @@ export interface McpConnectionRecord {
    * has asked yet, which is not the same as "offers none".
    */
   last_tools: McpToolInfo[] | null;
+  /** Whether an eval may call a tool this server marks `readOnlyHint` live. */
+  trust_read_only_hints: boolean;
   /**
    * The agents binding an organization server that the reader may see (#2072).
    * Absent on a personal connection, and null where the listing did not ask.
@@ -83,8 +85,15 @@ export interface McpToolCall {
 export interface McpToolInfo {
   name: string;
   description: string;
+  /**
+   * The JSON Schema of the tool's arguments, when the server's was small enough
+   * to keep. Absent from a list recorded before it was kept.
+   */
+  input_schema?: Record<string, unknown> | null;
   /** The server marks it read-only; anything else is treated as a write. */
   read_only?: boolean;
+  /** Explicit server annotation; absent/null is unknown, never proof of a write. */
+  read_only_hint?: boolean | null;
 }
 
 export interface McpConnectionTestResult {
@@ -230,4 +239,9 @@ export interface McpSignInProbeResult {
  */
 export async function probeMcpSignIn(url: string): Promise<McpSignInProbeResult> {
   return apiClient.post<McpSignInProbeResult>("/me/mcp-connections/probe", { url });
+}
+
+/** Bind the organization's GitHub App installation after verifying its key. */
+export async function connectGithubApp(installationId: string): Promise<void> {
+  await apiClient.post("/mcp-connections/portals/github-app", { installation_id: installationId });
 }

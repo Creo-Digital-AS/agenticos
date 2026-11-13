@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import BadRequestError, NotFoundError
 from app.db.models.sync_log import SyncLog
 from app.repositories import sync_log_repo
+from app.repositories.sync_log import SyncLogScope
 from app.schemas.rag import RAGSyncLogItem, RAGSyncLogList
+from app.services.background_jobs import enqueue
+from app.worker.jobs import SYNC_COLLECTION, SyncCollection
 
 
 def _as_item(log: SyncLog) -> RAGSyncLogItem:
@@ -46,17 +49,18 @@ class RAGSyncService:
     async def list_sync_logs(
         self,
         *,
-        collections: list[str],
+        scope: SyncLogScope,
         limit: int = 20,
     ) -> RAGSyncLogList:
         """Return up to `limit` sync log entries ordered newest-first.
 
-        `collections` is required and has no default: the caller has already
-        decided which collections it may report on, and "all of them" must not
-        be reachable by omission. The caller also chooses `limit` - no
-        server-side cap beyond `limit` is applied.
+        `scope` is required and has no default: the caller has already decided
+        which runs it may report on (`CollectionAccessService
+        .readable_sync_log_scope`), and "all of them" must not be reachable by
+        omission. The caller also chooses `limit` - no server-side cap beyond
+        `limit` is applied.
         """
-        logs = await sync_log_repo.get_all(self.db, collections=collections, limit=limit)
+        logs = await sync_log_repo.get_all(self.db, scope=scope, limit=limit)
         return RAGSyncLogList(items=[_as_item(log) for log in logs], total=len(logs))
 
     async def get_sync_log(self, sync_id: str) -> SyncLog:
@@ -107,27 +111,19 @@ class RAGSyncService:
             collection_name=collection_name,
             mode=mode,
         )
-        from app.core.background import spawn_after_commit
-
-        # Imported here rather than at module top so that importing this service
-        # does not pull in Prefect (~1.4s), which the API and the test suite pay
-        # for and never use - the flow only runs in the worker. The same reason
-        # `rag_document.py` and `sync_source.py` import their flows locally (#520).
-        from app.worker.tasks.rag_tasks import sync_collection_flow
-
-        # The flow reads this sync log by id on its own session, so it starts
-        # after the commit rather than after this line (#417).
-        spawn_after_commit(
+        # The job reads this sync log by id on its own session, and commits with it
+        # (#417).
+        await enqueue(
             self.db,
-            sync_collection_flow(
-                sync_log_id=str(sync_log.id),
+            SYNC_COLLECTION,
+            SyncCollection(
+                sync_log_id=sync_log.id,
                 source="local",
                 collection_name=collection_name,
                 mode=mode,
                 path=path,
-                knowledge_base_id=None if knowledge_base_id is None else str(knowledge_base_id),
+                knowledge_base_id=knowledge_base_id,
             ),
-            name=f"sync-collection-{collection_name}",
         )
         return sync_log
 

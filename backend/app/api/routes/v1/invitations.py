@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 
 from app.api.deps import (
+    CurrentSessionId,
     CurrentUser,
     InvitationStagingSvc,
     InvitationSvc,
@@ -25,9 +26,11 @@ from app.api.deps import (
     require_in_path_org,
 )
 from app.api.public_api import PUBLIC
+from app.api.routes.v1._stored_bytes import stored_image_response
 from app.core.exceptions import NotFoundError
 from app.core.permissions import Perm
 from app.schemas.organization import (
+    InvitationAccepted,
     InvitationCreate,
     InvitationCreated,
     InvitationList,
@@ -35,6 +38,7 @@ from app.schemas.organization import (
     InvitationStaged,
     InvitationStageRequest,
     InviteLinkCreate,
+    ReceivedInvitation,
 )
 
 org_router = APIRouter(dependencies=[PUBLIC])
@@ -183,6 +187,55 @@ async def revoke_invitation_by_id(
     await service.revoke_by_id(org_id, invitation_id, requester_id=ctx.subject_id)
 
 
+@token_router.get("/invitations/received", response_model=list[ReceivedInvitation])
+async def received_invitations(
+    service: InvitationSvc,
+    user: CurrentUser,
+    session_id: CurrentSessionId,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+) -> Any:
+    """List live invitations addressed to the signed-in account, across organizations.
+
+    A live session that proved the current mailbox is required; an unproved
+    session receives an empty list. Pagination uses skip/limit.
+    No organization membership or active organization is required. Shareable links,
+    expired invitations and existing memberships are excluded; bearer tokens never leave the server.
+    """
+    return await service.received(user.id, session_id, skip=skip, limit=limit)
+
+
+@token_router.get("/invitations/received/{invitation_id}/avatar", response_model=None)
+async def received_invitation_avatar(
+    invitation_id: UUID, service: InvitationSvc, user: CurrentUser, session_id: CurrentSessionId
+) -> Any:
+    """Preview an organization's logo through a live invitation to the current account.
+
+    The session must have proved the current mailbox. No membership is needed.
+    Expired, revoked and other recipients' invitations return 404.
+    """
+    path = await service.received_avatar(invitation_id, user.id, session_id)
+    response = await stored_image_response(
+        path, headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"}
+    )
+    if response is None:
+        raise NotFoundError(
+            message="Invitation avatar not found", details={"invitation_id": invitation_id}
+        )
+    return response
+
+
+@token_router.post(
+    "/invitations/received/{invitation_id}/accept", response_model=InvitationAccepted
+)
+async def accept_received_invitation(
+    invitation_id: UUID, service: InvitationSvc, user: CurrentUser, session_id: CurrentSessionId
+) -> Any:
+    """Accept by id only when this session proved the account's current mailbox."""
+    invite = await service.accept_received(invitation_id, user.id, session_id)
+    return InvitationAccepted(organization_id=invite.organization_id)
+
+
 @token_router.post("/invitations/stage", response_model=InvitationStaged)
 async def stage_invitation(
     request: Request,
@@ -211,16 +264,14 @@ async def stage_invitation(
     return InvitationStaged(handle=handle)
 
 
-@token_router.post(
-    "/invitations/staged/accept", status_code=status.HTTP_204_NO_CONTENT, response_model=None
-)
+@token_router.post("/invitations/staged/accept", response_model=InvitationAccepted)
 async def accept_staged_invitation(
     request: Request,
     service: InvitationSvc,
     staging: InvitationStagingSvc,
     user: CurrentUser,
     handle: Annotated[str, Header(alias="X-Invitation-Handle")],
-) -> None:
+) -> Any:
     """Redeem a staged handle and accept the invitation as the signed-in user.
 
     The other half of the exchange, once the round trip is over. The handle
@@ -235,19 +286,23 @@ async def accept_staged_invitation(
     token = await staging.redeem(handle)
     if token is None:
         raise NotFoundError(message="Invitation not found or already used")
-    await service.accept(token, accepting_user_id=user.id)
+    invite = await service.accept(token, accepting_user_id=user.id)
+    return InvitationAccepted(organization_id=invite.organization_id)
 
 
-@token_router.post(
-    "/invitations/{token}/accept", status_code=status.HTTP_204_NO_CONTENT, response_model=None
-)
+@token_router.post("/invitations/{token}/accept", response_model=InvitationAccepted)
 async def accept_invitation(
     token: str,
     service: InvitationSvc,
     user: CurrentUser,
-) -> None:
-    """Accept an invitation token. Adds the current user to the organization."""
-    await service.accept(token, accepting_user_id=user.id)
+) -> Any:
+    """Accept an invitation token. Adds the current user to the organization.
+
+    Answers with the organization joined, so the console can switch to it: the
+    person accepted an invitation to work there (#2156).
+    """
+    invite = await service.accept(token, accepting_user_id=user.id)
+    return InvitationAccepted(organization_id=invite.organization_id)
 
 
 @token_router.delete(

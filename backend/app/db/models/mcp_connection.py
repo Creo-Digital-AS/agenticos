@@ -28,8 +28,6 @@ CSRF token in `oauth_state`) and only replaces `oauth_payload` once
 the callback brings back real tokens.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -72,6 +70,34 @@ class McpConnection(Base, TimestampMixin):
 
     __tablename__ = "mcp_connections"
     __table_args__ = (
+        Index(
+            "uq_connected_accounts_user_email",
+            "user_id",
+            "catalog_key",
+            "account_source_organization_id",
+            "account_email",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text(
+                "purpose = 'account' AND scope = 'user' AND account_email IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_connected_accounts_org_email",
+            "organization_id",
+            "catalog_key",
+            "account_email",
+            unique=True,
+            postgresql_where=text(
+                "purpose = 'account' AND scope = 'org' AND account_email IS NOT NULL"
+            ),
+        ),
+        Index(
+            "mcp_connections_health_queue_idx",
+            "health_checked_at",
+            "id",
+            postgresql_where=text("scope = 'org' AND purpose = 'mcp' AND is_enabled IS true"),
+        ),
         UniqueConstraint("user_id", "name", name="uq_mcp_connections_user_name"),
         # Names identify a server to whoever is configuring an agent and become
         # its tool prefix, so they have to be unambiguous inside an
@@ -109,7 +135,13 @@ class McpConnection(Base, TimestampMixin):
         CheckConstraint(
             "visibility IN ('private', 'team', 'org')", name="ck_mcp_connection_visibility"
         ),
-        CheckConstraint("purpose IN ('mcp', 'portal')", name="ck_mcp_connection_purpose"),
+        CheckConstraint(
+            "purpose IN ('mcp', 'portal', 'account')", name="ck_mcp_connection_purpose"
+        ),
+        CheckConstraint(
+            "poll_interval_minutes IN (1, 5, 15, 30, 60)",
+            name="ck_mcp_connection_poll_interval",
+        ),
         # A portal grant names its portal and nothing else does: the column is what
         # the poller and the trigger card look a connection up by.
         CheckConstraint(
@@ -185,12 +217,17 @@ class McpConnection(Base, TimestampMixin):
     # `notion` and `notion-2`, and neither says which workspace it reaches.
     # Optional, not unique, and never a replacement - the slug stays on screen
     # beside it, because a run's tool calls are recorded under the prefix.
+    account_source_organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    account_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+
     label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Every tool the server offered the last time anything probed it - the
     # catalogue `allowed_tools` is chosen from. Recorded so the Builder can list
     # them without holding `connections:manage`, which gates the probe because it
     # dials out to a third party. Null until the connection is next checked.
-    last_tools: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB, nullable=True)
+    last_tools: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     # Which of this member's accounts on one service answers under the service's
     # own tool prefix (`notion`) where a binding reaches all of theirs; the others
     # add their label to it (#2125). False on every row until somebody chooses:
@@ -212,6 +249,11 @@ class McpConnection(Base, TimestampMixin):
     # Phase 0. The price is one column and one filter: every MCP-facing read asks
     # for `purpose = 'mcp'`, because a Gmail grant is not a server anybody should
     # be offered to bind an agent to (#1068).
+    #
+    # `account` is a connected account (#2191): an OAuth grant a virtual
+    # terminal's mount signs in as - a person's Google account, or one the
+    # organization connected. Its provider is `catalog_key` (`google`), its
+    # label the account's address, and a person may hold several.
     purpose: Mapped[str] = mapped_column(String(16), nullable=False, default="mcp", index=True)
     # Which portal a `purpose = 'portal'` row holds the grant for. Null on an MCP row.
     portal_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -232,10 +274,25 @@ class McpConnection(Base, TimestampMixin):
     # When the poller last asked. Read by the claim so one tick's work is spread
     # rather than every connection being polled by whichever worker gets there.
     polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How many minutes pass between reads of a polled mailbox. On the grant and not
+    # on a trigger: one read of the mailbox serves every trigger and workflow on it,
+    # so an interval per trigger would be overruled by a faster neighbour. The allowed
+    # values are the CHECK constraint's and `PortalPollIntervalUpdate`'s; the default
+    # is the poller's own tick.
+    poll_interval_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
 
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     auth_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Re-consent can switch provider accounts under the same connection id.
+    authorization_generation: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+        nullable=False,
+    )
     # Which vault master key sealed this row's secrets - the bearer token and
     # both OAuth payloads. One version per row, so a rotation moves them
     # together and a payload can never be readable while the token beside it is
@@ -249,6 +306,11 @@ class McpConnection(Base, TimestampMixin):
     # at it, so an ordinary MCP connect is untouched.
     granted_scopes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # `readOnlyHint` is the server's own claim. An isolated run lets a tool it
+    # marks run live only on a connection somebody chose to believe it of.
+    trust_read_only_hints: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     # Whether the server's own `initialize` instructions join the agent's. Off by
     # default: it is text the server's operator wrote, read with the authority of
     # the agent's own instructions, so someone who manages the connection opts in.
@@ -271,6 +333,16 @@ class McpConnection(Base, TimestampMixin):
     last_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    health_checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("'1970-01-01 00:00:00+00'::timestamptz"),
+    )
+    """Health queue clock, independent of OAuth renewal or mailbox polling.
+
+    Epoch means never checked. A non-null clock keeps oldest-first admission
+    indexable without mixing authorization activity into probe fairness.
+    """
     # When the current outage began: set by the first check or run that found
     # the server not answering, cleared by the first that found it answering
     # again (#2100). Its own column rather than read off `last_status`, which
@@ -306,11 +378,11 @@ class McpConnection(Base, TimestampMixin):
     def account_authorized(self) -> bool:
         """Whether this connection's stored credential can be used right now.
 
-        The side-effect-free half of `_resolve_auth_headers`, and the single place
+        The side-effect-free half of `resolve_auth_headers`, and the single place
         the answer is decided so a run and the rendered list cannot drift (#1443):
         an OAuth or bearer credential is usable once its payload/token is written
         and the master key that sealed it is still configured - the half
-        `_resolve_auth_headers` finds missing after a `SECRET_KEY` rotation. It
+        `resolve_auth_headers` finds missing after a `SECRET_KEY` rotation. It
         decrypts and refreshes nothing, so two failures it cannot see are left to
         the run that actually unseals: a ciphertext tampered with under a still
         configured key, and an OAuth grant the provider has revoked or expired past

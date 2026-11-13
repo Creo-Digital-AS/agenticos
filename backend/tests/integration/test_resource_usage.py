@@ -1,7 +1,5 @@
 """Which agents use a skill, a context file or a knowledge base (#2075)."""
 
-from __future__ import annotations
-
 import uuid
 
 import pytest
@@ -13,7 +11,7 @@ from app.db.models.agent import Agent, AgentStatus
 from app.db.models.organization import Organization, OrganizationMember
 from app.db.models.resource_grant import Visibility
 from app.db.models.user import User
-from app.services.resource_usage import agents_using
+from app.services.resource_usage import agents_serving_skills, agents_using
 
 pytestmark = pytest.mark.anyio
 
@@ -68,12 +66,18 @@ async def test_each_resource_names_the_agents_binding_it_in_name_order(db: Async
     _, owner = await _organization(db)
     refunds, unused = uuid.uuid4(), uuid.uuid4()
     await _agent(db, owner, "Support", skill_ids=[refunds])
-    await _agent(db, owner, "Billing", skill_ids=[refunds])
+    billing = await _agent(db, owner, "Billing", skill_ids=[refunds])
+    billing.avatar_url = "test/agent-avatar.png"
+    billing.avatar_color = 4
+    await db.flush()
     await _agent(db, owner, "Sales")
 
     used = await agents_using(db, owner, field="skill_ids", resource_ids=[refunds, unused])
 
     assert [agent.name for agent in used[refunds]] == ["Billing", "Support"]
+    assert used[refunds][0].slug == billing.slug
+    assert used[refunds][0].has_avatar is True
+    assert used[refunds][0].avatar_color == 4
     assert used[unused] == []
 
 
@@ -119,3 +123,4 @@ async def test_nothing_asked_is_nothing_queried(db: AsyncSession) -> None:
     _, owner = await _organization(db)
 
     assert await agents_using(db, owner, field="context_ids", resource_ids=[]) == {}
+    assert await agents_serving_skills(db, owner, skill_ids=[]) == {}

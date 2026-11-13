@@ -66,6 +66,24 @@ const open = () => userEvent.click(row());
  * produced: a chart, a question waiting on an answer, code that ran, a file written.
  */
 describe("a tool call in the transcript", () => {
+  it("serializes an object result only when opened and retains it across unrelated renders", async () => {
+    const serialize = vi.fn(() => ({ detail: "Large tool result" }));
+    const result = { toJSON: serialize };
+    const toolCall: ToolCall = {
+      id: "large",
+      name: "post_invoice",
+      args: {},
+      status: "completed",
+      result,
+    };
+    const { rerender } = render(<ToolCallCard toolCall={toolCall} mcpServers={servers.list} />);
+    expect(serialize).not.toHaveBeenCalled();
+    await open();
+    expect(serialize).toHaveBeenCalledTimes(1);
+    rerender(<ToolCallCard toolCall={{ ...toolCall }} mcpServers={servers.list} />);
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Large tool result/)).toBeInTheDocument();
+  });
   it("narrates what the agent is doing while the tool runs", () => {
     card({ name: "search_documents", status: "running", result: undefined });
 
@@ -182,8 +200,9 @@ describe("a tool call in the transcript", () => {
       ],
       [{ name: "delegate", args: {} }, "Delegate"],
       [{ name: "run_python", args: { code: "x=1" }, result: "result: 1" }, "Run Python"],
-      [{ name: "load_capability", args: { id: "refund_policy" } }, "Refund Policy"],
-      [{ name: "load_capability", args: {} }, "Load Skill"],
+      [{ name: "load_capability", args: { id: "refund-policy" } }, "refund-policy"],
+      [{ name: "load_capability", args: {} }, "Read Skill"],
+      [{ name: "read_skill", args: { id: "refund-policy" } }, "refund-policy"],
       [{ name: "ls", args: { path: "/workspace" } }, "Listed /workspace"],
       [
         { name: "grep", args: { pattern: "TODO", path: "/workspace/app.py" } },
@@ -246,11 +265,11 @@ describe("a tool call in the transcript", () => {
     expect(screen.getByText("https://acme.example/help")).toBeInTheDocument();
   });
 
-  it("says nothing about the input while the tool is still running", () => {
+  it("keeps the search subject visible while the tool is running", () => {
     // The caption already occupies that line.
     card({ name: "web_search", args: { query: "refund law" }, status: "running" });
 
-    expect(screen.queryByText("refund law")).toBeNull();
+    expect(screen.getByText("refund law")).toBeVisible();
   });
 
   it("opens and closes on the row", async () => {
@@ -262,6 +281,26 @@ describe("a tool call in the transcript", () => {
 
     await open();
     expect(screen.queryByText("the output")).toBeNull();
+  });
+
+  it("keeps generic results closed even when the caller requests automatic expansion", async () => {
+    render(
+      <ToolCallCard
+        mcpServers={[]}
+        autoExpand={false}
+        startOpen
+        toolCall={{
+          id: "tc-1",
+          name: "agenticos_list_projects",
+          args: {},
+          status: "completed",
+          result: "large result",
+        }}
+      />,
+    );
+    expect(screen.queryByText("large result")).toBeNull();
+    await open();
+    expect(screen.getByText("large result")).toBeInTheDocument();
   });
 
   it("is a button, so a keyboard opens it without a handler of its own", () => {
@@ -282,7 +321,7 @@ describe("a tool call in the transcript", () => {
       result: JSON.stringify({ instructions: "# Skill: refunds\n\nCheck the order date." }),
     });
 
-    expect(screen.getByText("Refunds")).toBeInTheDocument();
+    expect(screen.getByText("refunds")).toBeInTheDocument();
     await open();
     expect(screen.getByText("Check the order date.")).toBeInTheDocument();
   });
@@ -320,7 +359,7 @@ describe("a tool call in the transcript", () => {
       <ToolCallCard
         mcpServers={servers.list}
         startOpen
-        conversationId="c-1"
+        fileSource={{ kind: "conversation", id: "c-1" }}
         toolCall={{
           id: "tc-1",
           name: "write_file",
@@ -337,7 +376,11 @@ describe("a tool call in the transcript", () => {
   it("keeps the agent's bookkeeping folded even as the turn's last step", () => {
     // A note the agent wrote itself for next time opened over the answer it came
     // after. The same generic step that is not bookkeeping opens as before.
-    const props = { mcpServers: servers.list, startOpen: true, conversationId: "c-1" };
+    const props = {
+      mcpServers: servers.list,
+      startOpen: true,
+      fileSource: { kind: "conversation" as const, id: "c-1" },
+    };
     const memory = render(
       <ToolCallCard
         {...props}
@@ -422,6 +465,44 @@ describe("a tool call in the transcript", () => {
     );
   });
 
+  it("plays generated speech on sight, since the clip is the answer", () => {
+    const { container } = card({
+      name: "generate_speech",
+      result: JSON.stringify({
+        kind: "generated_speech",
+        filename: "x_speech.mp3",
+        voice: "marin",
+      }),
+    });
+
+    expect(container.querySelector("audio")).toHaveAttribute("src", "/api/generated/x_speech.mp3");
+  });
+
+  it("plays a generated video on sight, since the clip is the answer", () => {
+    const { container } = card({
+      name: "generate_video",
+      result: JSON.stringify({ kind: "generated_video", filename: "x_video.mp4", prompt: "rain" }),
+    });
+
+    expect(container.querySelector("video")).toHaveAttribute("src", "/api/generated/x_video.mp4");
+  });
+
+  it("opens a kept desktop screenshot on sight, as it does a generated image", () => {
+    card({
+      name: "computer_save_screenshot",
+      result: JSON.stringify({
+        kind: "desktop_screenshot",
+        filename: "x_image.png",
+        caption: "The login form",
+      }),
+    });
+
+    expect(screen.getByRole("img", { name: "The login form" })).toHaveAttribute(
+      "src",
+      "/api/generated/x_image.png",
+    );
+  });
+
   it("keeps a published page to one line, its card being under the answer", async () => {
     // The card sits under the reply, so the step does not open over the work -
     // which is what lets a turn that published an app fold away like any other.
@@ -462,7 +543,7 @@ describe("a tool call in the transcript", () => {
     const { rerender } = render(
       <ToolCallCard
         mcpServers={servers.list}
-        conversationId="c-1"
+        fileSource={{ kind: "conversation", id: "c-1" }}
         toolCall={{ ...live, status: "running" }}
       />,
     );
@@ -471,7 +552,7 @@ describe("a tool call in the transcript", () => {
     rerender(
       <ToolCallCard
         mcpServers={servers.list}
-        conversationId="c-1"
+        fileSource={{ kind: "conversation", id: "c-1" }}
         toolCall={{ ...live, status: "completed", result: "Wrote 1 lines" }}
       />,
     );
@@ -689,4 +770,48 @@ describe("one agent asking another", () => {
     expect(screen.queryByText("Brief")).toBeNull();
     expect(screen.queryByText("Answer")).toBeNull();
   });
+});
+
+it("does not stringify a collapsed result, and computes it only when opened (#2469)", async () => {
+  const result = { payload: "x".repeat(100_000) };
+  const stringify = vi.spyOn(JSON, "stringify");
+  try {
+    card({ result });
+    expect(stringify.mock.calls.filter(([value]) => value === result)).toHaveLength(0);
+    await open();
+    expect(stringify.mock.calls.filter(([value]) => value === result)).toHaveLength(1);
+    expect(screen.getByText(/xxx/)).toBeInTheDocument();
+  } finally {
+    stringify.mockRestore();
+  }
+});
+
+it("shows the task being worked on before the platform tool finishes", () => {
+  card({
+    name: "agenticos_create_task",
+    args: { task: { title: "Review supplier draft" } },
+    status: "running",
+  });
+  expect(screen.getByText("Create task")).toBeVisible();
+  expect(screen.getByText("Review supplier draft")).toBeVisible();
+});
+
+it("renders a renamed chart through its stable identity while showing the actual alias", () => {
+  card({
+    name: "plot_sales",
+    tool_id: "create_chart",
+    result: JSON.stringify({ kind: "chart", title: "Sales", series: [] }),
+  });
+  expect(screen.getByTestId("chart")).toHaveTextContent("Sales");
+  expect(row()).toHaveTextContent("Plot Sales");
+});
+
+it("keeps an MCP tool named create_chart generic even with a chart-shaped result", () => {
+  card({
+    name: "create_chart",
+    tool_id: null,
+    presentation_kind: "generic",
+    result: JSON.stringify({ kind: "chart", title: "External", series: [] }),
+  });
+  expect(screen.queryByTestId("chart")).not.toBeInTheDocument();
 });

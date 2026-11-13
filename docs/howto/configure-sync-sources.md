@@ -128,6 +128,11 @@ in the `rag-sources` listing.
 7. Use the **"Sync Now"** button to trigger an immediate sync, or wait
    for the schedule to fire automatically.
 
+To change a source later, click the pencil on its row. The same wizard opens
+with the source's values filled in. The connector cannot be changed, and
+**"Save Changes"** sends only the fields you changed. The source stays filed
+under the knowledge base it is on.
+
 The UI calls the same REST API documented below, so anything you can do
 in the UI you can also do with `curl` or any HTTP client.
 
@@ -200,12 +205,13 @@ automatically:
 | `120` | Every 2 hours |
 | `1440` | Once per day |
 
-!!! warning "A schedule needs the Prefect runner"
+!!! warning "A schedule needs the worker"
 
-    `check_scheduled_syncs_flow` is a Prefect deployment that wakes every 60
-    seconds and fires whatever is due, so `schedule_minutes` does nothing without
-    the `prefect-server` and `prefect-runner` containers `make dev` starts. With
-    neither running, only a manual trigger (CLI, API or the UI) syncs anything.
+    The `dispatch-due-syncs` schedule wakes every 60 seconds and queues a sync
+    for each source that has come due, so `schedule_minutes` does nothing without
+    the `worker` container `make dev` starts. Without it, a manual trigger (CLI,
+    API or the UI) queues its sync too, and the sync waits for a worker as well.
+    A source never has two syncs running at once.
 
 ## Google Drive setup
 
@@ -285,6 +291,13 @@ S3_RAG_REGION=us-east-1                    # required for AWS, optional for MinI
 For MinIO, the endpoint is typically `http://minio:9000` (Docker) or
 `http://localhost:9000` (local).
 
+A source's own `endpoint_url` is checked like a web source's start URL, when you
+save the source and again when a sync starts: a loopback, link-local or
+cloud-metadata address is always refused, and an endpoint on the private network,
+such as a MinIO container, needs its host listed in
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). The
+operator's `S3_RAG_ENDPOINT` is not checked.
+
 ### 2. S3 connector config fields
 
 | Field | Type | Required | Default | Description |
@@ -328,8 +341,10 @@ uv run agenticos cmd rag-source-add \
 - **The deployment's network is out of reach.** Every request - robots.txt, the
   sitemap, each page and each redirect - is checked against the same SSRF policy as
   webhooks and MCP servers. It is sent to the address that passed the check. A start
-  URL that resolves to a private, loopback, link-local or cloud-metadata address is
-  refused when you save the source.
+  URL that resolves to a loopback, link-local or cloud-metadata address is always
+  refused when you save the source. One that resolves to a private address is
+  refused too, unless the operator lists its host in
+  [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings).
 - **robots.txt is obeyed** for sitemaps and pages, including `Crawl-delay` up to
   ten seconds. The crawler identifies itself as `AgenticOS-Crawler`. It waits at
   least half a second between requests, and a page that says `noindex` or
@@ -433,7 +448,9 @@ document.
 The URL must be `https://`. Its host is resolved once and checked like any other
 address a tenant chooses: a host that resolves to a private, loopback or
 link-local address is refused when the source is saved and again when it syncs,
-and git connects only to the addresses that check approved. Redirects are not
+and git connects only to the addresses that check approved. The operator can admit
+a host on the deployment's network with
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). Redirects are not
 followed. A deployment behind an egress proxy (`HTTPS_PROXY`) keeps using it; the
 proxy then resolves the host itself.
 
@@ -564,16 +581,36 @@ China, use other hosts and are not supported.
 ## API reference
 
 All sync source endpoints live under `/api/v1/rag/sync/`. Listing takes
-`collections:view` and everything that changes a source takes `collections:edit`,
-in both cases reaching the collection the source belongs to — there is no admin
-role in it. See
+`collections:view` and everything that changes a source takes `collections:edit`.
+There is no admin role in it. The paragraphs below say which sources each one
+reaches. See
 [who may reach a collection](../file-processing.md#who-may-reach-a-collection).
+
+`GET /api/v1/rag/sync/sources` lists every source of your organization, unassigned
+ones included, only with `connections:manage`, as `/org/integrations` does. Without
+it, the list has only the sources that feed a base you can read, and
+`collection_name` must name a collection you can read, or the answer is 404. If
+you create or detach an unassigned source without the permission, keep its id from
+the response, because no list shows it to you. The list of existing integrations that the knowledge base wizard offers to reuse also needs
+`connections:manage`. See [Permissions](../permissions.md).
+
+To update, delete or trigger a source through `/api/v1/rag/sync/sources/{id}`, you
+must also be able to write the base the source feeds. This includes a `PATCH` that
+sets `collection_name` to `null`. An unassigned source needs only your
+organization. `/org/integrations` manages sources at the organization level and
+needs `connections:manage` instead.
+
+Sync history and a source's run log show the runs of your organization's sources,
+also through an app-scoped base that every organization reads. A platform admin
+also sees the other organizations' sources of the bases they read. A run with no
+source, such as a local sync or a run whose source was deleted, is listed by its
+collection name to everyone who reads that collection.
 
 ### Sync sources CRUD
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/rag/sync/sources` | List all configured sync sources |
+| `GET` | `/api/v1/rag/sync/sources` | List sync sources (all of them with `connections:manage`) |
 | `POST` | `/api/v1/rag/sync/sources` | Create a new sync source |
 | `PATCH` | `/api/v1/rag/sync/sources/{id}` | Update an existing sync source |
 | `DELETE` | `/api/v1/rag/sync/sources/{id}` | Delete a sync source |
@@ -648,7 +685,18 @@ curl -X PATCH http://localhost:8000/api/v1/rag/sync/sources/{source_id} \
 Updatable fields: `name`, `config`, `sync_mode`, `schedule_minutes`,
 `is_active`, `collection_name`.
 
-Set `is_active` to `false` to pause a source without deleting it.
+Set `is_active` to `false` to pause a source without deleting it. A paused
+source cannot run on a schedule or be triggered through the API or CLI. The
+console disables its sync button. A queued job checks again before downloading
+files and ends with an error if the source was paused while it waited. Pausing
+does not interrupt a sync that has already started; set `is_active` to `true`
+to allow new syncs.
+
+When resolving a collection name, the oldest base in the source's organization
+wins, falling back to an app-scoped base. Equal creation times are ordered by
+base id. The API refuses to assign a source by collection name when several
+eligible bases share the oldest creation time. Use a knowledge base with a
+unique collection name to remove that ambiguity.
 
 ## Monitoring sync operations
 
@@ -744,8 +792,10 @@ endpoint includes the port (e.g. `http://localhost:9000`).
 ### Website: "resolves to private/internal address"
 
 The start URL, or the sitemap, points inside the deployment's network, or its name
-resolves there. A website source reads only public addresses. To index an internal
-site, publish its pages somewhere public, or upload the files directly.
+resolves there. A website source reads only public addresses, unless the operator
+lists the site's host in
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). Otherwise,
+publish its pages somewhere public, or upload the files directly.
 
 ### Website: "The site's robots.txt could not be read, so it was not crawled"
 
@@ -831,7 +881,8 @@ the source changed meanwhile.
 
 The repository's host resolves inside the deployment's network, so the source is
 refused. A self-hosted Git server on an internal address cannot be reached by a
-sync source.
+sync source unless the operator lists its host in
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings).
 
 ### Git: "git is not installed on this worker"
 

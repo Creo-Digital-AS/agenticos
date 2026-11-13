@@ -1,7 +1,5 @@
 """A bot's reaction emoji and Mattermost's `/agent` token, as settings (#2084)."""
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,8 +20,11 @@ SERVER = "https://mattermost.acme.internal"
 
 def _create(platform: str = "mattermost", **overrides: object) -> ChannelBotCreate:
     fields: dict[str, object] = {"platform": platform, "name": "bot", "token": "t" * 20}
-    if platform == "mattermost":
+    if platform in {"mattermost", "imessage"}:
         fields["api_base_url"] = SERVER
+    if platform == "teams":
+        fields["teams_app_id"] = str(uuid.uuid4())
+        fields["teams_tenant_id"] = str(uuid.uuid4())
     return ChannelBotCreate(**{**fields, **overrides})
 
 
@@ -46,6 +47,7 @@ def _row(platform: str = "mattermost") -> ChannelBot:
         stream_answers=True,
         step_display="timeline",
         rate_answers=True,
+        transcribe_voice_notes=True,
     )
 
 
@@ -70,11 +72,38 @@ async def _updated(bot: ChannelBot, **fields: object) -> dict:
         ) as repo_update,
     ):
         service = ChannelBotService(MagicMock(), organization_id=bot.organization_id)
-        await service.update(bot.id, ChannelBotUpdate(**fields))
+        await service.update(bot.id, ChannelBotUpdate(**fields), MagicMock())
     return repo_update.call_args.kwargs["update_data"]
 
 
 class TestTheReaction:
+    @pytest.mark.parametrize(
+        ("platform", "reaction"),
+        [
+            ("mattermost", "eyes"),
+            ("slack", "eyes"),
+            ("telegram", "eyes"),
+            ("imessage", "emphasize"),
+            ("discord", None),
+            ("teams", None),
+            ("email", None),
+        ],
+    )
+    def test_new_bot_defaults_are_native_and_ratings_are_opt_in(
+        self, platform: str, reaction: str | None
+    ) -> None:
+        data = _create(platform)
+        assert data.ack_reaction == reaction
+        assert data.rate_answers is False
+
+    async def test_explicit_choices_survive_creation_and_unrelated_updates(self) -> None:
+        created = await _created(_create(ack_reaction=None, rate_answers=True))
+        assert created["ack_reaction"] is None
+        assert created["rate_answers"] is True
+        changed = await _updated(_row(), name="Renamed")
+        assert "ack_reaction" not in changed
+        assert "rate_answers" not in changed
+
     async def test_it_is_stored_by_its_name(self) -> None:
         assert (await _created(_create(ack_reaction="eyes")))["ack_reaction"] == "eyes"
         assert (await _updated(_row(), ack_reaction="white_check_mark"))[

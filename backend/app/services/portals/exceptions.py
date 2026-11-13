@@ -7,8 +7,6 @@ secret) rather than a 4xx. They subclass `AppException` only so a stray one that
 escapes the create flow is logged and mapped like any other domain error.
 """
 
-from __future__ import annotations
-
 from app.core.exceptions import AppException
 
 
@@ -53,3 +51,11 @@ class PortalUnreachable(PortalError):
 
     message = "The portal's provider could not be reached"
     code = "PORTAL_UNREACHABLE"
+
+
+class AttachmentTooLarge(PortalError):
+    """The attachment is bigger than the caller's limit; nothing past the limit was kept."""
+
+    message = "The attachment is larger than the allowed size"
+    code = "PORTAL_ATTACHMENT_TOO_LARGE"
+    status_code = 413

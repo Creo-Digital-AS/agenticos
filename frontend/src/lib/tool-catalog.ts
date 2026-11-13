@@ -37,6 +37,8 @@ export type StepKind =
   | "shell"
   | "chart"
   | "image"
+  | "audio"
+  | "video"
   | "knowledge"
   | "web"
   | "skill"
@@ -60,9 +62,13 @@ export type ToolRenderer =
   | "artifact"
   | "chart"
   | "generated-image"
+  | "generated-speech"
+  | "generated-video"
+  | "desktop-screenshot"
   | "web-search"
   | "rag"
   | "run-python"
+  | "coding-agent"
   | "loaded-skill"
   | "load-skill"
   | "skill-list"
@@ -71,6 +77,7 @@ export type ToolRenderer =
   | "asked"
   | "delegation"
   | "workspace"
+  | "memory"
   | "generic";
 
 /**
@@ -87,6 +94,19 @@ export interface ToolVerbs {
   now: string;
   /** Once it has finished. */
   done: string;
+}
+
+/**
+ * Which `chat.tools` sentence names a parked call, and the `context` names it needs.
+ *
+ * `needs` is checked before the sentence is drawn, so a context missing one of them -
+ * a describer that could name the table and not the view - falls back to the plain
+ * card rather than to a sentence with a hole in it. A table write names its table and
+ * never its record: a record's label is a cell's text, stored on the approval row.
+ */
+export interface ApprovalSummary {
+  key: string;
+  needs: readonly string[];
 }
 
 export interface ToolEntry {
@@ -107,6 +127,13 @@ export interface ToolEntry {
   displayNameKey?: string;
   /** Set instead of `captionKey` when the label is a verb plus the call's subject. */
   verbs?: ToolVerbs;
+  /**
+   * The sentence an approval card leads with when the call was parked with a
+   * `context` - the ids in its arguments as names, resolved by the tool's describer
+   * on the backend (`ApprovalDescriber`). Absent for a tool nobody describes, and
+   * never shown instead of the arguments: those are what runs.
+   */
+  approvalSummary?: ApprovalSummary;
   /**
    * Open this step when it finishes in front of somebody.
    *
@@ -137,6 +164,13 @@ export interface ToolEntry {
    * over the answer it came after. It is still a line somebody can open.
    */
   staysClosed?: boolean;
+  /**
+   * Never drawn as a step: what the call produced is drawn under the answer
+   * instead - next steps as buttons, a card to switch a capability on (#2301).
+   * As a step it would be a line saying the agent offered something the person
+   * is already looking at.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -169,6 +203,50 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     captionKey: "readingArtifact",
     displayNameKey: "readArtifact",
   },
+  list_artifacts: {
+    kind: "list",
+    render: "generic",
+    captionKey: "listingArtifacts",
+    displayNameKey: "listArtifacts",
+  },
+  // The picture goes to the model; the step shows the written report beside it.
+  preview_artifact: {
+    kind: "read",
+    render: "generic",
+    captionKey: "previewingArtifact",
+    displayNameKey: "previewArtifact",
+  },
+  // Files a request the owner answers in the Share dialog; nothing is shared by the call.
+  share_artifact: {
+    kind: "write",
+    render: "generic",
+    captionKey: "sharingArtifact",
+    displayNameKey: "shareArtifact",
+  },
+
+  // visuals - the drawing is its own panel under the message, drawn while it is
+  // written; the step stays a line, since opening it would print the drawing's
+  // source as JSON.
+  draw: {
+    kind: "image",
+    render: "generic",
+    captionKey: "drawingVisual",
+    displayNameKey: "drawVisual",
+    staysClosed: true,
+  },
+  revise_visual: {
+    kind: "edit",
+    render: "generic",
+    captionKey: "revisingVisual",
+    displayNameKey: "reviseVisual",
+    staysClosed: true,
+  },
+  read_visual: {
+    kind: "read",
+    render: "generic",
+    captionKey: "readingVisual",
+    displayNameKey: "readVisual",
+  },
 
   // browser_use - a whole browse. The step card stays generic because the live view
   // is its own panel beside the transcript: a frame per step folded into the message
@@ -187,6 +265,30 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     render: "generic",
     captionKey: "openingPage",
     displayNameKey: "openPage",
+  },
+  browser_new_tab: {
+    kind: "web",
+    render: "generic",
+    captionKey: "openingPage",
+    displayNameKey: "openPage",
+  },
+  browser_tabs: {
+    kind: "web",
+    render: "generic",
+    captionKey: "readingPage",
+    displayNameKey: "readPage",
+  },
+  browser_switch_tab: {
+    kind: "web",
+    render: "generic",
+    captionKey: "readingPage",
+    displayNameKey: "readPage",
+  },
+  browser_close_tab: {
+    kind: "web",
+    render: "generic",
+    captionKey: "readingPage",
+    displayNameKey: "readPage",
   },
   browser_read: {
     kind: "web",
@@ -225,6 +327,37 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     displayNameKey: "goBack",
   },
 
+  // computer_use - a desktop worked through screenshots. Like `browse_web`, the live
+  // view is the browse panel, fed by frames rather than by these calls; what comes
+  // back to the model is a screenshot plus a line, so the generic renderer serves.
+  computer_screenshot: {
+    kind: "web",
+    render: "generic",
+    captionKey: "lookingAtScreen",
+    displayNameKey: "takeScreenshot",
+  },
+  computer_act: {
+    kind: "web",
+    render: "generic",
+    captionKey: "usingComputer",
+    displayNameKey: "useComputer",
+  },
+  computer_apps: {
+    kind: "list",
+    render: "generic",
+    captionKey: "listingApps",
+    displayNameKey: "listApps",
+  },
+  // The screenshot kept for the user rather than looked at: the picture is the answer.
+  computer_save_screenshot: {
+    kind: "image",
+    render: "desktop-screenshot",
+    captionKey: "savingScreenshot",
+    displayNameKey: "savedScreenshot",
+    opensWhenDone: true,
+    opensOnSight: true,
+  },
+
   // channel_tools - only ever called on a Slack, Telegram or Mattermost run, so these
   // steps are read back in the run timeline rather than watched live in the dashboard.
   get_channel_info: {
@@ -244,6 +377,12 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     render: "generic",
     captionKey: "lookingForChannel",
     displayNameKey: "channelSearch",
+  },
+  send_channel_file: {
+    kind: "write",
+    render: "generic",
+    captionKey: "sendingChannelFile",
+    displayNameKey: "sendChannelFile",
   },
   read_channel_history: {
     kind: "read",
@@ -272,6 +411,26 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     opensOnSight: true,
   },
 
+  // text_to_speech - the clip is the answer, so it opens wherever it lands, as an image does.
+  generate_speech: {
+    kind: "audio",
+    render: "generated-speech",
+    captionKey: "generatingSpeech",
+    displayNameKey: "generateSpeech",
+    opensWhenDone: true,
+    opensOnSight: true,
+  },
+
+  // video_generation - the clip is the answer, so it opens wherever it lands, as an image does.
+  generate_video: {
+    kind: "video",
+    render: "generated-video",
+    captionKey: "generatingVideo",
+    displayNameKey: "generateVideo",
+    opensWhenDone: true,
+    opensOnSight: true,
+  },
+
   // sandbox - the workspace toolset, whose steps name the file they are about
   ls: { kind: "list", render: "workspace", verbs: { now: "listing", done: "listed" } },
   read_file: { kind: "read", render: "workspace", verbs: { now: "reading", done: "read" } },
@@ -294,6 +453,62 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     opensWhenDone: true,
   },
   execute: { kind: "shell", render: "workspace", verbs: { now: "executing", done: "executed" } },
+
+  // mirage - the same console tools over a virtual terminal's mounted services. The
+  // generic renderer shows a command's output as the text it is: a file written
+  // there lives in a Drive or a repository, not in this conversation's workspace,
+  // so it is not one the workspace renderer could open.
+  mirage_ls: { kind: "list", render: "generic", verbs: { now: "listing", done: "listed" } },
+  mirage_read_file: { kind: "read", render: "generic", verbs: { now: "reading", done: "read" } },
+  mirage_glob: {
+    kind: "search",
+    render: "generic",
+    verbs: { now: "lookingFor", done: "lookedFor" },
+  },
+  mirage_grep: {
+    kind: "search",
+    render: "generic",
+    verbs: { now: "searchingFor", done: "searchedFor" },
+  },
+  mirage_write_file: { kind: "write", render: "generic", verbs: { now: "writing", done: "wrote" } },
+  mirage_edit_file: { kind: "edit", render: "generic", verbs: { now: "editing", done: "edited" } },
+  mirage_execute: {
+    kind: "shell",
+    render: "generic",
+    verbs: { now: "executing", done: "executed" },
+  },
+
+  // coding_agent - Claude Code or Codex in the sandbox. Its steps stream into a
+  // panel of their own while it works; what it read, ran and changed opens under
+  // the step afterwards, because that is what a person checks before trusting it.
+  run_coding_agent: {
+    kind: "code",
+    render: "coding-agent",
+    captionKey: "runningCodingAgent",
+    displayNameKey: "runCodingAgent",
+    opensWhenDone: true,
+  },
+
+  // monitor - a long-running command watched while the agent works. Starting one is a
+  // shell step; what it matched so far and its state read as plain text.
+  start_monitor: {
+    kind: "shell",
+    render: "generic",
+    captionKey: "startingMonitor",
+    displayNameKey: "startMonitor",
+  },
+  list_monitors: {
+    kind: "list",
+    render: "generic",
+    captionKey: "listingMonitors",
+    displayNameKey: "listMonitors",
+  },
+  stop_monitor: {
+    kind: "shell",
+    render: "generic",
+    captionKey: "stoppingMonitor",
+    displayNameKey: "stopMonitor",
+  },
 
   // code_execution
   run_python: {
@@ -327,51 +542,104 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     displayNameKey: "knowledgeBaseSearch",
   },
 
+  // workflows - starting one is a write: it sets a process going.
+  list_workflows: { kind: "list", render: "generic", captionKey: "workflowsListing" },
+  get_phone_contact_policy: { kind: "read", render: "generic", captionKey: "phoneContactPolicy" },
+  call_me: { kind: "write", render: "generic", captionKey: "phoneCalling" },
+  list_phone_transfer_contacts: { kind: "read", render: "generic", captionKey: "phoneContacts" },
+  transfer_phone_call: { kind: "write", render: "generic", captionKey: "phoneTransferring" },
+  end_phone_call: { kind: "write", render: "generic", captionKey: "phoneEnding" },
+  run_workflow: { kind: "write", render: "generic", captionKey: "workflowRunning" },
+  get_workflow_run: { kind: "read", render: "generic", captionKey: "workflowRunReading" },
+
+  // drafts - the card draws in the turn; the step stays a line, since opening it
+  // would print the draft's arguments as JSON under the card. Not hidden: a hidden
+  // step is dropped from the turn's runs and no card would be drawn.
+  write_draft: {
+    kind: "write",
+    render: "generic",
+    captionKey: "writingDraft",
+    displayNameKey: "draft",
+    staysClosed: true,
+  },
+
+  // follow_ups - next steps, drawn as buttons under the answer (#2301).
+  suggest_next_steps: {
+    kind: "tool",
+    render: "generic",
+    captionKey: "suggestingNextSteps",
+    displayNameKey: "nextSteps",
+    hidden: true,
+  },
+  // ...and things to set up, drawn as cards under the answer (#2301).
+  propose_setup: {
+    kind: "tool",
+    render: "generic",
+    captionKey: "proposingSetup",
+    displayNameKey: "setupProposals",
+    hidden: true,
+  },
   // memory - the agent's own file store. An index and a note read back as text, so the
-  // generic renderer serves; `delete_memory` is `edit` because `StepKind` has no delete.
+  // dedicated renderer serves; `delete_memory` is `edit` because `StepKind` has no delete.
   // All of it `staysClosed`: bookkeeping, not an answer.
   list_memory: {
     kind: "list",
-    render: "generic",
+    render: "memory",
     captionKey: "memoryChecking",
     displayNameKey: "listMemory",
     staysClosed: true,
   },
   read_memory: {
     kind: "read",
-    render: "generic",
+    render: "memory",
     captionKey: "memoryReading",
     displayNameKey: "readMemory",
     staysClosed: true,
   },
   write_memory: {
     kind: "write",
-    render: "generic",
+    render: "memory",
     captionKey: "memorySaving",
     displayNameKey: "writeMemory",
     staysClosed: true,
   },
   edit_memory: {
     kind: "edit",
-    render: "generic",
+    render: "memory",
     captionKey: "memoryUpdating",
     displayNameKey: "editMemory",
     staysClosed: true,
   },
   delete_memory: {
     kind: "edit",
-    render: "generic",
+    render: "memory",
     captionKey: "memoryForgetting",
     displayNameKey: "deleteMemory",
     staysClosed: true,
   },
+  correct_memory: {
+    kind: "edit",
+    render: "memory",
+    captionKey: "memoryCorrecting",
+    displayNameKey: "correctMemory",
+    staysClosed: true,
+    approvalSummary: { key: "approveCorrectMemory", needs: ["before", "after"] },
+  },
+  share_memory: {
+    kind: "write",
+    render: "memory",
+    captionKey: "memorySharing",
+    displayNameKey: "shareMemory",
+    staysClosed: true,
+    approvalSummary: { key: "approveShareMemory", needs: ["claim", "audience"] },
+  },
   remember: {
     kind: "write",
-    render: "generic",
+    render: "memory",
     captionKey: "memoryRemembering",
     staysClosed: true,
   },
-  recall: { kind: "search", render: "generic", captionKey: "memoryRecalling", staysClosed: true },
+  recall: { kind: "search", render: "memory", captionKey: "memoryRecalling", staysClosed: true },
 
   // conversation search - past threads, found and opened. Both answer in Markdown,
   // which the generic renderer already shows as prose.
@@ -400,6 +668,24 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
   // of its own, built from `subagent_*` frames rather than from these calls.
   // `task` is one agent asking another, and is drawn as that: the delegate's face
   // and name on the step, the brief and the answer under it.
+  start_background_task: {
+    kind: "delegate",
+    render: "generic",
+    captionKey: "startingBackgroundTask",
+    displayNameKey: "backgroundTaskStarted",
+  },
+  list_background_tasks: {
+    kind: "list",
+    render: "generic",
+    captionKey: "listingBackgroundTasks",
+    displayNameKey: "backgroundTasks",
+  },
+  stop_background_task: {
+    kind: "delegate",
+    render: "generic",
+    captionKey: "stoppingBackgroundTask",
+    displayNameKey: "backgroundTaskStopped",
+  },
   task: { kind: "delegate", render: "delegation", captionKey: "handingWork" },
   check_task: { kind: "delegate", render: "generic", captionKey: "checkingDelegate" },
   wait_tasks: { kind: "delegate", render: "generic", captionKey: "waitingDelegates" },
@@ -532,10 +818,8 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
  * exact match in both directions - a surplus row there is a renderer nothing reaches,
  * and that is the half that hid #144.
  *
- * `load_capability` is Pydantic AI's own, and it is how a model opens a skill: every
- * skill an agent is given is a deferred capability, so this is the call a person sees
- * where `load_skill` used to be. Without a row it would render as *Load Capability*
- * over a JSON blob, which says nothing about which skill was opened.
+ * The stable policy id is `load_capability`; the model-facing alias is `read_skill`.
+ * Both and older histories resolve to this renderer, showing which skill was read.
  */
 export const FRAMEWORK_TOOLS: Record<string, ToolEntry> = {
   load_capability: {
@@ -543,6 +827,41 @@ export const FRAMEWORK_TOOLS: Record<string, ToolEntry> = {
     render: "loaded-skill",
     captionKey: "loadingSkill",
     displayNameKey: "loadSkill",
+  },
+};
+
+/**
+ * Tools every agent's own setup adds, which no capability registers (#2301).
+ *
+ * `request_capability` is the card an agent shows for a capability it lacks,
+ * offered by the setup section every run carries rather than by a capability a
+ * spec binds - so, like `load_capability`, it stays out of the drift check.
+ */
+export const PLATFORM_TOOLS: Record<string, ToolEntry> = {
+  request_capability: {
+    kind: "tool",
+    render: "generic",
+    captionKey: "requestingCapability",
+    displayNameKey: "capabilityRequest",
+    hidden: true,
+  },
+};
+
+/**
+ * Tools a voice call adds that no capability registers (#54).
+ *
+ * `hand_off` is how a call's realtime model hands a task to the agent's own text
+ * model, which has the sandbox, the browser and the delegates a call cannot
+ * carry. Out of `TOOL_CATALOG` for the reason `FRAMEWORK_TOOLS` is: the drift
+ * check there is against the capability registry, and the backend checks this
+ * table against the tool's own name instead.
+ */
+export const CALL_TOOLS: Record<string, ToolEntry> = {
+  hand_off: {
+    kind: "delegate",
+    render: "generic",
+    captionKey: "workingInText",
+    displayNameKey: "workedInText",
   },
 };
 
@@ -560,6 +879,42 @@ export const FRAMEWORK_TOOLS: Record<string, ToolEntry> = {
  * registers.
  */
 export const LEGACY_TOOLS: Record<string, ToolEntry> = {
+  // Retired Tables capability: saved approvals and transcripts still name these tools.
+  // Reads are lookups, writes are edits; `delete_record` is `edit`
+  // because `StepKind` has no delete, the same choice `delete_memory` makes.
+  list_tables: { kind: "list", render: "generic", captionKey: "tablesListing" },
+  table_exists: { kind: "read", render: "generic", captionKey: "tablesChecking" },
+  describe_table: { kind: "read", render: "generic", captionKey: "tablesDescribing" },
+  list_views: { kind: "list", render: "generic", captionKey: "viewsListing" },
+  create_table: { kind: "write", render: "generic", captionKey: "tablesCreating" },
+  record_exists: { kind: "read", render: "generic", captionKey: "recordsChecking" },
+  list_records: { kind: "list", render: "generic", captionKey: "recordsListing" },
+  get_record: { kind: "read", render: "generic", captionKey: "recordsReading" },
+  create_record: {
+    kind: "write",
+    render: "generic",
+    captionKey: "recordsCreating",
+    approvalSummary: { key: "approveCreateRecord", needs: ["table"] },
+  },
+  upsert_record: {
+    kind: "write",
+    render: "generic",
+    captionKey: "recordsUpserting",
+    approvalSummary: { key: "approveUpsertRecord", needs: ["table"] },
+  },
+  update_record: {
+    kind: "edit",
+    render: "generic",
+    captionKey: "recordsUpdating",
+    approvalSummary: { key: "approveUpdateRecord", needs: ["table"] },
+  },
+  delete_record: {
+    kind: "edit",
+    render: "generic",
+    captionKey: "recordsDeleting",
+    approvalSummary: { key: "approveDeleteRecord", needs: ["table"] },
+  },
+
   list_skills: {
     kind: "skill",
     render: "skill-list",
@@ -576,7 +931,14 @@ export const LEGACY_TOOLS: Record<string, ToolEntry> = {
 
 /** What this side knows about `name`, or null for a tool it has never heard of. */
 export function toolEntry(name: string): ToolEntry | null {
-  return TOOL_CATALOG[name] ?? FRAMEWORK_TOOLS[name] ?? LEGACY_TOOLS[name] ?? null;
+  return (
+    TOOL_CATALOG[name] ??
+    FRAMEWORK_TOOLS[name === "read_skill" ? "load_capability" : name] ??
+    PLATFORM_TOOLS[name] ??
+    CALL_TOOLS[name] ??
+    LEGACY_TOOLS[name] ??
+    null
+  );
 }
 
 /**

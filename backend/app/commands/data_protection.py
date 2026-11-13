@@ -18,8 +18,6 @@ the deployment needs them to sit, and exclude the traffic from training. Those
 are contracts, not rows, and the page names each as evidence to obtain.
 """
 
-from __future__ import annotations
-
 import asyncio
 import re
 from collections import Counter
@@ -29,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 import click
 from sqlalchemy import func, select
@@ -39,6 +38,7 @@ from tabulate import tabulate
 from app.commands import command, info, success, warning
 from app.commands.vault_rotate import SEALED_TABLES
 from app.core.config import settings
+from app.core.sanitize import deployment_allowlist
 from app.db.models.agent import Agent, AgentVersion
 from app.db.models.agent_embed import AgentEmbed
 from app.db.models.agent_environment import AgentEnvironment
@@ -52,6 +52,7 @@ from app.db.models.conversation import Conversation
 from app.db.models.credential import ModelProfile
 from app.db.models.deployment_settings import DeploymentSettings
 from app.db.models.embed_visitor import EmbedVisitor
+from app.db.models.generated_media import GeneratedMedia
 from app.db.models.knowledge_base import KnowledgeBase
 from app.db.models.local_service import LocalService
 from app.db.models.mcp_connection import McpConnection
@@ -62,7 +63,10 @@ from app.db.models.rag_document import RAGDocument
 from app.db.models.sandbox_operation import SandboxOperation
 from app.db.models.sync_source import SyncSource
 from app.db.models.user import User
+from app.db.models.visual import Visual
+from app.db.models.workflow_file import WorkflowFile
 from app.db.session import get_db_context
+from app.services.rag_scratch import SCRATCH_DIRECTORY
 
 # Every column holding a path under `MEDIA_DIR`. The unreferenced-file scan is
 # only as good as this list: a column missing from it turns every file it names
@@ -80,12 +84,20 @@ MEDIA_PATH_COLUMNS: tuple[InstrumentedAttribute[str | None] | InstrumentedAttrib
     DeploymentSettings.logo_path,
     DeploymentSettings.favicon_path,
     ArtifactVersion.storage_path,
+    WorkflowFile.storage_path,
+    Visual.thumbnail_path,
+    GeneratedMedia.storage_path,
 )
 
-# Directories under `MEDIA_DIR` that hold files no row points at, by design:
-# generated images are addressed by their path in a message, and the parse
-# scratch directory is cleared by the worker that wrote it.
-UNREFERENCED_BY_DESIGN = ("generated_", "_rag_tmp")
+# Directories under `MEDIA_DIR` that hold files no row points at, by design: the
+# parse scratch directory holds one copy per queued or running ingest, which its
+# job removes when it ends, a document delete removes after its commit, and the
+# hourly `sweep-rag-scratch` removes once its document is gone or settled
+# (`app.services.rag_scratch`, #2681). Generated media
+# is not one of them since `generated_media` records each file (#2310), so a
+# file generated before that table existed is counted here - it has no row, and
+# goes only with its organization.
+UNREFERENCED_BY_DESIGN = (SCRATCH_DIRECTORY,)
 
 # Which capabilities send something out of the deployment when an agent runs
 # with them, and where. A capability reaches the network without any row in
@@ -99,20 +111,43 @@ UNREFERENCED_BY_DESIGN = ("generated_", "_rag_tmp")
 # either named here or in `CAPABILITIES_STAYING_INSIDE`, so a new one fails a
 # test rather than quietly leaving the inventory short.
 OUTBOUND_CAPABILITIES: dict[str, str] = {
+    "phone_calls": "the configured telephony provider and explicitly consented recipients",
     # The pages it opens are the destination a reviewer has to know about. What
     # each step sends the model - the page's address, element labels and an
     # excerpt of its text - goes to the agent's own model provider, which the
     # inventory already names.
     "browser_use": "a browser host on BROWSER_CDP_ALLOWED_HOSTS, and the sites it opens",
+    # Claude Code or Codex reads the sandbox's files and sends what it reads to
+    # its own vendor, from inside the sandbox rather than from the platform.
+    "coding_agent": (
+        "Anthropic, OpenAI or the gateway the binding names, from the agent's sandbox, "
+        "with the code the coding agent reads"
+    ),
+    # Screenshots of the desktop go to the agent's own model; the actions, and the
+    # text the model types, go to the desktop.
+    "computer_use": "the agent's sandbox connection, or the computerd host on COMPUTER_DAEMON_ALLOWED_HOSTS",
     "image_generation": "the image provider named in the binding",
     "knowledge": "the collection's embedding endpoint",
-    "memory_mem0": "the mem0 host the binding names (MEM0_ALLOWED_HOSTS bounds it)",
     "sandbox": "the sandbox runtime this deployment configures",
+    "mirage": (
+        "the mounted services' APIs; author-specified hosts must be on MIRAGE_ALLOWED_HOSTS; "
+        "RAM folders stay in the API process"
+    ),
+    "text_to_speech": "the speech provider named in the binding",
+    "video_generation": "the video provider named in the binding, with any starting image",
+    # A drawing's pictures by address, only for an agent that already reads the
+    # web and only on a host its `web_fetch` or `browser_use` may reach.
+    # And, for a channel reply's picture and a thumbnail, the whole drawing with
+    # its pictures inlined, to the rendering browser the deployment configures.
+    "visuals": (
+        "picture addresses the model names, on hosts the agent's web readers may reach; "
+        "the whole drawing to the browser at VISUAL_RENDER_CDP_URL, where it is set"
+    ),
     "web_fetch": "whatever address the model asks for",
     "web_research": "DuckDuckGo by default, or the search provider the binding names",
 }
 
-# Capabilities whose work never leaves the process, so they own no destination.
+# Capabilities with no outbound destination of their own.
 CAPABILITIES_STAYING_INSIDE = frozenset(
     {
         # A published page goes to the deployment's own file storage. Who may then
@@ -123,9 +158,15 @@ CAPABILITIES_STAYING_INSIDE = frozenset(
         # Questions go to the person running the agent, on the surface they are
         # already using.
         "ask_user",
+        # Runs a command in the run's own workspace and reads its output back from a
+        # file there; nothing leaves that workspace except through its own tools.
+        "monitor",
         # Runs the agent's own tools later in the same process; whatever a tool
         # reaches is that tool's capability's destination, listed under it.
         "background_tools",
+        # Delegation stays in this deployment; outbound destinations belong to
+        # the child model and tools, which this inventory already lists.
+        "background_tasks",
         "channel_tools",
         "charts",
         "clock",
@@ -133,6 +174,10 @@ CAPABILITIES_STAYING_INSIDE = frozenset(
         "compaction",
         "context",
         "conversation_search",
+        # The draft goes to the person's own screen, as a card in the answer.
+        "drafts",
+        # Next steps go to the person's own screen, under the answer.
+        "follow_ups",
         "guardrails",
         # The bytes leave the database for the deployment's own file storage,
         # which is a store this report already lists rather than a destination
@@ -146,6 +191,10 @@ CAPABILITIES_STAYING_INSIDE = frozenset(
         "thinking",
         "tool_output_limits",
         "tool_search",
+        # Records are rows in this deployment's own database.
+        # A run is one of this deployment's own workflows, carried out by its
+        # worker; whatever a step reaches is that workflow's, not this capability's.
+        "workflows",
     }
 )
 
@@ -212,11 +261,16 @@ def _settings_section() -> Section:
         ["SMTP_TLS", _yes_no(settings.SMTP_TLS)],
         ["LOG_PROVIDER_WRITE_TO_DISK", _yes_no(settings.LOG_PROVIDER_WRITE_TO_DISK)],
         ["RATE_LIMIT_TRUST_FORWARDED_FOR", _yes_no(settings.RATE_LIMIT_TRUST_FORWARDED_FOR)],
-        ["MEM0_ALLOWED_HOSTS", ", ".join(settings.MEM0_ALLOWED_HOSTS) or "none"],
+        ["MIRAGE_ALLOWED_HOSTS", ", ".join(settings.MIRAGE_ALLOWED_HOSTS) or "none"],
+        # Its host only: an address can carry a token, and this report is attached
+        # to reviews.
+        ["VISUAL_RENDER_CDP_URL", urlsplit(settings.VISUAL_RENDER_CDP_URL).hostname or "unset"],
         [
             "BROWSER_CDP_ALLOWED_HOSTS",
             ", ".join(settings.BROWSER_CDP_ALLOWED_HOSTS) or "none",
         ],
+        ["MCP_ALLOWED_HOSTS", ", ".join(settings.MCP_ALLOWED_HOSTS) or "none"],
+        ["OUTBOUND_PRIVATE_ALLOWLIST", ", ".join(deployment_allowlist().entries) or "none"],
         ["GOOGLE_CLIENT_ID", "set" if settings.GOOGLE_CLIENT_ID else "unset"],
     ]
     return Section(
@@ -432,12 +486,32 @@ async def _external_connections(db: AsyncSession) -> Section:
         for platform, name, api_base_url in bots.all()
     ]
 
+    accounts = await db.execute(
+        select(
+            McpConnection.scope,
+            func.coalesce(McpConnection.account_email, McpConnection.label, McpConnection.name),
+            McpConnection.catalog_key,
+            McpConnection.url,
+        )
+        .where(
+            McpConnection.is_enabled.is_(True),
+            McpConnection.purpose == "account",
+            McpConnection.oauth_payload.is_not(None),
+        )
+        .order_by(McpConnection.scope, McpConnection.name)
+    )
+    rows += [
+        ["Connected account", f"{scope}/{account}", _endpoint(url), f"{provider} OAuth grant"]
+        for scope, account, provider, url in accounts.all()
+    ]
+
     return Section(
         title="Other configured destinations",
         note=(
             "Tool arguments and results reach an MCP server; a sync source pulls "
             "documents in under its own credential; a channel bot posts the "
-            "agent's replies to the messaging vendor."
+            "agent's replies to the messaging vendor. Connected accounts hold "
+            "provider OAuth grants independently of an agent's current bindings."
         ),
         headers=("Kind", "Name", "Destination", "Detail"),
         rows=rows,
@@ -473,6 +547,13 @@ async def _runnable_versions(db: AsyncSession) -> list[tuple[str, str, int, dict
     return runnable
 
 
+LOCAL_CODING_DESTINATION = (
+    "The provider or gateway configured in Claude Code or Codex on the person's "
+    "computer, directly from that computer, with the task and code the coding "
+    "agent reads. The deployment does not control its model, endpoint or sign-in."
+)
+
+
 async def _capability_destinations(db: AsyncSession) -> Section:
     """Where a capability sends something, with no row naming the address.
 
@@ -489,13 +570,30 @@ async def _capability_destinations(db: AsyncSession) -> Section:
             destination = OUTBOUND_CAPABILITIES.get(str(capability_id))
             if destination is None:
                 continue
+            config = binding.get("config") if isinstance(binding, dict) else None
+            if (
+                capability_id == "coding_agent"
+                and isinstance(config, dict)
+                and config.get("runs_on") == "this_computer"
+            ):
+                destination = LOCAL_CODING_DESTINATION
             rows.append([f"agent {slug}", f"{where} v{version}", str(capability_id), destination])
+    rows.append(
+        [
+            "desktop chat",
+            "per-conversation override",
+            "coding_agent (this computer)",
+            LOCAL_CODING_DESTINATION,
+        ]
+    )
     return Section(
         title="Capability destinations",
         note=(
             "A capability reaches its own address with nothing in the tables "
             "above naming it. Only the versions that can run are listed: the "
-            "default one, and each environment's pinned one."
+            "default one, and each environment's pinned one. The desktop chat row is a "
+            "selectable runtime path even without a published coding-agent binding, "
+            "not evidence that a conversation has used it."
         ),
         headers=("Agent", "Version", "Capability", "Reaches"),
         rows=rows,
@@ -605,6 +703,17 @@ def _walk_media(media_dir: Path) -> list[str]:
     return found
 
 
+def _conversation_of(path: str) -> UUID | None:
+    """The conversation a `media/<organization>/<conversation>/...` path belongs to."""
+    parts = PurePosixPath(path).parts
+    if len(parts) < 4 or parts[0] != "media":
+        return None
+    try:
+        return UUID(parts[2])
+    except ValueError:
+        return None
+
+
 async def _unreferenced_media(db: AsyncSession) -> Section:
     """Files under `MEDIA_DIR` that no row points at any more.
 
@@ -619,7 +728,16 @@ async def _unreferenced_media(db: AsyncSession) -> Section:
         referenced.update(str(value) for value in result.scalars().all())
 
     media_dir = Path(settings.MEDIA_DIR)
-    orphans = [path for path in _walk_media(media_dir) if path not in referenced]
+    unlisted = [path for path in _walk_media(media_dir) if path not in referenced]
+    # A conversation's media - offloaded history, a visual's pictures - has no row
+    # of its own: its prefix is its lifetime, so it is live while the
+    # conversation is, and an orphan once the conversation is gone.
+    threads = {thread for path in unlisted if (thread := _conversation_of(path)) is not None}
+    live: set[UUID] = set()
+    if threads:
+        found = await db.execute(select(Conversation.id).where(Conversation.id.in_(threads)))
+        live = set(found.scalars().all())
+    orphans = [path for path in unlisted if _conversation_of(path) not in live]
 
     # Counted per directory, never named. An upload keeps the original filename
     # in its stored path, so listing twenty of them would put "medical-results"
@@ -630,10 +748,15 @@ async def _unreferenced_media(db: AsyncSession) -> Section:
     return Section(
         title=f"Files on disk with no row ({len(orphans)} under {media_dir})",
         note=(
-            "Generated images and the parse scratch directory are excluded - "
-            "they have no row by design. Everything else here is bytes the "
-            "product can no longer find, and cannot delete. Directories and "
-            "counts only: a stored path carries the original filename."
+            "The parse scratch directory is excluded - it has no row by design, "
+            "and an hourly sweep removes a copy whose document is gone or settled. "
+            "Under generated_<organization> these are mostly files generated "
+            "before generated_media recorded them, which go only with their "
+            "organization; also a file whose unlink failed after its row was "
+            "deleted, or one still being saved before its row is written. "
+            "Everything else here is bytes the product can no "
+            "longer find, and cannot delete. Directories and counts only: a "
+            "stored path carries the original filename."
         ),
         headers=("Directory", "Files"),
         rows=rows,

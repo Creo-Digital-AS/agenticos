@@ -9,8 +9,6 @@ it. Neither edge is exercised by the tests that only read a working capability's
 contract, so they get their own file.
 """
 
-from __future__ import annotations
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -112,3 +110,12 @@ class TestToolContracts:
             contracts = await tool_contracts()
 
         assert contracts == {"toolset_free_for_this_test": {}}
+
+
+async def test_an_uninstalled_mirage_extra_needs_no_documentation_build(monkeypatch):
+    from app.services import capability_contracts
+
+    monkeypatch.setattr(capability_contracts, "mirage_catalog", lambda: ())
+    definition = SimpleNamespace(id="mirage", builder=MagicMock())
+    assert await capability_contracts._contracts_for(definition) == {}
+    definition.builder.assert_not_called()

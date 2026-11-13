@@ -8,20 +8,25 @@ there is no engine to install beside the platform and no second vendor that page
 content goes to (#2127).
 """
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
 
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.models import Model
-from pydantic_ai.tools import AgentDepsT
-from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.models import Model, ModelRequestContext
+from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
 
+from app.agents.capabilities.browser_use._history import (
+    BROWSER_REPORT_TOOLS,
+    compact_browser_tables,
+)
 from app.agents.capabilities.browser_use._loop import LoopPolicy
 from app.agents.capabilities.browser_use._page import PagePolicy
 from app.agents.capabilities.browser_use._route import BrowserRoute
-from app.agents.capabilities.browser_use._toolset import PageFactory, build_toolset
+from app.agents.capabilities.browser_use._toolset import (
+    BROWSER_TAB_REQUIREMENT,
+    BrowserToolset,
+    PageFactory,
+    build_toolset,
+)
 
 _INSTRUCTIONS = (
     "You can use a real web browser two ways. Drive it yourself with browser_open, then "
@@ -29,7 +34,7 @@ _INSTRUCTIONS = (
     "numbered elements each one returns - best for a short task, and say in one short "
     "sentence what you are about to do before each action so the person can follow. Or "
     "hand a long task to `browse_web` with a starting URL, and it works the page step by "
-    "step until the task is done. Both use the same tab, which stays open for the rest "
+    "step until the task is done. Both use the selected tab, which stays open for the rest "
     "of the turn: if a browse pauses at its step limit, call it again without a "
     "start_url to continue where it stopped. For a page you only need to read, fetch it "
     "instead. A 'blocked' result is an answer about the page, not a failure to retry "
@@ -71,6 +76,7 @@ class WebBrowser(AbstractCapability[AgentDepsT]):
     candidate_cap: int = 60
     vision: bool = False
     preview: bool = True
+    report_tool_names: frozenset[str] = BROWSER_REPORT_TOOLS
 
     step_model: Model | None = field(default=None, repr=False, compare=False)
     """The model `browse_web` asks for each step, when the agent named one; else the run's."""
@@ -86,18 +92,63 @@ class WebBrowser(AbstractCapability[AgentDepsT]):
     route: BrowserRoute | None = field(default=None, repr=False, compare=False)
     """Where the organization sends its browses (#2130), resolved by the runner."""
 
+    resume_local: bool = False
     page_factory: PageFactory | None = field(default=None, repr=False, compare=False)
     """The browser seam; `None` reaches the real `cdp-use`. A test substitutes it."""
 
-    _toolset: AbstractToolset[Any] | None = field(
-        default=None, init=False, repr=False, compare=False
-    )
+    _toolset: BrowserToolset | None = field(default=None, init=False, repr=False, compare=False)
 
     def get_instructions(self) -> str:
         """Static guidance: which way to drive the browser, and to distrust its output."""
-        return _INSTRUCTIONS
+        if self.resume_local:
+            return _INSTRUCTIONS + (
+                " Use browser_new_tab to open a separate page, browser_tabs to list ids, "
+                "browser_switch_tab to select and browser_close_tab to release a tab. "
+                "On the paired computer, native tabs remain open for this conversation "
+                "between turns. To continue earlier work, call browser_read first to "
+                "reattach and obtain fresh element numbers. If no tab remains, open the "
+                "requested URL with browser_open. If another run holds the tab, report "
+                "that it is busy and wait rather than repeatedly retrying."
+            )
+        return _INSTRUCTIONS + (
+            " Use browser_new_tab(url) to open a separate tab (up to eight); browser_tabs "
+            "lists ids, browser_switch_tab selects and reads one, browser_close_tab closes one. "
+            "In private conversations, browser_read restores the previous remote session "
+            "for up to one hour. Remote tabs close after each turn; resume reloads their "
+            "URLs, cookies and local storage, not unsaved forms or JavaScript memory. "
+            "Read the page again before using element numbers."
+        )
 
-    def get_toolset(self) -> AbstractToolset[Any]:
+    async def prepare_tools(
+        self, ctx: RunContext[AgentDepsT], tool_defs: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        """Offer tab actions only while a tab is held; restoration remains available."""
+        has_tabs = self._toolset is not None and bool(self._toolset.sessions())
+        has_active = self._toolset is not None and self._toolset.session is not None
+        offered: list[ToolDefinition] = []
+        for tool in tool_defs:
+            requirement = (
+                (tool.metadata or {}).get(BROWSER_TAB_REQUIREMENT)
+                if tool.capability_id == self.id
+                else None
+            )
+            if requirement == "active" and not has_active:
+                continue
+            if requirement == "any" and not has_tabs:
+                continue
+            offered.append(tool)
+        return offered
+
+    async def before_model_request(
+        self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext
+    ) -> ModelRequestContext:
+        """Retain page evidence while dropping obsolete element tables from this request."""
+        return replace(
+            request_context,
+            messages=compact_browser_tables(request_context.messages, self.report_tool_names),
+        )
+
+    def get_toolset(self) -> BrowserToolset:
         """The toolset providing `browse_web` (built once, then reused)."""
         if self._toolset is None:
             self._toolset = build_toolset(
@@ -113,5 +164,6 @@ class WebBrowser(AbstractCapability[AgentDepsT]):
                 page_factory=self.page_factory,
                 step_model=self.step_model,
                 route=self.route,
+                resume_local=self.resume_local,
             )
         return self._toolset

@@ -18,8 +18,6 @@ This module is template-inherited and outside the coverage gate, which is why
 the behaviour is pinned by name rather than trusted to a percentage.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -159,7 +157,7 @@ class TestWhatTheWorkerStampsOnAnUploadsChunks:
 
         @asynccontextmanager
         async def _worker_db() -> AsyncIterator[MagicMock]:
-            yield MagicMock()
+            yield MagicMock(execute=AsyncMock(), refresh=AsyncMock())
 
         @asynccontextmanager
         async def _pipeline(**_kwargs: object) -> AsyncIterator[MagicMock]:
@@ -237,7 +235,7 @@ async def _connector_sync(
 
     @asynccontextmanager
     async def _worker_db() -> AsyncIterator[MagicMock]:
-        yield MagicMock()
+        yield MagicMock(execute=AsyncMock(), refresh=AsyncMock())
 
     with (
         patch.object(rag_tasks, "VectorStore", return_value=store),

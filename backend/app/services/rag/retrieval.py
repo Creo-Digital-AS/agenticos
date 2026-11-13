@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import logging
 import time
@@ -9,16 +7,20 @@ from uuid import UUID
 
 from rank_bm25 import BM25Okapi
 
+from app.agents.capabilities.budget import assert_ambient_budget
+from app.core.exceptions import BadRequestError
+from app.db.vector_tables import VectorScope
 from app.services.rag.config import RAGSettings
 from app.services.rag.filters import (
     RetrievalFilters,
     RetrievalQuery,
     RetrievalScope,
     compose,
-    scope_for_tenant,
+    scope_for,
 )
 from app.services.rag.models import ParentContextMode, SearchResult
-from app.services.rag.parent_context import expand_context, expansion_tenant
+from app.services.rag.overlay import active_overlay
+from app.services.rag.parent_context import expand_context, expansion_scope
 from app.services.rag.vectorstore import BaseVectorStore
 
 logger = logging.getLogger(__name__)
@@ -62,19 +64,18 @@ class RetrievalService(BaseRetrievalService):
         """The scope a search of this collection should carry, resolved by name.
 
         For a caller that holds only a collection name and its own organization -
-        the agent capability, the CLI - not an already-authorized knowledge base
-        row. It asks the store's own `resolve_tenant` (its own organization for an
-        org base, `None` for an app-scoped one every organization reads or a
-        collection no base claims, #1684) and converts that into the matching
-        scope shape (`TenantScope` or `AppScope`, FA-039). A caller that already
-        resolved and authorized the base for this name - the `/search` route,
-        through `CollectionAccessService` - builds its scope directly from that
-        base's own `vector_tenant` with `scope_for_tenant` instead, so it never
-        re-resolves a name the resolver could prefer a different, same-named base
-        for (#1684).
+        the agent capability - not an already-authorized knowledge base row. It
+        asks the store's own `resolve_scope` (the base the name resolves to for
+        that organization, and its tenant - its organization for an org base,
+        `None` for an app-scoped one every organization reads or a collection no
+        base claims, #1684, #2537) and converts that into the matching scope shape
+        (`TenantScope` or `AppScope`, FA-039). A caller that already resolved and
+        authorized the base for this name - the `/search` route, through
+        `CollectionAccessService` - builds its scope directly from that base's own
+        `vector_scope` with `scope_for` instead, so it never re-resolves a name the
+        resolver could prefer a different, same-named base for (#1684).
         """
-        tenant = await self.store.resolve_tenant(collection_name, organization_id)
-        return scope_for_tenant(tenant)
+        return scope_for(await self.store.resolve_scope(collection_name, organization_id))
 
     @staticmethod
     def _rrf_fuse(
@@ -89,10 +90,14 @@ class RetrievalService(BaseRetrievalService):
         appears in provides its representative - which for the hybrid case is the
         vector leg, exactly as before this generalised past two lists.
 
-        The representative is copied with only its score replaced, so every other
-        field a store or a later stage put on the result survives fusion.
+        The representative is copied with its score replaced and its similarity
+        raised to the closest any list found the row at, so every other field a
+        store or a later stage put on the result survives fusion, and a row one
+        query variant matched well is not judged by a variant that matched it
+        poorly.
         """
         scores: dict[str, float] = {}
+        similarities: dict[str, float | None] = {}
         result_map: dict[str, SearchResult] = {}
 
         for results in result_lists:
@@ -101,9 +106,18 @@ class RetrievalService(BaseRetrievalService):
                 scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
                 if key not in result_map:
                     result_map[key] = r
+                    similarities[key] = r.similarity
+                elif r.similarity is not None:
+                    best = similarities[key]
+                    similarities[key] = r.similarity if best is None else max(best, r.similarity)
 
         sorted_keys = sorted(scores, key=lambda x: scores[x], reverse=True)
-        return [result_map[key].model_copy(update={"score": scores[key]}) for key in sorted_keys]
+        return [
+            result_map[key].model_copy(
+                update={"score": scores[key], "similarity": similarities[key]}
+            )
+            for key in sorted_keys
+        ]
 
     async def _bm25_search(
         self, query: str, collection_name: str, limit: int, query_filter: RetrievalQuery
@@ -121,6 +135,7 @@ class RetrievalService(BaseRetrievalService):
         across tenants, and an empty `store.search` already answers the same
         "nothing to rank" question fail-closed.
         """
+        await assert_ambient_budget()
         all_results = await self.store.search(
             collection_name=collection_name,
             query=query,
@@ -140,8 +155,10 @@ class RetrievalService(BaseRetrievalService):
             SearchResult(
                 content=r.content,
                 score=float(s),
+                similarity=r.similarity,
                 metadata=r.metadata,
                 parent_doc_id=r.parent_doc_id,
+                overlay_token=r.overlay_token,
             )
             for r, s in scored[:limit]
             if s > 0
@@ -158,12 +175,23 @@ class RetrievalService(BaseRetrievalService):
         min_score: float = 0.0,
         parent_context: ParentContextMode = ParentContextMode.OFF,
     ) -> list[SearchResult]:
+        await assert_ambient_budget()
         # Overfetch so min-score filtering and dedup still leave `limit` results.
         fetch_multiplier = 2
 
         # Composed once and threaded through every candidate-producing query
         # (the vector leg and the BM25 rerank), so no path can skip enforcement.
         query_filter = compose(scope, filters)
+        overlay = active_overlay()
+        if (
+            overlay is not None
+            and overlay.matching(collection_name, query_filter)
+            and not self.store.supports_knowledge_overlay
+        ):
+            overlay.failed = True
+            raise BadRequestError(
+                message="This vector store does not support run-only knowledge drafts"
+            )
 
         logger.info(
             "[RETRIEVAL] Query: '%.50s...', collection: %s, limit: %d",
@@ -242,10 +270,10 @@ class RetrievalService(BaseRetrievalService):
         # dedup above are untouched and operate on the small chunks; this only
         # attaches surrounding context to what was already selected, so `OFF`
         # returns exactly what the pre-#1651 path did.
-        expandable, tenant = expansion_tenant(scope)
-        if expandable:
+        siblings = expansion_scope(scope)
+        if siblings is not None:
             await expand_context(
-                self.store, final_results, parent_context, lambda _: (collection_name, tenant)
+                self.store, final_results, parent_context, lambda _: (collection_name, siblings)
             )
 
         total_time = time.time() - start_time
@@ -350,10 +378,10 @@ class RetrievalService(BaseRetrievalService):
         single-collection path.
         """
 
-        def resolve_fetch(result: SearchResult) -> tuple[str, UUID | None] | None:
+        def resolve_fetch(result: SearchResult) -> tuple[str, VectorScope] | None:
             collection = str(result.metadata["collection"])
-            expandable, tenant = expansion_tenant(scopes[collection])
-            return (collection, tenant) if expandable else None
+            siblings = expansion_scope(scopes[collection])
+            return (collection, siblings) if siblings is not None else None
 
         await expand_context(self.store, results, parent_context, resolve_fetch)
 

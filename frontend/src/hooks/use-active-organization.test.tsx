@@ -55,7 +55,10 @@ function organizationRefused(orgId: string) {
 }
 
 /** `/orgs` still answers when the active organization does not - it is keyed on the caller. */
-function answerWith(orgs: Array<{ id: string; is_personal: boolean }>, permissions: unknown) {
+function answerWith(
+  orgs: Array<{ id: string; is_personal: boolean; is_default?: boolean }>,
+  permissions: unknown,
+) {
   vi.mocked(apiClient.get).mockImplementation((endpoint: string) => {
     if (endpoint === "/orgs") {
       return Promise.resolve({
@@ -297,6 +300,27 @@ describe("useActiveOrganizationRecovery", () => {
     expect(client.getQueryData(["secrets", "list"])).toEqual([{ id: "s-1" }]);
   });
 
+  it("treats no selection and the default organization as the same tenant (#2156)", async () => {
+    // With a default organization a request that names none acts there, not in
+    // the personal one - so selecting it is the page settling, not a switch.
+    answerWith(
+      [
+        { id: PERSONAL, is_personal: true },
+        { id: STALE, is_personal: false, is_default: true },
+      ],
+      { permissions: [] },
+    );
+    useOrgStore.setState({ activeOrgId: null });
+    const { rerender } = renderHook(() => useActiveOrganizationRecovery(), { wrapper });
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith("/orgs"));
+    client.setQueryData(["secrets", "list"], [{ id: "s-1" }]);
+
+    useOrgStore.setState({ activeOrgId: STALE });
+    rerender();
+
+    expect(client.getQueryData(["secrets", "list"])).toEqual([{ id: "s-1" }]);
+  });
+
   it("falls back to an organization the caller belongs to", async () => {
     // The reported failure: a persisted org id outlived the org. `can()` is
     // false while permissions are unavailable, so a permanent refusal
@@ -496,6 +520,24 @@ describe("useActiveOrganizationRecovery", () => {
     rerender();
 
     expect(useOrgStore.getState().activeOrgId).toBe(PERSONAL);
+  });
+
+  it("drops the cache on a switch made on a page a link named the organization of", async () => {
+    // The link's `?org=` stays in the URL after the switch, while every request
+    // from then on carries the organization switched to - so the cache has to
+    // follow the selection, not the URL, or the previous tenant stays on screen.
+    const OTHER = "33333333-3333-3333-3333-333333333333";
+    answerWith([{ id: PERSONAL, is_personal: true }], { permissions: [] });
+    useOrgStore.setState({ activeOrgId: PERSONAL });
+    search.mockReturnValue(new URLSearchParams({ org: OTHER }));
+    const { rerender } = renderHook(() => useActiveOrganizationRecovery(), { wrapper });
+    await waitFor(() => expect(useOrgStore.getState().activeOrgId).toBe(OTHER));
+    client.setQueryData(["datasets", "d-1"], { id: "d-1", name: "The linked organization's" });
+
+    useOrgStore.setState({ activeOrgId: PERSONAL });
+    rerender();
+
+    await waitFor(() => expect(client.getQueryData(["datasets", "d-1"])).toBeUndefined());
   });
 
   it("leaves a working organization alone", async () => {

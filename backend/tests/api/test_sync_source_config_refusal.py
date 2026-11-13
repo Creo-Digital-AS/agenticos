@@ -11,8 +11,6 @@ knowledge-base lookup are mocked. The config is refused before any row is
 written, so nothing here reaches the database.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -96,6 +94,9 @@ def client(mock_db_session: Any, mock_redis: MagicMock) -> Iterator[Any]:
     app.dependency_overrides[deps.get_current_user] = lambda: user
     app.dependency_overrides[deps.get_auth_context] = lambda: context
     app.dependency_overrides[deps.get_knowledge_base_service] = lambda: kb_service
+    # The base is the one its sync writes into; what is under test is the config.
+    access = MagicMock(new_source_feeds=AsyncMock(return_value=None))
+    app.dependency_overrides[deps.get_collection_access_service] = lambda: access
 
     @asynccontextmanager
     async def open_client() -> AsyncIterator[AsyncClient]:

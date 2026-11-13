@@ -2,7 +2,7 @@
 title: "AgenticOS vs OpenAI dots"
 seo_title: "AgenticOS vs OpenAI dots: alternatywa, którą hostujesz sam"
 description: "OpenAI dots to agenci w ChatGPT, każdy z komputerem w chmurze. Porównaj z AgenticOS: twoje serwery, dowolny model i reguły egzekwowane w kodzie."
-source_sha: "8673b6e5689a"
+source_sha: "f49d22528b05"
 ---
 
 # AgenticOS vs OpenAI dots { #agenticos-vs-openai-dots }
@@ -11,7 +11,7 @@ OpenAI dots to agenci działający bez przerwy w ChatGPT. Każdy dot ma własny 
 
 Jeśli twoja firma już żyje w ChatGPT, a twój plan i region obejmują dots, to najszybszy sposób, żeby wypróbować współpracownika AI. Jeśli agenci, dane i reguły mają zostać twoje, AgenticOS jest zbudowany właśnie do tego.
 
-Utrzymuje zespół AgenticOS. Źródła sprawdzono 14 października 2026. Wersja bazowa AgenticOS: v0.0.535. Zakres dots: ogłoszenie OpenAI z 29 września 2026, FAQ w centrum pomocy i relacje prasowe, a nie przetestowane konto.
+Utrzymuje zespół AgenticOS. Źródła sprawdzono 21 października 2026. Wersja bazowa AgenticOS: v1.10.0. Zakres dots: ogłoszenie OpenAI z 29 września 2026, FAQ w centrum pomocy i relacje prasowe, a nie przetestowane konto.
 
 ## W skrócie { #at-a-glance }
 
@@ -20,7 +20,7 @@ Utrzymuje zespół AgenticOS. Źródła sprawdzono 14 października 2026. Wersja
 | Co dostajesz | Agentów działających bez przerwy w ChatGPT, każdego z komputerem w chmurze | Dowolną liczbę agentów, każdy jako wersjonowany spec |
 | Gdzie działa | Chmura OpenAI | Twoja infrastruktura, z Docker Compose |
 | Kod źródłowy | Zamknięty | Apache-2.0 |
-| Modele | Tylko OpenAI | 27 providerów, w tym modele lokalne |
+| Modele | Tylko OpenAI | 28 providerów, w tym modele lokalne |
 | Narzędzia | Ponad 4000 podłączonych aplikacji, przeglądarka i komputer dla każdego dota | Ponad 4700 serwerów MCP w galerii, przeglądarka, sandbox do kodu, twoje własne capabilities |
 | Kanały | ChatGPT, Slack, Microsoft Teams; SMS zapowiedziany | Czat w przeglądarce, widget, strona hostowana, HTTP API, WebSocket, Slack, Telegram, Mattermost |
 | Reguły | Własne reguły: zezwól, zablokuj albo wymagaj zgody; ryzykowne akcje ocenia model | Zgody sprawdzane przez platformę, zanim narzędzie się uruchomi; listy dozwolonych narzędzi |
@@ -35,11 +35,11 @@ OpenAI opisuje własne reguły jako wskazówki, których dot się trzyma, a ryzy
 
 ### Twoje serwery, twój region { #your-servers-your-region }
 
-Dots działają w chmurze OpenAI, a na starcie plan Pro nie był dostępny w EOG, Szwajcarii i Wielkiej Brytanii. AgenticOS działa [tam, gdzie go wdrożysz](../deploy.md), trzyma rozmowy i dokumenty w [twoim własnym Postgresie](../data-protection.md#where-personal-data-lives) i może działać z [modelem lokalnym](../models.md#providers), więc nic nie opuszcza twojej sieci.
+Dots działają w chmurze OpenAI, a na starcie plan Pro nie był dostępny w EOG, Szwajcarii i Wielkiej Brytanii. AgenticOS działa [tam, gdzie go wdrożysz](../deploy.md), trzyma rozmowy i dokumenty w [twoim własnym Postgresie](../data-protection.md#where-personal-data-lives) i może działać z [modelem lokalnym](../models.md#providers), więc twoje prompty i dokumenty nie opuszczają twojej sieci.
 
 ### Dowolny model, nie jednego dostawcy { #any-model-not-one-vendors }
 
-Dot myśli modelami OpenAI. Agent AgenticOS korzysta z [profilu modelu](../models.md#a-model-profile) opartego na 27 providerach, z fallbackami, więc jeden agent może działać na Claude, inny na modelu lokalnym, a zmiana providera to jedno ustawienie.
+Dot myśli modelami OpenAI. Agent AgenticOS korzysta z [profilu modelu](../models.md#a-model-profile) opartego na 28 providerach, z fallbackami, więc jeden agent może działać na Claude, inny na modelu lokalnym, a zmiana providera to jedno ustawienie.
 
 ### Zapis, który możesz audytować { #a-record-you-can-audit }
 

@@ -8,6 +8,8 @@ from typing import Any, NewType
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from app.db.vector_tables import VectorWriterKind
+
 # The parser-created `Document.id` stamped on every chunk as `parent_doc_id`,
 # distinct from the relational `RAGDocument.id` UUID (which records it separately
 # as `RAGDocument.vector_document_id`, a `String(255)`). Filters and the scope's
@@ -44,6 +46,11 @@ class DocumentPageChunk(DocumentPage):
     chunk_content: str
     chunk_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     chunk_num: int = 0
+    image_count: int | None = Field(
+        default=None,
+        ge=0,
+        description="Image count on the source page; None derives it from legacy inline images.",
+    )
 
 
 class DocumentMetadata(BaseModel):
@@ -70,6 +77,9 @@ class DocumentMetadata(BaseModel):
     source_path: str = ""  # original path: local path, s3://bucket/key, gdrive://file_id
     content_hash: str = ""  # SHA256 hash for deduplication
     organization_id: str | None = None
+    # Trusted worker correlation, excluded from public chunk metadata.
+    rag_document_id: uuid.UUID | None = Field(default=None, exclude=True)
+    writer_kind: VectorWriterKind = Field(default=VectorWriterKind.DOCUMENT, exclude=True)
     source: str | None = None
     document_type: str | None = None
     organizational_unit: str | None = None
@@ -91,7 +101,7 @@ class Document(BaseModel):
         return len(self.pages)
 
     @model_validator(mode="after")
-    def connect_pages(self) -> "Document":
+    def connect_pages(self) -> Document:
         for page in self.pages:
             page.parent_doc_id = self.id
         return self
@@ -136,13 +146,20 @@ class SearchResult(BaseModel):
     `ParentContextMode` other than `OFF` is in effect, and stays `None`
     otherwise - so a formatter that prefers it falls back to `content` for an
     unexpanded result.
+
+    `score` is what ranks the result, and after hybrid search or query-variant
+    fusion it is a reciprocal-rank value that says nothing about how close the
+    match was. `similarity` keeps the chunk's cosine similarity to the query
+    through fusion, so "nothing relevant was found" can still be judged.
     """
 
     content: str
     score: float
+    similarity: float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     parent_doc_id: str | None = None
     expanded_content: str | None = None
+    overlay_token: uuid.UUID | None = Field(default=None, exclude=True)
 
 
 class IngestionStatus(StrEnum):
@@ -170,6 +187,11 @@ class IngestionResult(BaseModel):
     which row that was. Left unretired, its `chunk_count` keeps being summed
     into the collection's total, so a nightly sync reports a collection growing
     by its own size every night while the vector store holds one copy.
+
+    `refused` marks an `ERROR` the ingester chose rather than one it hit: the
+    collection or its knowledge base was removed while the file was parsed, so
+    nothing was written. Trying again cannot succeed, so the worker ends the job
+    instead of handing it to a retry (#2561).
     """
 
     status: IngestionStatus = IngestionStatus.NEW
@@ -178,6 +200,7 @@ class IngestionResult(BaseModel):
     document_id: str | None = None
     chunk_count: int = 0
     replaced_document_id: str | None = None
+    refused: bool = False
 
 
 class CollectionInfo(BaseModel):
@@ -186,7 +209,6 @@ class CollectionInfo(BaseModel):
     name: str
     total_vectors: int
     dim: int
-    indexing_status: str = "complete"
 
 
 class DocumentInfo(BaseModel):

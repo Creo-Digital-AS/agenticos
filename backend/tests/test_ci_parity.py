@@ -35,8 +35,6 @@ are held to the mirror-image rule - a gating job may prepare its runner however
 it likes, as long as `make install` prepares a laptop the same way.
 """
 
-from __future__ import annotations
-
 import re
 from pathlib import Path
 from typing import Any
@@ -53,14 +51,23 @@ MAKEFILE = REPO_ROOT / "Makefile"
 # organization and a running backend. The image build is not in this workflow at
 # all any more - `images.yml` builds and publishes on a push to `main` and on a
 # tag, and `test_images_workflow.py` is what reads that file.
-GATING_JOBS = ("lint", "test", "test-frontend", "docs", "security")
+GATING_JOBS = (
+    "lint",
+    "test",
+    "lint-frontend",
+    "frontend-shards",
+    "build-frontend",
+    "test-frontend",
+    "docs",
+    "security",
+)
 
 # Commands that prepare a runner rather than check anything. They have no place in
 # `check` - it checks a checkout, it does not build one - so they answer to
 # `install` instead, which is what INSTALL_EXEMPT below is about.
 ENVIRONMENT_SETUP = frozenset(
     {
-        "uv python install 3.12",
+        "uv python install 3.15",
         "uv sync --directory backend --dev",
         "uv sync --directory backend --group docs",
         "bun install --frozen-lockfile",
@@ -73,7 +80,7 @@ INSTALL_EXEMPT = frozenset(
     {
         # `uv sync` reads `backend/.python-version` and fetches the interpreter
         # itself; the runner needs it named because it starts with none.
-        "uv python install 3.12",
+        "uv python install 3.15",
         # `docs` and `docs-build` pass `--group docs` to `uv run`, which resolves
         # the group at the point of use rather than into a synced virtualenv.
         "uv sync --directory backend --group docs",
@@ -84,6 +91,13 @@ INSTALL_EXEMPT = frozenset(
 # not drift. Anything else appearing in a gating job has to be reachable from
 # `check`.
 CI_ONLY_TARGETS = {
+    # This disables durability only on CI's ephemeral database container.
+    "ci-test-db-configure",
+    # Distribution and aggregation transport the same suite/gate as test-frontend-cov.
+    "test-frontend-jobs-check",
+    "test-frontend-reports-check",
+    "test-frontend-merge",
+    "build-frontend-pack",
     # `downgrade base` against CI's throwaway `test_db` is a rollback test;
     # against a laptop's `backend/.env` it is somebody's afternoon.
     "test-migrations",

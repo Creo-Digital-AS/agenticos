@@ -7,12 +7,21 @@ the rule here means a surface never re-derives it from the registry and the spec
 and gets a different answer.
 """
 
-from __future__ import annotations
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel
 
-from app.agents.capabilities import CapabilityDef, CapabilityToolInfo
+from app.agents.capabilities import (
+    AlwaysAsksWhen,
+    ApprovalDescriber,
+    BoundDescriber,
+    CapabilityDef,
+    CapabilityToolInfo,
+    all_capabilities,
+)
 from app.agents.capabilities import get as get_capability
+from app.agents.deps import AgentDeps
 from app.agents.spec import AgentSpec, CapabilityBindingSpec
 from app.core.exceptions import BadRequestError
 
@@ -26,17 +35,16 @@ def tool_needs_approval(*, tool: CapabilityToolInfo, binding: CapabilityBindingS
     2. the binding's `approval` - this agent's decision about the whole
        capability, and so the default for every tool in it.
 
-    `'default'` at either level is not an answer but a deferral, and when
-    nobody has said anything the answer is **no approval**. Every tool runs
-    unattended until somebody who owns the agent asks for a person - the
-    product's decision, because a gate nobody chose parked runs in channels and
-    routines where nobody was there to answer it. `side_effecting` still says
-    what a tool does to the world, and the Builder shows it beside the choice;
-    it no longer makes the choice.
+    `'default'` at either level defers to no approval in the agent's policy.
+    Unattended routines additionally require approval for actions through their
+    live routine policy; this function describes only the spec's own floor.
+    A routine exception never weakens a required spec approval.
 
     Keyed on the tool's stable id rather than the name the model sees, so a
     renamed tool keeps the gate its operator put on it.
     """
+    if tool.always_requires_approval:
+        return True
     for mode in (binding.tool_approval.get(tool.id, "default"), binding.approval):
         if mode != "default":
             return mode == "required"
@@ -74,6 +82,98 @@ def approval_required_tools(spec: AgentSpec) -> frozenset[str]:
             if tool_needs_approval(tool=tool, binding=binding)
         )
     return frozenset(required)
+
+
+def always_asking_tools(spec: AgentSpec) -> frozenset[str]:
+    """The tools in a spec whose every call waits for a person, by the name the model calls.
+
+    Narrower than :func:`approval_required_tools`: these are the tools nothing a
+    person set in advance may answer for - not "Approve everything" on the session,
+    not a remembered "Always allow" - because the call is the decision.
+    """
+    return frozenset(
+        tool.name
+        for binding in spec.capabilities
+        if binding.enabled
+        for tool in get_capability(binding.id).effective_tools(binding.tool_overrides)
+        if tool.always_requires_approval
+    )
+
+
+def always_asking_checks(spec: AgentSpec) -> dict[str, AlwaysAsksWhen]:
+    """Each tool whose calls decide for themselves whether they always ask, by effective name."""
+    checks: dict[str, AlwaysAsksWhen] = {}
+    for binding in spec.capabilities:
+        if not binding.enabled:
+            continue
+        definition = get_capability(binding.id)
+        for tool in definition.effective_tools(binding.tool_overrides):
+            if (check := definition.always_asks_when.get(tool.id)) is not None:
+                checks[tool.name] = check
+    return checks
+
+
+def private_approval_fields(capability_tool_id: str | None) -> frozenset[str]:
+    """The keys of a parked call that only somebody who may see its run reads.
+
+    Looked up by the stable tool id an approval row carries, across every
+    capability, because the row does not name the capability. Two capabilities
+    declaring one id would hide the union of their keys, which errs towards
+    hiding.
+    """
+    if capability_tool_id is None:
+        return frozenset()
+    return frozenset().union(
+        *(
+            definition.private_approval_fields.get(capability_tool_id, frozenset())
+            for definition in all_capabilities()
+        )
+    )
+
+
+def approval_describers(spec: AgentSpec) -> dict[str, BoundDescriber]:
+    """The describer for every tool in a spec that has one, by the name the model calls.
+
+    Keyed like :func:`approval_required_tools` and for the same reason: the gate
+    sees the effective name, while a capability declares its describer against the
+    stable id - so a renamed `update_record` is still described. Each is handed its
+    own binding's config.
+    """
+    describers: dict[str, BoundDescriber] = {}
+    for binding in spec.capabilities:
+        if not binding.enabled:
+            continue
+        definition = get_capability(binding.id)
+        if not definition.describers:
+            continue
+        config = definition.validate_config(binding.config)
+        for tool in definition.effective_tools(binding.tool_overrides):
+            if (describe := definition.describers.get(tool.id)) is not None:
+                describers[tool.name] = _bound(describe, config)
+    return describers
+
+
+def _bound(describe: ApprovalDescriber, config: BaseModel | None) -> BoundDescriber:
+    async def bound(deps: AgentDeps, args: Mapping[str, Any]) -> dict[str, str] | None:
+        return await describe(deps, args, config)
+
+    return bound
+
+
+def approval_tool_ids(spec: AgentSpec) -> dict[str, str]:
+    """Every capability tool in a spec, from the name the model calls to its stable id.
+
+    What an approval carries beside the name, so a surface that words a parked call
+    by tool - the card's sentence, the queue's - still finds the words for a tool a
+    binding renamed. Every enabled binding's tools rather than only the gated ones,
+    because `ApprovalMode.ASK_ALL` gates the rest too.
+    """
+    return {
+        tool.name: tool.id
+        for binding in spec.capabilities
+        if binding.enabled
+        for tool in get_capability(binding.id).effective_tools(binding.tool_overrides)
+    }
 
 
 def ungateable_tool_problems(

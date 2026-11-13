@@ -1,7 +1,5 @@
 """Decision 1's catalog: mandatory-ness and the read-time content gate (#1598)."""
 
-from __future__ import annotations
-
 from app.db.models.notification import NotificationEventType
 from app.services.notification_catalog import (
     CONTENT_GATE,
@@ -14,13 +12,17 @@ from app.services.notification_center import _COALESCED_SUMMARY
 
 
 class TestMandatoryEventTypes:
-    def test_security_and_configuration_events_are_mandatory(self):
+    def test_security_configuration_and_paused_work_events_are_mandatory(self):
+        """A paused kind of background job stops until an owner resumes it, so
+        no preference may silence it (#2219)."""
         assert {
             NotificationEventType.SECURITY_EVENT,
             NotificationEventType.CONFIGURATION_CHANGED,
+            NotificationEventType.BACKGROUND_TASK_PAUSED,
         } == MANDATORY_EVENT_TYPES
         assert is_mandatory(NotificationEventType.SECURITY_EVENT) is True
         assert is_mandatory(NotificationEventType.CONFIGURATION_CHANGED) is True
+        assert is_mandatory(NotificationEventType.BACKGROUND_TASK_PAUSED) is True
 
     def test_every_other_event_type_is_not_mandatory(self):
         for event_type in NotificationEventType:
@@ -49,6 +51,9 @@ class TestContentGate:
             NotificationEventType.SECURITY_EVENT: ContentGate.ORG_ADMIN_OR_APP_ADMIN,
             NotificationEventType.CONFIGURATION_CHANGED: ContentGate.APP_ADMIN,
             NotificationEventType.ANNOUNCEMENT: ContentGate.ANNOUNCEMENT_AUDIENCE,
+            NotificationEventType.ARTIFACT_OWNER_CHANGED: ContentGate.ARTIFACTS_VIEW,
+            NotificationEventType.ARTIFACT_SHARE_REQUESTED: ContentGate.ARTIFACTS_VIEW,
+            NotificationEventType.WORKFLOW_LOG_ALERT: ContentGate.WORKFLOWS_VIEW,
         }
         for event_type, gate in expected.items():
             assert content_gate_for(event_type) is gate

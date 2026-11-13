@@ -11,16 +11,18 @@ import { useAgents, useModelProviders, usePermissions } from "@/hooks";
 import { ROUTES } from "@/lib/constants";
 import { newSpecialist, specialistNameError } from "@/lib/agent-spec";
 import { cn } from "@/lib/utils";
-import { childrenOf, delegateNamed, rootsOf, type DelegateRef } from "@/lib/delegations";
-import { AgentAvatar } from "@/components/agents/agent-avatar";
+import { childrenOf, delegateOf, rootsOf, type DelegateRef } from "@/lib/delegations";
+import { DelegateFace } from "./delegate-face";
 import { DelegationChat } from "./delegation-chat";
 import { STATUS_KEY } from "./delegation-sheet";
-import { toolStep } from "@/lib/tool-steps";
+import { delegationStep } from "@/lib/tool-steps";
 import { Button } from "@/components/ui";
 import { Perm } from "@/types/permissions";
 import type { Delegation, DelegationStatus, SpecialistDefinition } from "@/types";
 import { AgentStep } from "./agent-step";
 import { MarkdownContent } from "./markdown-content";
+
+const FINISHED: ReadonlySet<DelegationStatus> = new Set(["completed", "failed", "cancelled"]);
 
 /**
  * What the specialists are doing, one collapsible block per delegation.
@@ -52,34 +54,47 @@ export function DelegationPanels({
   /** The agent that handed the work out, at the head of the strip. */
   parent?: DelegateRef;
   /**
-   * The turn is over. A delegation that answered in it is then the "Asked …" step
-   * and the team under the answer, so its panel goes; so does one the person
-   * stopped, which the step now reads as "Stopped asking …". One still out in the
-   * background, one that failed, and a specialist that can still be kept stay.
+   * The turn has answered. A finished exchange it waited for is drawn under the
+   * answer as "Talked it through with…", and a coding task as its saved report,
+   * so only work that outlives the turn stays here.
    */
   settled?: boolean;
   /** The turn is still running: draw the delegations as a conversation. */
   conversation?: boolean;
 }) {
-  const roots = rootsOf(delegations).filter(
+  const retained = delegations.filter(
     (delegation) =>
-      !settled ||
-      delegation.specialist !== null ||
-      (delegation.status === "completed"
-        ? delegation.mode === "async"
-        : delegation.status !== "cancelled"),
+      !(
+        settled &&
+        FINISHED.has(delegation.status) &&
+        (delegation.harness !== null ||
+          (delegation.specialist === null && delegation.mode !== "async"))
+      ),
   );
+  // A finished parent may leave a promotable child behind. Keep that child at
+  // the root rather than nesting it under a panel no longer on screen.
+  const retainedIds = new Set(retained.map((delegation) => delegation.taskId));
+  const visible = retained.map((delegation) =>
+    delegation.parentTaskId !== null && !retainedIds.has(delegation.parentTaskId)
+      ? { ...delegation, parentTaskId: null }
+      : delegation,
+  );
+  const roots = rootsOf(visible);
   if (roots.length === 0) return null;
-  // While the turn runs, the team is drawn as the exchange it is - see
-  // `DelegationChat`; the panels are what remains once it is over.
-  if (conversation) return <DelegationChat delegations={roots} agents={agents} parent={parent} />;
+  // Preserve the exchange after completion; promotable specialists retain their controls.
+  if (
+    conversation ||
+    (settled &&
+      visible.every((delegation) => delegation.harness === null && delegation.specialist === null))
+  )
+    return <DelegationChat delegations={visible} agents={agents} parent={parent} />;
   return (
     <div className="space-y-1 pb-2">
       {roots.map((delegation) => (
         <DelegationPanel
           key={delegation.taskId}
           delegation={delegation}
-          all={delegations}
+          all={visible}
           agents={agents}
         />
       ))}
@@ -145,7 +160,7 @@ function DelegationPanel({
   }
 
   const children = childrenOf(all, delegation.taskId);
-  const delegate = delegateNamed(delegation.subagent, agents);
+  const delegate = delegateOf(delegation, agents);
 
   return (
     <div className="border-foreground/10 border-l pl-3.5">
@@ -161,12 +176,8 @@ function DelegationPanel({
             back, because the panel is then a record rather than a report. */}
         {/* The delegate's own face, thinking while it works - the same face it
             wears in the agent list and on its own conversations. */}
-        <AgentAvatar
-          agentId={delegate.id ?? delegate.slug}
-          slug={delegate.slug}
-          hasAvatar={delegate.has_avatar}
-          colorSlot={delegate.avatar_color}
-          size="sm"
+        <DelegateFace
+          who={delegate}
           thinking={delegation.status === "running"}
           className="h-5 w-5"
         />
@@ -235,7 +246,7 @@ function DelegationPanel({
                 // rather than a rendering choice: the frames carry no arguments and
                 // no result, so there is nothing behind a chevron. See
                 // `DelegationStep`.
-                const shown = toolStep(step.name, undefined, step.ok !== null, tTools);
+                const shown = delegationStep(step, tTools);
                 return (
                   <AgentStep
                     key={step.id}

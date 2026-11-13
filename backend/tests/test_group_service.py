@@ -6,8 +6,6 @@ would need contortions to reach: each refusal, asserted to happen before
 anything is written, and the savepoint turning a lost race into a 409.
 """
 
-from __future__ import annotations
-
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -131,7 +129,7 @@ class TestGroupServiceRefusals:
             patch("app.services.group.group_repo") as groups,
             pytest.raises(AuthorizationError),
         ):
-            await GroupService(_db()).delete(ORG, uuid.uuid4(), CALLER)
+            await GroupService(_db()).delete(OWNER, uuid.uuid4())
 
         groups.delete_group.assert_not_called()
 
@@ -144,7 +142,7 @@ class TestGroupServiceRefusals:
             patch("app.services.group.group_repo.get", new=AsyncMock(return_value=None)),
             pytest.raises(NotFoundError),
         ):
-            await GroupService(_db()).delete(ORG, uuid.uuid4(), CALLER)
+            await GroupService(_db()).delete(OWNER, uuid.uuid4())
 
     async def test_a_lost_create_race_is_a_conflict(self):
         with (

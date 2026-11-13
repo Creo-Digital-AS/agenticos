@@ -13,25 +13,26 @@ The second is the one that was actually broken. `UserService.delete` relied on
 cascades, and those two tables have none.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import BadRequestError, NotFoundError
 from app.core.memory_keys import person_owner_key
+from app.core.permissions import AuthContext, OrgRoleName
 from app.db.models.agent import Agent
+from app.db.models.agent_run import AgentRun
 from app.db.models.agent_workspace import AgentWorkspace
 from app.db.models.api_key import ApiKey
 from app.db.models.audit_log import AppAdminAuditLog
 from app.db.models.browser_sign_in import BrowserSignIn
 from app.db.models.channel_identity import ChannelIdentity
 from app.db.models.chat_file import ChatFile
-from app.db.models.conversation import Message, ToolCall
+from app.db.models.conversation import Conversation, Message, ToolCall
 from app.db.models.dashboard_layout import DashboardLayout
 from app.db.models.memory import AgentMemoryFile
 from app.db.models.notification import (
@@ -42,8 +43,19 @@ from app.db.models.notification import (
 from app.db.models.notification_preference import NotificationChannelPreference
 from app.db.models.oauth import OAuthClient, OAuthGrant
 from app.db.models.organization import Organization, OrganizationMember
-from app.repositories import conversation_repo, personal_data_repo, session_repo, user_repo
+from app.db.models.user import User
+from app.repositories import (
+    agent_run_repo,
+    case_score_repo,
+    conversation_repo,
+    personal_data_repo,
+    project_repo,
+    session_repo,
+    user_repo,
+)
+from app.schemas.dataset import DatasetCaseCreate, DatasetCreate
 from app.services.conversation import ConversationService
+from app.services.dataset import DatasetService
 from app.services.file_storage import LocalFileStorage, delete_files_best_effort
 from app.services.memory import _native
 from app.services.personal_data import PersonalDataService
@@ -82,6 +94,80 @@ async def _org_and_agent(db) -> tuple[Organization, Agent]:
     db.add(agent)
     await db.flush()
     return organization, agent
+
+
+async def _scored_answer(
+    db,
+    organization: Organization,
+    agent: Agent,
+    *,
+    run_by: UUID | None,
+    for_a_visitor: bool = False,
+    results: list[dict[str, object]] | None = None,
+):
+    """A score of a run `run_by` started - or a visitor did, in `run_by`'s name -
+    keeping the answer it graded."""
+    owner = AuthContext(
+        user_id=organization.created_by_user_id,
+        organization_id=organization.id,
+        role=OrgRoleName.OWNER,
+    )
+    datasets = DatasetService(db)
+    dataset = await datasets.create(owner, DatasetCreate(name=f"refunds-{uuid4().hex[:8]}"))
+    case = await datasets.add_case(
+        owner, dataset.id, DatasetCaseCreate(input="Where is my refund?", reference_answer="a")
+    )
+    run = AgentRun(
+        id=uuid4(),
+        organization_id=organization.id,
+        agent_id=agent.id,
+        user_id=run_by,
+        initiated_by_publisher_fallback=for_a_visitor,
+    )
+    db.add(run)
+    await db.flush()
+    return await case_score_repo.create(
+        db,
+        organization_id=organization.id,
+        dataset_id=dataset.id,
+        case_revision_id=case.id,
+        case_id=case.case_id,
+        run_id=run.id,
+        agent_id=agent.id,
+        eval_run_id=None,
+        answer="Your refund is on its way.",
+        scoring={},
+        results=results or [],
+        judge=None,
+        passed=False,
+        review_state="none",
+        created_by_user_id=None,
+    )
+
+
+async def _run_by(
+    db,
+    user_id: UUID,
+    *,
+    organization_id: UUID,
+    agent_id: UUID,
+    publisher_fallback: bool,
+    channel_identity_id: UUID | None = None,
+) -> UUID:
+    run = await agent_run_repo.create_run(
+        db,
+        organization_id=organization_id,
+        agent_id=agent_id,
+        agent_version_id=None,
+        user_id=user_id,
+        conversation_id=None,
+        surface="channel" if publisher_fallback else "chat",
+        model_label=None,
+        started_at=datetime.now(UTC),
+        channel_identity_id=channel_identity_id,
+        initiated_by_publisher_fallback=publisher_fallback,
+    )
+    return run.id
 
 
 async def _note_about(db, user_id: UUID, *, organization_id: UUID, agent_id: UUID) -> None:
@@ -178,7 +264,11 @@ class TestTheExport:
         organization, _ = await _org_and_agent(db)
         db.add(
             OrganizationMember(
-                id=uuid4(), organization_id=organization.id, user_id=user_id, role="member"
+                id=uuid4(),
+                organization_id=organization.id,
+                user_id=user_id,
+                role="member",
+                personal_starters=["Plan my week"],
             )
         )
         await db.flush()
@@ -188,6 +278,8 @@ class TestTheExport:
         assert [(row["organization"], row["role"]) for row in export.memberships] == [
             ("Acme", "member")
         ]
+        # The first messages written for them there, drawn from their own requests.
+        assert export.memberships[0]["personal_starters"] == ["Plan my week"]
 
     async def test_the_archive_flag_and_the_layout_are_the_values_on_the_row(self, db):
         """Both were exported as `null` for every person: the model's attributes
@@ -234,6 +326,99 @@ class TestTheExport:
         assert "hashed_password" not in export.profile
         assert "is_app_admin" not in export.profile
 
+    async def test_the_profile_carries_what_agents_are_told_about_them(self, db):
+        """Codex on #2324: their role, their work, their hours, their language and
+        whether the nightly look may reach them are theirs to take away."""
+        user = await _person(db, "export-context@example.com")
+        user_id = user.id
+        user.job_title = "Head of sales"
+        user.about = "Runs the EMEA pipeline"
+        user.time_zone = "Europe/Warsaw"
+        user.locale = "pl"
+        user.working_hours = {"days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00"}
+        user.proactive_opt_out = True
+        await db.flush()
+
+        export = await PersonalDataService(db).export(user_id, actor_user_id=user_id)
+
+        assert export.profile["job_title"] == "Head of sales"
+        assert export.profile["about"] == "Runs the EMEA pipeline"
+        assert export.profile["time_zone"] == "Europe/Warsaw"
+        assert export.profile["locale"] == "pl"
+        assert export.profile["working_hours"]["start"] == "09:00"
+        assert export.profile["proactive_opt_out"] is True
+
+    async def test_it_carries_what_the_platform_proposed_to_them_declined_ones_too(self, db):
+        """Codex on #2324: a suggestion is drawn from their requests and kept after a
+        "Not now" - held about them either way."""
+        from app.db.models.suggestion import SuggestionStatus
+        from app.repositories import suggestion_repo
+
+        user = await _person(db, "export-suggestions@example.com")
+        user_id = user.id
+        other = await _person(db, "export-suggestions-other@example.com")
+        organization, _ = await _org_and_agent(db)
+        for person, key in ((user_id, "mine"), (other.id, "theirs")):
+            made = await suggestion_repo.propose(
+                db,
+                organization_id=organization.id,
+                user_id=person,
+                kind="routine",
+                title=f"Routine {key}",
+                detail="You asked three times",
+                payload={"prompt": "Summarise"},
+                dedupe_key=f"routine:{key}",
+            )
+            assert made is not None
+            if person == user_id:
+                await suggestion_repo.decide(db, suggestion=made, status=SuggestionStatus.DISMISSED)
+
+        export = await PersonalDataService(db).export(user_id, actor_user_id=user_id)
+
+        assert [(row["title"], row["status"]) for row in export.suggestions] == [
+            ("Routine mine", "dismissed")
+        ]
+
+    async def test_it_carries_what_they_asked_to_have_watched(self, db):
+        """#2301: a watch is their own words about their own account."""
+        from app.db.models.mcp_connection import McpConnection
+        from app.repositories import watch_repo
+
+        user = await _person(db, "export-watches@example.com")
+        user_id = user.id
+        organization, _ = await _org_and_agent(db)
+        connection = McpConnection(
+            scope="user",
+            user_id=user_id,
+            name="github",
+            catalog_key="github",
+            url="https://mcp.example.com/mcp",
+            secret_key_version=1,
+        )
+        db.add(connection)
+        await db.flush()
+        await watch_repo.create(
+            db,
+            organization_id=organization.id,
+            user_id=user_id,
+            connection_id=connection.id,
+            preset_key="github-reviews",
+            title="Reviews",
+            instructions="Waiting on my review.",
+            urgent=True,
+            interval_minutes=60,
+            next_run_at=datetime.now(UTC),
+        )
+
+        export = await PersonalDataService(db).export(user_id, actor_user_id=user_id)
+
+        (row,) = export.watches
+        assert (row["title"], row["instructions"], row["urgent"]) == (
+            "Reviews",
+            "Waiting on my review.",
+            True,
+        )
+
     async def test_more_text_than_one_document_can_carry_is_refused(self, db, monkeypatch):
         """The document is assembled and serialized whole, so without a ceiling
         the caller decides how much memory a worker spends. A refusal, because a
@@ -266,6 +451,109 @@ class TestTheExport:
         export = await PersonalDataService(db).export(user_id, actor_user_id=user_id)
 
         assert [row["content"] for row in export.memory] == ["Prefers short answers."]
+
+    async def test_it_carries_the_eval_verdicts_they_gave(self, db):
+        """A pass or fail given by hand, and its note, are that person's opinion."""
+        user = await _person(db, "export-verdicts@example.com")
+        organization, _ = await _org_and_agent(db)
+        owner = AuthContext(
+            user_id=organization.created_by_user_id,
+            organization_id=organization.id,
+            role=OrgRoleName.OWNER,
+        )
+        datasets = DatasetService(db)
+        dataset = await datasets.create(owner, DatasetCreate(name="refunds"))
+        case = await datasets.add_case(
+            owner, dataset.id, DatasetCaseCreate(input="q", reference_answer="a")
+        )
+        for reviewer in (user.id, organization.created_by_user_id):
+            score = await case_score_repo.create(
+                db,
+                organization_id=organization.id,
+                dataset_id=dataset.id,
+                case_revision_id=case.id,
+                case_id=case.case_id,
+                run_id=None,
+                agent_id=None,
+                eval_run_id=None,
+                answer=None,
+                scoring={},
+                results=[],
+                judge=None,
+                passed=False,
+                review_state="done",
+                created_by_user_id=None,
+            )
+            await case_score_repo.update(
+                db,
+                score=score,
+                update_data={
+                    "human_passed": True,
+                    "human_note": "Right, just terse",
+                    "reviewed_by_user_id": reviewer,
+                    "reviewed_at": datetime.now(UTC),
+                },
+            )
+
+        export = await PersonalDataService(db).export(user.id, actor_user_id=user.id)
+
+        assert [(row["human_passed"], row["human_note"]) for row in export.case_verdicts] == [
+            (True, "Right, just terse")
+        ]
+        assert set(export.case_verdicts[0]) == {
+            "id",
+            "dataset_id",
+            "case_id",
+            "human_passed",
+            "human_note",
+            "reviewed_at",
+        }
+
+    async def test_it_carries_the_answers_to_their_runs_a_score_kept(self, db):
+        """A score copies the answer it graded, so it outlives the run and the thread."""
+        user = await _person(db, "export-answers@example.com")
+        organization, agent = await _org_and_agent(db)
+        score = await _scored_answer(db, organization, agent, run_by=user.id)
+
+        export = await PersonalDataService(db).export(user.id, actor_user_id=user.id)
+
+        assert [(row["id"], row["answer"]) for row in export.scored_answers] == [
+            (score.id, "Your refund is on its way.")
+        ]
+        assert set(export.scored_answers[0]) == {
+            "id",
+            "dataset_id",
+            "case_id",
+            "run_id",
+            "answer",
+            "created_at",
+        }
+
+    async def test_it_carries_the_claims_recorded_about_them_corrected_ones_too(self, db):
+        from app.repositories.memory_claim import ClaimScope
+        from app.services.memory import claims
+
+        user = await _person(db, "export-claims@example.com")
+        user_id = user.id
+        organization, agent = await _org_and_agent(db)
+        scope = ClaimScope(person_owner_key(user_id), agent.id)
+        first = (
+            await claims.remember(
+                db,
+                organization_id=organization.id,
+                scope=scope,
+                statement="Lives in Kraków",
+                subject="home",
+            )
+        ).claim
+        await claims.correct(db, claim=first, statement="Lives in Gdańsk", author_user_id=user_id)
+
+        export = await PersonalDataService(db).export(user_id, actor_user_id=user_id)
+
+        assert {(row["statement"], row["status"]) for row in export.memory_claims} == {
+            ("Lives in Kraków", "superseded"),
+            ("Lives in Gdańsk", "current"),
+        }
 
     async def test_it_carries_the_notifications_addressed_to_them(self, db):
         """`docs/data-protection.md` classifies these rows as personal data, and
@@ -399,6 +687,106 @@ class TestTheExport:
 
         assert export.conversations == []
 
+    @pytest.mark.security
+    async def test_runs_made_for_somebody_else_under_their_name_are_not_theirs(self, db):
+        """An unlinked channel sender runs as the publisher, with the publisher's
+        id on the run and `initiated_by_publisher_fallback` set. Those runs were
+        started by other people and are no part of the publisher's export."""
+        publisher = await _person(db, "export-publisher@example.com")
+        publisher_id = publisher.id
+        organization, agent = await _org_and_agent(db)
+        theirs = await _run_by(
+            db,
+            publisher_id,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            publisher_fallback=False,
+        )
+        await _run_by(
+            db,
+            publisher_id,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            publisher_fallback=True,
+        )
+
+        export = await PersonalDataService(db).export(publisher_id, actor_user_id=publisher_id)
+
+        assert [row["id"] for row in export.runs] == [theirs]
+
+    @pytest.mark.security
+    async def test_a_chat_accounts_runs_are_theirs_once_they_link_it(self, db):
+        """Linking an account attributes its earlier runs to them, though each ran
+        as the publisher at the time - so those runs are in their export, and a
+        delegation made under such a run, which carries the same, with them."""
+        publisher = await _person(db, "export-linked-publisher@example.com")
+        sender = await _person(db, "export-linked-sender@example.com")
+        sender_id = sender.id
+        organization, agent = await _org_and_agent(db)
+        identity = await _identity_for(db, None, platform_user_id="U-LINKED")
+        before_linking = await _run_by(
+            db,
+            publisher.id,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            publisher_fallback=True,
+            channel_identity_id=identity.id,
+        )
+        identity.user_id = sender_id
+        await db.flush()
+
+        export = await PersonalDataService(db).export(sender_id, actor_user_id=sender_id)
+        publishers = await PersonalDataService(db).export(publisher.id, actor_user_id=publisher.id)
+
+        assert [row["id"] for row in export.runs] == [before_linking]
+        assert publishers.runs == []
+
+    @pytest.mark.security
+    async def test_a_project_chat_carries_their_turns_and_the_answers_to_them_only(self, db):
+        """A project's chat is several people's. Its starter's export must not hand
+        over a teammate's questions, and a teammate who typed there is owed theirs."""
+        starter = await _person(db, "export-starter@example.com")
+        teammate = await _person(db, "export-teammate@example.com")
+        organization, _ = await _org_and_agent(db)
+        project = await project_repo.create(
+            db,
+            organization_id=organization.id,
+            owner_user_id=starter.id,
+            name="Launch",
+            description="",
+            instructions="",
+            default_agent_id=None,
+            backend="state",
+            visibility="org",
+        )
+        chat = await conversation_repo.create_conversation(
+            db,
+            organization_id=organization.id,
+            user_id=starter.id,
+            title="Plan",
+            project_id=project.id,
+        )
+        for author, role, content in [
+            (starter, "user", "Mine?"),
+            (None, "assistant", "Answer to mine."),
+            (teammate, "user", "Theirs?"),
+            (None, "assistant", "Answer to theirs."),
+        ]:
+            await conversation_repo.create_message(
+                db,
+                conversation_id=chat.id,
+                role=role,
+                content=content,
+                author_user_id=None if author is None else author.id,
+            )
+
+        mine = await PersonalDataService(db).export(starter.id, actor_user_id=starter.id)
+        theirs = await PersonalDataService(db).export(teammate.id, actor_user_id=teammate.id)
+
+        assert [row["content"] for row in mine.messages] == ["Mine?", "Answer to mine."]
+        assert [row["title"] for row in theirs.conversations] == ["Plan"]
+        assert [row["content"] for row in theirs.messages] == ["Theirs?", "Answer to theirs."]
+
     async def test_the_request_is_recorded_even_when_it_is_your_own(self, db):
         """An export is the shape of a breach when the caller is not who they
         claim to be, and the entry is what makes that readable afterwards."""
@@ -521,6 +909,28 @@ class TestWhatDeletionRemoves:
         ).scalar_one()
         assert left == 0
 
+    async def test_runs_made_for_somebody_else_outlive_the_publisher(self, db):
+        """Deleting the publisher clears their id from a stand-in run, as the
+        foreign key does for every run, and leaves the run itself: it is the
+        record of somebody else's turn, not the publisher's personal data."""
+        publisher = await _person(db, "purge-publisher@example.com")
+        publisher_id = publisher.id
+        organization, agent = await _org_and_agent(db)
+        stand_in = await _run_by(
+            db,
+            publisher_id,
+            organization_id=organization.id,
+            agent_id=agent.id,
+            publisher_fallback=True,
+        )
+
+        await UserService(db).delete(publisher_id)
+
+        run = await db.get(AgentRun, stand_in, populate_existing=True)
+        assert run is not None
+        assert run.user_id is None
+        assert run.initiated_by_publisher_fallback is True
+
     async def test_a_note_cannot_be_written_about_an_account_that_is_gone(self, db):
         """`owner_key` has no foreign key, so nothing in the database stopped a
         run recreating what the purge had just removed."""
@@ -529,10 +939,10 @@ class TestWhatDeletionRemoves:
         await user_repo.delete(db, user_id)
         await db.flush()
 
-        written = await _native._person_still_exists(db, person_owner_key(user_id))
+        written = await _native.person_still_exists(db, person_owner_key(user_id))
 
         assert written is False
-        assert await _native._person_still_exists(db, "room:slack:C123") is True
+        assert await _native.person_still_exists(db, "room:slack:C123") is True
 
     async def test_nobody_else_s_notes_or_identities_are_touched(self, db):
         """The purge is keyed on the person, and a key built from a uuid is not a
@@ -564,6 +974,60 @@ class TestWhatDeletionRemoves:
             )
         ).scalar_one()
         assert identities == 1
+
+    async def test_a_score_of_their_run_loses_the_answer_and_keeps_the_verdict(self, db):
+        """The score is the organization's; the copy of what their run answered is not."""
+        user = await _person(db, "purge-answers@example.com")
+        organization, agent = await _org_and_agent(db)
+        theirs = await _scored_answer(db, organization, agent, run_by=user.id)
+        others = await _scored_answer(db, organization, agent, run_by=None)
+
+        purged = await PersonalDataService(db).purge(user.id)
+
+        assert purged.scored_answers == 1
+        await db.refresh(theirs)
+        await db.refresh(others)
+        assert (theirs.answer, theirs.passed) == (None, False)
+        assert others.answer == "Your refund is on its way."
+
+    async def test_a_score_of_their_run_loses_what_its_results_quoted_of_the_answer(self, db):
+        """A judge's reason, quotes and unreadable answer can repeat the answer
+        word for word, so they go with it; the verdict each reached stays."""
+        user = await _person(db, "purge-reasons@example.com")
+        organization, agent = await _org_and_agent(db)
+        graded = {
+            "scorer": "judge",
+            "name": "tone",
+            "required": True,
+            "status": "fail",
+            "reason": "2/5: says 'Your refund is on its way.'",
+            "unverified_quotes": ["Your refund is on its way"],
+            "judge_said": "Your refund is on its way.",
+        }
+        theirs = await _scored_answer(db, organization, agent, run_by=user.id, results=[graded])
+
+        await PersonalDataService(db).purge(user.id)
+
+        await db.refresh(theirs)
+        [kept] = theirs.results
+        assert (kept["reason"], kept["unverified_quotes"], kept["judge_said"]) == ("", [], None)
+        assert (kept["status"], kept["name"]) == ("fail", "tone")
+
+    async def test_a_visitors_answer_on_their_published_surface_is_not_theirs(self, db):
+        """An embed or a hosted page runs a visitor's message in its publisher's
+        name; what the visitor was answered is neither exported to nor erased with
+        the publisher."""
+        user = await _person(db, "purge-visitor@example.com")
+        organization, agent = await _org_and_agent(db)
+        visitors = await _scored_answer(db, organization, agent, run_by=user.id, for_a_visitor=True)
+
+        export = await PersonalDataService(db).export(user.id, actor_user_id=user.id)
+        purged = await PersonalDataService(db).purge(user.id)
+
+        assert export.scored_answers == []
+        assert purged.scored_answers == 0
+        await db.refresh(visitors)
+        assert visitors.answer == "Your refund is on its way."
 
     async def test_an_identity_that_was_never_linked_is_left_where_it_is(self, db):
         """An unlinked identity is not this person's residue - it is a platform
@@ -669,3 +1133,223 @@ class TestDeletingYourOwnChatHistory:
             await ConversationService(db).delete_conversation(
                 conversation_id, organization_id=organization.id, user_id=mine.id
             )
+
+
+@pytest.mark.security
+async def test_channel_authors_are_erased_without_copying_labels_into_message_bodies(
+    db: AsyncSession,
+) -> None:
+    from app.schemas.conversation import MessageRead
+
+    going = await _person(db, "channel-author-gone@example.com")
+    staying = await _person(db, "channel-author-kept@example.com")
+    going_id = going.id
+    organization, _ = await _org_and_agent(db)
+    own_identity = await _identity_for(db, going.id, platform_user_id="U-GONE")
+    own_identity.platform_display_name = "Deleted Person"
+    other_identity = await _identity_for(db, staying.id, platform_user_id="U-STAYS")
+    other_identity.platform_display_name = "Remaining Person"
+    chat = await conversation_repo.create_conversation(
+        db, organization_id=organization.id, user_id=staying.id
+    )
+    own = await conversation_repo.create_message(
+        db,
+        conversation_id=chat.id,
+        role="user",
+        content="My actual text.",
+        channel_identity_id=own_identity.id,
+    )
+    other = await conversation_repo.create_message(
+        db,
+        conversation_id=chat.id,
+        role="user",
+        content="A colleague's text.",
+        channel_identity_id=other_identity.id,
+    )
+    import json
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from app.agents.manifest import RecordingModel, RunRecorder, as_payload
+    from app.services.channels.formatting import ChannelReference, channel_author_references
+    from app.services.message_history import CHANNEL_AUTHOR_ID
+
+    await db.commit()
+    conversations = ConversationService(db)
+    history = await conversations.model_history(chat.id, limit=20)
+    assert history[0].metadata[CHANNEL_AUTHOR_ID] == str(own_identity.id)
+    assert "U-GONE" not in str(history) and "Deleted Person" not in str(history)
+    recorder = RunRecorder()
+    seen = []
+
+    def respond(messages, info):
+        seen.append(messages)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    agent = Agent(
+        RecordingModel(FunctionModel(respond), recorder),
+        capabilities=[
+            ChannelReference("", authors_by_timestamp=channel_author_references(history))
+        ],
+    )
+    await agent.run("Who said what?", message_history=history)
+    assert "U-GONE" in str(seen) and "Deleted Person" in str(seen)
+    assert "U-STAYS" in str(seen) and "Remaining Person" in str(seen)
+    assert own.content == "My actual text."
+    assert MessageRead.model_validate(own).model_dump(mode="json")["content"] == "My actual text."
+    for private in ["U-GONE", "Deleted Person", "U-STAYS", "Remaining Person"]:
+        assert private not in json.dumps(as_payload(recorder), default=str)
+
+    await UserService(db).delete(going_id)
+    await db.commit()
+    await db.refresh(own)
+    await db.refresh(other)
+    assert own.channel_identity_id is None
+    assert own.content == "My actual text."
+    seen.clear()
+    # A parked history can still carry an opaque identity reference. A new
+    # dispatch cannot turn a deleted row back into personal platform labels.
+    await agent.run("Continue", message_history=history)
+    assert "U-GONE" not in str(seen) and "Deleted Person" not in str(seen)
+    assert "U-STAYS" in str(seen) and "Remaining Person" in str(seen)
+    assert other.content == "A colleague's text."
+    assert await db.get(User, going_id) is None
+    assert await db.get(Conversation, chat.id) is not None
+
+
+async def test_export_includes_every_owned_outcome_and_bounds_the_full_content(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db.models.outcome import Outcome
+
+    user = await _person(db, f"outcomes-{uuid4()}@example.com")
+    other = await _person(db, f"other-outcomes-{uuid4()}@example.com")
+    org, _ = await _org_and_agent(db)
+    now = datetime.now(UTC)
+    records = [
+        Outcome(
+            organization_id=org.id,
+            user_id=user.id,
+            kind="finding",
+            dedupe_key="no-phone",
+            summary="Needs attention",
+            context_url="/chat",
+            last_observed_at=now,
+        ),
+        Outcome(
+            organization_id=org.id,
+            user_id=user.id,
+            kind="finding",
+            dedupe_key="settled",
+            summary="Already resolved",
+            status="resolved",
+            settled_at=now,
+            settled_via="chat",
+            phone_attempted_at=now,
+        ),
+        Outcome(
+            organization_id=org.id,
+            user_id=other.id,
+            kind="finding",
+            dedupe_key="private",
+            summary="Another person's case",
+        ),
+    ]
+    db.add_all(records)
+    await db.flush()
+    service = PersonalDataService(db)
+    export = await service.export(user.id, actor_user_id=user.id)
+    assert {row.id for row in export.outcomes} == {records[0].id, records[1].id}
+    assert next(row for row in export.outcomes if row.id == records[0].id).last_observed_at == now
+    assert {row.id for row in export.phone_case_attempts} == {records[1].id}
+    records[0].summary = "x" * 50_000
+    records[0].context_url = "https://example.com/" + "x" * 50_000
+    await db.flush()
+    monkeypatch.setattr(settings, "PERSONAL_DATA_EXPORT_MAX_CHARS", 80_000)
+    with pytest.raises(BadRequestError, match="more conversation text"):
+        await service.export(user.id, actor_user_id=user.id)
+
+
+async def test_coding_changes_are_exported_only_with_accessible_conversations_and_bounded(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db.models.coding_task_change import CodingTaskChange
+
+    user = await _person(db, f"coding-{uuid4()}@example.com")
+    other = await _person(db, f"other-coding-{uuid4()}@example.com")
+    org, _ = await _org_and_agent(db)
+    chats = [
+        Conversation(organization_id=org.id, user_id=person.id, title="Coding")
+        for person in (user, other)
+    ]
+    db.add_all(chats)
+    await db.flush()
+    changes = [
+        CodingTaskChange(
+            organization_id=org.id,
+            conversation_id=chat.id,
+            harness="codex",
+            files=[{"path": "report.py", "patch": "+print('hello')"}],
+        )
+        for chat in chats
+    ]
+    db.add_all(changes)
+    await db.flush()
+    service = PersonalDataService(db)
+    exported = await service.export(user.id, actor_user_id=user.id)
+    assert [row.id for row in exported.coding_task_changes] == [changes[0].id]
+    assert exported.coding_task_changes[0].files[0]["patch"] == "+print('hello')"
+    changes[0].files = [{"path": "report.py", "patch": "x" * 50_000}]
+    await db.flush()
+    monkeypatch.setattr(settings, "PERSONAL_DATA_EXPORT_MAX_CHARS", 40_000)
+    with pytest.raises(BadRequestError, match="more conversation text"):
+        await service.export(user.id, actor_user_id=user.id)
+
+
+async def test_private_tasks_export_values_history_schemas_and_enforce_the_size_limit(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.repositories import personal_data_repo
+    from app.schemas.task import TaskCreate, TaskUpdate
+    from app.services.tasks import TaskService
+    from tests.integration.test_tasks import world
+
+    data = await world(db)
+    tasks = TaskService(db)
+    own = await tasks.create(
+        data.contexts[0], TaskCreate(title="My reminder", description="Private notes")
+    )
+    await tasks.create(data.contexts[1], TaskCreate(title="Other person's reminder"))
+    await tasks.create(
+        data.contexts[0],
+        TaskCreate(title="Team reminder", scope="organization", scope_id=data.org.id),
+    )
+    await tasks.update(
+        data.contexts[0],
+        own.id,
+        TaskUpdate(title="Updated reminder", expected_revision=own.revision),
+    )
+    service = PersonalDataService(db)
+    exported = await service.export(data.users[0].id, actor_user_id=data.users[0].id)
+    assert [record.id for record in exported.private_task_records] == [own.id]
+    assert [board.table_id for board in exported.private_task_boards] == [own.table_id]
+    assert all(row.table_id == own.table_id for row in exported.private_task_history)
+    assert all(row.table_id == own.table_id for row in exported.private_task_schemas)
+    encoded = exported.model_dump_json()
+    assert "Private notes" in encoded and "Updated reminder" in encoded
+    assert "Other person's reminder" not in encoded and "Team reminder" not in encoded
+    before = await personal_data_repo.private_task_export_size(db, data.users[0].id)
+    latest = await tasks.get(data.contexts[0], own.id)
+    await tasks.update(
+        data.contexts[0],
+        own.id,
+        TaskUpdate(title=latest.title, description="x" * 9000, expected_revision=latest.revision),
+    )
+    after = await personal_data_repo.private_task_export_size(db, data.users[0].id)
+    assert after > before + 18000
+    assert await personal_data_repo.private_task_export_size(db, uuid4()) == 0
+    monkeypatch.setattr(settings, "PERSONAL_DATA_EXPORT_MAX_CHARS", before + 1000)
+    with pytest.raises(BadRequestError, match="more conversation text"):
+        await service.export(data.users[0].id, actor_user_id=data.users[0].id)

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TriggerFormDialog } from "./trigger-form-dialog";
 import { apiClient } from "@/lib/api-client";
+import { useAuthStore } from "@/stores";
 import type { TriggerTemplate } from "@/types/trigger-templates";
 
 vi.mock("@/lib/api-client", async () => {
@@ -55,6 +56,7 @@ function serve(templates: TriggerTemplate[] = [DAILY, WEEKLY]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useAuthStore.setState({ user: { id: "me", time_zone: "Europe/Warsaw" } as never });
   serve();
 });
 
@@ -72,7 +74,8 @@ describe("New-schedule template picker", () => {
     vi.mocked(apiClient.post).mockResolvedValue({});
     const dialog = await open();
 
-    await user.click(await dialog.findByRole("button", { name: /Daily standup/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(await screen.findByRole("button", { name: /Daily standup/ }));
     await user.click(dialog.getByRole("button", { name: "Continue" }));
     // The schedule step's interval builder reads the template's cadence: one day.
     expect(dialog.getByLabelText<HTMLInputElement>("Run every").value).toBe("1");
@@ -84,6 +87,7 @@ describe("New-schedule template picker", () => {
       name: "Daily standup",
       trigger_type: "schedule",
       environment_id: null,
+      overlap: "skip",
       schedule_kind: "interval",
       interval_seconds: 86400,
     });
@@ -95,8 +99,10 @@ describe("New-schedule template picker", () => {
     const dialog = await open();
 
     // A second pick replaces the name the first one wrote.
-    await user.click(await dialog.findByRole("button", { name: /Daily standup/ }));
-    await user.click(dialog.getByRole("button", { name: /Weekly report/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(await screen.findByRole("button", { name: /Daily standup/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(screen.getByRole("button", { name: /Weekly report/ }));
     await user.click(dialog.getByRole("button", { name: "Continue" }));
     await user.click(dialog.getByRole("button", { name: "Create" }));
 
@@ -105,8 +111,10 @@ describe("New-schedule template picker", () => {
       name: "Weekly report",
       trigger_type: "schedule",
       environment_id: null,
+      overlap: "skip",
       schedule_kind: "cron",
       cron_expression: "0 9 * * 1",
+      time_zone: "Europe/Warsaw",
     });
   });
 
@@ -143,7 +151,8 @@ describe("New-schedule template picker", () => {
 
     await user.type(dialog.getByLabelText("Name"), "Board update");
     await user.click(dialog.getByRole("button", { name: "Continue" }));
-    await user.click(await dialog.findByRole("button", { name: /Weekly report/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(await screen.findByRole("button", { name: /Weekly report/ }));
     await user.click(dialog.getByRole("button", { name: "Continue" }));
     await user.click(dialog.getByRole("button", { name: "Create" }));
 
@@ -157,16 +166,17 @@ describe("New-schedule template picker", () => {
     const user = userEvent.setup();
     const dialog = await open();
 
-    await user.click(await dialog.findByRole("button", { name: /Daily standup/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(await screen.findByRole("button", { name: /Daily standup/ }));
     // The task step can advance once a template fills the prompt.
     expect(dialog.getByRole("button", { name: "Continue" })).toBeEnabled();
 
-    await user.click(dialog.getByRole("button", { name: /Start from scratch/ }));
+    await user.click(dialog.getByRole("button", { name: "Start from a template" }));
+    await user.click(screen.getByRole("button", { name: /Start from scratch/ }));
     // Back to a blank message, so there is nothing to continue with yet.
     expect(dialog.getByRole("button", { name: "Continue" })).toBeDisabled();
-    expect(dialog.getByRole("button", { name: /Start from scratch/ })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    expect(dialog.getByRole("button", { name: "Start from a template" })).toHaveTextContent(
+      "Start from a template",
     );
     // The name the template wrote goes with it.
     await user.click(dialog.getByRole("button", { name: "Back" }));
@@ -179,16 +189,18 @@ describe("New-schedule template picker", () => {
     // which mark illustrates a card is not the catalog's business.
     const dialog = await open();
 
-    const card = await dialog.findByRole("button", { name: /Daily standup/ });
+    await userEvent.click(dialog.getByRole("button", { name: "Start from a template" }));
+    const card = await screen.findByRole("button", { name: /Daily standup/ });
 
     expect(card.querySelector("svg")).not.toBeNull();
   });
 
-  it("stays out of the way when the catalog is empty", async () => {
+  it("keeps a stable selector and an editable message when the catalog is empty", async () => {
     serve([]);
     const dialog = await open();
 
     await dialog.findByLabelText("Message");
-    expect(dialog.queryByText("Start from a template")).toBeNull();
+    expect(dialog.getByRole("button", { name: "Start from a template" })).toBeInTheDocument();
+    expect(dialog.getByLabelText("Message")).toBeEnabled();
   });
 });

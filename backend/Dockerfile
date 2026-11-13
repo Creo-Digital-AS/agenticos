@@ -9,7 +9,7 @@
 # the root says what of the tree reaches the daemon.
 
 # Build stage
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -44,7 +44,6 @@ RUN if echo "${EXTRAS}" | grep -q kerberos; then \
         && apt-get clean && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Install dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=backend/uv.lock,target=uv.lock \
     --mount=type=bind,source=backend/pyproject.toml,target=pyproject.toml \
@@ -58,9 +57,16 @@ COPY emails /app/emails
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev ${EXTRAS}
 
+# The application's own modules, compiled once here. `UV_COMPILE_BYTECODE`
+# covers the dependencies only, and the runtime sets `PYTHONDONTWRITEBYTECODE`,
+# so every process - each API worker, the worker, every ingest child it
+# respawns, every migration - compiled all of `app/` at start and threw the
+# result away (#2229).
+RUN python -m compileall -q -j 0 app cli alembic
+
 
 # Runtime stage
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -101,8 +107,7 @@ RUN if echo "${EXTRAS}" | grep -q kerberos; then \
         && apt-get clean && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Copy virtual environment from builder
-COPY --from=builder /app/.venv /app/.venv
+# Application and its virtual environment, from the builder
 COPY --from=builder /app /app
 
 # The licence, the notice and the generated index of every third-party component
@@ -118,19 +123,21 @@ COPY frontend/licenses/texts /app/licenses/texts
 # Add venv to path
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Create non-root user and writable directories
-RUN adduser --disabled-password --gecos "" appuser && \
+# Non-root user. Code and venv stay root-owned and read-only to it; only the
+# directories it writes at run time are its own. uid pinned: media_data volumes
+# created by earlier images are owned by 1000.
+RUN adduser --disabled-password --gecos "" --uid 1000 appuser && \
     mkdir -p /app/media /app/data /app/chroma_data /app/models_cache && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app/media /app/data /app/chroma_data /app/models_cache
 USER appuser
 
 EXPOSE 8000
 
 # No HEALTHCHECK here, deliberately. This image has two consumers with different
-# commands: the API (`uvicorn app.main:app`) and the Prefect runner
-# (`python -m app.worker.prefect_app`). The probe that used to live here asked
-# localhost:8000 for `/api/v1/health`, which the runner serves nothing on - so the
-# runner was `unhealthy` from the second it started and stayed that way, hiding
+# commands: the API (`uvicorn app.main:app`) and the background worker
+# (`python -m app.worker`). The probe that used to live here asked
+# localhost:8000 for `/api/v1/health`, which the worker serves nothing on - so the
+# worker was `unhealthy` from the second it started and stayed that way, hiding
 # the one thing a health status exists to show. An image cannot know which of the
 # two it was started as; a service definition does. Both probes are in the compose
 # files, one per service.

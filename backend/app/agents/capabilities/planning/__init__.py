@@ -16,8 +16,6 @@ seeds it from `paused_state` on resume, and reads it back when the run stops. Se
 `planning/_capability.py` for why the store lives there rather than here.
 """
 
-from __future__ import annotations
-
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -51,9 +49,8 @@ __all__ = [
 class PlanningConfig(BaseModel):
     """How this agent plans.
 
-    Both fields have defaults that make the smallest useful surface: a flat checklist
-    with a short-lived cache breakpoint. An agent that binds the capability and sets
-    nothing gets exactly that.
+    The default is a flat checklist. The legacy cache lifetime stays in the schema
+    so existing specs load; prompt caching is controlled by the model settings.
     """
 
     # Adds `add_subtask`, `set_dependency` and `get_available_tasks` and a `blocked`
@@ -68,13 +65,11 @@ class PlanningConfig(BaseModel):
         ),
     )
     cache_ttl: Literal["5m", "1h"] = Field(
-        title="Prompt cache lifetime",
+        title="Legacy prompt cache lifetime",
         default="5m",
         description=(
-            "How long the provider may cache the prompt prefix that sits before the "
-            "plan reminder. The reminder changes every turn and is deliberately kept "
-            "behind this breakpoint so the stable prefix stays cacheable; a longer TTL "
-            "suits a conversation that stays open, the shorter one a burst of turns."
+            "Kept so existing agent specs still load. Planning no longer uses this "
+            "value; configure prompt caching through cache in the model settings."
         ),
         json_schema_extra={"x-advanced": True},
     )
@@ -82,6 +77,7 @@ class PlanningConfig(BaseModel):
 
 @register(
     id="planning",
+    read_only=True,
     name="Planning",
     category="reasoning",
     description="Let the agent keep a checklist of steps for a multi-step task.",
@@ -90,6 +86,7 @@ class PlanningConfig(BaseModel):
     # binding, and the offered subset is decided by `enable_subtasks` at build time.
     tools=PLANNING_TOOLS,
     config_schema=PlanningConfig,
+    tunable=True,
     # None of the tools acts on the world - they mutate a checklist the model keeps
     # for itself - so there is nothing here for a person to approve.
     side_effecting=False,

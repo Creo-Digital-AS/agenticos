@@ -133,6 +133,8 @@ async def test_configured_credentials_are_passed_through(monkeypatch):
 
     assert sent["username"] == "me"
     assert sent["password"] == "pw"
+    assert sent["validate_certs"] is True
+    assert sent["timeout"] == 30
 
 
 async def test_the_message_carries_its_optional_headers(monkeypatch):
@@ -157,6 +159,43 @@ async def test_the_message_carries_its_optional_headers(monkeypatch):
     assert msg["Reply-To"] == "support@example.com"
 
 
+async def test_thread_headers_and_attachments_are_set_on_the_message(monkeypatch):
+    from app.services.email.providers.base import EmailAttachment
+
+    sent = _capture(monkeypatch)
+
+    await SMTPProvider(host="mail", port=587, username="", password="", use_tls=True).send(
+        EmailMessage(
+            to=["someone@example.com"],
+            from_email="agent@example.com",
+            subject="Re: Invoice",
+            html="<p>done</p>",
+            text="done",
+            headers={"In-Reply-To": "<1@x>", "References": "<0@x> <1@x>"},
+            attachments=[
+                EmailAttachment(filename="r.pdf", content=b"%PDF", mime_type="application/pdf")
+            ],
+        )
+    )
+
+    msg = sent["msg"]
+    assert msg["In-Reply-To"] == "<1@x>" and msg["References"] == "<0@x> <1@x>"
+    assert msg.get_content_type() == "multipart/mixed"
+    kinds = [part.get_content_type() for part in msg.get_payload()]
+    assert kinds == ["multipart/alternative", "application/pdf"]
+    assert msg.get_payload()[1].get_filename() == "r.pdf"
+
+
+async def test_a_message_without_attachments_stays_a_plain_alternative(monkeypatch):
+    sent = _capture(monkeypatch)
+
+    await SMTPProvider(host="mail", port=587, username="", password="", use_tls=True).send(
+        _message()
+    )
+
+    assert sent["msg"].get_content_type() == "multipart/alternative"
+
+
 async def test_a_send_failure_is_reported_not_raised(monkeypatch):
     async def fail(msg, **kwargs):
         raise aiosmtplib.SMTPConnectError("connection refused")
@@ -169,4 +208,17 @@ async def test_a_send_failure_is_reported_not_raised(monkeypatch):
 
     assert result.accepted is False
     assert result.provider_message_id == ""
-    assert "connection refused" in (result.error or "")
+    assert result.error == "SMTP delivery failed"
+
+
+async def test_server_error_text_never_exposes_credentials(monkeypatch, caplog):
+    async def fail(msg, **kwargs):
+        raise aiosmtplib.SMTPAuthenticationError(535, "smtp-password was refused")
+
+    monkeypatch.setattr(aiosmtplib, "send", fail)
+    result = await SMTPProvider(
+        host="mail", port=587, username="me", password="smtp-password"
+    ).send(_message())
+    assert result.error == "SMTP delivery failed"
+    assert "smtp-password" not in caplog.text
+    assert "smtp-password" not in repr(result)

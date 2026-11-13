@@ -79,6 +79,15 @@ describe("extractSources", () => {
     expect(sources[1]?.subtitle).toBeUndefined();
   });
 
+  it("names the section a page-less passage opens with (#2489)", () => {
+    const result =
+      '[1] Source: guide.md, section "Install", chunk 3 [docs] (score: 0.700)\nRun it.';
+    const sources = extractSources(message({ toolCalls: [toolCall({ result })] }), t);
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ title: "guide.md", subtitle: "Install · chunk 3" });
+  });
+
   it("reads web hits, naming each by its domain", () => {
     const sources = extractSources(
       message({ toolCalls: [toolCall({ name: "web_search", result: WEB_RESULT })] }),
@@ -217,4 +226,20 @@ describe("sourceDocuments", () => {
     expect(docs).toHaveLength(1);
     expect(docs[0]?.key).toBe("web:A");
   });
+});
+
+it.each([
+  ["search_documents", RAG_RESULT],
+  ["web_search", WEB_RESULT],
+])("keeps sources from renamed %s and ignores external name collisions", (id, result) => {
+  const renamed = message({ toolCalls: [toolCall({ name: "lookup", tool_id: id, result })] });
+  const original = message({ toolCalls: [toolCall({ name: id, result })] });
+  expect(extractSources(renamed, t)).toEqual(extractSources(original, t));
+  expect(extractSources(renamed, t)).not.toEqual([]);
+  expect(
+    extractSources(
+      message({ toolCalls: [toolCall({ name: id, presentation_kind: "generic", result })] }),
+      t,
+    ),
+  ).toEqual([]);
 });

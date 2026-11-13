@@ -1,5 +1,7 @@
 "use client";
 
+import { glideOrJump } from "@/lib/motion";
+
 import { ArrowRight, ChevronLeft, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
@@ -30,20 +32,8 @@ interface Tip {
 }
 
 const TIPS: readonly Tip[] = [
-  // The two keys that open up the chat, first: everybody chats, and neither is
-  // something a person finds by looking.
-  { id: "mentions", href: ROUTES.CHAT, key: "@" },
-  { id: "commands", href: ROUTES.CHAT, key: "/" },
-  {
-    id: "mcp",
-    href: ROUTES.SETTINGS_MCP,
-    brands: [
-      { name: "claude", color: "#D97757" },
-      { name: "cursor", color: "currentColor" },
-    ],
-  },
-  { id: "subagents", href: ROUTES.AGENTS, art: "subagents", gate: Perm.agentsEdit },
   { id: "sandbox", href: ROUTES.AGENTS, art: "sandbox", gate: Perm.agentsEdit },
+  { id: "subagents", href: ROUTES.AGENTS, art: "subagents", gate: Perm.agentsEdit },
   { id: "apps", href: ROUTES.ARTIFACTS, art: "artifacts", gate: Perm.artifactsView },
   { id: "routines", href: ROUTES.ROUTINES, art: "clock", gate: Perm.agentsEdit },
   {
@@ -54,11 +44,24 @@ const TIPS: readonly Tip[] = [
       { name: "slack", color: "#4A154B" },
       { name: "telegram", color: "#26A5E4" },
       { name: "mattermost", color: "#0058CC" },
+      { name: "microsoftteams", color: "#6264A7" },
+      { name: "discord", color: "#5865F2" },
     ],
   },
   { id: "browser", href: ROUTES.AGENTS, art: "browser_use", gate: Perm.agentsEdit },
   { id: "knowledge", href: ROUTES.RAG, art: "knowledge", gate: Perm.agentsEdit },
   { id: "skills", href: ROUTES.SKILLS, art: "skills", gate: Perm.agentsEdit },
+  // Keyboard tips remain available after the illustrated product examples.
+  { id: "mentions", href: ROUTES.CHAT, key: "@" },
+  { id: "commands", href: ROUTES.CHAT, key: "/" },
+  {
+    id: "mcp",
+    href: ROUTES.SETTINGS_MCP,
+    brands: [
+      { name: "claude", color: "#D97757" },
+      { name: "cursor", color: "currentColor" },
+    ],
+  },
 ];
 
 const DISMISSED_KEY = "agenticos:discover-tips:dismissed";
@@ -120,7 +123,7 @@ export function DiscoverTips() {
               tile.getBoundingClientRect().left -
               node.getBoundingClientRect().left -
               TILE_GAP_PX;
-        node.scrollTo({ left, behavior: "smooth" });
+        node.scrollTo({ left, behavior: glideOrJump() });
         return next;
       });
     }, ADVANCE_MS);
@@ -141,7 +144,7 @@ export function DiscoverTips() {
   const page = (direction: 1 | -1) =>
     strip.current?.scrollBy({
       left: direction * strip.current.clientWidth * 0.85,
-      behavior: "smooth",
+      behavior: glideOrJump(),
     });
 
   return (
@@ -246,7 +249,7 @@ function TipTile({ tip, lit, onDismiss }: { tip: Tip; lit: boolean; onDismiss: (
         type="button"
         onClick={onDismiss}
         aria-label={t("dismiss", { title })}
-        className="bg-background/85 text-muted-foreground hover:text-foreground absolute top-2 right-2 grid size-6 place-items-center rounded-full opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+        className="bg-background/85 text-muted-foreground hover:text-foreground touch:size-11 touch:opacity-100 absolute top-2 right-2 grid size-6 touch-manipulation place-items-center rounded-full opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
       >
         <X className="size-3.5" />
       </button>

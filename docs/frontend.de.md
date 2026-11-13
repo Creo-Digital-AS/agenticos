@@ -1,5 +1,5 @@
 ---
-source_sha: "22652979b979"
+source_sha: "8ca784f8a0b0"
 ---
 
 # Der Code der Konsole { #the-consoles-code }
@@ -13,17 +13,32 @@ Playwright. Paketmanager und Runner: **bun**.
 
 ## Wo was liegt { #where-things-live }
 
-| Pfad | |
-|---|---|
-| `src/app/[locale]/(dashboard)/…` | Das Produkt. Routen tragen ein **Locale-Präfix** |
-| `src/app/api/…` | Route Handler, die zum Backend weiterleiten |
-| `src/lib/` | Typisierte API-Clients, `query-keys.ts` und die Registries weiter unten |
-| `src/hooks/` | Einer pro Ressource — `use-agents`, `use-permissions`, … |
-| `src/stores/` | Zustand, einer pro Anliegen |
-| `src/components/<domain>/` | UI nach Domäne; Primitive in `ui/`, Leer- und Fehlerzustände in `states/` |
+| Pfad                             |                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `src/app/[locale]/(dashboard)/…` | Das Produkt. Routen tragen ein **Locale-Präfix**                          |
+| `src/app/api/…`                  | Route Handler, die zum Backend weiterleiten                               |
+| `src/lib/`                       | Typisierte API-Clients, `query-keys.ts` und die Registries weiter unten   |
+| `src/hooks/`                     | Einer pro Ressource — `use-agents`, `use-permissions`, …                  |
+| `src/stores/`                    | Zustand, einer pro Anliegen                                               |
+| `src/components/<domain>/`       | UI nach Domäne; Primitive in `ui/`, Leer- und Fehlerzustände in `states/` |
 
 Server Components sind der Default. `"use client"` ist für State, Effects und
 Handler da, nicht für die Gewohnheit.
+
+## Darstellung der Konsole { #console-presentation }
+
+Verwende `PageHeader` für kompakte Titel und Aktionen. Kartenkataloge verwenden
+`ListCard layout="grid"` ohne zusätzlichen Rahmen; Tabellen behalten ihr Panel.
+Aktionsschaltflächen nutzen neutrale `action`-Tokens, unabhängig von den
+`primary`-Tokens für aktivierte Steuerelemente und Badges. Fokus und
+Eingabefeldränder bleiben sichtbar.
+
+Personen und Organisationen verwenden `EntityAvatar`: Fotos werden kreisförmig
+zugeschnitten; Initialen auf einer stabilen Farbe dienen als Ersatz. Agenten
+behalten ihre generierten Gesichter. Katalogbeschreibungen belegen zwei Zeilen;
+beim Öffnen eines Eintrags erscheint die vollständige Beschreibung.
+
+Asynchrone Aktionen verwenden `Button loading`, damit Beschriftung und Abmessungen erhalten bleiben und wiederholtes Absenden verhindert wird. Dieser Zustand endet erst nach allen Schritten, einschließlich Uploads. Linkbasierte Schaltflächen behalten ein einzelnes Kind und blockieren die Aktivierung, solange sie nicht verfügbar sind. Steuerelemente teilen einen einheitlichen Tastaturfokus und kompakte Desktop-Größen; bei ausreichend Platz sind Touch-Ziele 44px groß. Overlays animieren von ihrem Anker aus; Tooltips umbrechen innerhalb des Fensters. Kalenderüberschriften folgen der Konsolensprache, und Fortschrittsanzeigen melden tatsächlichen Wert und Höchstwert an assistive Technologien. Animationen beachten die Motion-Einstellung der Person.
 
 ## Der Browser ruft nie das Backend auf { #the-browser-never-calls-the-backend }
 
@@ -54,6 +69,26 @@ Serverdaten wohnen in der Query-Schicht; **Stores halten nur UI- und flüchtigen
 State**. Registrieren Sie jeden Query Key in `query-keys.ts`, damit die
 Invalidierung nach einem Schreibvorgang konsistent bleibt.
 
+## Chatverlauf und Stream-Aktualisierungen { #chat-history-and-streamed-updates }
+
+Die Konsole öffnet die neueste Transcript-Seite und lädt frühere Nachrichten auf
+Anforderung. Projekt-Chips lesen `/conversations/{id}/metadata` mit denselben
+Leser- und Organisationsprüfungen, ohne Nachrichten zu laden. Repository-Lesezugriffe
+lassen die gespeicherte Modellzusammenfassung aus, sofern die Rekonstruktion des
+Modellverlaufs sie nicht ausdrücklich anfordert.
+
+Chat-Sockets liefern Nachrichtenserien einmal pro Animationsframe, mit einem
+50-ms-Fallback für verborgene Tabs und einer Warteschlangengrenze von 256 Frames.
+Benachbarte Text- oder Denk-Deltas werden zusammengefasst; Steuerungs-, Tool- und
+Teilgrenzen behalten ihre Reihenfolge. Ein Wechsel von Unterhaltung, Konto oder
+Organisation verwirft gepufferte Frames.
+
+Unverändertes Markdown und Tool-Ausgaben werden wiederverwendet. Das Scrollen folgt
+dem gemessenen Inhaltswachstum. Fertige Zeichnungen werden nahe dem Viewport
+eingebunden und außerhalb entfernt, behalten aber ihren gemessenen Platz; bei der
+Rückkehr starten ihre Skripte neu. Gestreamte Zeichnungen bleiben aktiv, und der
+Vollbildmodus pausiert die Inline-Kopie.
+
 ## Permissions sind eine Rendering-Entscheidung { #permissions-are-a-rendering-decision }
 
 `use-permissions.ts` liefert die effektive Permission-Menge für die aktive
@@ -68,8 +103,8 @@ Zwei Fallen, die hier beide schon ausgeliefert wurden:
   strikt überragt. Ein fest verdrahtetes "jede Rolle außer owner" ist das, was
   einem Admin die Option Admin anbot und nach dem Eintippen der E-Mail-Adresse
   mit 403 antwortete.
-- **Eine Seite, die eine Organisation in ihrer URL nennt, *ist* diese
-  Organisation.** Der API-Client stempelt `X-Organization-Id` aus der *aktiven*
+- **Eine Seite, die eine Organisation in ihrer URL nennt, _ist_ diese
+  Organisation.** Der API-Client stempelt `X-Organization-Id` aus der _aktiven_
   Organisation, also entscheidet eine Seite, die auf der Organisation in ihrem
   Pfad handelt und dabei die Permissions der aktiven liest, über die Mitglieder
   von Acme nach Ihrer Rolle in Globex. Die Übernahme wohnt in `ActiveOrgGuard`,
@@ -110,12 +145,12 @@ rendert eine fehlende Übersetzung Englisch statt des Keys.
 Jede davon ist eine Tabelle, die mehrere Teile der UI lesen. Der Tabelle etwas
 hinzuzufügen ist die ganze Änderung; eine zweite Quelle hinzuzufügen ist der Bug.
 
-| | Hält | Hinzufügen über |
-|---|---|---|
-| `lib/tool-catalog.ts` | Icon, laufende Beschriftung, fertigen Namen und Renderer für jedes Tool, das das Backend registriert | Eine Zeile, die auf der Tool-id der Capability sitzt. Ein Backend-Test vergleicht beide in beide Richtungen |
-| `lib/brand-glyphs.generated.ts` | Jedes Dienst-, Connector- und Provider-Zeichen, als rohe Pfaddaten | Eine Zeile in `scripts/gen-brand-icons.ts`, dann `bun run gen:brand-icons`. Nie ein Import aus einem Icon-Paket |
-| `lib/dashboard/registry.ts` | Die Dashboard-Widgets und die Permission, an der jedes gemessen wird | Fünf Änderungen, unten auf der Seite aufgeführt |
-| `lib/dialog-sizes.ts` | Ein Breiten-Token und ein Form-Token pro Dialog | Ein Token wählen, nie eine maßgeschneiderte Höhe |
+|                                 | Hält                                                                                                 | Hinzufügen über                                                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `lib/tool-catalog.ts`           | Icon, laufende Beschriftung, fertigen Namen und Renderer für jedes Tool, das das Backend registriert | Eine Zeile, die auf der Tool-id der Capability sitzt. Ein Backend-Test vergleicht beide in beide Richtungen     |
+| `lib/brand-glyphs.generated.ts` | Jedes Dienst-, Connector- und Provider-Zeichen, als rohe Pfaddaten                                   | Eine Zeile in `scripts/gen-brand-icons.ts`, dann `bun run gen:brand-icons`. Nie ein Import aus einem Icon-Paket |
+| `lib/dashboard/registry.ts`     | Die Dashboard-Widgets und die Permission, an der jedes gemessen wird                                 | Fünf Änderungen, unten auf der Seite aufgeführt                                                                 |
+| `lib/dialog-sizes.ts`           | Ein Breiten-Token und ein Form-Token pro Dialog                                                      | Ein Token wählen, nie eine maßgeschneiderte Höhe                                                                |
 
 ## Zwei Dinge, die eine neue Oberfläche schuldet { #two-things-a-new-surface-owes }
 
@@ -183,3 +218,13 @@ Assertions lesen.
 
 [Das Backend →](architecture.md) · [Ein Feature hinzufügen →](adding_features.md) ·
 [Testen →](testing.md)
+
+## Tests in der Konsole { #evals-in-the-console }
+
+Tests verwenden `PageHeader`, `ListCard`, Dialoggrößen, Registerkarten und `WizardSteps` der Konsole. Datenänderungen aktualisieren registrierte Abfragen über `/ws/events`; menschliche Bewertungen aktualisieren auch Prüfungssuiten, Verbesserungssitzungen und Umgebungsschutz. Ein Lesefehler bietet einen erneuten Versuch statt einer leeren Erfolgsansicht. Schmale Ansichten behalten 16-px-Formularfelder und Platz für den Architekten.
+
+Datasets behalten ihre Freigaben und Ressourcengrants und sind über mehrere Agenten nutzbar. Bewertungsmodell und Anweisungen gehören zum Dataset; Generierung und Verbesserung haben einen Einstellungstab. Code-definierte Helfer behalten interne Run-Identitäten zur Zuordnung, erscheinen aber nicht im Benutzeragentenkatalog. Fälle und Evals verwenden gemeinsame Konsolentabellen; Fall- und Reviewdetails öffnen Seitenpanels.
+
+Der Architekt erhält in diesem Meilenstein keine neue Capability zum Schreiben von Datasets. Fragen werden durch eine ausdrücklich geschätzte, berechtigungsgeprüfte Aktion im Verbesserungsablauf erstellt; der Eckassistent kann diese kostenpflichtige Arbeit nicht still starten. Seine Schaltfläche bleibt neben den Testansichten erreichbar.
+
+`e2e/improvement.mobile.spec.ts` durchläuft echte API und Hintergrundworker. Geprüft werden Dataset-Fälle, Falleditor, Bewertung, Durchsicht, Testergebnis, Verbesserungsassistent und bestätigte Veröffentlichung mit Umgebungsschutz. Nur das externe Modell ist eine Testattrappe. GitHub Actions bewahrt Screenshots beider Farbschemata in Telefon- und Desktopbreite zur Sichtprüfung auf.

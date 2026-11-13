@@ -12,9 +12,8 @@ messages leave no lock behind, two messages in one chat still take turns, and
 the allowance is consumed from the Redis every worker shares.
 """
 
-from __future__ import annotations
-
 import asyncio
+import json
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +24,7 @@ from app.core.exceptions import BadRequestError
 from app.services import rate_limit
 from app.services.channels import router as router_module
 from app.services.channels.base import IncomingMessage, thread_key
+from app.services.channels.mattermost import MattermostAdapter
 from app.services.channels.router import ChannelMessageRouter, _ChatLocks
 
 pytestmark = pytest.mark.anyio
@@ -209,7 +209,7 @@ class TestTheAllowanceAChatAccountGets:
         redis = MagicMock()
         redis.count_in_window = AsyncMock(side_effect=ConnectionError("redis is down"))
         rate_limit.configure(redis)
-        monkeypatch.setattr(router_module, "_fallback_windows", router_module._LocalWindows())
+        monkeypatch.setattr(router_module, "_fallback_windows", rate_limit.LocalWindows())
         router = ChannelMessageRouter()
         bot = _bot({"rate_limit_rpm": 3})
 
@@ -222,7 +222,7 @@ class TestTheAllowanceAChatAccountGets:
     async def test_a_deployment_with_no_limiter_is_bounded_locally_and_says_so(
         self, monkeypatch: pytest.MonkeyPatch, caplog
     ):
-        monkeypatch.setattr(router_module, "_fallback_windows", router_module._LocalWindows())
+        monkeypatch.setattr(router_module, "_fallback_windows", rate_limit.LocalWindows())
         router = ChannelMessageRouter()
         bot = _bot({"rate_limit_rpm": 1})
 
@@ -238,10 +238,59 @@ class TestTheAllowanceAChatAccountGets:
         """Bounded the way the shared window is bounded by its TTL: an entry
         lives one window, so the map is the callers of the last minute."""
         clock = iter([0.0, 1.0, 61.0, 62.0])
-        windows = router_module._LocalWindows(clock=lambda: next(clock))
+        windows = rate_limit.LocalWindows(clock=lambda: next(clock))
 
         assert windows.consume("a", attempts=1, window_seconds=60) is True
         assert windows.consume("a", attempts=1, window_seconds=60) is False
         assert windows.consume("b", attempts=1, window_seconds=60) is True
         assert windows.consume("a", attempts=1, window_seconds=60) is True, "a new window"
         assert len(windows) == 2
+
+
+@pytest.mark.parametrize("text", ["", " \n\t"])
+async def test_an_empty_post_after_mention_removal_never_starts_a_turn(text, locks):
+    routed = AsyncMock()
+    with patch.object(ChannelMessageRouter, "_route_inner", routed):
+        await ChannelMessageRouter().route(_message(platform="mattermost", text=text), MagicMock())
+    routed.assert_not_awaited()
+    router_module.claim_delivery.assert_not_awaited()
+
+
+async def test_a_media_only_post_still_reaches_the_attachment_pipeline(locks):
+    routed = AsyncMock()
+    with patch.object(ChannelMessageRouter, "_route_inner", routed):
+        await ChannelMessageRouter().route(
+            _message(text="", attachments=[MagicMock()]), MagicMock()
+        )
+    routed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("transport", ["socket", "webhook"])
+async def test_a_mattermost_bot_mention_alone_does_not_claim_a_turn(transport, locks):
+    adapter = MattermostAdapter()
+    adapter._own_names["bot-1"] = "helper"
+    payload = (
+        {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(
+                    {
+                        "id": "p1",
+                        "user_id": "u1",
+                        "channel_id": "c1",
+                        "message": "@helper",
+                    }
+                ),
+                "channel_type": "D",
+            },
+        }
+        if transport == "socket"
+        else {"user_name": "person", "user_id": "u1", "channel_id": "c1", "text": "@helper"}
+    )
+    incoming = adapter.parse_incoming(payload, "bot-1")
+    assert incoming is not None and incoming.text == ""
+    routed = AsyncMock()
+    with patch.object(ChannelMessageRouter, "_route_inner", routed):
+        await ChannelMessageRouter().route(incoming, adapter)
+    routed.assert_not_awaited()
+    router_module.claim_delivery.assert_not_awaited()

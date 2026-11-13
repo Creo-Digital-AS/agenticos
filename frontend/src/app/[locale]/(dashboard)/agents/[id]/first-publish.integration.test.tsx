@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
@@ -5,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import AgentBuilderPage from "./page";
 import type { AgentSpec } from "@/types/agents";
+import type { SpecRefusal } from "@/hooks/use-agents";
 import type { ProfilesStatus } from "@/hooks/use-model-providers";
 import { Perm } from "@/types/permissions";
 import type { Permission } from "@/types/permissions";
@@ -42,6 +44,7 @@ const MODEL_PROFILE = {
 };
 
 const refetchProfiles = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const saveDraft = vi.hoisted(() => vi.fn(async (spec: AgentSpec) => ({ draft_spec: spec })));
 
 const state = {
   permissions: [] as Permission[],
@@ -53,6 +56,9 @@ const state = {
   permissionsLoaded: true,
   versions: [] as { version: number }[],
   nextPublished: 1,
+  capabilities: [] as AgentSpec["capabilities"],
+  /** What each check of the draft answers, in turn; then that it may be published. */
+  refusals: [] as SpecRefusal[],
 };
 
 vi.mock("@/hooks", async () => {
@@ -67,12 +73,14 @@ vi.mock("@/hooks", async () => {
         name: "Support",
         status: "draft",
         has_avatar: false,
+        can_edit: true,
+        can_publish: true,
         draft_spec: {
           name: "Support",
           instructions: "Be helpful.",
           model_profile_id: null,
           model_settings: {},
-          capabilities: [],
+          capabilities: state.capabilities,
           collection_ids: [],
           skill_ids: [],
           context_ids: [],
@@ -81,8 +89,8 @@ vi.mock("@/hooks", async () => {
         } satisfies AgentSpec,
       },
       isLoading: false,
-      saveDraft: { mutateAsync: vi.fn(), isPending: false },
-      validate: async () => ({ problems: [], fields: [] }),
+      saveDraft: { mutateAsync: saveDraft, isPending: false },
+      validate: async () => state.refusals.shift() ?? { problems: [], fields: [], fixes: [] },
       publish: {
         mutateAsync: vi.fn().mockResolvedValue({ version: state.nextPublished }),
         isPending: false,
@@ -91,6 +99,7 @@ vi.mock("@/hooks", async () => {
       setAvatar: { mutateAsync: vi.fn(), isPending: false },
       setColor: { mutate: vi.fn(), isPending: false },
       setMetadata: { mutate: vi.fn(), isPending: false },
+      setA2a: { mutate: vi.fn(), isPending: false },
     }),
     useAgentEnvironments: () => ({ environments: [], promote: { mutateAsync: vi.fn() } }),
     useAgents: () => ({
@@ -103,6 +112,7 @@ vi.mock("@/hooks", async () => {
     useAgentVersion: () => ({ version: undefined, isLoading: false }),
     useAgentVersions: () => ({ versions: state.versions }),
     useAllAgentVersions: () => ({ versions: [] }),
+    useDraftBase: () => ({ base: undefined }),
     useCapabilityCatalog: () => ({ capabilities: [] }),
     usePromptVariables: () => ({ variables: [] }),
     useDelegationTree: () => ({ tree: null, isLoading: false, error: null }),
@@ -125,7 +135,7 @@ vi.mock("@/hooks", async () => {
       can: (permission: Permission) => state.permissions.includes(permission),
       isLoaded: state.permissionsLoaded,
     }),
-    useProviderModels: () => ({ models: [], source: null, isLoading: false }),
+    useProviderModels: () => ({ models: [], refused: [], source: null, isLoading: false }),
     useRuns: () => ({ runs: [] }),
     useSecretPurposes: () => ({ purposes: [] }),
     useSecrets: () => ({ secrets: [] }),
@@ -133,6 +143,16 @@ vi.mock("@/hooks", async () => {
   };
 });
 
+// The page's eval parts read their own queries; this test is not about them.
+vi.mock("@/hooks/use-eval-runs", () => ({
+  useDraftEvalRuns: () => ({ runs: [] }),
+  useEvalArmSpec: () => ({ spec: undefined }),
+  useRunsADataset: () => false,
+}));
+vi.mock("@/components/evals/draft-eval-note", () => ({ DraftEvalNote: () => null }));
+vi.mock("@/components/evals/evals-panel", () => ({ EvalsPanel: () => null }));
+vi.mock("@/components/authoring/assistant-strip", () => ({ AssistantStrip: () => null }));
+vi.mock("@/components/evals/start-eval-dialog", () => ({ StartEvalDialog: () => null }));
 vi.mock("@/hooks/use-context", () => ({
   useContextFiles: () => ({ files: [], total: 0 }),
 }));
@@ -150,6 +170,7 @@ vi.mock("@/stores", () => ({
 // harder to read.
 vi.mock("@/components/agents/agent-avatar", () => ({ AgentAvatar: () => null }));
 vi.mock("@/components/agents/model-settings-form", () => ({ ModelSettingsForm: () => null }));
+vi.mock("@/components/agents/voice-card", () => ({ VoiceCard: () => null }));
 vi.mock("@/components/agents/thinking-setting", () => ({ ThinkingSetting: () => null }));
 vi.mock("@/components/ui/markdown-editor", () => ({
   MarkdownEditor: () => null,
@@ -169,9 +190,11 @@ vi.mock("@/components/triggers/triggers-panel", () => ({ TriggersPanel: () => nu
 async function mount() {
   await act(async () => {
     render(
-      <Suspense fallback={null}>
-        <AgentBuilderPage params={Promise.resolve({ id: "a-1" })} />
-      </Suspense>,
+      <QueryClientProvider client={new QueryClient()}>
+        <Suspense fallback={null}>
+          <AgentBuilderPage params={Promise.resolve({ id: "a-1" })} />
+        </Suspense>
+      </QueryClientProvider>,
     );
   });
 }
@@ -182,6 +205,9 @@ beforeEach(() => {
   state.profiles = [MODEL_PROFILE];
   state.profilesStatus = "loaded";
   state.permissionsLoaded = true;
+  state.capabilities = [];
+  state.refusals = [];
+  saveDraft.mockClear();
 });
 
 describe("the first publish", () => {
@@ -191,18 +217,14 @@ describe("the first publish", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
   }
 
-  it("points at where else people can reach the agent, and opens it", async () => {
+  it("leads to setting a baseline after the first publish", async () => {
     await mount();
     await publish();
 
-    expect(await screen.findByText(/choose where else people reach it/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Open Availability" }));
+    expect(await screen.findByText(/Set a baseline: test this version/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Set a baseline" }));
 
-    expect(screen.getByRole("tab", { name: "Availability" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.queryByText(/choose where else people reach it/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Set a baseline: test this version/)).not.toBeInTheDocument();
   });
 
   it("says nothing of the kind on a later version", async () => {
@@ -210,6 +232,40 @@ describe("the first publish", () => {
     await mount();
     await publish();
 
-    expect(screen.queryByText(/choose where else people reach it/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Set a baseline: test this version/)).not.toBeInTheDocument();
+  });
+});
+
+describe("a refusal that offers a fix", () => {
+  const NO_SANDBOX = "This organization has registered no sandbox connection.";
+
+  it("rewrites the draft, saves it and checks it again, and leaves publishing to its own click", async () => {
+    state.capabilities = [
+      {
+        id: "sandbox",
+        config: { backend: "service", runtime: "python" },
+        approval: "default",
+        tool_approval: {},
+        tool_overrides: {},
+        secret_id: null,
+        enabled: true,
+      },
+    ];
+    state.refusals = [{ problems: [NO_SANDBOX], fields: [], fixes: ["use_state_workspace"] }];
+    await mount();
+
+    await userEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Switch the workspace to Files" }),
+    );
+
+    const saved = saveDraft.mock.lastCall?.[0] as AgentSpec;
+    expect(saved.capabilities[0]?.config).toMatchObject({
+      backend: "state",
+      runtime: null,
+      connection_id: null,
+    });
+    expect(screen.queryByText(NO_SANDBOX)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

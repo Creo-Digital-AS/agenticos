@@ -2,14 +2,15 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TriggerTemplatePicker } from "./trigger-template-picker";
+import { TriggerTemplatePicker, TriggerTemplateSelector } from "./trigger-template-picker";
 import type { TriggerTemplate } from "@/types/trigger-templates";
 
 let templates: TriggerTemplate[] = [];
 let isLoading = false;
+let templateError: Error | null = null;
 
 vi.mock("@/hooks", () => ({
-  useTriggerTemplates: () => ({ templates, isLoading, error: null }),
+  useTriggerTemplates: () => ({ templates, isLoading, error: templateError }),
 }));
 
 const DAILY: TriggerTemplate = {
@@ -40,6 +41,7 @@ const EMAIL_REPLY: TriggerTemplate = {
 };
 
 beforeEach(() => {
+  templateError = null;
   templates = [];
   isLoading = false;
 });
@@ -138,4 +140,113 @@ describe("TriggerTemplatePicker", () => {
       "false",
     );
   });
+  describe("a long catalog", () => {
+    const many = Array.from({ length: 5 }, (_, i) => ({
+      ...DAILY,
+      key: `schedule-${i}`,
+      label: `Template ${i}`,
+    }));
+
+    it("shows writing your own and three templates, the rest behind Show more", async () => {
+      const user = userEvent.setup();
+      templates = many;
+      render(
+        <TriggerTemplatePicker
+          triggerType="schedule"
+          selectedKey={null}
+          onPick={vi.fn()}
+          onScratch={vi.fn()}
+        />,
+      );
+
+      const cards = screen.getAllByRole("button", { pressed: false });
+      expect(cards.map((card) => card.textContent)).toEqual([
+        expect.stringContaining("Template 0"),
+        expect.stringContaining("Template 1"),
+        expect.stringContaining("Template 2"),
+      ]);
+      expect(screen.getAllByRole("button", { pressed: true })[0]).toHaveTextContent(
+        "Start from scratch",
+      );
+
+      await user.click(screen.getByRole("button", { name: "Show 2 more" }));
+      expect(screen.getByRole("button", { name: /Template 4/ })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Show fewer" }));
+      expect(screen.queryByRole("button", { name: /Template 4/ })).toBeNull();
+    });
+
+    it("keeps a picked template from the fold in sight, with nothing to fold", () => {
+      templates = many;
+      render(
+        <TriggerTemplatePicker
+          triggerType="schedule"
+          selectedKey="schedule-4"
+          onPick={vi.fn()}
+          onScratch={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: /Template 4/ })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(screen.queryByRole("button", { name: /Show/ })).toBeNull();
+    });
+  });
+});
+
+describe("stable template selector", () => {
+  it("keeps the same closed control when a delayed catalog arrives", async () => {
+    const user = userEvent.setup();
+    isLoading = true;
+    const props = {
+      triggerType: "schedule" as const,
+      selectedKey: null,
+      onPick: vi.fn(),
+      onScratch: vi.fn(),
+    };
+    const { rerender } = render(<TriggerTemplateSelector {...props} />);
+    const trigger = screen.getByRole("button", { name: "Start from a template" });
+    expect(screen.queryByText("Daily standup")).toBeNull();
+    templates = [DAILY];
+    isLoading = false;
+    rerender(<TriggerTemplateSelector {...props} />);
+    expect(screen.getByRole("button", { name: "Start from a template" })).toBe(trigger);
+    expect(screen.queryByText("Daily standup")).toBeNull();
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Daily standup/ }));
+    expect(props.onPick).toHaveBeenCalledWith(DAILY);
+    expect(screen.queryByText("Summarise overnight activity")).toBeNull();
+  });
+
+  it("keeps writing available when no template fits", async () => {
+    render(
+      <TriggerTemplateSelector
+        triggerType="schedule"
+        selectedKey={null}
+        onPick={vi.fn()}
+        onScratch={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Start from a template" }));
+    expect(
+      screen.getByText("No templates available. You can write your own message."),
+    ).toBeInTheDocument();
+  });
+});
+
+it("reports a template request failure while leaving the message flow available", async () => {
+  templateError = new Error("Network unavailable");
+  render(
+    <TriggerTemplateSelector
+      triggerType="schedule"
+      selectedKey={null}
+      onPick={vi.fn()}
+      onScratch={vi.fn()}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Start from a template" }));
+  expect(
+    screen.getByText("Could not load templates. You can still write your own message."),
+  ).toBeInTheDocument();
 });

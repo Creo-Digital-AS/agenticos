@@ -1,7 +1,5 @@
 """Data access for sandbox connections."""
 
-from __future__ import annotations
-
 from typing import Any
 from uuid import UUID
 
@@ -12,19 +10,20 @@ from app.db.models.sandbox_connection import SandboxConnection
 
 
 async def get(
-    db: AsyncSession, connection_id: UUID, *, organization_id: UUID
+    db: AsyncSession, connection_id: UUID, *, organization_id: UUID, for_update: bool = False
 ) -> SandboxConnection | None:
     """One connection, inside its organization.
 
     The scope is not decoration: without it a connection id from another tenant
     resolves, and what it resolves to is a host somebody else's agents run on.
     """
-    result = await db.execute(
-        select(SandboxConnection).where(
-            SandboxConnection.id == connection_id,
-            SandboxConnection.organization_id == organization_id,
-        )
+    stmt = select(SandboxConnection).where(
+        SandboxConnection.id == connection_id,
+        SandboxConnection.organization_id == organization_id,
     )
+    if for_update:
+        stmt = stmt.execution_options(populate_existing=True).with_for_update()
+    result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -71,6 +70,7 @@ async def create(
     base_url: str | None = None,
     secret_id: UUID | None = None,
     default_runtime: str | None = None,
+    secure_access: bool = False,
     is_default: bool = False,
 ) -> SandboxConnection:
     connection = SandboxConnection(
@@ -80,6 +80,7 @@ async def create(
         base_url=base_url,
         secret_id=secret_id,
         default_runtime=default_runtime,
+        secure_access=secure_access,
         is_default=is_default,
     )
     db.add(connection)
@@ -123,3 +124,17 @@ async def clear_default(
 async def delete(db: AsyncSession, *, connection: SandboxConnection) -> None:
     await db.delete(connection)
     await db.flush()
+
+
+async def names_for_ids(
+    db: AsyncSession, *, organization_id: UUID, ids: list[UUID]
+) -> dict[UUID, str]:
+    """Friendly sandbox names for a project reader, without addresses or vault ids."""
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(SandboxConnection.id, SandboxConnection.name).where(
+            SandboxConnection.organization_id == organization_id, SandboxConnection.id.in_(ids)
+        )
+    )
+    return {row.id: row.name for row in rows.all()}

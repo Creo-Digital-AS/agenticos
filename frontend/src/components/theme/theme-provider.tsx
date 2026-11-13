@@ -1,6 +1,18 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useSyncExternalStore } from "react";
+
+import { usePathname } from "next/navigation";
+import {
+  DESKTOP_SETUP_ATTRIBUTE,
+  isDesktopSetupPath,
+  LOOK_ATTRIBUTE,
+  THEME_STORAGE_KEY,
+  type Look,
+} from "@/lib/appearance";
+import { setAppearance } from "@/lib/desktop/commands";
+import { isDesktopShell, readShellInfo, reportShellFailure } from "@/lib/desktop/shell";
+import { prefersReducedMotion } from "@/lib/motion";
 import { useThemeStore, getResolvedTheme } from "@/stores/theme-store";
 
 interface ThemeProviderProps {
@@ -20,33 +32,96 @@ function applyTheme(resolved: "light" | "dark") {
  * the clip-path animation lives on `::view-transition-new(root)` in
  * `globals.css`.
  *
- * Three cases go without the sweep, each for its own reason: the first paint
+ * Four cases go without the sweep, each for its own reason: the first paint
  * (there is no previous theme on the root to sweep away from - animating it
  * would wipe the page against itself on every load), a browser without the
- * View Transitions API, and a reader who asked for reduced motion.
+ * View Transitions API, a reader who asked for reduced motion - at the operating
+ * system or in their Motion preference - and a tab that is not on screen - the
+ * system turning dark at dusk, or another tab changing the theme, while this one
+ * is in the background. There the browser skips the transition and rejects its
+ * `ready`, which surfaced as an unhandled error.
  */
 function applyThemeAnimated(resolved: "light" | "dark") {
   const root = document.documentElement;
   if (root.classList.contains(resolved)) return;
 
   const firstPaint = !root.classList.contains("light") && !root.classList.contains("dark");
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (firstPaint || reducedMotion || document.startViewTransition === undefined) {
+  const hidden = document.visibilityState !== "visible";
+  if (
+    firstPaint ||
+    prefersReducedMotion() ||
+    hidden ||
+    document.startViewTransition === undefined
+  ) {
     applyTheme(resolved);
     return;
   }
-  document.startViewTransition(() => applyTheme(resolved));
+  const transition = document.startViewTransition(() => applyTheme(resolved));
+  // A tab hidden mid-transition is skipped too. The theme is applied either way -
+  // a skipped transition still runs its update - so only the sweep is lost.
+  transition.ready.catch(() => undefined);
 }
 
+/** The standard look is the absence of the attribute, as the bootstrap script leaves it. */
+function applyLook(look: Look) {
+  const root = document.documentElement;
+  if (look === "standard") root.removeAttribute(LOOK_ATTRIBUTE);
+  else root.setAttribute(LOOK_ATTRIBUTE, look);
+}
+
+const noSubscription = () => () => {};
+
 export function ThemeProvider({ children }: ThemeProviderProps) {
-  const { theme } = useThemeStore();
+  // Zustand exposes its server snapshot during hydration. Keep the bootstrap
+  // appearance until the client snapshot includes the saved/platform defaults.
+  const hydrated = useSyncExternalStore(
+    noSubscription,
+    () => true,
+    () => false,
+  );
+  const { theme, look } = useThemeStore();
+  const setupPage = isDesktopSetupPath(usePathname());
+  useLayoutEffect(() => {
+    const shell = readShellInfo();
+    document.documentElement.toggleAttribute(
+      DESKTOP_SETUP_ATTRIBUTE,
+      isDesktopShell(shell) && shell.window === "main" && setupPage,
+    );
+  }, [setupPage]);
 
   useEffect(() => {
-    applyThemeAnimated(getResolvedTheme(theme));
-  }, [theme]);
+    if (hydrated) applyLook(look);
+  }, [look, hydrated]);
+
+  // The desktop app's console window draws its material and its title bar in
+  // the chosen mode, and builds itself that way on the next launch - so the
+  // console window tells it. Blobby and quick ask follow; they do not lead.
+  useEffect(() => {
+    if (!hydrated) return;
+    const shell = readShellInfo();
+    if (!isDesktopShell(shell) || shell.window !== "main") return;
+    setAppearance({ look, mode: theme }).catch((error: unknown) =>
+      reportShellFailure("could not dress the window in the chosen appearance", error),
+    );
+  }, [look, theme, setupPage, hydrated]);
+
+  // Every window of the desktop app is a page of this origin with one
+  // `localStorage`, and a choice made in the console has to reach blobby and
+  // quick ask without a reload. The same holds for two browser tabs.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === THEME_STORAGE_KEY) void useThemeStore.persist.rehydrate();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   useEffect(() => {
-    if (theme !== "system") return;
+    if (hydrated) applyThemeAnimated(getResolvedTheme(theme));
+  }, [theme, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || theme !== "system") return;
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const handleChange = () => {
@@ -55,7 +130,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
 
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
-  }, [theme]);
+  }, [theme, hydrated]);
 
   return <>{children}</>;
 }

@@ -6,8 +6,6 @@ four facts - who, where, which message, which value - and that Mattermost, which
 signs nothing, is not trusted with a press this deployment did not sign.
 """
 
-from __future__ import annotations
-
 import base64
 import contextlib
 import json
@@ -25,6 +23,7 @@ from fastapi import HTTPException
 from app.api.routes.v1.mattermost_webhook import mattermost_action
 from app.api.routes.v1.telegram_webhook import telegram_webhook
 from app.services.channels.base import ChannelChoice, IncomingPress, PromptMessage
+from app.services.channels.feedback import FeedbackOutcome
 from app.services.channels.mattermost import MattermostAdapter, trigger_presser
 from app.services.channels.telegram import TelegramAdapter
 from app.services.channels.telegram_press import parse_press
@@ -313,7 +312,12 @@ class TestMattermost:
         body = json.loads(seen[0].content)
         assert str(seen[0].url) == "https://mm.acme/api/v4/posts"
         assert (body["channel_id"], body["root_id"]) == ("ch", "root")
-        actions = body["props"]["attachments"][0]["actions"]
+        assert body["message"] == ""
+        card = body["props"]["attachments"][0]
+        assert card["text"] == _prompt().text
+        assert card["fallback"] == _prompt().text
+        assert card["title"] == "Your response is needed"
+        actions = card["actions"]
         assert [(action["name"], action["style"]) for action in actions] == [
             ("Approve", "primary"),
             ("Reject", "danger"),
@@ -368,10 +372,20 @@ class TestMattermost:
         assert len(seen) == 2
         assert str(seen[0].url) == "https://mm.acme/api/v4/posts/post-1/patch"
         assert json.loads(seen[0].content) == {
-            "message": "Approve it?\n**Approved.**",
-            "props": {"attachments": []},
+            "message": "",
+            "props": {
+                "attachments": [
+                    {
+                        "title": "Approved.",
+                        "text": "Approve it?",
+                        "fallback": "Approve it?\n**Approved.**",
+                        "color": "#6b7280",
+                    }
+                ]
+            },
         }
-        assert json.loads(seen[1].content)["message"] == "**Approved.**"
+        assert json.loads(seen[1].content)["props"]["attachments"][0]["text"] == ""
+        assert "actions" not in json.loads(seen[0].content)["props"]["attachments"][0]
 
     def test_a_signed_press_is_read_and_an_unsigned_one_is_not(self):
         signed = {
@@ -409,7 +423,7 @@ class TestMattermost:
         )
 
         with pytest.raises(HTTPException) as refused:
-            await mattermost_action(uuid.uuid4(), request, service)
+            await mattermost_action(uuid.uuid4(), request, service, MagicMock())
 
         assert refused.value.status_code == 403
 
@@ -429,7 +443,7 @@ class TestMattermost:
             patch("app.api.routes.v1.mattermost_webhook.spawn") as spawn,
             patch.object(MattermostAdapter, "pressed_by", AsyncMock(return_value=True)),
         ):
-            answered = await mattermost_action(bot_id, request, service)
+            answered = await mattermost_action(bot_id, request, service, MagicMock())
 
         assert answered == {}
         assert spawn.call_args.kwargs["name"].startswith("mattermost_press:")
@@ -454,7 +468,7 @@ class TestMattermost:
             patch.object(MattermostAdapter, "pressed_by", AsyncMock(return_value=False)),
             pytest.raises(HTTPException) as refused,
         ):
-            await mattermost_action(bot_id, request, service)
+            await mattermost_action(bot_id, request, service, MagicMock())
 
         assert refused.value.status_code == 403
         spawn.assert_not_called()
@@ -462,7 +476,42 @@ class TestMattermost:
     async def test_the_action_url_for_an_unknown_bot_answers_empty(self):
         service = MagicMock(find_active=AsyncMock(return_value=None))
 
-        assert await mattermost_action(uuid.uuid4(), MagicMock(), service) == {}
+        assert await mattermost_action(uuid.uuid4(), MagicMock(), service, MagicMock()) == {}
+
+    @pytest.mark.parametrize(
+        "outcome, expected",
+        [
+            (FeedbackOutcome.SAVED, "Your rating was saved."),
+            (FeedbackOutcome.UNAVAILABLE, "no longer available"),
+        ],
+    )
+    async def test_feedback_returns_a_private_outcome_instead_of_an_empty_acknowledgement(
+        self, outcome: FeedbackOutcome, expected: str
+    ) -> None:
+        bot_id = uuid.uuid4()
+        value = f"aosfb:{uuid.uuid4()}:+"
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={
+                "user_id": "u",
+                "post_id": "p",
+                "channel_id": "c",
+                "context": {"value": value, "signature": sign_press(str(bot_id), value)},
+            }
+        )
+        service = MagicMock(
+            find_active=AsyncMock(return_value=MagicMock(api_base_url="https://mm"))
+        )
+        feedback = MagicMock(rate_result=AsyncMock(return_value=outcome))
+        with (
+            patch("app.api.routes.v1.mattermost_webhook.spawn") as spawn,
+            patch.object(MattermostAdapter, "pressed_by", AsyncMock(return_value=True)),
+        ):
+            response = await mattermost_action(bot_id, request, service, feedback)
+        assert expected in response["ephemeral_text"]
+        assert "update" not in response
+        feedback.rate_result.assert_awaited_once()
+        spawn.assert_not_called()
 
 
 class TestTheBackgroundHandlers:

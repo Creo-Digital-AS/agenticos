@@ -50,7 +50,17 @@ describe("the sandbox connections client", () => {
     expect(apiClient.patch).toHaveBeenCalledWith("/sandbox-connections/c-1", { is_default: true });
 
     await api.deleteSandboxConnection("c-1");
-    expect(apiClient.delete).toHaveBeenCalledWith("/sandbox-connections/c-1");
+    expect(apiClient.delete).toHaveBeenCalledWith("/sandbox-connections/c-1", {
+      params: undefined,
+    });
+  });
+
+  it("says when the sandboxes left on the provider were deleted by hand", async () => {
+    // #2250: the only way to release a connection whose tombstones cannot be retried.
+    await api.deleteSandboxConnection("c-1", { forgetPendingDestroys: true });
+    expect(apiClient.delete).toHaveBeenCalledWith("/sandbox-connections/c-1", {
+      params: { forget_pending_destroys: "true" },
+    });
   });
 
   it("asks for the sessions without sampling usage unless told to", async () => {
@@ -161,5 +171,20 @@ describe("the durable record of what agents did", () => {
     await api.readSandboxOperations();
 
     expect(apiClient.get).toHaveBeenCalledWith("/sandbox-connections/operations?skip=0&limit=50");
+  });
+});
+
+it("checks an OpenSandbox image through the backend without browser credentials", async () => {
+  await api.probeSandboxService("https://sandbox.example", "vault-id", {
+    kind: "opensandbox",
+    image: "python:3.12-slim",
+    secureAccess: true,
+  });
+  expect(apiClient.post).toHaveBeenCalledWith("/sandbox-connections/probe", {
+    base_url: "https://sandbox.example",
+    secret_id: "vault-id",
+    kind: "opensandbox",
+    default_runtime: "python:3.12-slim",
+    secure_access: true,
   });
 });

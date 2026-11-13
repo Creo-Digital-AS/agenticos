@@ -39,8 +39,6 @@ TTL as well, so a write that never reached Redis heals on its own instead of
 leaving the deployment open during a window somebody scheduled.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 
@@ -48,6 +46,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clients.redis import RedisClient
+from app.core.update_gate import draining
 from app.db.session import get_db_context
 from app.repositories import deployment_settings_repo
 
@@ -117,6 +116,8 @@ async def _verdict() -> tuple[bool, str | None]:
     reads the row every time, which is correct and slower rather than a second
     behaviour.
     """
+    if draining():
+        return True, "This deployment is being updated."
     if _redis is not None:
         try:
             cached = await _redis.get(CACHE_KEY)

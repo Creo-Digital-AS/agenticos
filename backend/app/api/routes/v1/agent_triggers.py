@@ -12,6 +12,11 @@ collection route with no single resource whose grants could widen the answer, so
 carries `require(agents:view)` as its coarse first door, exactly as `GET /agents`
 and the org-wide `GET /runs` do. The per-agent visibility filtering still happens in
 the service. `tests/api/test_platform_routes.py` enforces both halves.
+
+Listing, creating, firing, changing and removing a trigger are public API, each
+marked on its route, so a key - and the platform's own MCP server an agent asks
+"do this every Monday" through - reaches them (#2301). Portals, presets and
+signing secrets stay the console's.
 """
 
 from typing import Any
@@ -20,8 +25,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import AgentTriggerSvc, Auth, require
+from app.api.public_api import PUBLIC
 from app.core.permissions import Perm
 from app.schemas.agent_trigger import (
+    TriggerAttemptList,
     TriggerCreate,
     TriggerCreateRead,
     TriggerList,
@@ -33,6 +40,8 @@ from app.schemas.portal import (
     PortalTargetList,
     PortalTargetRead,
 )
+from app.schemas.routine_actions import RoutineActionOptions, RoutineActions
+from app.schemas.routine_sources import RoutineSourceConsent, RoutineSourceReview
 from app.schemas.trigger_template import TriggerTemplateList, TriggerTemplateRead
 from app.services import trigger_templates
 
@@ -108,7 +117,9 @@ async def list_portal_targets(
 
 
 @org_router.get(
-    "/triggers", response_model=TriggerList, dependencies=[Depends(require(Perm.AGENTS_VIEW))]
+    "/triggers",
+    response_model=TriggerList,
+    dependencies=[PUBLIC, Depends(require(Perm.AGENTS_VIEW))],
 )
 async def list_org_triggers(
     ctx: Auth,
@@ -121,7 +132,7 @@ async def list_org_triggers(
     return TriggerList(items=items, total=total)
 
 
-@router.get("/{agent_id}/triggers", response_model=TriggerList)
+@router.get("/{agent_id}/triggers", response_model=TriggerList, dependencies=[PUBLIC])
 async def list_triggers(agent_id: UUID, ctx: Auth, service: AgentTriggerSvc) -> Any:
     """Every schedule on this agent."""
     items = await service.list_for_agent(ctx, agent_id)
@@ -132,6 +143,7 @@ async def list_triggers(agent_id: UUID, ctx: Auth, service: AgentTriggerSvc) -> 
     "/{agent_id}/triggers",
     response_model=TriggerCreateRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[PUBLIC],
 )
 async def create_trigger(
     agent_id: UUID, data: TriggerCreate, ctx: Auth, service: AgentTriggerSvc
@@ -149,6 +161,7 @@ async def create_trigger(
     "/{agent_id}/triggers/{trigger_id}/run",
     response_model=TriggerRead,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[PUBLIC],
 )
 async def run_trigger_now(
     agent_id: UUID, trigger_id: UUID, ctx: Auth, service: AgentTriggerSvc
@@ -186,7 +199,9 @@ async def rotate_trigger_secret(
     return await service.rotate_secret(ctx, agent_id, trigger_id)
 
 
-@router.patch("/{agent_id}/triggers/{trigger_id}", response_model=TriggerRead)
+@router.patch(
+    "/{agent_id}/triggers/{trigger_id}", response_model=TriggerRead, dependencies=[PUBLIC]
+)
 async def update_trigger(
     agent_id: UUID,
     trigger_id: UUID,
@@ -198,10 +213,79 @@ async def update_trigger(
     return await service.update(ctx, agent_id, trigger_id, data)
 
 
-@router.delete("/{agent_id}/triggers/{trigger_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{agent_id}/triggers/{trigger_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[PUBLIC],
+)
 async def delete_trigger(
     agent_id: UUID, trigger_id: UUID, ctx: Auth, service: AgentTriggerSvc
 ) -> Response:
     """Remove a schedule entirely - the agent stops running itself."""
     await service.delete(ctx, agent_id, trigger_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/{agent_id}/triggers/{trigger_id}/action-consents", response_model=RoutineActionOptions
+)
+async def routine_action_options(
+    agent_id: UUID, trigger_id: UUID, ctx: Auth, service: AgentTriggerSvc
+) -> Any:
+    """Review the published routine's actions and version-bound standing consent."""
+    return await service.action_options(ctx, agent_id, trigger_id)
+
+
+@router.put(
+    "/{agent_id}/triggers/{trigger_id}/action-consents", response_model=RoutineActionOptions
+)
+async def replace_routine_action_consents(
+    agent_id: UUID, trigger_id: UUID, data: RoutineActions, ctx: Auth, service: AgentTriggerSvc
+) -> Any:
+    """Replace the owner's explicit action exceptions, or revoke them with an empty list.
+
+    Console session only: an API key or an agent cannot grant standing consent.
+    Agent- and connection-required approvals remain required.
+    """
+    return await service.set_action_consents(ctx, agent_id, trigger_id, data)
+
+
+@router.get("/{agent_id}/triggers/{trigger_id}/sources", response_model=RoutineSourceReview)
+async def routine_source_options(
+    agent_id: UUID, trigger_id: UUID, ctx: Auth, service: AgentTriggerSvc
+) -> Any:
+    """Review the exact published sources and physical accounts of a routine."""
+    return await service.source_options(ctx, agent_id, trigger_id)
+
+
+@router.put("/{agent_id}/triggers/{trigger_id}/sources", response_model=RoutineSourceReview)
+async def replace_routine_sources(
+    agent_id: UUID,
+    trigger_id: UUID,
+    data: RoutineSourceConsent,
+    ctx: Auth,
+    service: AgentTriggerSvc,
+) -> Any:
+    """Accept a freshly reviewed source ceiling. Only the console owner may consent."""
+    return await service.set_source_consents(ctx, agent_id, trigger_id, data)
+
+
+@router.get(
+    "/{agent_id}/triggers/{trigger_id}/attempts",
+    response_model=TriggerAttemptList,
+    dependencies=[PUBLIC],
+)
+async def trigger_attempts(
+    agent_id: UUID,
+    trigger_id: UUID,
+    ctx: Auth,
+    service: AgentTriggerSvc,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+) -> Any:
+    """Blocked or failed activations before an agent run existed, newest first.
+
+    These records carry bounded reason codes, never prompts, provider errors or
+    credentials. Reading delegates to the agent's resource access checks.
+    """
+    return await service.attempts(ctx, agent_id, trigger_id, skip=skip, limit=limit)

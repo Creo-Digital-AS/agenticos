@@ -19,8 +19,6 @@ below are a stored document, which is what a `state` agent works in; the
 failures a container shows are wrappers around one.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from uuid import uuid4
 
@@ -29,6 +27,7 @@ from pydantic_ai.workspaces import FileEntry, Workspace, WrapperWorkspace
 from pydantic_ai_backends import StateBackend
 
 from app.agents.capabilities.sandbox._capped import CappedStateBackend
+from app.agents.capabilities.skills import SkillBody, SkillBodyFile
 from app.services.skill_workspace import (
     SKILLS_ROOT,
     collect_changes,
@@ -43,6 +42,7 @@ pytestmark = pytest.mark.anyio
 class _Resource:
     def __init__(self, name: str, content: str) -> None:
         self.name = name
+        self.description: str | None = None
         self.content = content
 
 
@@ -53,8 +53,11 @@ class _Skill:
         description: str = "How refunds work.",
         content: str = "Ask for the order id.",
         resources: list[_Resource] | None = None,
+        version: int = 1,
     ) -> None:
         self.id = uuid4()
+        self.version = version
+        self.latest_version_id = uuid4()
         self.name = name
         self.description = description
         self.content = content
@@ -113,6 +116,36 @@ class TestWritingSkillsIntoTheWorkspace:
         assert body.startswith("---\nname: refunds\n")
         assert "description: How refunds work." in body
 
+    async def test_a_candidate_body_is_the_file_the_shell_reads(self):
+        """An eval checking a proposed skill change serves the proposal through
+        `load_capability`; the file on disk has to say the same thing."""
+        skill = _Skill()
+        document, workspace = _document()
+
+        await materialise(
+            workspace, [skill], {skill.id: SkillBody(description="Proposed.", content="New body.")}
+        )
+
+        body = document.read_bytes(f"{SKILLS_ROOT}/refunds/SKILL.md").decode()
+        assert "description: Proposed." in body
+        assert "New body." in body
+        assert "Ask for the order id." not in body
+
+    async def test_a_candidate_with_its_own_files_replaces_the_stored_ones(self):
+        """A change that edits a skill's files is checked with those files on disk."""
+        skill = _Skill(resources=[_Resource("template.md", "old template")])
+        document, workspace = _document()
+        candidate = SkillBody(
+            description="Proposed.",
+            content="New body.",
+            resources=(SkillBodyFile(name="limits.md", description=None, content="Up to $500."),),
+        )
+
+        state = await materialise(workspace, [skill], {skill.id: candidate})
+
+        assert document.read_bytes(f"{SKILLS_ROOT}/refunds/limits.md").decode() == "Up to $500."
+        assert not any(path.endswith("/template.md") for path in state.written)
+
     async def test_a_workspace_that_refuses_a_write_still_runs_the_agent(self):
         """The skills are in the prompt either way, which is how they worked
         before this existed. Failing the run over a file would be a regression
@@ -136,7 +169,7 @@ class TestCollectingWhatTheAgentChanged:
         assert await collect_changes(workspace, state) == []
 
     async def test_an_edited_body_comes_back_as_the_new_body(self):
-        skill = _Skill()
+        skill = _Skill(version=4)
         document, workspace = _document()
         state = await materialise(workspace, [skill])
 
@@ -149,6 +182,8 @@ class TestCollectingWhatTheAgentChanged:
 
         assert change.skill_id == skill.id
         assert change.is_new is False
+        assert change.base_version == 4
+        assert change.base_version_id == skill.latest_version_id
         assert change.description == "How refunds work now."
         assert change.content == "Ask for the receipt."
 
@@ -337,3 +372,34 @@ def test_which_skill_a_path_belongs_to(path: str, expected: str | None):
     from app.services.skill_workspace import _skill_of
 
     assert _skill_of(path) == expected
+
+
+@pytest.mark.parametrize("name,description", [("x" * 65, "short"), ("normal", "x" * 501)])
+async def test_overlong_proposal_metadata_is_refused_without_altering_workspace(
+    name, description, caplog
+):
+    from app.services.skill_workspace import MaterialisedSkills
+
+    _, workspace = _document()
+    path = f"{SKILLS_ROOT}/{name}/SKILL.md"
+    body = f"---\nname: {name}\ndescription: {description}\n---\nKeep the original instructions."
+    await workspace.write_text(path, body)
+    await workspace.write_text(
+        f"{SKILLS_ROOT}/valid/SKILL.md", "---\ndescription: Valid\n---\nValid instructions"
+    )
+    changes = await collect_changes(workspace, MaterialisedSkills())
+    assert [change.name for change in changes] == ["valid"]
+    assert await workspace.read_text(path) == body
+    assert "skill_change_metadata_out_of_bounds" in caplog.text
+
+
+async def test_proposal_metadata_accepts_exact_column_limits():
+    from app.services.skill_workspace import MaterialisedSkills
+
+    _, workspace = _document()
+    name, description = "x" * 64, "x" * 500
+    await workspace.write_text(
+        f"{SKILLS_ROOT}/{name}/SKILL.md", f"---\ndescription: {description}\n---\nBody"
+    )
+    changes = await collect_changes(workspace, MaterialisedSkills())
+    assert changes[0].name == name and changes[0].description == description

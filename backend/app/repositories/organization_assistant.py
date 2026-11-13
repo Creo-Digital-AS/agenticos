@@ -26,10 +26,18 @@ async def lock_for_install(db: AsyncSession, organization_id: UUID) -> None:
 
 
 async def create(
-    db: AsyncSession, *, organization_id: UUID, agent_id: UUID, mark_path: str | None
+    db: AsyncSession,
+    *,
+    organization_id: UUID,
+    agent_id: UUID,
+    mark_path: str | None,
+    instructions_fingerprint: str | None = None,
 ) -> OrganizationAssistant:
     row = OrganizationAssistant(
-        organization_id=organization_id, agent_id=agent_id, mark_path=mark_path
+        organization_id=organization_id,
+        agent_id=agent_id,
+        mark_path=mark_path,
+        instructions_fingerprint=instructions_fingerprint,
     )
     db.add(row)
     await db.flush()
@@ -53,3 +61,15 @@ async def for_agent(db: AsyncSession, agent_id: UUID) -> OrganizationAssistant |
         select(OrganizationAssistant).where(OrganizationAssistant.agent_id == agent_id)
     )
     return result.scalar_one_or_none()
+
+
+async def switched_off(db: AsyncSession, agent_ids: list[UUID]) -> set[UUID]:
+    """Which of these agents are an assistant their organization switched off."""
+    if not agent_ids:
+        return set()
+    result = await db.execute(
+        select(OrganizationAssistant.agent_id).where(
+            OrganizationAssistant.agent_id.in_(agent_ids), OrganizationAssistant.enabled.is_(False)
+        )
+    )
+    return set(result.scalars().all())

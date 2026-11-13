@@ -10,9 +10,20 @@ from pydantic import Field, field_validator
 
 from app.agents.ask_user import QuestionItem
 from app.agents.capabilities import CapabilityToolInfo
-from app.agents.spec import AgentSpec, CapabilityBindingSpec, DelegationMode, SpecialistSpec
+from app.agents.spec import (
+    AgentSpec,
+    CapabilityBindingSpec,
+    DelegationMode,
+    SpecialistSpec,
+    StarterIcons,
+    StarterTitles,
+)
 from app.core.secret_kinds import SecretRequirement
+from app.db.models.agent import AgentKind
+from app.db.models.agent_run import RunStatus
+from app.db.models.resource_grant import Visibility
 from app.schemas.base import BaseSchema
+from app.schemas.promotion_gate import PromotionOverrideRead
 from app.schemas.resource_grant import AudienceChoice
 
 # The longest a single category/tag may be, matching the `String(32)` array
@@ -99,6 +110,25 @@ def normalize_labels_query(values: list[str], *, max_items: int) -> list[str] | 
     return kept[:max_items]
 
 
+class LocalCodingAgent(BaseSchema):
+    """A coding agent an agent's published version runs on the person's computer."""
+
+    harness: Literal["claude_code", "codex"]
+    access: Literal["edit", "read_only"]
+
+
+class PublishedCodingAgent(BaseSchema):
+    """A published version's coding agent binding: which harness, where, how far.
+
+    Defaults mirror the capability's own, so a binding that left a field out reads
+    as it runs.
+    """
+
+    harness: Literal["claude_code", "codex"] = "claude_code"
+    runs_on: Literal["sandbox", "personal_sandbox", "this_computer"] = "sandbox"
+    access: Literal["edit", "read_only"] = "edit"
+
+
 class PublishedModel(BaseSchema):
     """The model an agent's published version runs on.
 
@@ -119,11 +149,49 @@ class AgentRead(BaseSchema):
     id: UUID
     slug: str
     name: str
+    is_starter: bool = Field(
+        default=False, description="Listing marker for the authentic shipped AgenticOS starter."
+    )
+    setup_required: bool = Field(
+        default=False,
+        description="Listing marker for a never-published starter draft eligible for setup guidance, not execution.",
+    )
     description: str | None = None
     status: str
     visibility: str
     owner_user_id: UUID | None = None
     current_version_id: UUID | None = None
+    system_key: str | None = Field(
+        default=None,
+        description=(
+            "Set on an agent the platform seeded and starts itself - `eval_judge` for "
+            "the default eval judge. It is edited and shared like any agent."
+        ),
+    )
+    kind: AgentKind = Field(
+        default=AgentKind.AGENT,
+        description=(
+            "`judge` for an agent that grades evals, `drafter` for the one that drafts a "
+            "knowledge gap's missing content, `generator` for the one that drafts dataset "
+            "cases and `classifier` for the one that reads answers for knowledge gaps: "
+            "only the platform runs them, and the console lists them apart, without "
+            "chat, channels or delegation."
+        ),
+    )
+    workflow_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The workflow whose step configures this agent, when one does. Such an "
+            "agent is changed in that step, never here, and is not in the catalog."
+        ),
+    )
+    a2a_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether other systems may reach this agent over A2A: its card at "
+            "/a2a/{id}/.well-known/agent-card.json, its tasks at /a2a/{id} (#2092)."
+        ),
+    )
     has_avatar: bool = Field(
         default=False,
         description=(
@@ -207,6 +275,57 @@ class AgentRead(BaseSchema):
             "not a security boundary, since every create endpoint re-checks server-side."
         ),
     )
+    can_edit: bool = Field(
+        default=False,
+        description=(
+            "Whether THIS caller may edit the agent - change its draft, test it on a "
+            "dataset, stop a run of it somebody else started. Resolved per caller like "
+            "can_run: an explicit edit grant reads true where the role-level check "
+            "would say false, and a role that may edit agents reads false on one it "
+            "cannot reach. Hides controls; every edit endpoint re-checks server-side."
+        ),
+    )
+    can_publish: bool = Field(
+        default=False,
+        description=(
+            "Whether THIS caller may publish the agent - a new version, a rollback, "
+            "its embeds, exposures and environments. Resolved per caller like "
+            "can_edit, and not the same answer: a Member edits the agents they own "
+            "but publishes none. Hides controls; every publish endpoint re-checks "
+            "server-side."
+        ),
+    )
+    published_capabilities: list[str] | None = Field(
+        default=None,
+        description="Enabled capability ids from the published version, filled by the listing. Null when unknown.",
+    )
+    local_coding_agent: LocalCodingAgent | None = Field(
+        default=None,
+        description=(
+            "The coding agent this agent's published version runs on the person's own "
+            "computer, or null when it runs none there. Read off the frozen spec, filled by "
+            "the listing, so the chat's composer can say which agent will work in which "
+            "folder before the person sends."
+        ),
+    )
+    personal_coding_harness: Literal["claude_code", "codex"] | None = Field(
+        default=None,
+        description=(
+            "The coding agent this agent's published version runs as a private cloud task "
+            "on the initiating person's own account, or null when it runs none that way. "
+            "Filled by the listing, so the chat can offer to connect that account where "
+            "the agent needs it."
+        ),
+    )
+    local_workspace: bool = Field(
+        default=False,
+        description=(
+            "Whether the published version's workspace is the person's own computer "
+            "(a sandbox binding on the local backend). Such an agent has no cloud "
+            "workspace, so the desktop chat asks for a folder or the whole computer "
+            "before its first run. Filled by the listing."
+        ),
+    )
     published_model: PublishedModel | None = Field(
         default=None,
         description=(
@@ -218,6 +337,22 @@ class AgentRead(BaseSchema):
             "shared_user_count."
         ),
     )
+    starters: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The published version's first messages, which an empty chat offers - read "
+            "off the frozen spec, not the draft. Empty for a draft agent and for one "
+            "with none. Filled by the listing, same bargain as shared_user_count."
+        ),
+    )
+    starter_titles: StarterTitles = Field(
+        default_factory=dict,
+        description="Published opener card titles keyed by starter text; the message is their description.",
+    )
+    starter_icons: StarterIcons = Field(
+        default_factory=dict,
+        description="Published chat opener icons keyed by starter text; never taken from the draft.",
+    )
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -226,6 +361,29 @@ class AgentDetail(AgentRead):
     """An agent plus the spec currently being edited."""
 
     draft_spec: AgentSpec
+
+
+class AgentCeiling(BaseSchema):
+    """The deployment's agent limit for this organization, and whether it is reached.
+
+    Read by a console to say a create would be refused before it is attempted.
+    The count is every agent in the organization that is not archived - the
+    same count a create is refused on - so it includes agents the caller may
+    not see. It is therefore given only to a caller whose `agents:view` reaches
+    every agent in the organization; anyone else gets `at_limit` alone, which
+    is no more than a refused create would tell them.
+    """
+
+    limit: int | None = Field(
+        description="Agents the deployment allows per organization. Null is no limit"
+    )
+    held: int | None = Field(
+        description=(
+            "Agents this organization holds, archived ones excluded. Null when there "
+            "is no limit, or the caller cannot see every agent in the organization"
+        )
+    )
+    at_limit: bool = Field(description="Whether a new agent would be refused for the limit")
 
 
 class AgentList(BaseSchema):
@@ -244,10 +402,37 @@ class AgentList(BaseSchema):
     )
 
 
+SystemAgentKindLiteral = Literal["judge", "drafter", "generator", "classifier", "improver"]
+
+
+class SystemAgentCreate(BaseSchema):
+    """A system agent of the organization's own, made from its kind's definition."""
+
+    kind: SystemAgentKindLiteral = Field(
+        description="Which kind of system agent to create and pick where it runs"
+    )
+    name: str = Field(min_length=1, max_length=128)
+    model_profile_id: UUID | None = Field(
+        default=None, description="The model it runs on; the organization's oldest if omitted"
+    )
+    visibility: Visibility = Field(default=Visibility.ORG)
+
+
 class AgentCreate(AudienceChoice):
     """Create an agent from a spec. The handle is derived from the name."""
 
     spec: AgentSpec
+    from_starter: bool = Field(
+        default=False,
+        description=(
+            "Start as the AgenticOS agent does: whatever of its instructions, "
+            "common capabilities, skills, platform tools, first messages and budget the spec "
+            "leaves empty is filled from it - what the console's New agent sends. "
+            "Computer use, browser and coding tools remain specific to the shipped AgenticOS "
+            "unless explicitly selected. "
+            "Without it, a spec with no instructions gets only the starter's instructions"
+        ),
+    )
     # Discovery labels, folded the same way `AgentMetadataRequest` folds them.
     # They are not spec, and they are offered here because the catalog a new
     # agent joins is the moment somebody knows what to call it - the detail page
@@ -296,6 +481,24 @@ class AgentMetadataRequest(BaseSchema):
     @classmethod
     def _normalize(cls, v: list[str]) -> list[str]:
         return normalize_labels_strict(v)
+
+
+class CapabilityEnabled(BaseSchema):
+    """What switching a capability on from an agent's card did (#2301)."""
+
+    published: bool = Field(
+        description=(
+            "Whether the agent answers with it now. False when the draft held other "
+            "unpublished changes, or the caller may edit but not publish: the "
+            "capability is in the draft, for the Builder's Publish"
+        )
+    )
+
+
+class CapabilityRequest(BaseSchema):
+    """Asking an agent's owner to switch a capability on (#2301)."""
+
+    reason: str = Field(min_length=1, max_length=300, description="What it was needed for")
 
 
 class AgentPublish(BaseSchema):
@@ -359,6 +562,13 @@ class AgentVersionRead(BaseSchema):
         ),
     )
     created_at: datetime | None = None
+    overrides: list[PromotionOverrideRead] = Field(
+        default_factory=list,
+        description=(
+            "Each time this version was promoted onto an environment past eval suites "
+            "that had not passed on it - who, why, and each suite's state then"
+        ),
+    )
 
 
 class AgentVersionDetail(AgentVersionRead):
@@ -426,7 +636,7 @@ class DelegationTreeNode(BaseSchema):
         default=False,
         description="Has delegates of its own that a run from this root cannot reach.",
     )
-    children: list["DelegationTreeNode"] = Field(default_factory=list)
+    children: list[DelegationTreeNode] = Field(default_factory=list)
 
 
 class DelegationTree(BaseSchema):
@@ -491,6 +701,14 @@ class CapabilityCatalogEntry(BaseSchema):
     side_effecting: bool = Field(
         description="The default answer for every tool below: gate it unless waived"
     )
+    read_only: bool = Field(
+        default=False,
+        description=(
+            "The default answer for every tool below in an eval: run it on the normal "
+            "connections. False means it writes, and an eval blocks it unless the "
+            "environment gives it a test connection"
+        ),
+    )
     tools: list[CapabilityToolInfo] = Field(
         description=(
             "The tools this capability contributes, with the name and description code "
@@ -499,7 +717,21 @@ class CapabilityCatalogEntry(BaseSchema):
             "and description the model sees via tool_overrides, both keyed by the id here."
         )
     )
+    tool_settings: bool = Field(
+        default=True,
+        description=(
+            "Whether the Builder offers per-tool approval and tool text for this "
+            "capability. False where its one tool is the capability itself, so its "
+            "approval is the capability's own."
+        ),
+    )
     scopes: list[str]
+    voice: Literal["live", "hand_off", "never"] = Field(
+        description=(
+            "How this capability takes part in a voice call: `live` on the call's own model, "
+            "`hand_off` in the agent's text model the call hands a task to, `never` not at all"
+        )
+    )
     contracts: list[CapabilityToolContract] = Field(
         default_factory=list,
         description=(
@@ -522,7 +754,7 @@ class CapabilityCatalogEntry(BaseSchema):
     recommended: CapabilityBindingSpec | None = Field(
         default=None,
         description=(
-            "How the starter agent (the Claude Code like template) binds this "
+            "How the starter agent (the AgenticOS template) binds this "
             "capability, or null where it does not. The console marks these "
             "Recommended and switches them on for a new agent."
         ),
@@ -552,7 +784,7 @@ class McpCatalogCheck(BaseSchema):
 
 
 class McpCatalogEntry(BaseSchema):
-    """One connectable MCP server in the curated catalog."""
+    """One connectable MCP server, curated, mirrored or custom."""
 
     key: str
     name: str
@@ -589,6 +821,16 @@ class McpCatalogEntry(BaseSchema):
     check: McpCatalogCheck | None = Field(
         default=None, description="What the last catalog check found; null if never checked"
     )
+    custom: bool = Field(
+        default=False, description="A saved server with no catalog or registry entry"
+    )
+    connection_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Accessible saved accounts grouped on this server in a paged listing. "
+            "Null on catalog metadata; an empty list means no accessible account."
+        ),
+    )
 
 
 class McpCatalog(BaseSchema):
@@ -604,15 +846,51 @@ class McpCatalog(BaseSchema):
     )
 
 
+class PlatformMcpTool(BaseSchema):
+    name: str = Field(description="The tool's name on the platform's MCP server")
+    description: str = Field(description="The first line of what the model reads")
+    writes: bool = Field(
+        description="Whether it changes something - held for approval under `approval: writes`"
+    )
+    ungated: bool = Field(
+        default=False,
+        description=(
+            "Whether it runs without approval under every policy - a write that changes "
+            "only the caller's own preference, such as the console's language"
+        ),
+    )
+    held: bool = Field(
+        default=False,
+        description=(
+            "Legacy read-approval exception flag; always false. Read-only platform tools "
+            "run automatically under `writes` and require approval under `all`."
+        ),
+    )
+
+
+class PlatformMcpToolList(BaseSchema):
+    items: list[PlatformMcpTool]
+    total: int
+
+
 class CapabilityCatalog(BaseSchema):
     items: list[CapabilityCatalogEntry]
     total: int
 
 
+MAX_RUN_PROMPT_CHARS = 500_000
+"""The longest prompt one run takes: the per-turn text budget a chat turn has
+(`CHAT_TURN_TEXT_MAX_CHARS`). Unbounded, an asynchronous run put whatever the
+proxy let through - tens of megabytes - into a queued job's JSONB."""
+
+MAX_RUN_FILES = 20
+"""Uploads one run may attach."""
+
+
 class AgentRunRequest(BaseSchema):
     """Ask a published agent a question."""
 
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=MAX_RUN_PROMPT_CHARS)
     conversation_id: UUID | None = Field(
         default=None,
         description=(
@@ -632,6 +910,7 @@ class AgentRunRequest(BaseSchema):
     )
     file_ids: list[UUID] = Field(
         default_factory=list,
+        max_length=MAX_RUN_FILES,
         description=(
             "Files already uploaded through `POST /files/upload`, to attach to this "
             "turn. Where each one goes is the agent's to decide - written into its "
@@ -640,9 +919,20 @@ class AgentRunRequest(BaseSchema):
             "caller's own uploads"
         ),
     )
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Run the unpublished draft instead of a version, as the Builder's test "
+            "panel does: a test run, budgeted and recorded. Needs `agents:edit` on the "
+            "agent, and the draft must pass the checks a publish makes. Not with "
+            "`environment_id`, nor with `Prefer: respond-async`"
+        ),
+    )
 
 
 class ParkedCall(BaseSchema):
+    can_remember: bool = False
+    subagent_name: str | None = None
     """A tool call a run is waiting on a decision for."""
 
     id: UUID = Field(description="The approval to decide, which is what a client posts to.")
@@ -655,9 +945,28 @@ class ParkedCall(BaseSchema):
     )
     tool_name: str
     tool_args: dict[str, Any] = Field(default_factory=dict)
+    capability_tool_id: str | None = Field(
+        default=None,
+        description="The tool's stable id, as `ApprovalRead.capability_tool_id` carries it.",
+    )
+    context: dict[str, str] | None = Field(
+        default=None,
+        description="The arguments' ids as names, as `ApprovalRead.context` carries them.",
+    )
     account: str | None = Field(
         default=None,
         description="Which account of an MCP service the call acts as, where that is a question.",
+    )
+    content_hidden: bool = Field(
+        default=False,
+        description="As `ApprovalRead.content_hidden`: what the call quotes was left out for this caller.",
+    )
+    always_asks: bool = Field(
+        default=False,
+        description=(
+            "As `ApprovalRead.always_asks`. With `content_hidden`, the caller may reject the "
+            "call but not approve it"
+        ),
     )
 
 
@@ -690,6 +999,8 @@ class RunStep(BaseSchema):
         description="The provider's id for the call, so a surface can match it to a step it drew."
     )
     tool_name: str
+    tool_id: str | None = None
+    presentation_kind: Literal["draft", "generic", "platform"] | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     result: str | None = Field(
         default=None,
@@ -710,6 +1021,15 @@ class SettledCall(BaseSchema):
     result: str
 
 
+class SettledDelegation(BaseSchema):
+    """A published delegate that reached its own outcome in this execution."""
+
+    task_id: str = Field(description="Stable delegation task ID, shared with subagent frames")
+    status: RunStatus = Field(
+        description="The delegate's outcome, independent of the parent run status"
+    )
+
+
 class AgentRunResult(BaseSchema):
     """What the agent answered, and what the run cost."""
 
@@ -723,6 +1043,14 @@ class AgentRunResult(BaseSchema):
         ),
     )
     output: str
+    structured: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The answer as an object, for an agent with an `output_schema`: it fits "
+            "that schema, and `output` shows the same object as a JSON block. Null "
+            "for a free-text answer, and for a run that parked or stopped"
+        ),
+    )
     status: str
     cost_usd: Decimal
     cost_is_partial: bool = Field(
@@ -736,6 +1064,12 @@ class AgentRunResult(BaseSchema):
     )
     input_tokens: int
     output_tokens: int
+    cache_read_tokens: int = Field(
+        default=0, description="Of `input_tokens`, those read from the provider's cache"
+    )
+    cache_write_tokens: int = Field(
+        default=0, description="Of `input_tokens`, those written to the provider's cache"
+    )
     steps: list[RunStep] = Field(
         default_factory=list,
         description=(
@@ -753,6 +1087,14 @@ class AgentRunResult(BaseSchema):
             "call somebody approved. It was made by the previous execution, so it is not "
             "in `steps`; it belongs to a step the caller already drew. Empty on a run "
             "that inherited nothing."
+        ),
+    )
+    delegations: list[SettledDelegation] = Field(
+        default_factory=list,
+        description=(
+            "Published delegates settled by this execution. A delegate may finish while "
+            "the parent parks on a new approval; HTTP continuations carry no socket "
+            "completion frames, so clients reconcile each task by its own outcome."
         ),
     )
     parked: list[ParkedCall] = Field(
@@ -773,6 +1115,35 @@ class AgentRunResult(BaseSchema):
             "The questions the run is now waiting on its person to answer, which is "
             "empty unless it stopped on one again - the same reason `parked` exists."
         ),
+    )
+    continues_in_chat: bool = Field(
+        default=False,
+        description=(
+            "Only a continuation of a parked chat run sets it: its answer is also "
+            "posted to that chat. Always false for a run started here"
+        ),
+    )
+
+
+RunRequestStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class RunRequestRead(BaseSchema):
+    """An asynchronous run: where it is, and once it has finished, what it answered."""
+
+    id: UUID = Field(description="The request to poll: `GET /api/v1/run-requests/{id}`.")
+    status: RunRequestStatus
+    conversation_id: UUID = Field(
+        description="The conversation the run files under, known from the moment it is queued."
+    )
+    created_at: datetime
+    finished_at: datetime | None = None
+    error: str | None = Field(
+        default=None, description="Why a failed request failed, in the platform's words."
+    )
+    result: AgentRunResult | None = Field(
+        default=None,
+        description="What the synchronous call would have answered, once the run has completed.",
     )
 
 
@@ -810,11 +1181,12 @@ class TemplateInstallRequest(BaseSchema):
 class TemplateInstallResult(BaseSchema):
     """What was created, and what the person still has to do.
 
-    An installed template is a **draft**: it names no model, because this
-    platform has no organization-wide default on purpose, and it may name no
-    collection. Both are decisions the spec refuses to make on somebody's
-    behalf, so the result carries them back rather than publishing something
-    that would answer its first question from nowhere.
+    An installed template is a **draft**. It names no model, because this
+    platform has no organization-wide default on purpose, unless the
+    organization has exactly one model an agent can run on and the draft starts
+    on that (#2483). It may name no collection, which is never chosen for
+    anybody. So the result carries back what is still to attach rather than
+    publishing something that would answer its first question from nowhere.
     """
 
     agent_id: UUID
@@ -868,3 +1240,9 @@ class AgentKnowledgeReach(BaseSchema):
     whole_organization: bool
     groups: list[str] = Field(default_factory=list)
     sources: list[KnowledgeSource] = Field(default_factory=list)
+
+
+class AgentA2ARequest(BaseSchema):
+    """Serve this agent over A2A, or stop (#2092)."""
+
+    enabled: bool

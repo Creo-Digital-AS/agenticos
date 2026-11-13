@@ -17,8 +17,13 @@ import { BudgetHeadroomWidget } from "./budget-headroom";
 import { DepartmentQualityWidget } from "./department-quality";
 import { DepartmentSpendWidget } from "./department-spend";
 import { ConversationsWidget } from "./conversations";
+import { BackgroundTasksWidget } from "./background-tasks";
+import { BackgroundJobsWidget } from "./background-jobs";
 import { HealthWidget } from "./health";
 import { KnowledgeFreshnessWidget } from "./knowledge-freshness";
+import { KnowledgeGapsWidget } from "./knowledge-gaps";
+import { ImprovementsWaitingWidget } from "./improvements-waiting";
+import { NeedsAttentionWidget } from "./needs-attention";
 import { LatencyWidget } from "./latency";
 import { McpHealthWidget } from "./mcp-health";
 import { MembersWidget } from "./members";
@@ -40,11 +45,25 @@ import { SandboxPolicyWidget } from "./sandbox-policy";
 import { SandboxSessionsWidget } from "./sandbox-sessions";
 import { SharedWithYouWidget } from "./shared-with-you";
 import { ArtifactsWidget } from "./artifacts";
+import { DatasetsWidget } from "./datasets";
+import { ReviewQueueWidget } from "./review-queue";
+import { EvalRunsWidget } from "./eval-runs";
+import { EvalSuitesWidget } from "./eval-suites";
+import { AuthoringSuggestionsWidget } from "./authoring-suggestions";
+import { PhoneCallsWidget } from "./phone-calls";
+import { VoiceMinutesWidget } from "./voice-minutes";
+import { ProjectsWidget } from "./projects";
+import { RecentVisualsWidget } from "./recent-visuals";
 import { SpendWidget } from "./spend";
 import { ActivityRhythmWidget } from "./activity-rhythm";
 import { ChannelsWidget } from "./channels";
 import { RoutinesWidget } from "./routines";
+import { SuggestionsWidget } from "./suggestions";
 import { KnowledgeWidget } from "./knowledge";
+import { TablesWidget } from "./tables-widget";
+import { WorkflowsWidget } from "./workflows-widget";
+import { ApprovalOutcomesWidget } from "./approval-outcomes";
+import { WorkflowLogsWidget } from "./workflow-logs";
 import { SummaryWidget } from "./summary";
 import { SurfacesWidget } from "./surfaces";
 import { TopOrgsWidget } from "./top-orgs";
@@ -56,9 +75,16 @@ export const WIDGET_COMPONENTS: Record<WidgetId, ComponentType<DashboardWidgetPr
   "activity-rhythm": ActivityRhythmWidget,
   channels: ChannelsWidget,
   routines: RoutinesWidget,
+  "authoring-suggestions": AuthoringSuggestionsWidget,
   knowledge: KnowledgeWidget,
+  tables: TablesWidget,
+  workflows: WorkflowsWidget,
+  "approval-outcomes": ApprovalOutcomesWidget,
+  "workflow-logs": WorkflowLogsWidget,
   platform: PlatformWidget,
   health: HealthWidget,
+  "background-jobs": BackgroundJobsWidget,
+  "background-tasks": BackgroundTasksWidget,
   "top-orgs": TopOrgsWidget,
   "platform-ratings": PlatformRatingsWidget,
   runs: RunsWidget,
@@ -88,6 +114,18 @@ export const WIDGET_COMPONENTS: Record<WidgetId, ComponentType<DashboardWidgetPr
   "my-quality": MyQualityWidget,
   "shared-with-you": SharedWithYouWidget,
   artifacts: ArtifactsWidget,
+  datasets: DatasetsWidget,
+  "knowledge-gaps": KnowledgeGapsWidget,
+  "needs-attention": NeedsAttentionWidget,
+  "improvements-waiting": ImprovementsWaitingWidget,
+  "review-queue": ReviewQueueWidget,
+  "eval-runs": EvalRunsWidget,
+  "eval-suites": EvalSuitesWidget,
+  suggestions: SuggestionsWidget,
+  "voice-minutes": VoiceMinutesWidget,
+  "phone-calls": PhoneCallsWidget,
+  projects: ProjectsWidget,
+  "recent-visuals": RecentVisualsWidget,
   "sandbox-capacity": SandboxCapacityWidget,
   "sandbox-sessions": SandboxSessionsWidget,
   "sandbox-policy": SandboxPolicyWidget,

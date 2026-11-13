@@ -94,6 +94,16 @@ class SubagentsConfig(BaseModel):
             "given. A question is not an approval and cannot grant one."
         ),
     )
+    allow_any_agent: bool = Field(
+        title="Use other accessible agents",
+        default=False,
+        description=(
+            "Offer the current published versions of other agents this person may run in this "
+            "organization, under agent-prefixed slug handles. Explicit pins keep their selected versions. "
+            "The catalog is resolved at the start of each interactive run; unattended work stays "
+            "limited to reviewed pins. Large catalogs increase setup time and context."
+        ),
+    )
     # Off by default: instructions nobody wrote are instructions nobody reviewed.
     # Keeping a specialist means publishing an agent, which stays a person's decision.
     allow_dynamic: bool = Field(
@@ -164,6 +174,8 @@ class SubagentsConfig(BaseModel):
 
 @register(
     id="subagents",
+    read_only=True,
+    voice="hand_off",
     name="Subagents",
     category="reasoning",
     description="Hand part of a job to another agent, or to a specialist defined here.",

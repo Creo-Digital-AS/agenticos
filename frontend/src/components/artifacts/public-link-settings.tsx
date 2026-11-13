@@ -1,13 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { KeyRound } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { ChevronRight, KeyRound } from "lucide-react";
+import { useFormatter, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/chat/copy-button";
 import {
+  Badge,
   Button,
+  ConfirmDialog,
   FormField,
   Input,
   Select,
@@ -51,8 +53,30 @@ export function originLines(text: string): string[] {
     .filter((line) => line !== "");
 }
 
+/**
+ * A version the link may show: one the page's audience could be served. A version
+ * waiting for its owner's consent, or declined, is never shown to strangers before
+ * members, and the server refuses the pin.
+ */
+export function pinnable(version: ArtifactVersion): boolean {
+  return version.consent_state !== "pending" && version.consent_state !== "declined";
+}
+
+/** A site as the server compares it: no case, no trailing slash. */
+function siteKey(origin: string): string {
+  return origin.toLowerCase().replace(/\/+$/, "");
+}
+
+/** Whether `next` holds a site the saved list does not - one more place to frame the page. */
+export function addsOrigin(saved: string[], next: string[]): boolean {
+  const known = new Set(saved.map(siteKey));
+  return next.some((origin) => !known.has(siteKey(origin)));
+}
+
 interface PublicLinkSettingsProps {
   link: ArtifactPublicLink;
+  /** The page's data is confirmed for the public link: a new site then clears that. */
+  publicDataConfirmed: boolean;
   /** The kept versions, newest first - what the link may be pinned to. */
   versions: ArtifactVersion[];
   saving: boolean;
@@ -66,14 +90,24 @@ interface PublicLinkSettingsProps {
  * A refusal names its field, so it is shown under that field rather than as a
  * toast somebody has to match to a box.
  */
-export function PublicLinkSettings({ link, versions, saving, onSave }: PublicLinkSettingsProps) {
+export function PublicLinkSettings({
+  link,
+  publicDataConfirmed,
+  versions,
+  saving,
+  onSave,
+}: PublicLinkSettingsProps) {
   const t = useTranslations("artifacts");
   const tErrors = useTranslations("errors");
+  const format = useFormatter();
   const [expiry, setExpiry] = useState(localDate(link.expires_at));
   const [pinned, setPinned] = useState(link.pinned_version_id ?? LATEST);
   const [password, setPassword] = useState("");
   const [origins, setOrigins] = useState(link.embed_origins.join("\n"));
   const [problems, setProblems] = useState<Record<string, string>>({});
+  // The save that waits for the answer to "stop showing the data?".
+  const [asking, setAsking] = useState<ArtifactPublicLinkUpdate | null>(null);
+  const [removingPassword, setRemovingPassword] = useState(false);
 
   const save = async (changes: ArtifactPublicLinkUpdate) => {
     setProblems({});
@@ -89,104 +123,183 @@ export function PublicLinkSettings({ link, versions, saving, onSave }: PublicLin
   };
 
   return (
-    <div className="space-y-4 border-t pt-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <FormField
-          htmlFor="public-link-expiry"
-          label={t("linkExpiry")}
-          description={t("linkExpiryWhy")}
-          error={problems.expires_at}
-        >
-          <Input type="date" value={expiry} onChange={(event) => setExpiry(event.target.value)} />
-        </FormField>
-        <FormField
-          htmlFor="public-link-version"
-          label={t("linkVersion")}
-          description={t("linkVersionWhy")}
-          error={problems.pinned_version_id}
-        >
-          <Select value={pinned} onValueChange={setPinned}>
-            <SelectTrigger id="public-link-version">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={LATEST}>{t("latestVersion")}</SelectItem>
-              {versions.map((version) => (
-                <SelectItem key={version.id} value={version.id}>
-                  {t("versionBadge", { version: version.number })}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FormField>
-      </div>
-      <FormField
-        htmlFor="public-link-origins"
-        label={t("embedSites")}
-        description={link.password_protected ? t("embedNeedsNoPassword") : t("embedSitesWhy")}
-        error={problems.embed_origins}
-      >
-        <Textarea
-          rows={2}
-          value={origins}
-          onChange={(event) => setOrigins(event.target.value)}
-          placeholder={ORIGIN_EXAMPLE}
-          className="font-mono text-xs"
-        />
-      </FormField>
-      <Button
-        size="sm"
-        disabled={saving}
-        onClick={() =>
-          void save({
-            expires_at: endOfDay(expiry),
-            pinned_version_id: pinned === LATEST ? null : pinned,
-            embed_origins: originLines(origins),
-          })
-        }
-      >
-        {t("saveLinkSettings")}
-      </Button>
-
-      <div className="space-y-2">
-        <FormField
-          htmlFor="public-link-password"
-          label={t("linkPassword")}
-          description={link.password_protected ? t("linkPasswordOn") : t("linkPasswordWhy")}
-          error={problems.password}
-        >
-          <Input
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className="sm:w-56"
-          />
-        </FormField>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={saving || password === ""}
-            onClick={async () => {
-              if (await save({ password })) setPassword("");
-            }}
-          >
-            <KeyRound className="h-3.5 w-3.5" />
-            {link.password_protected ? t("changePassword") : t("setPassword")}
-          </Button>
-          {link.password_protected && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={saving}
-              onClick={() => void save({ password: null })}
-            >
-              {t("removePassword")}
-            </Button>
+    <div className="space-y-3">
+      {(link.password_protected ||
+        link.expires_at ||
+        link.pinned_version ||
+        link.embed_origins.length > 0) && (
+        <div className="flex flex-wrap gap-1.5">
+          {link.password_protected && <Badge variant="secondary">{t("passwordProtected")}</Badge>}
+          {link.expires_at && (
+            <Badge variant="outline">
+              {t("expiresOn", {
+                date: format.dateTime(new Date(link.expires_at), { dateStyle: "medium" }),
+              })}
+            </Badge>
+          )}
+          {link.pinned_version && (
+            <Badge variant="outline">{t("versionBadge", { version: link.pinned_version })}</Badge>
+          )}
+          {link.embed_origins.length > 0 && (
+            <Badge variant="outline">
+              {t("embedSiteCount", { count: link.embed_origins.length })}
+            </Badge>
           )}
         </div>
-      </div>
+      )}
+      <details className="group/link-options border-t pt-3">
+        <summary
+          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring touch:min-h-11 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md text-[13px] font-medium outline-none focus-visible:ring-2 aria-disabled:cursor-wait [&::-webkit-details-marker]:hidden"
+          aria-disabled={saving || undefined}
+          onClick={(event) => {
+            if (saving) event.preventDefault();
+          }}
+        >
+          <ChevronRight
+            className="size-4 shrink-0 transition-transform group-open/link-options:rotate-90"
+            aria-hidden
+          />
+          {t("linkSettings")}
+        </summary>
+        <fieldset disabled={saving} className="mt-3 min-w-0 space-y-4">
+          <legend className="sr-only">{t("linkSettings")}</legend>
+          <EmbedSnippet link={link} />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField
+              htmlFor="public-link-expiry"
+              label={t("linkExpiry")}
+              description={t("linkExpiryWhy")}
+              error={problems.expires_at}
+            >
+              <Input
+                type="date"
+                value={expiry}
+                onChange={(event) => setExpiry(event.target.value)}
+              />
+            </FormField>
+            <FormField
+              htmlFor="public-link-version"
+              label={t("linkVersion")}
+              description={`${t("linkVersionWhy")} ${t("linkLatestWhy")}`}
+              error={problems.pinned_version_id}
+            >
+              <Select value={pinned} onValueChange={setPinned}>
+                <SelectTrigger id="public-link-version">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={LATEST}>{t("latestVersion")}</SelectItem>
+                  {versions.filter(pinnable).map((version) => (
+                    <SelectItem key={version.id} value={version.id}>
+                      {t("versionBadge", { version: version.number })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          </div>
+          <FormField
+            htmlFor="public-link-origins"
+            label={t("embedSites")}
+            description={link.password_protected ? t("embedNeedsNoPassword") : t("embedSitesWhy")}
+            error={problems.embed_origins}
+          >
+            <Textarea
+              rows={2}
+              value={origins}
+              onChange={(event) => setOrigins(event.target.value)}
+              placeholder={ORIGIN_EXAMPLE}
+              className="font-mono text-base md:text-xs"
+            />
+          </FormField>
+          <Button
+            size="sm"
+            disabled={saving}
+            onClick={() => {
+              const changes = {
+                expires_at: endOfDay(expiry),
+                pinned_version_id: pinned === LATEST ? null : pinned,
+                embed_origins: originLines(origins),
+              };
+              if (publicDataConfirmed && addsOrigin(link.embed_origins, changes.embed_origins)) {
+                setAsking(changes);
+              } else {
+                void save(changes);
+              }
+            }}
+          >
+            {t("saveLinkSettings")}
+          </Button>
+
+          <div className="space-y-2">
+            <FormField
+              htmlFor="public-link-password"
+              label={t("linkPassword")}
+              description={link.password_protected ? t("linkPasswordOn") : t("linkPasswordWhy")}
+              error={problems.password}
+            >
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="sm:w-56"
+              />
+            </FormField>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={saving || password === ""}
+                onClick={async () => {
+                  if (await save({ password })) setPassword("");
+                }}
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                {link.password_protected ? t("changePassword") : t("setPassword")}
+              </Button>
+              {link.password_protected && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() =>
+                    publicDataConfirmed ? setRemovingPassword(true) : void save({ password: null })
+                  }
+                >
+                  {t("removePassword")}
+                </Button>
+              )}
+            </div>
+          </div>
+        </fieldset>
+      </details>
+      <ConfirmDialog
+        open={removingPassword}
+        onOpenChange={setRemovingPassword}
+        title={t("removePasswordTitle")}
+        description={t("removePasswordWhy")}
+        confirmLabel={t("removePasswordConfirm")}
+        destructive
+        loading={saving}
+        onConfirm={async () => {
+          await save({ password: null });
+          setRemovingPassword(false);
+        }}
+      />
+      <ConfirmDialog
+        open={asking !== null}
+        onOpenChange={(open) => !open && setAsking(null)}
+        title={t("addSiteTitle")}
+        description={t("addSiteWhy")}
+        confirmLabel={t("addSiteConfirm")}
+        destructive
+        loading={saving}
+        onConfirm={async () => {
+          if (asking !== null) await save(asking);
+          setAsking(null);
+        }}
+      />
     </div>
   );
 }

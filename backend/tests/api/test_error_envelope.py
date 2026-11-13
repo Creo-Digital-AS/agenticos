@@ -14,8 +14,6 @@ Its vehicle is `GET /users/avatar/{user_id}`, the one route that reaches a
 service without authenticating first - the handler it exercises is global.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from datetime import UTC, datetime
@@ -28,6 +26,8 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.exceptions import RequestValidationError
 from httpx import AsyncClient, Response
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+from starlette.datastructures import State
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.agents.capabilities.budget import BudgetExceeded, BudgetScope
@@ -38,6 +38,7 @@ from app.api.exception_handlers import (
     app_exception_handler,
     budget_exceeded_handler,
     http_exception_handler,
+    pool_exhausted_handler,
     unhandled_exception_handler,
     validation_exception_handler,
 )
@@ -46,6 +47,7 @@ from app.core.exceptions import (
     AppException,
     BadRequestError,
     ExternalServiceError,
+    IdentifyingContentError,
     NotFoundError,
     RateLimitError,
 )
@@ -235,7 +237,7 @@ class TestHTTPExceptionJoinsTheEnvelope:
 
         assert response is not None
         body = json.loads(bytes(response.body))
-        assert body["error"]["message"] == "Unprocessable entity"
+        assert body["error"]["message"] == "Unprocessable content"
         assert body["error"]["details"] == {"detail": [{"loc": ["body"], "msg": "bad"}]}
 
     @pytest.mark.anyio
@@ -297,9 +299,47 @@ class TestARateLimitCarriesItsIntervalInAHeader:
         assert "retry-after" not in response.headers
 
 
+class TestAnExhaustedPoolIsBusyNotBroken:
+    """No connection within `DB_POOL_TIMEOUT` is load to shed, not a fault (#2219)."""
+
+    @pytest.mark.anyio
+    async def test_a_route_that_waited_out_the_pool_answers_503_with_retry_after(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            user_repo, "get_by_id", AsyncMock(side_effect=PoolTimeoutError("QueuePool limit"))
+        )
+
+        response = await client.get(f"{settings.API_V1_STR}/users/avatar/{uuid4()}")
+
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "5"
+        assert response.json()["error"] == {
+            "code": "SERVICE_BUSY",
+            "message": "The server is busy. Try again in a few seconds.",
+            "details": None,
+        }
+
+    @pytest.mark.anyio
+    async def test_it_logs_one_line_not_a_traceback(self, caplog: pytest.LogCaptureFixture):
+        with caplog.at_level(logging.WARNING, logger="app.api.exception_handlers"):
+            await pool_exhausted_handler(_HttpConnection(), PoolTimeoutError("QueuePool limit"))
+
+        (record,) = caplog.records
+        assert (record.getMessage(), record.exc_info) == ("db_pool_exhausted", None)
+
+    @pytest.mark.anyio
+    async def test_a_socket_gets_no_body(self):
+        assert await pool_exhausted_handler(_WebsocketConnection(), PoolTimeoutError("x")) is None
+
+
 class _HttpConnection:
     scope = {"type": "http"}
     method = "GET"
+
+    def __init__(self) -> None:
+        # Every real request has one; the embed CORS helper reads it.
+        self.state = State()
 
     class url:
         path = "/api/v1/anything"
@@ -599,3 +639,20 @@ class TestDetailsDescribeTheRefusalNotTheServer:
         error = response.json()["error"]
         assert error["details"] == {"fields": [{"field": "base_url", "message": error["message"]}]}
         assert "hunter2" not in response.text
+
+
+class TestARefusalCanLogLessThanItAnswers:
+    @pytest.mark.anyio
+    async def test_flagged_content_reaches_its_caller_and_not_the_log(self, caplog):
+        """The values are what may identify somebody - an order number from a question."""
+        flags = [{"kind": "shared", "value": "7781", "count": 1}]
+        with caplog.at_level(logging.WARNING):
+            response = await app_exception_handler(
+                _HttpConnection(), IdentifyingContentError(details={"flags": flags})
+            )
+
+        assert response is not None
+        body = json.loads(bytes(response.body))["error"]
+        assert (body["code"], body["details"]["flags"]) == ("IDENTIFYING_CONTENT", flags)
+        [record] = [r for r in caplog.records if r.getMessage().startswith("IDENTIFYING_CONTENT")]
+        assert record.details == {"flags": [{"kind": "shared", "count": 1}]}

@@ -1,5 +1,6 @@
+import { useUnsavedChangesStore } from "@/stores/unsaved-changes-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,12 +30,14 @@ const NAME_TAKEN = new ApiError(409, TAKEN, {
 
 const name = () => screen.getByLabelText("Name");
 const description = () => screen.getByLabelText("Description");
-const format = () => screen.getByLabelText("Format");
 // The body is the shared file pane, as the editor has it - editable only once
 // the pane is flipped to Source, and named from the file being created, so it is
 // asked for by role rather than by a name that moves as somebody types.
 const content = () => screen.getByRole("textbox", { name: /source$/ });
-const openSource = () => userEvent.click(screen.getByRole("button", { name: "Source" }));
+const openSource = async () => {
+  const source = screen.queryByRole("button", { name: "Source" });
+  if (source) await userEvent.click(source);
+};
 const create = () => screen.getByRole("button", { name: "Create" });
 
 function mount(onOpenChange = vi.fn(), onCreated = vi.fn()) {
@@ -45,7 +48,115 @@ function mount(onOpenChange = vi.fn(), onCreated = vi.fn()) {
 }
 
 describe("CreateContextDialog", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useUnsavedChangesStore.setState({ sources: {}, prompt: null, saving: false });
+  });
+
+  it("keeps the audience visible in the mobile details control", async () => {
+    mount();
+    const details = screen.getByRole("button", { name: "Details · Everyone" });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    const panel = document.getElementById(details.getAttribute("aria-controls") ?? "");
+    expect(panel).toHaveClass("max-md:hidden");
+    await userEvent.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(screen.getByRole("radio", { name: /Only me/ }));
+    expect(details).toHaveTextContent("Only me");
+    await userEvent.click(details);
+    expect(panel).toHaveClass("max-md:hidden");
+  });
+
+  it("opens mobile details when their hidden field is refused", async () => {
+    vi.mocked(apiClient.post).mockRejectedValueOnce(
+      new ApiError(422, "Invalid description", {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid description",
+          details: { fields: [{ field: "description", message: "Description needs attention" }] },
+        },
+      }),
+    );
+    mount();
+    await userEvent.type(name(), "mobile-policy");
+    await userEvent.click(create());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Details · Everyone" })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      ),
+    );
+    expect(description()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Description needs attention")).toBeInTheDocument();
+  });
+
+  it("locks the source and dismissal while creating, then retains the draft after refusal", async () => {
+    let rejectWrite: (error: Error) => void = () => {
+      throw new Error("Not started");
+    };
+    vi.mocked(apiClient.post).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectWrite = reject;
+        }),
+    );
+    const { onOpenChange } = mount();
+    await userEvent.type(name(), "mobile-policy");
+    await userEvent.type(content(), "Keep this policy.");
+    await userEvent.click(create());
+    await waitFor(() => expect(name()).toBeDisabled());
+    expect(content()).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(onOpenChange).not.toHaveBeenCalled();
+    const proceed = vi.fn();
+    act(() => useUnsavedChangesStore.getState().leave(proceed));
+    await act(() => useUnsavedChangesStore.getState().answer("save"));
+    expect(proceed).not.toHaveBeenCalled();
+    await act(async () => rejectWrite(new Error("Controlled refusal")));
+    await waitFor(() => expect(name()).toBeEnabled());
+    expect(content()).not.toHaveAttribute("readonly");
+    expect(content()).toHaveValue("Keep this policy.");
+    expect(name()).toHaveAttribute("aria-describedby", "new-context-name-note");
+  });
+
+  it("keeps a new draft on Stay and clears it only on Discard", async () => {
+    const { onOpenChange } = mount();
+    await userEvent.type(name(), "mobile-policy");
+    await userEvent.type(content(), "Draft policy.");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(useUnsavedChangesStore.getState().prompt).not.toBeNull();
+    await act(() => useUnsavedChangesStore.getState().answer("stay"));
+    expect(content()).toHaveValue("Draft policy.");
+    await userEvent.keyboard("{Escape}");
+    await act(() => useUnsavedChangesStore.getState().answer("discard"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(name()).toHaveValue("");
+    expect(content()).toHaveValue("");
+  });
+
+  it("does not save one dropped file and silently abandon the remaining queue on close", async () => {
+    render(
+      <CreateContextDialog
+        open
+        initial={{ key: "first", name: "first-policy", format: "md", content: "First policy." }}
+        remaining={1}
+        onOpenChange={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+      { wrapper },
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const prompt = useUnsavedChangesStore.getState().prompt;
+    expect(prompt).not.toBeNull();
+    expect(
+      prompt?.ids.every((id) => useUnsavedChangesStore.getState().sources[id]?.save === undefined),
+    ).toBe(true);
+    await act(() => useUnsavedChangesStore.getState().answer("stay"));
+    expect(name()).toHaveValue("first-policy");
+    expect(apiClient.post).not.toHaveBeenCalled();
+  });
 
   it("creates an injected file by default and reports it", async () => {
     vi.mocked(apiClient.post).mockResolvedValue({ id: "c1", name: "glossary" });
@@ -70,7 +181,7 @@ describe("CreateContextDialog", () => {
     });
     // Reported rather than closed: whether one file created means "done" or
     // "next of the four somebody dropped" is the page's queue to answer.
-    expect(onCreated).toHaveBeenCalled();
+    expect(onCreated).toHaveBeenCalledWith({ id: "c1", name: "glossary" });
   });
 
   it("sends an untouched description as null and Markdown as the default format", async () => {
@@ -87,32 +198,18 @@ describe("CreateContextDialog", () => {
     expect(payload).toMatchObject({ description: null, format: "md" });
   });
 
-  it("takes the format from a closed list rather than from typing", async () => {
-    vi.mocked(apiClient.post).mockResolvedValue({ id: "c1", name: "notes" });
+  it("infers the renderer from the filename and leaves usage to the builder", async () => {
+    vi.mocked(apiClient.post).mockResolvedValue({ id: "c1", name: "notes.json" });
     mount();
-
-    await userEvent.type(name(), "notes");
-    await userEvent.click(format());
-    await userEvent.click(await screen.findByRole("option", { name: "txt" }));
+    await userEvent.type(name(), "notes.json");
+    expect(screen.queryByLabelText("Format")).toBeNull();
+    expect(screen.queryByLabelText("Mode")).toBeNull();
     await userEvent.click(create());
-
     await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.post).mock.calls.at(-1)![1]).toMatchObject({ format: "txt" });
-  });
-
-  it("lets the author choose to link a file instead of injecting it", async () => {
-    vi.mocked(apiClient.post).mockResolvedValue({ id: "c1", name: "runbook" });
-    mount();
-
-    await userEvent.type(name(), "runbook");
-    await userEvent.click(screen.getByLabelText("Mode"));
-    await userEvent.click(await screen.findByRole("option", { name: "linked" }));
-    await openSource();
-    await userEvent.type(content(), "steps");
-    await userEvent.click(create());
-
-    await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.post).mock.calls.at(-1)![1]).toMatchObject({ mode: "link" });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      "/context",
+      expect.objectContaining({ format: "json", mode: "inject" }),
+    );
   });
 
   it("cannot be submitted without a name", () => {
@@ -144,7 +241,6 @@ describe("CreateContextDialog", () => {
         details: {
           fields: [
             { field: "description", message: "too long" },
-            { field: "format", message: "not a format" },
             { field: "content", message: "must be text" },
           ],
         },
@@ -158,7 +254,6 @@ describe("CreateContextDialog", () => {
 
     await waitFor(() => expect(screen.getByText("must be text")).toBeInTheDocument());
     expect(screen.getByText("too long")).toBeInTheDocument();
-    expect(screen.getByText("not a format")).toBeInTheDocument();
   });
 
   it("toasts a failure that names no field", async () => {

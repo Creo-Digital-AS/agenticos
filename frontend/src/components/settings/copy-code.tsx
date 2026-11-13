@@ -1,29 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { toast } from "sonner";
 import { Check, Copy } from "lucide-react";
 import { useTranslations } from "next-intl";
+
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
 /** A block of code with a button that copies it - a curl call, a base URL. */
 export function CopyCode({ code }: { code: string }) {
   const t = useTranslations("common");
-  const [copied, setCopied] = useState(false);
+  const { copy: write, copied } = useCopyToClipboard(1500);
 
   async function copy() {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    if (!(await write(code))) toast.error(t("copyFailed"));
   }
 
   return (
-    <div className="bg-muted relative rounded-lg">
+    <div className="bg-muted touch:min-h-14 relative rounded-lg">
       <pre className="overflow-x-auto px-3 py-2.5 pr-20 font-mono text-xs leading-relaxed whitespace-pre">
         {code}
       </pre>
       <button
         type="button"
         onClick={copy}
-        className="text-muted-foreground hover:text-foreground bg-background absolute top-1.5 right-1.5 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs"
+        className="text-muted-foreground hover:text-foreground bg-background touch:min-h-11 touch:min-w-11 absolute top-1.5 right-1.5 inline-flex h-7 touch-manipulation items-center gap-1 rounded-md border px-2 text-xs"
       >
         {copied ? (
           <Check className="h-3.5 w-3.5" aria-hidden />

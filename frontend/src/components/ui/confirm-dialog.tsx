@@ -22,6 +22,8 @@ export interface ConfirmDialogProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: React.ReactNode;
+  /** Shown between the description and the buttons, e.g. why a confirm was refused. */
+  children?: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   /** Style the confirm button as destructive (red). */
@@ -46,6 +48,7 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
+  children,
   confirmLabel,
   cancelLabel,
   destructive,
@@ -68,11 +71,13 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={DIALOG_CONFIRM}>
+      <DialogContent dismissible={!loading} className={DIALOG_CONFIRM}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+
+        {children}
 
         {confirmText && (
           <div className="space-y-1.5">
@@ -98,10 +103,11 @@ export function ConfirmDialog({
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
+            loading={loading}
             disabled={!canConfirm}
             onClick={() => void onConfirm()}
           >
-            {loading ? "…" : confirmWords}
+            {confirmWords}
           </Button>
         </DialogFooter>
       </DialogContent>

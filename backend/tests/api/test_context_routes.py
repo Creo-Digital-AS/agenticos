@@ -12,8 +12,6 @@ the assertions are about what the route returns rather than about a stub echoing
 its input.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -43,6 +41,7 @@ def _used_nowhere(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("app.services.context.agents_using", nowhere)
     monkeypatch.setattr("app.services.context.groups_sharing", nowhere)
+    monkeypatch.setattr("app.services.eval_suite.EvalSuiteService.dependency_changed", AsyncMock())
 
 
 _ORGANIZATION_ID = uuid.uuid4()

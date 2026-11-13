@@ -19,7 +19,11 @@ export type SecretKind =
   | "github_oauth_app"
   | "google_oauth_app"
   | "git_token"
-  | "entra_app";
+  | "entra_app"
+  | "http_credential"
+  | "smtp_account"
+  | "microsoft_oauth_app"
+  | "openai_codex";
 
 /**
  * Every kind a person can save. `none` is not one of them: it says "there is no
@@ -39,6 +43,11 @@ export type StorableSecretKind = Exclude<SecretKind, "none">;
  */
 export interface SecretRequirement {
   kind: StorableSecretKind;
+  /**
+   * Further kinds that satisfy it besides `kind` - the coding agent takes an API
+   * key or a ChatGPT sign-in. Optional here, always on the wire.
+   */
+  also_accepts?: StorableSecretKind[];
   /** What the capability's author said it is for, shown beside the picker. */
   description: string;
   /**
@@ -58,7 +67,7 @@ export interface SecretRequirement {
   optional_when?: SecretCondition | null;
   /**
    * Which service in the catalog the key is for - a `services.json` id such as
-   * `mem0` - or null where `required_when` already names it.
+   * `llamaparse` - or null where `required_when` already names it.
    *
    * The two are the same question asked of different capabilities. Web search
    * offers several providers and the chosen one *is* the service, so the
@@ -67,6 +76,24 @@ export interface SecretRequirement {
    * right kind", which is every API key in the vault.
    */
   purpose: string | null;
+  /**
+   * Which services a key may be for, by a config field whose values are not
+   * service ids - the coding agent's `claude_code` takes an `anthropic` key,
+   * `codex` an `openai` key or an `openai_codex` sign-in. Read before
+   * `required_when` and `purpose`. Optional here, always on the wire.
+   */
+  purposes_by?: PurposesByValue | null;
+}
+
+/** Purposes per value of one config field. Mirrors `PurposesByValue`. */
+export interface PurposesByValue {
+  field: string;
+  purposes: Record<string, string[]>;
+  /**
+   * Per value, a config field that, once set, points the key at an endpoint the
+   * platform cannot name - Claude Code's `base_url` - so any key fits.
+   */
+  open_when_set: Record<string, string>;
 }
 
 /** "This config field is one of these values." Mirrors `SecretCondition`. */
@@ -83,6 +110,13 @@ export function secretIsRequired(
   const condition = requirement.required_when;
   if (!condition) return true;
   return condition.equals.includes(String(config[condition.field]));
+}
+
+/** Whether a secret of `kind` satisfies the requirement, as the server checks at publish. */
+export function acceptsKind(requirement: SecretRequirement, kind: string): boolean {
+  return (
+    kind === requirement.kind || (requirement.also_accepts ?? []).some((also) => also === kind)
+  );
 }
 
 /** Whether the picker belongs on the form: the key is needed, or merely usable. */
@@ -160,6 +194,8 @@ export interface SecretPurposeList {
 export type SecretVisibility = "private" | "team" | "org";
 
 export interface Secret {
+  /** Effective edit access in listings; absent on older deployments or write responses. */
+  can_edit?: boolean;
   id: string;
   name: string;
   description: string | null;

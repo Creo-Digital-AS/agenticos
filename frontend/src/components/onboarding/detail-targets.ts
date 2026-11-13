@@ -7,8 +7,11 @@ import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { stripLocale } from "@/lib/active-route";
 import { ROUTES } from "@/lib/constants";
+import { PAGE_SIZE } from "@/components/ui";
 import {
   AGENT_BUILDER,
+  ARTIFACT_DETAIL,
+  DATASET_DETAIL,
   KB_DETAIL,
   ORG_DIRECTORY,
   ORG_GROUPS,
@@ -17,14 +20,23 @@ import {
   ORG_RETENTION,
   ORG_ROLES,
   SETTINGS_DETAIL,
+  TABLE_DETAIL,
+  WORKFLOW_DETAIL,
+  WORKFLOW_LOGS_DETAIL,
+  WORKFLOW_RUNS_DETAIL,
+  WORKFLOW_RUN_DETAIL,
   WORKSPACE_DETAIL,
+  PROJECT_DETAIL,
+  SKILL_DETAIL,
 } from "@/lib/onboarding/tour";
 import { qk } from "@/lib/query-keys";
 import { useOrgStore } from "@/stores";
 import type { AgentList } from "@/types/agents";
+import type { DatasetList } from "@/types/datasets";
 import type { GroupList } from "@/types/groups";
 import type { KnowledgeBaseList } from "@/types/knowledge-base";
 import type { OrganizationList } from "@/types/organization";
+import type { SkillList } from "@/types/providers";
 
 /**
  * The organization a path names, for the `/orgs/<id>/…` detail routes, or `null`
@@ -47,6 +59,8 @@ function orgIdFromPath(path: string): string | null {
 export const FETCHED_DETAIL_PAGES: ReadonlySet<string> = new Set([
   AGENT_BUILDER,
   KB_DETAIL,
+  DATASET_DETAIL,
+  SKILL_DETAIL,
   GROUP_DETAIL,
   ORG_MEMBERS,
   ORG_RETENTION,
@@ -89,7 +103,7 @@ export function useDetailTargets(enabled: boolean): Record<string, ResolvedDetai
     enabled,
   });
   const agentId =
-    agents.data?.items.find((agent) => agent.slug === "claude-code-like")?.id ??
+    agents.data?.items.find((agent) => agent.slug === "agenticos")?.id ??
     agents.data?.items[0]?.id ??
     null;
 
@@ -99,6 +113,38 @@ export function useDetailTargets(enabled: boolean): Record<string, ResolvedDetai
     enabled,
   });
   const kbId = kbs.data?.find((kb) => kb.is_default)?.id ?? kbs.data?.[0]?.id ?? null;
+
+  // The first page the Datasets list itself reads, so the two share one cache entry.
+  const datasets = useQuery({
+    queryKey: qk.datasets.list({
+      search: "",
+      sort: "name",
+      skip: 0,
+      limit: PAGE_SIZE,
+      editable: false,
+      judge: "",
+      asksRun: "",
+      agent: "",
+    }),
+    queryFn: () => apiClient.get<DatasetList>(`/datasets?sort=name&skip=0&limit=${PAGE_SIZE}`),
+    enabled,
+  });
+  const datasetId = datasets.data?.items[0]?.id ?? null;
+
+  // The first page the Skills list itself reads, so the two share one cache entry.
+  const skills = useQuery({
+    queryKey: qk.skills.list({
+      search: "",
+      category: "",
+      sort: "name",
+      skip: 0,
+      limit: PAGE_SIZE,
+      groupId: "",
+    }),
+    queryFn: () => apiClient.get<SkillList>(`/skills?sort=name&skip=0&limit=${PAGE_SIZE}`),
+    enabled,
+  });
+  const skillId = skills.data?.items[0]?.id ?? null;
 
   // The example organization is the one the reader is looking at, then the one
   // they are in, then the list (which is also what `pending` waits on). Members and
@@ -143,6 +189,14 @@ export function useDetailTargets(enabled: boolean): Record<string, ResolvedDetai
         pending: enabled && kbs.isPending,
         href: kbId ? ROUTES.RAG_DETAIL(kbId) : null,
       },
+      [DATASET_DETAIL]: {
+        pending: enabled && datasets.isPending,
+        href: datasetId ? ROUTES.DATASET_DETAIL(datasetId) : null,
+      },
+      [SKILL_DETAIL]: {
+        pending: enabled && skills.isPending,
+        href: skillId ? ROUTES.SKILL_DETAIL(skillId) : null,
+      },
       [ORG_MEMBERS]: {
         pending: orgPending,
         href: orgId ? ROUTES.ORG_MEMBERS(orgId) : null,
@@ -167,14 +221,24 @@ export function useDetailTargets(enabled: boolean): Record<string, ResolvedDetai
         pending: enabled && !!activeOrgId && groups.isPending,
         href: groupId ? ROUTES.GROUP_DETAIL(groupId) : null,
       },
-      // Two "?"-only sections with nothing to fetch. Settings resolves to its own
+      // Six "?"-only sections with nothing to fetch. Settings resolves to its own
       // first page for the rare navigation into it, but its stop is really shown in
       // place on whichever settings page the reader opened help from. A workspace
-      // has no seeded example to open — it is a person's own agent output — so it
-      // never resolves an href and is not walked into from the list; the entry
-      // exists only so the engine treats it as a detail it need not navigate to.
+      // has no seeded example to open — it is a person's own agent output — and
+      // neither has a table, a workflow or a project, so none resolves an href and none is walked into
+      // from its list - nor an artifact's page, which is the viewer's own page, not a
+      // row to open; the entry exists only so the engine treats it as a detail it
+      // need not navigate to. Without it the engine reads the pseudo-page as a
+      // route and pushes to it.
       [SETTINGS_DETAIL]: { pending: false, href: ROUTES.SETTINGS_PROFILE },
       [WORKSPACE_DETAIL]: { pending: false, href: null },
+      [TABLE_DETAIL]: { pending: false, href: null },
+      [WORKFLOW_DETAIL]: { pending: false, href: null },
+      [WORKFLOW_RUN_DETAIL]: { pending: false, href: null },
+      [WORKFLOW_RUNS_DETAIL]: { pending: false, href: null },
+      [WORKFLOW_LOGS_DETAIL]: { pending: false, href: null },
+      [ARTIFACT_DETAIL]: { pending: false, href: null },
+      [PROJECT_DETAIL]: { pending: false, href: null },
     }),
     [
       enabled,
@@ -182,6 +246,10 @@ export function useDetailTargets(enabled: boolean): Record<string, ResolvedDetai
       agentId,
       kbs.isPending,
       kbId,
+      datasets.isPending,
+      datasetId,
+      skills.isPending,
+      skillId,
       orgPending,
       orgId,
       activeOrgId,

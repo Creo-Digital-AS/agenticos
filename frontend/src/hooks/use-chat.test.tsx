@@ -1,13 +1,19 @@
+import { useChatControlsStore } from "@/stores/chat-controls-store";
+import { projectFolderKey, useProjectFoldersStore } from "@/stores/project-folders-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { toast } from "sonner";
 
+import { useWorkOnStore } from "@/stores/work-on-store";
 import { useChat } from "./use-chat";
+import { useVisualImagesStore, useVisualStreamStore } from "@/stores/visual-stream-store";
 import { ApiError } from "@/lib/api-error";
 import { qk } from "@/lib/query-keys";
+import type { ResumedRun } from "@/types/runs";
+import type { AskUserAnswer } from "@/types/chat";
 import {
   useAgentSelectionStore,
   useAuthStore,
@@ -25,8 +31,23 @@ import {
 // uses. It used to be a WebSocket `resume` frame the server silently discarded, so
 // asserting on the frame is exactly what let that pass.
 const { post, get } = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn() }));
-vi.mock("@/lib/api-client", () => ({ apiClient: { post, get } }));
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  // The real error class: `usePermissions` reads a refusal by it.
+  ApiError: (await importOriginal<typeof import("@/lib/api-client")>()).ApiError,
+  apiClient: { post, get },
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+// The outbox's copy on the device is `device-cache`'s to test; here, what the
+// hook hands it and what it does with what comes back.
+const { keepOutbox, keptOutbox } = vi.hoisted(() => ({
+  keepOutbox: vi.fn(() => Promise.resolve()),
+  keptOutbox: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
+}));
+vi.mock("@/lib/offline/device-cache", () => ({
+  keepOutbox,
+  keptOutbox,
+  readThrough: (_key: string, fetch: () => Promise<unknown>) => fetch(),
+}));
 
 const { sent, socket, connect, disconnect, reopen } = vi.hoisted(() => ({
   sent: vi.fn(),
@@ -35,6 +56,7 @@ const { sent, socket, connect, disconnect, reopen } = vi.hoisted(() => ({
   reopen: vi.fn(),
   socket: {
     onMessage: null as ((event: MessageEvent) => void) | null,
+    onMessageBatch: null as ((events: readonly MessageEvent[]) => void) | null,
     onClose: null as (() => void) | null,
     url: "",
     protocols: undefined as string[] | undefined,
@@ -52,7 +74,10 @@ const { sent, socket, connect, disconnect, reopen } = vi.hoisted(() => ({
  * caller's permissions the same way, for whether a reloaded parked run may have
  * its approval panel rebuilt.
  */
-function makeWrapper(permissions: string[] = []) {
+function makeWrapper(
+  permissions: string[] = [],
+  organizations: { id: string; chat_may_waive_approvals: boolean }[] = [],
+) {
   return function Wrapper({ children }: { children: ReactNode }) {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -60,13 +85,16 @@ function makeWrapper(permissions: string[] = []) {
     // Seeded rather than fetched: these tests count requests, and an
     // organizations or permissions query going out would be a request none of
     // them made.
-    client.setQueryData(qk.organizations.list(), []);
-    client.setQueryData(qk.organizations.permissions("current"), {
-      organization_id: "org-1",
-      role: "member",
-      is_app_admin: false,
-      permissions: permissions.map((permission) => ({ permission, scope: "all" })),
-    });
+    client.setQueryData(qk.organizations.list(), organizations);
+    client.setQueryData(
+      qk.organizations.permissions(useOrgStore.getState().activeOrgId ?? "current"),
+      {
+        organization_id: "org-1",
+        role: "member",
+        is_app_admin: false,
+        permissions: permissions.map((permission) => ({ permission, scope: "all" })),
+      },
+    );
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   };
 }
@@ -80,9 +108,11 @@ vi.mock("./use-websocket", () => ({
     url: string;
     protocols?: () => string[] | undefined;
     onMessage?: (event: MessageEvent) => void;
+    onMessageBatch?: (events: readonly MessageEvent[]) => void;
     onClose?: () => void;
   }) => {
     socket.onMessage = options.onMessage ?? null;
+    socket.onMessageBatch = options.onMessageBatch ?? null;
     socket.onClose = options.onClose ?? null;
     socket.url = options.url;
     // Called, because the real hook calls it when it opens a socket rather than
@@ -137,11 +167,12 @@ function parkedTurn() {
 }
 
 beforeEach(() => {
+  useChatControlsStore.setState({ byScope: {} });
   vi.clearAllMocks();
   socket.isConnected = true;
   socket.getProtocols = null;
   useAgentSelectionStore.setState({ selectedAgentId: null });
-  useAuthStore.setState({ accessToken: "t-1" });
+  useAuthStore.setState({ accessToken: "t-1", user: null });
   useOrgStore.setState({ activeOrgId: null });
   useConversationStore.getState().reset();
   useChatStore.getState().clearMessages();
@@ -198,7 +229,65 @@ describe("useChat - which agent a turn is addressed to", () => {
   });
 });
 
+describe("useChat - replying to a message", () => {
+  it("sends what the turn answers once, and quotes it on the question", () => {
+    const reply = { messageId: "m-2", role: "assistant" as const, excerpt: "Plan: A" };
+    act(() => useChatStore.getState().setReplyTo(reply));
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    act(() => result.current.sendMessage("make it bigger"));
+
+    expect(lastFrame()).toMatchObject({ message: "make it bigger", reply_to: "m-2" });
+    const asked = useChatStore.getState().messages.at(-1);
+    expect(asked?.replyTo).toEqual(reply);
+    expect(asked?.isTemporaryId).toBe(true);
+    // Spent: the next turn answers nothing in particular.
+    expect(useChatStore.getState().replyTo).toBeNull();
+  });
+});
+
 describe("useChat - attributing the answer", () => {
+  it("keeps creation, answer persistence and completion ordered inside one delivery batch", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("hello"));
+    const events = [
+      { type: "conversation_created", data: { conversation_id: "created" } },
+      { type: "model_request_start", data: {} },
+      { type: "text_delta", data: { index: 0, content: "hello back" } },
+      { type: "message_saved", data: { message_id: "saved" } },
+      { type: "complete", data: {} },
+      { type: "session_ready", data: {} },
+    ].map((frame) => new MessageEvent("message", { data: JSON.stringify(frame) }));
+    act(() => socket.onMessageBatch?.(events));
+    const messages = useChatStore.getState().messages;
+    expect(messages.every((message) => message.conversationId === "created")).toBe(true);
+    expect(messages.find((message) => message.role === "assistant")).toMatchObject({
+      id: "saved",
+      content: "hello back",
+      isStreaming: false,
+    });
+    expect(result.current.isProcessing).toBe(false);
+  });
+  it("applies a burst of text deltas as one transcript update", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("hello"));
+    receive("model_request_start", {});
+    let changes = 0;
+    const unsubscribe = useChatStore.subscribe((state, previous) => {
+      if (state.messages !== previous.messages) changes++;
+    });
+    const events = Array.from(
+      { length: 200 },
+      (_, n) =>
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text_delta", data: { index: 0, content: `${n} ` } }),
+        }),
+    );
+    act(() => socket.onMessageBatch?.(events));
+    unsubscribe();
+    expect(changes).toBe(1);
+    expect(streaming()?.content).toBe(Array.from({ length: 200 }, (_, n) => `${n} `).join(""));
+  });
   it("credits the answer to the agent the turn was sent to", () => {
     useAgentSelectionStore.getState().select("agent-1");
 
@@ -304,6 +393,7 @@ describe("useChat - the streamed answer", () => {
     receive("text_delta", { index: 0, content: "first" });
     receive("final_result", { output: "first" });
     receive("complete", {});
+    receive("session_ready", {});
 
     receive("model_request_start", {});
 
@@ -345,6 +435,60 @@ describe("useChat - the streamed answer", () => {
       status: "completed",
       result: "3 passages",
     });
+  });
+
+  const SPEAKS_POLISH = {
+    id: "u-1",
+    email: "ada@example.com",
+    is_active: true,
+    created_at: "2026-10-21T00:00:00Z",
+    locale: "pl" as const,
+  };
+
+  it("switches the account's language when an agent was asked to", () => {
+    // What "switch to English" in a chat does (#2301): the console follows the
+    // account, so the page changes as the agent's call answers.
+    useAuthStore.setState({ user: SPEAKS_POLISH });
+    renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+
+    receive("tool_call", {
+      tool_call_id: "tc-1",
+      tool_name: "agenticos_set_my_language",
+      args: { locale: "en" },
+    });
+    receive("tool_result", { tool_call_id: "tc-1", content: '{"locale": "en"}' });
+
+    expect(useAuthStore.getState().user?.locale).toBe("en");
+  });
+
+  it("leaves the language alone for any other tool", () => {
+    useAuthStore.setState({ user: SPEAKS_POLISH });
+    renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+
+    receive("tool_call", { tool_call_id: "tc-1", tool_name: "web_search", args: {} });
+    receive("tool_result", { tool_call_id: "tc-1", content: '{"locale": "en"}' });
+
+    expect(useAuthStore.getState().user?.locale).toBe("pl");
+  });
+
+  it("shows the role an agent saved for the person without a reload (#2301)", () => {
+    useAuthStore.setState({ user: SPEAKS_POLISH });
+    renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+
+    receive("tool_call", {
+      tool_call_id: "tc-1",
+      tool_name: "agenticos_set_my_profile",
+      args: { job_title: "Head of sales" },
+    });
+    receive("tool_result", {
+      tool_call_id: "tc-1",
+      content: '{"job_title": "Head of sales", "about": null}',
+    });
+
+    expect(useAuthStore.getState().user).toMatchObject({ job_title: "Head of sales" });
   });
 
   it("ignores a tool frame with no message open", () => {
@@ -418,6 +562,59 @@ describe("useChat - the streamed answer", () => {
     expect(streaming()?.parts?.filter((part) => part.type === "tool")).toHaveLength(1);
   });
 
+  it("gathers a drawing's arguments for its panel, and drops them once the call is whole", () => {
+    vi.useFakeTimers();
+    try {
+      useVisualStreamStore.setState({ args: {} });
+      renderHook(() => useChat(), { wrapper });
+      receive("model_request_start", {});
+      receive("part_start", {
+        index: 1,
+        part_type: "ToolCallPart",
+        tool_name: "draw",
+        tool_call_id: "tc-draw",
+      });
+      const before = streaming()?.toolCalls;
+
+      receive("tool_call_delta", { index: 1, args_delta: '{"title": "Flow"' });
+      act(() => vi.advanceTimersByTime(100));
+
+      expect(useVisualStreamStore.getState().args).toEqual({ "tc-draw": '{"title": "Flow"' });
+      expect(streaming()?.toolCalls).toBe(before);
+
+      receive("tool_call", { tool_call_id: "tc-draw", tool_name: "draw", args: { title: "Flow" } });
+      expect(useVisualStreamStore.getState().args).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a drawing's pictures when the socket sends them", () => {
+    useVisualImagesStore.setState({ images: {} });
+    renderHook(() => useChat(), { wrapper });
+
+    receive("visual_images", {
+      tool_call_id: "tc-draw",
+      images: { logo: "data:image/png;base64,AA" },
+    });
+
+    expect(useVisualImagesStore.getState().images).toEqual({
+      "tc-draw": { logo: "data:image/png;base64,AA" },
+    });
+  });
+
+  it("tells the running turn how a drawing rendered", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    act(() => result.current.reportVisual("tc-draw", ["boom"]));
+
+    expect(lastFrame()).toEqual({
+      type: "visual_report",
+      tool_call_id: "tc-draw",
+      errors: ["boom"],
+    });
+  });
+
   it("ignores a delta for a part that is not a tool call it drew", () => {
     renderHook(() => useChat(), { wrapper });
     receive("model_request_start", {});
@@ -482,7 +679,7 @@ describe("useChat - the streamed answer", () => {
 });
 
 describe("useChat - failures and interruptions", () => {
-  it("writes the error into the message being streamed", () => {
+  it("keeps the error separate from the streamed answer", () => {
     renderHook(() => useChat(), { wrapper });
     receive("model_request_start", {});
     receive("text_delta", { index: 0, content: "Let me check." });
@@ -490,7 +687,9 @@ describe("useChat - failures and interruptions", () => {
     receive("error", { message: "Budget exceeded" });
 
     expect(streaming()).toMatchObject({ isStreaming: false });
-    expect(streaming()?.content).toContain("❌ Error: Budget exceeded");
+    expect(streaming()?.content).not.toContain("Budget exceeded");
+    expect(streaming()?.runFailed).toBe(true);
+    expect(streaming()?.runError).toBe("Budget exceeded");
   });
 
   it("answers a refusal that came before the turn opened a message, instead of dropping it", () => {
@@ -501,7 +700,7 @@ describe("useChat - failures and interruptions", () => {
 
     const answer = useChatStore.getState().messages.at(-1);
     expect(answer).toMatchObject({ role: "assistant", isStreaming: false });
-    expect(answer?.content).toContain("This agent has no model");
+    expect(answer?.runError).toBe("This agent has no model");
     expect(result.current.isProcessing).toBe(false);
   });
 
@@ -511,7 +710,102 @@ describe("useChat - failures and interruptions", () => {
 
     receive("error", { message: "" });
 
-    expect(streaming()?.content).toContain("Unknown error");
+    expect(streaming()?.runError).toBe("Unknown error");
+  });
+
+  it("shows a late save failure on the stopped reply without restarting it", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("hello"));
+    receive("user_prompt", { message_id: "prompt-1" });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Part of the answer." });
+    const stoppedId = streaming()?.id;
+
+    act(() => result.current.stopGeneration());
+    // A second Stop while persistence unwinds must keep the same target.
+    act(() => result.current.stopGeneration());
+    receive("text_delta", { content: "Late text must not resume the stopped reply." });
+    receive("error", { code: "message_save_failed", message: "The reply could not be saved." });
+    receive("complete", { stopped: true });
+    receive("session_ready", {});
+
+    expect(streaming()).toMatchObject({ id: stoppedId, isStreaming: false, isTemporaryId: true });
+    expect(streaming()?.content).toContain("Part of the answer.");
+    expect(streaming()?.runError).toBe("The reply could not be saved.");
+    expect(streaming()?.content).not.toContain("Late text");
+    expect(
+      useChatStore.getState().messages.filter((message) => message.role === "assistant"),
+    ).toHaveLength(1);
+    expect(result.current.isProcessing).toBe(false);
+  });
+
+  it("releases the stopped reply once persistence has finished", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Stopped answer." });
+    act(() => result.current.stopGeneration());
+    receive("complete", { stopped: true });
+    receive("session_ready", {});
+
+    receive("error", { code: "message_save_failed", message: "An unrelated save failed." });
+
+    expect(streaming()?.content).toBe("Stopped answer.");
+    act(() => result.current.sendMessage("A new question"));
+    receive("user_prompt", { message_id: "prompt-2" });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "New answer." });
+    receive("error", { code: "message_save_failed", message: "The new reply was not saved." });
+
+    const replies = useChatStore
+      .getState()
+      .messages.filter((message) => message.role === "assistant");
+    expect(replies[0]?.content).toBe("Stopped answer.");
+    expect(replies[1]?.runError).toBe("The new reply was not saved.");
+  });
+
+  it("forgets the stopped reply when another conversation opens", () => {
+    const { result, rerender } = renderHook(({ id }) => useChat({ conversationId: id }), {
+      wrapper,
+      initialProps: { id: "c-1" },
+    });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Stopped answer." });
+    act(() => result.current.stopGeneration());
+
+    rerender({ id: "c-2" });
+    rerender({ id: "c-1" });
+    receive("error", { code: "message_save_failed", message: "An unrelated save failed." });
+
+    expect(streaming()?.content).toBe("Stopped answer.");
+  });
+
+  it.each(["reconnect", "follow"])("forgets the stopped reply after %s", (transition) => {
+    const { result, rerender } = renderHook(() => useChat({ conversationId: "c-1" }), {
+      wrapper,
+    });
+    act(() => result.current.sendMessage("hello"));
+    receive("user_prompt", { message_id: "prompt-1" });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Stopped answer." });
+    act(() => result.current.stopGeneration());
+
+    if (transition === "reconnect") {
+      socket.isConnected = false;
+      rerender();
+      socket.isConnected = true;
+      rerender();
+    } else {
+      receive("turn_attached", { conversation_id: "c-1" });
+    }
+    receive("model_request_start", {});
+    receive("text_delta", { content: "New answer." });
+    receive("error", { code: "message_save_failed", message: "The new reply was not saved." });
+
+    const replies = useChatStore
+      .getState()
+      .messages.filter((message) => message.role === "assistant");
+    expect(replies[0]?.content).toBe("Stopped answer.");
+    expect(replies[1]?.runError).toBe("The new reply was not saved.");
   });
 
   // Every ending ends the call that was already out too, not only the one still
@@ -593,17 +887,20 @@ describe("useChat - failures and interruptions", () => {
     expect(useChatStore.getState().messages).toEqual([]);
   });
 
-  it("stops a turn on request and clears everything waiting on it", () => {
+  it("stops a turn on request and clears everything waiting on it", async () => {
+    post.mockResolvedValue("Not performed: the run was stopped.");
     const { result } = renderHook(() => useChat(), { wrapper });
     receive("model_request_start", {});
     receive("tool_approval_required", {
       action_requests: [{ id: "ar-1", tool_name: "send_email", args: {} }],
+      run_id: "r-1",
       review_configs: [],
     });
 
     act(() => result.current.stopGeneration());
 
-    expect(frame(0)).toEqual({ type: "stop" });
+    await waitFor(() => expect(result.current.pendingApproval).toBeNull());
+    expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
     expect(streaming()?.isStreaming).toBe(false);
     expect(result.current.isProcessing).toBe(false);
     expect(result.current.pendingApproval).toBeNull();
@@ -690,6 +987,53 @@ describe("useChat - streaming a delegation", () => {
     });
   });
 
+  it.each(["Not performed: the run was stopped.", null])(
+    "settles waiting delegates after Stop returns %s",
+    async (settled) => {
+      post.mockResolvedValue(settled);
+      const { result } = renderHook(() => useChat(), { wrapper: decider });
+      receive("model_request_start", {});
+      startDelegation("t1");
+      receive("subagent_awaiting_approval", {
+        kind: "subagent_awaiting_approval",
+        task_id: "t1",
+        subagent: "researcher",
+        depth: 0,
+      });
+      receive("tool_approval_required", {
+        run_id: "r-1",
+        action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+        review_configs: [],
+      });
+      receive("complete", {});
+      expect(result.current.delegations[0]?.status).toBe("awaiting_approval");
+      act(() => result.current.stopGeneration());
+      await waitFor(() => expect(result.current.pendingApproval).toBeNull());
+      expect(result.current.delegations[0]?.status).toBe("cancelled");
+    },
+  );
+
+  it("keeps another run's delegation panel unchanged when stopping an older run", async () => {
+    get.mockResolvedValue(true);
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    startDelegation("other-task");
+    receive("subagent_awaiting_approval", {
+      kind: "subagent_awaiting_approval",
+      task_id: "other-task",
+      subagent: "researcher",
+      depth: 0,
+    });
+    receive("complete", {});
+    await waitFor(() => expect(result.current.canStopParked).toBe(true));
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(useChatStore.getState().messages[0]?.wasStopped).toBe(true));
+    expect(result.current.delegations[0]?.status).toBe("awaiting_approval");
+  });
+
   it("closes a delegate's panel into a waiting state when it stops for a person", () => {
     // A sync delegate that parks on an approval sends `subagent_awaiting_approval`
     // and no `subagent_complete` until the person decides. The panel must stop
@@ -726,6 +1070,16 @@ describe("useChat - streaming a delegation", () => {
     receive("error", { message: "Budget exceeded" });
 
     expect(result.current.delegations[0]?.status).toBe("cancelled");
+  });
+
+  it("keeps a background delegate running when only the reply could not be saved", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    startDelegation("t1", "researcher", "async");
+
+    receive("error", { code: "message_save_failed", message: "The reply could not be saved." });
+    receive("complete", {});
+
+    expect(result.current.delegations[0]?.status).toBe("running");
   });
 
   it("closes an unfinished delegation when the person presses stop", () => {
@@ -948,7 +1302,34 @@ describe("useChat - the conversation a turn belongs to", () => {
     expect(result.current.lastUsage).toMatchObject({ input_tokens: 1200 });
 
     receive("complete", {});
+    receive("session_ready", {});
     expect(result.current.lastUsage).toMatchObject({ input_tokens: 1200 });
+  });
+
+  it("keeps an unsaved reply, its warning and its usage when the turn completes", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const warning =
+      "The assistant's reply could not be saved. " +
+      "Copy any text you need before leaving this conversation.";
+    const usage = {
+      input_tokens: 1200,
+      output_tokens: 300,
+      cost_usd: "0.0125",
+      budget_percent: null,
+      sandbox: null,
+    };
+
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Two are open." });
+    receive("final_result", { output: "Two are open." });
+    receive("error", { code: "message_save_failed", message: warning });
+    receive("complete", { usage });
+
+    expect(streaming()?.content).toContain("Two are open.");
+    expect(streaming()?.runError).toBe(warning);
+    expect(streaming()).toMatchObject({ isTemporaryId: true, isStreaming: false, usage });
+    expect(result.current.lastUsage).toEqual(usage);
+    expect(result.current.isProcessing).toBe(false);
   });
 
   it("still finds the message after it has been given its real id", () => {
@@ -1043,6 +1424,7 @@ describe("useChat - the conversation a turn belongs to", () => {
     renderHook(() => useChat(), { wrapper });
     receive("model_request_start", {});
     receive("complete", {});
+    receive("session_ready", {});
 
     receive("message_saved", { message_id: "m-real" });
 
@@ -1056,6 +1438,7 @@ describe("useChat - the conversation a turn belongs to", () => {
   it("renames nothing when there is no temporary message to rename", () => {
     renderHook(() => useChat(), { wrapper });
     receive("complete", {});
+    receive("session_ready", {});
 
     receive("message_saved", { message_id: "m-real" });
 
@@ -1068,10 +1451,79 @@ describe("useChat - the conversation a turn belongs to", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
 
     receive("complete", {});
+    receive("session_ready", {});
 
     expect(listener).toHaveBeenCalled();
     expect(result.current.isProcessing).toBe(false);
     window.removeEventListener("billing:refresh", listener);
+  });
+});
+
+describe("useChat - a sandbox still being opened", () => {
+  // The first session after an update builds the runtime's image on the host:
+  // minutes in which nothing streams (#2222).
+  it("says so when the server does", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    receive("sandbox_preparing", {});
+
+    expect(result.current.sandboxPreparing).toBe(true);
+  });
+
+  it("keeps saying so through another tool's result", () => {
+    // A faster tool beside the sandbox one finishes while the image still builds.
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("sandbox_preparing", {});
+
+    receive("tool_result", { tool_call_id: "t-1", content: "ok" });
+
+    expect(result.current.sandboxPreparing).toBe(true);
+  });
+
+  it("stops saying so once the sandbox is open", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("sandbox_preparing", {});
+
+    receive("sandbox_ready", {});
+
+    expect(result.current.sandboxPreparing).toBe(false);
+  });
+
+  it("stops saying so when the turn fails", () => {
+    // A failed open sends `error` and no `complete` after it.
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("sandbox_preparing", {});
+
+    receive("error", { message: "The sandbox could not be opened." });
+
+    expect(result.current.sandboxPreparing).toBe(false);
+  });
+
+  it("stops saying so when the turn ends", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("sandbox_preparing", {});
+
+    receive("complete", {});
+    receive("session_ready", {});
+
+    expect(result.current.sandboxPreparing).toBe(false);
+  });
+
+  it("stops saying so when the socket drops mid-preparation", () => {
+    // The lost socket can bring no `sandbox_ready`, and the next turn on the
+    // open sandbox sends no preparation frames to clear it (#2251).
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("run the analysis"));
+    receive("sandbox_preparing", {});
+    expect(result.current.sandboxPreparing).toBe(true);
+
+    socket.isConnected = false;
+    rerender();
+    socket.isConnected = true;
+    rerender();
+
+    expect(result.current.isProcessing).toBe(false);
+    expect(result.current.sandboxPreparing).toBe(false);
   });
 });
 
@@ -1121,6 +1573,7 @@ describe("useChat - the summary of its own history", () => {
       window_tokens: 5_000,
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     expect(result.current.compactionImpossible).toMatchObject({ overhead_tokens: 3_843 });
   });
@@ -1155,6 +1608,7 @@ describe("useChat - the summary of its own history", () => {
     });
 
     receive("complete", {});
+    receive("session_ready", {});
 
     expect(result.current.compacting).toBeNull();
   });
@@ -1188,6 +1642,24 @@ describe("useChat - the summary of its own history", () => {
 });
 
 describe("useChat - approvals and questions", () => {
+  it("records a completed turn for the sidebar but leaves a parked approval unfinished", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "Done." });
+    receive("complete", {});
+    expect(useWorkingStore.getState().finishedAt["c-1"]).toBeDefined();
+    useWorkingStore.getState().reset();
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: "send_email", args: {}, tool_call_id: "tc-1" });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "send_email", args: {} }],
+      review_configs: [],
+    });
+    receive("complete", {});
+    expect(useWorkingStore.getState().finishedAt["c-1"]).toBeUndefined();
+  });
+
   it("surfaces the tools waiting on a person, and resolves their cards", async () => {
     // The card used to spin forever: a parked call produces no `tool_result`
     // until somebody decides, so "running" is a state it never leaves.
@@ -1252,6 +1724,311 @@ describe("useChat - approvals and questions", () => {
     expect(result.current.pendingApproval).toBeNull();
   });
 
+  it("submits a batch only once when two clicks arrive before a render", async () => {
+    let finish!: (value: object) => void;
+    const decision = new Promise<object>((resolve) => {
+      finish = resolve;
+    });
+    post.mockImplementation((url: string) =>
+      url.endsWith("/resume")
+        ? Promise.resolve({ status: "completed", output: "Done." })
+        : decision,
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+      review_configs: [],
+    });
+    const submit = result.current.sendResumeDecisions;
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = submit([{ type: "approve" }]);
+      second = submit([{ type: "approve" }]);
+    });
+    expect(post.mock.calls.filter(([url]) => url === "/approvals/ar-1")).toHaveLength(1);
+    await act(async () => {
+      finish({});
+      await Promise.all([first, second]);
+    });
+    expect(post.mock.calls.filter(([url]) => url.endsWith("/resume"))).toHaveLength(1);
+  });
+
+  it("does not restore the second HTTP approval batch while its decision is in flight", async () => {
+    const parked = {
+      id: "ar-2",
+      tool_call_id: "tc-2",
+      tool_name: "execute",
+      tool_args: { cmd: "ls" },
+    };
+    get.mockImplementation(async (url: string) => (url.endsWith("/parked") ? [parked] : {}));
+    let finish!: (value: object) => void;
+    const decision = new Promise<object>((resolve) => {
+      finish = resolve;
+    });
+    let resumes = 0;
+    post.mockImplementation((url: string) => {
+      if (url === "/approvals/ar-2") return decision;
+      if (url.endsWith("/resume")) {
+        resumes += 1;
+        return Promise.resolve(
+          resumes === 1
+            ? {
+                status: "awaiting_approval",
+                output: "",
+                parked: [parked],
+                steps: [
+                  { tool_call_id: "tc-2", tool_name: "execute", args: { cmd: "ls" }, result: null },
+                ],
+              }
+            : { status: "completed", output: "Done.", parked: [] },
+        );
+      }
+      return Promise.resolve({});
+    });
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper: decider });
+    receive("model_request_start", {});
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+      review_configs: [],
+    });
+    receive("complete", {});
+    receive("session_ready", {});
+    await act(async () => {
+      await result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+    expect(result.current.pendingApproval?.actionRequests[0]?.id).toBe("ar-2");
+    let submitting!: Promise<void>;
+    await act(async () => {
+      submitting = result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+    expect(result.current.pendingApproval).toBeNull();
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(0);
+    await act(async () => {
+      finish({});
+      await submitting;
+    });
+    expect(result.current.pendingApproval).toBeNull();
+    expect(post.mock.calls.filter(([url]) => url === "/approvals/ar-2")).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "does not replace another conversation after a stale decision fails: %s",
+    async (fails) => {
+      let finish!: (value: object) => void;
+      let fail!: (reason: Error) => void;
+      const decision = new Promise<object>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      post.mockImplementation((url: string) =>
+        url.endsWith("/resume")
+          ? Promise.resolve({ status: "completed", output: "Old conversation result." })
+          : decision,
+      );
+      const { result, rerender } = renderHook(({ conversationId }) => useChat({ conversationId }), {
+        initialProps: { conversationId: "first" },
+        wrapper,
+      });
+      receive("tool_approval_required", {
+        run_id: "r-1",
+        action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+        review_configs: [],
+      });
+      let submitting!: Promise<void>;
+      act(() => {
+        submitting = result.current.sendResumeDecisions([{ type: "approve" }]);
+      });
+      rerender({ conversationId: "second" });
+      receive("tool_approval_required", {
+        run_id: "r-2",
+        action_requests: [{ id: "ar-2", tool_call_id: "tc-2", tool_name: "execute", args: {} }],
+        review_configs: [],
+      });
+      await act(async () => {
+        if (fails) fail(new Error("Old decision failed"));
+        else finish({});
+        await submitting;
+      });
+      expect(result.current.pendingApproval?.runId).toBe("r-2");
+      expect(
+        useChatStore
+          .getState()
+          .messages.some((message) => message.content === "Old conversation result."),
+      ).toBe(false);
+    },
+  );
+
+  it("keeps an HTTP continuation visibly working across a stale transcript refresh", async () => {
+    let finish!: (value: object) => void;
+    const resumed = new Promise<object>((resolve) => {
+      finish = resolve;
+    });
+    post.mockImplementation((url: string) =>
+      url.endsWith("/resume") ? resumed : Promise.resolve({}),
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_call_id: "tc-1", tool_name: "execute", args: {} });
+    receive("message_saved", { message_id: "saved-turn" });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+      review_configs: [],
+    });
+    receive("complete", {});
+    receive("session_ready", {});
+    const parkedSnapshot = useChatStore.getState().messages.map((message) => ({ ...message }));
+    let submitting!: Promise<void>;
+    await act(async () => {
+      submitting = result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      isStreaming: true,
+      toolCalls: [{ id: "tc-1", status: "running" }],
+    });
+    act(() => useChatStore.getState().rereadMessages(parkedSnapshot));
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      isStreaming: true,
+      toolCalls: [{ id: "tc-1", status: "running" }],
+    });
+    act(() => result.current.sendMessage("Follow up after the continuation"));
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(
+      useChatStore.getState().messages.filter((message) => message.role === "user"),
+    ).toHaveLength(0);
+    await act(async () => {
+      finish({
+        status: "completed",
+        output: "Done.",
+        settled: [{ tool_call_id: "tc-1", result: "ok" }],
+      });
+      await submitting;
+    });
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      isStreaming: false,
+      toolCalls: [{ id: "tc-1", status: "completed", result: "ok" }],
+    });
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(0));
+    expect(
+      useChatStore
+        .getState()
+        .messages.some(
+          (message) =>
+            message.role === "user" && message.content === "Follow up after the continuation",
+        ),
+    ).toBe(true);
+  });
+
+  it("keeps a rejected step refused when a chat run's batch mixes both", async () => {
+    post.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith("/approvals/") ? { continues_in_chat: true } : {}),
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_call_id: "tc-1", tool_name: "execute", args: {} });
+    receive("tool_call", { tool_call_id: "tc-2", tool_name: "delete_row", args: {} });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [
+        { id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} },
+        { id: "ar-2", tool_call_id: "tc-2", tool_name: "delete_row", args: {} },
+      ],
+      review_configs: [],
+    });
+    receive("complete", {});
+    receive("session_ready", {});
+
+    await act(async () => {
+      await result.current.sendResumeDecisions([{ type: "approve" }, { type: "reject" }]);
+    });
+
+    const steps = useChatStore
+      .getState()
+      .messages.flatMap((message) => message.parts ?? [])
+      .map((part) => part.toolCall);
+    expect(steps.find((call) => call?.id === "tc-1")?.status).toBe("running");
+    expect(steps.find((call) => call?.id === "tc-2")).toMatchObject({
+      status: "error",
+      result: "Refused",
+    });
+    expect(post).not.toHaveBeenCalledWith("/runs/r-1/resume");
+  });
+
+  it("settles nothing on screen when a chat run's decision has no open turn", async () => {
+    post.mockResolvedValue({ continues_in_chat: true });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+      review_configs: [],
+    });
+
+    await act(async () => {
+      await result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+
+    expect(post).not.toHaveBeenCalledWith("/runs/r-1/resume");
+    expect(toast.info).toHaveBeenCalled();
+  });
+
+  it("records the decisions on a chat run and leaves its continuation to the server", async () => {
+    // A chat run is continued by the server once its last call is decided; a
+    // resume from here would answer that chat twice.
+    post.mockImplementation((url: string) =>
+      Promise.resolve(
+        url.startsWith("/approvals/")
+          ? { status: "approved", run_id: "r-1", continues_in_chat: true }
+          : {},
+      ),
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_call_id: "tc-1", tool_name: "execute", args: {} });
+    receive("subagent_start", {
+      kind: "subagent_start",
+      task_id: "t1",
+      subagent: "researcher",
+      depth: 0,
+      mode: "sync",
+      prompt: "look",
+      parent_task_id: null,
+    });
+    receive("tool_approval_required", {
+      run_id: "r-1",
+      action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "execute", args: {} }],
+      review_configs: [],
+    });
+    receive("complete", {});
+    receive("session_ready", {});
+
+    await act(async () => {
+      await result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+
+    expect(post).toHaveBeenCalledWith("/approvals/ar-1", { approved: true });
+    expect(post).not.toHaveBeenCalledWith("/runs/r-1/resume");
+    expect(result.current.pendingApproval).toBeNull();
+    const steps = useChatStore
+      .getState()
+      .messages.flatMap((message) => message.parts ?? [])
+      .filter((part) => part.toolCall !== undefined)
+      .map((part) => part.toolCall);
+    expect(steps.find((call) => call?.id === "tc-1")).toMatchObject({
+      status: "running",
+      result: undefined,
+    });
+    expect(steps.some((call) => call?.status === "running")).toBe(true);
+    // A panel is not tied to a run, so a decision on a chat run leaves it alone.
+    expect(result.current.delegations[0]?.status).toBe("running");
+    expect(toast.info).toHaveBeenCalledWith(
+      "Decided. Once nothing else is waiting, the agent goes on in the chat this was asked in and answers there.",
+    );
+  });
+
   it("re-opens the panel when the continuation parks again", async () => {
     // A resume runs the agent, and the agent can reach a second gated call. Nothing
     // announces that here - the continuation runs over HTTP, so no
@@ -1278,6 +2055,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1329,6 +2107,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1360,6 +2139,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1376,6 +2156,7 @@ describe("useChat - approvals and questions", () => {
   });
 
   it("marks a refused call refused, on the turn it was drawn in", async () => {
+    post.mockResolvedValue({});
     const { result } = renderHook(() => useChat(), { wrapper });
     receive("model_request_start", {});
     receive("tool_call", { tool_call_id: "tc-1", tool_name: "execute", args: {} });
@@ -1385,6 +2166,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "reject" }]);
@@ -1453,7 +2235,15 @@ describe("useChat - approvals and questions", () => {
     // reload, but the panel with the decision was gone, so the only way to finish
     // the run was the approvals queue on another page (#601).
     get.mockResolvedValue([
-      { id: "ar-1", tool_call_id: "tc-1", tool_name: "send_email", tool_args: { to: "a@b.c" } },
+      {
+        id: "ar-1",
+        tool_call_id: "tc-1",
+        tool_name: "send_email",
+        tool_args: { to: "a@b.c" },
+        // The stable id and the names its sentence is written from come back with it.
+        capability_tool_id: "send_email",
+        context: { recipient: "Ada" },
+      },
       // A run parked before the tool-call mapping was stored has no id to
       // resolve a card with; the decision is still offered.
       { id: "ar-2", tool_call_id: null, tool_name: "execute", tool_args: {} },
@@ -1464,10 +2254,19 @@ describe("useChat - approvals and questions", () => {
     const { result } = renderHook(() => useChat(), { wrapper: decider });
     await act(async () => {});
 
-    expect(get.mock.calls).toEqual([["/runs/r-1/parked"]]);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toEqual([
+      ["/runs/r-1/parked"],
+    ]);
     expect(result.current.pendingApproval).toEqual({
       actionRequests: [
-        { id: "ar-1", tool_call_id: "tc-1", tool_name: "send_email", args: { to: "a@b.c" } },
+        {
+          id: "ar-1",
+          tool_call_id: "tc-1",
+          tool_name: "send_email",
+          args: { to: "a@b.c" },
+          capability_tool_id: "send_email",
+          context: { recipient: "Ada" },
+        },
         { id: "ar-2", tool_call_id: "", tool_name: "execute", args: {} },
       ],
       reviewConfigs: [
@@ -1479,7 +2278,45 @@ describe("useChat - approvals and questions", () => {
     });
   });
 
-  it("asks nothing without approvals:decide", async () => {
+  it.each([
+    ["approval", "parked", parkedTurn],
+    ["question", "questions", askedTurn],
+  ] as const)(
+    "keeps Stop available when restoring a %s fails for an approver",
+    async (_, path, turn) => {
+      get.mockImplementation(async (url: string) => {
+        if (url.endsWith("/can-stop")) return true;
+        throw new Error("restore failed");
+      });
+      post.mockResolvedValue("Not performed: the run was stopped.");
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      useChatStore.getState().addMessage(turn());
+      const { result } = renderHook(() => useChat(), { wrapper: decider });
+      await waitFor(() => expect(get).toHaveBeenCalledWith(`/runs/r-1/${path}`));
+      await waitFor(() => expect(result.current.canStopParked).toBe(true));
+      expect(result.current.pendingApproval).toBeNull();
+      expect(result.current.pendingQuestions).toBeNull();
+      act(() => result.current.stopGeneration());
+      await waitFor(() => expect(useChatStore.getState().messages[0]?.wasStopped).toBe(true));
+      expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
+    },
+  );
+
+  it("lets an approver stop a run whose approvals were already decided elsewhere", async () => {
+    get.mockImplementation(async (url: string) => (url.endsWith("/can-stop") ? true : []));
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper: decider });
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/runs/r-1/parked"));
+    await waitFor(() => expect(result.current.canStopParked).toBe(true));
+    expect(result.current.pendingApproval).toBeNull();
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(useChatStore.getState().messages[0]?.wasStopped).toBe(true));
+    expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
+  });
+
+  it("checks only stopping authority without approvals:decide", async () => {
     // The endpoint is gated on the permission deciding takes, so a caller
     // without it would 403 on every reopened conversation. The stored step
     // still says the run is waiting; there is just no decision to offer.
@@ -1489,8 +2326,131 @@ describe("useChat - approvals and questions", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
     await act(async () => {});
 
-    expect(get).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith("/runs/r-1/can-stop", { signal: expect.any(AbortSignal) });
     expect(result.current.pendingApproval).toBeNull();
+  });
+
+  it("lets the owner stop a restored approval without deciding it", async () => {
+    get.mockResolvedValue(true);
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.canStopParked).toBe(true));
+    expect(result.current.pendingApproval).toBeNull();
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.canStopParked).toBe(false));
+    expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
+  });
+
+  it("finds the owner's earlier parked run behind another person's approval", async () => {
+    get.mockImplementation(async (url: string) => url === "/runs/r-1/can-stop");
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    useChatStore.getState().addMessage({ ...parkedTurn(), id: "other", runId: "other-run" });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.canStopParked).toBe(true));
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/runs/r-1/cancel"));
+  });
+
+  it("does not offer another person's parked run to a member", async () => {
+    get.mockResolvedValue(false);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await act(async () => {});
+    expect(result.current.canStopParked).toBe(false);
+  });
+
+  it.each(["pending", "resolved"])(
+    "drops owner-only Stop when decision permission arrives with lookup %s",
+    async (lookup) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      });
+      client.setQueryData(qk.organizations.list(), []);
+      const setPermissions = (decide: boolean) =>
+        client.setQueryData(qk.organizations.permissions("current"), {
+          organization_id: "org-1",
+          role: decide ? "admin" : "member",
+          is_app_admin: false,
+          permissions: decide ? [{ permission: "approvals:decide", scope: "all" }] : [],
+        });
+      setPermissions(false);
+      const Wrap = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      );
+      let finish!: (allowed: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+      get.mockImplementation(async (url: string) =>
+        url.endsWith("/can-stop")
+          ? lookup === "pending"
+            ? pending
+            : true
+          : [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "send_email", tool_args: {} }],
+      );
+      post.mockResolvedValue({ run_id: "r-1", status: "completed", output: "Done." });
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      useChatStore.getState().addMessage(parkedTurn());
+      const { result } = renderHook(() => useChat(), { wrapper: Wrap });
+      await waitFor(() =>
+        expect(get).toHaveBeenCalledWith("/runs/r-1/can-stop", { signal: expect.any(AbortSignal) }),
+      );
+      if (lookup === "resolved")
+        await waitFor(() => expect(result.current.canStopParked).toBe(true));
+      await act(async () => {
+        setPermissions(true);
+      });
+      await waitFor(() => expect(result.current.pendingApproval).not.toBeNull());
+      await act(async () => finish(true));
+      expect(result.current.canStopParked).toBe(false);
+      await act(async () => result.current.sendResumeDecisions([{ type: "approve" }]));
+      expect(result.current.pendingApproval).toBeNull();
+      expect(result.current.canStopParked).toBe(false);
+    },
+  );
+
+  it("waits for known permissions before asking about owner-only Stop", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    client.setQueryData(qk.organizations.list(), []);
+    let finish!: (permissions: unknown) => void;
+    const pending = new Promise((resolve) => {
+      finish = resolve;
+    });
+    get.mockImplementation(async (url: string) => (url === "/me/permissions" ? pending : []));
+    const Wrap = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    renderHook(() => useChat(), { wrapper: Wrap });
+    await act(async () => {});
+    expect(get.mock.calls.map(([url]) => url)).toEqual(["/me/permissions"]);
+    await act(async () =>
+      finish({
+        organization_id: "org-1",
+        role: "admin",
+        is_app_admin: false,
+        permissions: [{ permission: "approvals:decide", scope: "all" }],
+      }),
+    );
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/runs/r-1/parked"));
+    expect(get.mock.calls.some(([url]) => url.endsWith("/can-stop"))).toBe(true);
+  });
+
+  it("automatically retries a temporary authority failure without another message", async () => {
+    get.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(true);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(parkedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.canStopParked).toBe(true), { timeout: 4000 });
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("asks about a run once, not on every store update", async () => {
@@ -1513,7 +2473,7 @@ describe("useChat - approvals and questions", () => {
 
     // Once for the run - and an answer of "nothing pending" leaves the panel
     // down rather than inventing one: the calls were decided somewhere else.
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(1);
   });
 
   it("leaves a parked step from before runs were stamped on messages alone", async () => {
@@ -1539,7 +2499,7 @@ describe("useChat - approvals and questions", () => {
     const { result } = renderHook(() => useChat(), { wrapper: decider });
     await act(async () => {});
 
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(1);
     expect(result.current.pendingApproval).toBeNull();
   });
 
@@ -1549,16 +2509,18 @@ describe("useChat - approvals and questions", () => {
     // switch effect exists to prevent - Approve would decide a call the person
     // is no longer looking at.
     let resolveParked!: (rows: unknown) => void;
-    get.mockReturnValue(
-      new Promise((resolve) => {
-        resolveParked = resolve;
-      }),
+    get.mockImplementation((url: string) =>
+      url.endsWith("/can-stop")
+        ? Promise.resolve(false)
+        : new Promise((resolve) => {
+            resolveParked = resolve;
+          }),
     );
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(parkedTurn());
     const { result } = renderHook(() => useChat(), { wrapper: decider });
     await act(async () => {});
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(1);
 
     act(() => {
       useConversationStore.getState().setCurrentConversationId("c-2");
@@ -1573,7 +2535,7 @@ describe("useChat - approvals and questions", () => {
     expect(result.current.pendingApproval).toBeNull();
   });
 
-  it("waits for the turn in flight before asking", async () => {
+  it("can recover an older parked approval while another turn is in flight", async () => {
     // While a turn is processing the parked state on screen is the live one,
     // and the live frame is what will carry the panel.
     get.mockResolvedValue([]);
@@ -1584,12 +2546,13 @@ describe("useChat - approvals and questions", () => {
       useChatStore.getState().addMessage(parkedTurn());
     });
     await act(async () => {});
-    expect(get).not.toHaveBeenCalled();
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(1);
 
     receive("complete", {});
+    receive("session_ready", {});
     await act(async () => {});
 
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(1);
   });
 
   it("takes a pending question off screen when another conversation is opened", () => {
@@ -1663,6 +2626,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1699,6 +2663,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1733,6 +2698,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1784,6 +2750,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
 
     await act(async () => {
       await result.current.sendResumeDecisions([{ type: "approve" }]);
@@ -1813,6 +2780,7 @@ describe("useChat - approvals and questions", () => {
       review_configs: [],
     });
     receive("complete", {});
+    receive("session_ready", {});
     const before = useChatStore.getState().messages.length;
 
     await act(async () => {
@@ -2083,6 +3051,31 @@ describe("useChat - approvals and questions", () => {
     expect(result.current.pendingQuestions).toEqual([]);
   });
 
+  it.each(["ask_user_question", "ask_person"])(
+    "pauses the working status while %s awaits an answer",
+    (name) => {
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const { result } = renderHook(() => useChat(), { wrapper });
+      receive("model_request_start", {});
+      receive("tool_call", {
+        tool_name: name,
+        tool_id: "ask_user_question",
+        tool_call_id: "ask-live",
+        args: {},
+      });
+      receive("ask_user", { questions: [{ question: "Which?", options: [{ label: "A" }] }] });
+      expect(useWorkingStore.getState().waiting["c-1"]).toBe("awaiting_answer");
+      expect(streaming()?.toolCalls?.find((call) => call.id === "ask-live")?.status).toBe(
+        "awaiting_answer",
+      );
+      act(() => result.current.sendAskUserResponses([{ answer: "A", skipped: false }]));
+      expect(useWorkingStore.getState().waiting["c-1"]).toBeUndefined();
+      expect(streaming()?.toolCalls?.find((call) => call.id === "ask-live")?.status).toBe(
+        "running",
+      );
+    },
+  );
+
   it("sends the answers and closes the prompt", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
     receive("ask_user", {
@@ -2140,6 +3133,23 @@ describe("useChat - what goes out with a turn", () => {
     expect(frame(0)).not.toHaveProperty("file_ids");
   });
 
+  it("files a new thread into the project picked for it, and only the first turn", () => {
+    useConversationStore.getState().setPendingProjectId("p-1");
+    const { result, rerender } = renderHook(({ id }) => useChat({ conversationId: id }), {
+      wrapper,
+      initialProps: { id: null as string | null },
+    });
+
+    act(() => result.current.sendMessage("hello"));
+    expect(frame(0)).toMatchObject({ conversation_id: null, project_id: "p-1" });
+
+    rerender({ id: "c-1" });
+    receive("complete", {});
+    receive("session_ready", {});
+    act(() => result.current.sendMessage("again"));
+    expect(frame(1)).not.toHaveProperty("project_id");
+  });
+
   it("carries the per-turn model override, and only when it is set", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
 
@@ -2148,6 +3158,7 @@ describe("useChat - what goes out with a turn", () => {
 
     act(() => result.current.setModelProfile("p-1"));
     receive("complete", {});
+    receive("session_ready", {});
     act(() => result.current.sendMessage("second"));
 
     expect(frame(1)).toMatchObject({ model_profile_id: "p-1" });
@@ -2163,6 +3174,7 @@ describe("useChat - what goes out with a turn", () => {
 
     act(() => result.current.setApprovalMode("ask_all"));
     receive("complete", {});
+    receive("session_ready", {});
     act(() => result.current.sendMessage("second"));
 
     expect(frame(1)).toMatchObject({ approval_mode: "ask_all" });
@@ -2176,6 +3188,7 @@ describe("useChat - what goes out with a turn", () => {
 
     act(() => result.current.setApprovalMode("follow_agent"));
     receive("complete", {});
+    receive("session_ready", {});
     act(() => result.current.sendMessage("second"));
 
     expect(frame(1)).not.toHaveProperty("approval_mode");
@@ -2365,6 +3378,35 @@ describe("useChat - a socket that went away mid-answer", () => {
     expect(result.current.interrupted).toBe(true);
   });
 
+  it("re-reads a turn the chat page left streaming when it comes back (#2301)", () => {
+    // Leaving the chat unmounts this hook and its socket, but the store keeps
+    // the half-drawn turn: back on the page its timer ran on, and a question it
+    // parked on never returned as a card.
+    const first = renderHook(() => useChat(), { wrapper });
+    act(() => first.result.current.sendMessage("hej"));
+    receive("model_request_start", {});
+    first.unmount();
+
+    const onTurnInterrupted = vi.fn();
+    const { rerender } = renderHook(({ callback }) => useChat({ onTurnInterrupted: callback }), {
+      wrapper,
+      initialProps: { callback: onTurnInterrupted },
+    });
+    const nextCallback = vi.fn();
+    rerender({ callback: nextCallback });
+
+    expect(onTurnInterrupted).toHaveBeenCalledTimes(1);
+    expect(nextCallback).not.toHaveBeenCalled();
+  });
+
+  it("re-reads nothing on a page opened with no turn left streaming", () => {
+    const onTurnInterrupted = vi.fn();
+    const { rerender } = renderHook(() => useChat({ onTurnInterrupted }), { wrapper });
+    rerender();
+
+    expect(onTurnInterrupted).not.toHaveBeenCalled();
+  });
+
   it("says nothing about a socket that came back with no turn in flight", () => {
     const onTurnInterrupted = vi.fn();
     const { result, rerender } = renderHook(() => useChat({ onTurnInterrupted }), { wrapper });
@@ -2413,6 +3455,7 @@ describe("useChat - a socket that went away mid-answer", () => {
 
     act(() => result.current.sendMessage("never mind, this instead"));
     receive("complete", {});
+    receive("session_ready", {});
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
@@ -2464,8 +3507,13 @@ describe("useChat - a socket that went away mid-answer", () => {
       vi.advanceTimersByTime(100);
     });
 
-    expect(result.current.queuedMessages).toHaveLength(1);
-    expect(sent).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(0);
+    // Switching threads cancels this queue; the reconnect only follows.
+    // The reconnect asks to follow the interrupted turn; nothing queued went out.
+    const sentNotFollowing = sent.mock.calls.filter(
+      ([sentFrame]) => (sentFrame as { type?: string }).type !== "attach",
+    );
+    expect(sentNotFollowing).toHaveLength(1);
     vi.useRealTimers();
   });
 
@@ -2537,6 +3585,7 @@ describe("useChat - a socket that went away mid-answer", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
     act(() => result.current.sendMessage("first"));
     receive("complete", {});
+    receive("session_ready", {});
     act(() => result.current.sendMessage("second"));
 
     expect(result.current.detachedTurnPending).toBe(false);
@@ -2544,6 +3593,70 @@ describe("useChat - a socket that went away mid-answer", () => {
 });
 
 describe("useChat - the outbound queue", () => {
+  it("waits for session readiness after the result and the saved answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useChat(), { wrapper });
+      act(() => result.current.sendMessage("first"));
+      receive("model_request_start", {});
+      receive("final_result", { output: "answer" });
+      act(() => result.current.sendMessage("second"));
+      receive("message_saved", { message_id: "saved" });
+      receive("complete", {});
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(sent.mock.calls.filter(([value]) => value.message)).toHaveLength(1);
+      receive("session_ready", {});
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(
+        sent.mock.calls.filter(([value]) => value.message).map(([value]) => value.message),
+      ).toEqual(["first", "second"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["conversation", "new-chat-to-existing", "organization", "account", "unmount", "clear"])(
+    "cancels a scheduled send after %s changes",
+    async (changed) => {
+      vi.useFakeTimers();
+      try {
+        useConversationStore.setState({
+          currentConversationId: changed === "new-chat-to-existing" ? null : "c-1",
+        });
+        const { result, unmount } = renderHook(() => useChat(), { wrapper });
+        act(() => result.current.sendMessage("first"));
+        act(() => result.current.sendMessage("belongs to c-1"));
+        receive("complete", {});
+        receive("session_ready", {});
+        act(() => {
+          if (changed === "conversation" || changed === "new-chat-to-existing")
+            useConversationStore.setState({ currentConversationId: "c-2" });
+          else if (changed === "organization") {
+            get.mockResolvedValue({ permissions: [] });
+            useOrgStore.setState({ activeOrgId: "org-other" });
+          } else if (changed === "account")
+            useAuthStore.setState({
+              user: {
+                id: "other",
+                email: "other@example.test",
+                is_active: true,
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            });
+          else if (changed === "unmount") unmount();
+          else result.current.clearQueued();
+          vi.advanceTimersByTime(100);
+        });
+        await act(async () => vi.advanceTimersByTimeAsync(100));
+        expect(
+          sent.mock.calls.filter(([value]) => value.message).map(([value]) => value.message),
+        ).toEqual(["first"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("queues what is sent to wait for the answer, and drains it when the agent is idle", async () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -2555,6 +3668,7 @@ describe("useChat - the outbound queue", () => {
     expect(sent).toHaveBeenCalledTimes(1);
 
     receive("complete", {});
+    receive("session_ready", {});
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
@@ -2593,6 +3707,7 @@ describe("useChat - the outbound queue", () => {
 
     act(() => result.current.sendMessage("second", undefined, undefined, [drive]));
     receive("complete", {});
+    receive("session_ready", {});
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
@@ -2773,6 +3888,7 @@ describe("what the person cannot reach", () => {
 
     receive("personal_services_unavailable", { services: [NOTION] });
     receive("complete", {});
+    receive("session_ready", {});
 
     expect(result.current.personalGaps).toEqual([NOTION]);
   });
@@ -2887,6 +4003,7 @@ describe("useChat - watching a browse", () => {
 
     browserFrame("browser_opened", { step: 0, goal: "g", max_steps: 25 });
     browserFrame("browser_frame", { step: 1, image: "data:image/jpeg;base64,AAA" });
+    browserFrame("browser_control_error", { step: 1, detail: "Outside allowed domains" });
     browserFrame("browser_step", {
       step: 1,
       operation: "CLICK",
@@ -2898,6 +4015,7 @@ describe("useChat - watching a browse", () => {
     expect(result.current.browses[0]).toMatchObject({
       image: "data:image/jpeg;base64,AAA",
       imageStep: 1,
+      controlError: "Outside allowed domains",
       outcome: "blocked",
       detail: "Sign in first",
     });
@@ -2975,6 +4093,600 @@ const ASKED = [
   },
 ];
 
+/** The submitted request, so tests acknowledge the actual correlation id. */
+function runAnswerFrame() {
+  const sentFrame = sent.mock.calls
+    .map(([frame]) => frame)
+    .findLast((frame) => frame.type === "answer_run");
+  expect(sentFrame).toBeDefined();
+  return sentFrame as {
+    type: "answer_run";
+    request_id: string;
+    run_id: string;
+    responses: Record<string, AskUserAnswer[]>;
+  };
+}
+
+function acknowledgeAnswer(
+  result: Partial<ResumedRun> = {},
+  requestId = runAnswerFrame().request_id,
+): void {
+  receive("run_answer_result", {
+    request_id: requestId,
+    result: {
+      run_id: "r-1",
+      status: "completed",
+      output: "Done",
+      cost_usd: "0.01",
+      cost_is_partial: false,
+      input_tokens: 5,
+      output_tokens: 5,
+      ...result,
+    },
+  });
+}
+
+function refuseAnswer(
+  error: { status: number; message: string; code: string; details: Record<string, unknown> | null },
+  requestId = runAnswerFrame().request_id,
+): void {
+  receive("run_answer_result", { request_id: requestId, error });
+}
+
+describe("useChat - durable questions resumed on the socket", () => {
+  function offer(toolName = "ask_user_question") {
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: toolName, tool_call_id: "ask-1", args: {} });
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+  }
+
+  it.each(["ask_user_question", "clarify"])(
+    "keeps the %s card after completion and resumes it on the socket",
+    async (toolName) => {
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const { result } = renderHook(() => useChat(), { wrapper });
+      offer(toolName);
+      receive("message_saved", {
+        message_id: "saved",
+        run_id: "r-1",
+        run_status: "awaiting_answer",
+      });
+      receive("complete", {});
+      expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?");
+      expect(streaming()?.toolCalls?.[0]?.status).toBe("awaiting_answer");
+      const answer = { answer: "", selected: ["Casual"], skipped: false };
+      act(() => result.current.sendAskUserResponses([answer]));
+      expect(runAnswerFrame()).toMatchObject({
+        type: "answer_run",
+        run_id: "r-1",
+        responses: { "ask-1": [answer] },
+      });
+      expect(result.current.isProcessing).toBe(true);
+      await act(async () =>
+        acknowledgeAnswer({ settled: [{ tool_call_id: "ask-1", result: "Casual" }] }),
+      );
+      expect(post).not.toHaveBeenCalled();
+      expect(result.current.pendingQuestions).toBeNull();
+      expect(result.current.isProcessing).toBe(false);
+      expect(streaming()?.runWaitingFor).toBeUndefined();
+      expect(useChatStore.getState().messages.at(-1)?.content).toBe("Done");
+    },
+  );
+
+  it("answers a live delegate question while the parked answer continuation is running", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    const request = runAnswerFrame();
+    receive("background_task_turn", {
+      conversation_id: "c-1",
+      agent_id: "continued-agent",
+      resumed_run_id: "r-1",
+    });
+    receive("model_request_start", {});
+    receive("ask_user", {
+      questions: [{ question: "Which region?", options: [{ label: "EU" }], allow_custom: true }],
+    });
+    expect(result.current.pendingQuestions?.[0]?.question).toBe("Which region?");
+    act(() => {
+      result.current.sendAskUserResponses([{ answer: "EU", skipped: false }]);
+      result.current.sendAskUserResponses([{ answer: "EU", skipped: false }]);
+    });
+    expect(sent).toHaveBeenCalledWith({
+      type: "ask_user_response",
+      answers: [{ answer: "EU", skipped: false }],
+    });
+    expect(sent.mock.calls.filter(([frame]) => frame.type === "answer_run")).toHaveLength(1);
+    expect(sent.mock.calls.filter(([frame]) => frame.type === "ask_user_response")).toHaveLength(1);
+    receive("text_delta", { content: "Using the EU numbers." });
+    receive("final_result", { output: "Using the EU numbers." });
+    await act(async () =>
+      acknowledgeAnswer({ output: "Using the EU numbers." }, request.request_id),
+    );
+    expect(
+      useChatStore
+        .getState()
+        .messages.filter((message) => message.content === "Using the EU numbers."),
+    ).toHaveLength(1);
+    expect(result.current.pendingQuestions).toBeNull();
+    expect(useChatStore.getState().messages.at(-1)).toMatchObject({
+      agentId: "continued-agent",
+      usage: { cost_usd: "0.01", input_tokens: 5 },
+    });
+    expect(result.current.lastUsage?.cost_usd).toBe("0.01");
+  });
+
+  it("marks both timeline and tool call waiting when the streamed continuation asks again", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    receive("background_task_turn", {
+      conversation_id: "c-1",
+      agent_id: "agent",
+      resumed_run_id: "r-1",
+    });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: "ask_user_question", tool_call_id: "ask-2", args: {} });
+    const questions = [
+      { tool_call_id: "ask-2", questions: [{ question: "Which day?", allow_custom: true }] },
+    ];
+    receive("user_question_required", { run_id: "r-1", questions });
+    await act(async () =>
+      acknowledgeAnswer({
+        status: "awaiting_answer",
+        output: "",
+        questions,
+        steps: [{ tool_call_id: "ask-2", tool_name: "ask_user_question", args: {}, result: null }],
+      }),
+    );
+    const continuation = useChatStore.getState().messages.at(-1);
+    expect(result.current.pendingQuestions?.[0]?.question).toBe("Which day?");
+    expect(continuation?.runWaitingFor).toBe("answer");
+    expect(continuation?.toolCalls?.[0]?.status).toBe("awaiting_answer");
+    expect(continuation?.parts?.find((part) => part.type === "tool")?.toolCall?.status).toBe(
+      "awaiting_answer",
+    );
+  });
+
+  it("keeps the question while disconnected and submits only after reconnection", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    socket.isConnected = false;
+    rerender();
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?");
+    expect(sent.mock.calls.some(([frame]) => frame.type === "answer_run")).toBe(false);
+    socket.isConnected = true;
+    rerender();
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    expect(runAnswerFrame().run_id).toBe("r-1");
+  });
+
+  it("groups every parked call and sends each its own answer slice", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    for (const id of ["ask-1", "ask-2"])
+      receive("tool_call", { tool_name: "ask_user_question", tool_call_id: id, args: {} });
+    receive("user_question_required", {
+      run_id: "r-1",
+      questions: [
+        ...ASKED,
+        {
+          tool_call_id: "ask-2",
+          questions: [
+            { question: "When?", allow_custom: true },
+            { question: "Who?", allow_custom: true },
+          ],
+        },
+      ],
+    });
+    receive("complete", {});
+    const answers = [
+      { answer: "Casual", skipped: false },
+      { answer: "Tomorrow", skipped: false },
+      { answer: "Ann", skipped: false },
+    ];
+    act(() => result.current.sendAskUserResponses(answers));
+    expect(runAnswerFrame().responses).toEqual({
+      "ask-1": answers.slice(0, 1),
+      "ask-2": answers.slice(1),
+    });
+    await act(async () => acknowledgeAnswer());
+  });
+
+  it("ignores acknowledgements with an unmatched id and duplicate submissions", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => {
+      result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]);
+      result.current.sendAskUserResponses([{ answer: "Formal", skipped: false }]);
+    });
+    acknowledgeAnswer({ output: "Wrong result" }, "unmatched");
+    expect(result.current.isProcessing).toBe(true);
+    expect(
+      useChatStore.getState().messages.some((message) => message.content === "Wrong result"),
+    ).toBe(false);
+    expect(sent.mock.calls.filter(([frame]) => frame.type === "answer_run")).toHaveLength(1);
+    await act(async () => acknowledgeAnswer());
+    expect(result.current.isProcessing).toBe(false);
+  });
+
+  it.each([false, true])(
+    "restores only the persisted question after an unacknowledged disconnect (%s)",
+    async (stillParked) => {
+      get.mockResolvedValue(stillParked ? ASKED : []);
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const refresh = vi.fn();
+      const { result, rerender } = renderHook(() => useChat({ onTurnInterrupted: refresh }), {
+        wrapper,
+      });
+      offer();
+      receive("complete", {});
+      act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+      const request = runAnswerFrame();
+      socket.isConnected = false;
+      await act(async () => rerender());
+      expect(result.current.pendingQuestions).toBeNull();
+      acknowledgeAnswer({ output: "Late" }, request.request_id);
+      socket.isConnected = true;
+      await act(async () => rerender());
+      await waitFor(() => expect(get).toHaveBeenCalledWith("/runs/r-1/questions"));
+      expect(Boolean(result.current.pendingQuestions)).toBe(stillParked);
+      expect(sent.mock.calls.filter(([frame]) => frame.type === "answer_run")).toHaveLength(1);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalled();
+    },
+  );
+
+  it.each(["conversation", "account", "organization", "unmount", "stop"])(
+    "ignores a late answer acknowledgement after %s",
+    async (context) => {
+      get.mockImplementation((url: string) =>
+        Promise.resolve(url === "/me/permissions" ? { permissions: [] } : []),
+      );
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const { result, unmount } = renderHook(() => useChat(), { wrapper });
+      offer();
+      receive("complete", {});
+      act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+      const request = runAnswerFrame();
+      act(() => {
+        if (context === "conversation")
+          useConversationStore.getState().setCurrentConversationId("c-2");
+        else if (context === "account")
+          useAuthStore.setState({ user: { id: "new-account" } as never });
+        else if (context === "organization") useOrgStore.setState({ activeOrgId: "new-org" });
+        else if (context === "unmount") unmount();
+        else result.current.stopGeneration();
+      });
+      await act(async () => acknowledgeAnswer({ output: "Late" }, request.request_id));
+      expect(useChatStore.getState().messages.some((message) => message.content === "Late")).toBe(
+        false,
+      );
+      expect(toast.error).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "keeps buffered followed-turn frames separate before answer admission (%s)",
+    async (stopBeforeAdmission) => {
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const { result } = renderHook(() => useChat(), { wrapper });
+      offer();
+      receive("complete", {});
+      receive("turn_attached", { conversation_id: "c-1" });
+      receive("background_task_turn", {
+        conversation_id: "c-1",
+        agent_id: "agent-b",
+        resumed_run_id: "run-b",
+      });
+      receive("model_request_start", {});
+      receive("text_delta", { content: "B before. " });
+      act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+      const submitted = runAnswerFrame();
+      receive("text_delta", { content: "B buffered." });
+      if (stopBeforeAdmission) {
+        act(() => result.current.stopGeneration());
+        await act(async () => acknowledgeAnswer({ output: "Late" }, submitted.request_id));
+        expect(sent).toHaveBeenCalledWith({ type: "stop" });
+        expect(sent.mock.calls.some(([frame]) => frame.type === "unfollow")).toBe(false);
+      } else {
+        receive("background_task_turn", {
+          conversation_id: "c-1",
+          agent_id: "agent-a",
+          resumed_run_id: "r-1",
+        });
+        receive("model_request_start", {});
+        receive("text_delta", { content: "A resumed." });
+        receive("final_result", { output: "A resumed." });
+        await act(async () => acknowledgeAnswer({ output: "A resumed." }, submitted.request_id));
+        expect(useChatStore.getState().messages.at(-1)).toMatchObject({
+          content: "A resumed.",
+          runId: "r-1",
+          agentId: "agent-a",
+        });
+      }
+      const followed = useChatStore
+        .getState()
+        .messages.find((message) => message.runId === "run-b");
+      expect(followed).toMatchObject({ content: "B before. B buffered.", agentId: "agent-b" });
+      expect(followed?.wasStopped).not.toBe(true);
+      expect(followed?.isStreaming).toBe(stopBeforeAdmission);
+    },
+  );
+
+  it("settles a terminal correlated failure without needing a transcript refresh", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    receive("background_task_turn", {
+      conversation_id: "c-1",
+      agent_id: "agent",
+      resumed_run_id: "r-1",
+    });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_call_id: "unfinished", tool_name: "execute", args: {} });
+    receive("subagent_start", {
+      kind: "subagent_start",
+      task_id: "delegate",
+      subagent: "Researcher",
+      depth: 0,
+      mode: "sync",
+      prompt: "Find data",
+      parent_task_id: null,
+    });
+    receive("ask_user", { questions: [{ question: "Which region?", allow_custom: true }] });
+    await act(async () =>
+      refuseAnswer({
+        status: 500,
+        message: "The run failed",
+        code: "RUN_EXECUTION_FAILED",
+        details: { run_id: "r-1", status: "failed" },
+      }),
+    );
+    expect(result.current.isProcessing).toBe(false);
+    expect(result.current.pendingQuestions).toBeNull();
+    expect(useChatStore.getState().messages.some((message) => message.isStreaming)).toBe(false);
+    expect(useChatStore.getState().messages.at(-1)?.toolCalls?.[0]?.status).toBe("unfinished");
+    expect(result.current.delegations[0]?.status).toBe("cancelled");
+  });
+
+  it("ignores a resolved acknowledgement when navigation wins the continuation microtask", async () => {
+    get.mockResolvedValue([]);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    await act(async () => {
+      acknowledgeAnswer({ output: "Late" });
+      useConversationStore.getState().setCurrentConversationId("c-2");
+    });
+    expect(useChatStore.getState().messages.some((message) => message.content === "Late")).toBe(
+      false,
+    );
+  });
+
+  it("does not restore a rejected answer once its run has a terminal marker", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    receive("background_task_turn", {
+      conversation_id: "c-1",
+      agent_id: "agent",
+      resumed_run_id: "r-1",
+    });
+    receive("model_request_start", {});
+    receive("message_saved", { message_id: "settled", run_id: "r-1", run_status: "completed" });
+    await act(async () =>
+      refuseAnswer({
+        status: 400,
+        message: "Already answered",
+        code: "BAD_REQUEST",
+        details: null,
+      }),
+    );
+    expect(result.current.pendingQuestions).toBeNull();
+    expect(result.current.isProcessing).toBe(false);
+    expect(useChatStore.getState().messages.some((message) => message.isStreaming)).toBe(false);
+  });
+
+  it("holds queued follow-ups through the answer and live delegate question", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => {
+      result.current.sendMessage("First task");
+      result.current.sendMessage("Queued follow-up");
+    });
+    offer();
+    receive("complete", {});
+    receive("session_ready", {});
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(result.current.queuedMessages).toHaveLength(1);
+    act(() => result.current.sendAskUserResponses([{ answer: "Casual", skipped: false }]));
+    receive("ask_user", { questions: [{ question: "Which region?", allow_custom: true }] });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(result.current.queuedMessages).toHaveLength(1);
+    act(() => result.current.sendAskUserResponses([{ answer: "EU", skipped: false }]));
+    await act(async () => acknowledgeAnswer());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(result.current.queuedMessages).toHaveLength(1);
+    receive("session_ready", {});
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(0));
+    expect(
+      sent.mock.calls
+        .filter(([frame]) => typeof frame.message === "string")
+        .map(([frame]) => frame.message),
+    ).toEqual(["First task", "Queued follow-up"]);
+  });
+
+  it("restores the persisted question after leaving and reopening its conversation", async () => {
+    get.mockResolvedValue(ASKED);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+    expect(result.current.pendingQuestions).toBeNull();
+    act(() => {
+      useChatStore.getState().clearMessages();
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      useChatStore.getState().addMessage(askedTurn());
+    });
+    await waitFor(() => expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?"));
+    expect(get).toHaveBeenCalledWith("/runs/r-1/questions");
+  });
+
+  it("ignores a late event for a terminal run and an empty question batch", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: "ask_user_question", tool_call_id: "ask-1", args: {} });
+    receive("user_question_required", { run_id: "r-1", questions: [] });
+    expect(result.current.pendingQuestions).toBeNull();
+    receive("message_saved", { message_id: "saved", run_id: "r-1", run_status: "failed" });
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("ignores a question for the conversation that was left", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("ignores question events delivered after Stop or for a different run", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: "ask_user_question", tool_call_id: "ask-1", args: {} });
+    receive("user_question_required", {
+      run_id: "other",
+      questions: [{ tool_call_id: "unrelated", questions: ASKED[0]!.questions }],
+    });
+    expect(result.current.pendingQuestions).toBeNull();
+    act(() => result.current.stopGeneration());
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("releases queued follow-ups when the durable question is cancelled", async () => {
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("First task"));
+    offer();
+    receive("complete", {});
+    receive("session_ready", {});
+    act(() => result.current.sendMessage("Queued follow-up"));
+    expect(result.current.queuedMessages).toHaveLength(1);
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(0));
+    expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
+    expect(sent.mock.calls.some(([frame]) => frame.message === "Queued follow-up")).toBe(true);
+  });
+
+  it("does not offer late questions whose calls already completed, or whose run has no message", () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("user_question_required", { run_id: "missing", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+    receive("model_request_start", {});
+    receive("tool_call", { tool_name: "ask_user_question", tool_call_id: "ask-1", args: {} });
+    receive("tool_result", { tool_call_id: "ask-1", result: "Casual" });
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("dismisses only the question whose run a terminal marker names", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    receive("message_saved", {
+      message_id: "other-message",
+      run_id: "other-run",
+      run_status: "failed",
+    });
+    expect(result.current.pendingQuestions).not.toBeNull();
+    receive("message_saved", { message_id: "saved", run_id: "r-1", run_status: "completed" });
+    expect(result.current.pendingQuestions).toBeNull();
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("dismisses the question when another tab starts its answer continuation", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("background_task_turn", {
+      conversation_id: "c-1",
+      agent_id: "agent",
+      resumed_run_id: "r-1",
+    });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("keeps the newer question when an old call's event arrives for the same run", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const { result } = renderHook(() => useChat(), { wrapper });
+    offer();
+    receive("complete", {});
+    act(() => {
+      useChatStore.getState().clearMessages();
+      useChatStore.getState().addMessage({
+        ...askedTurn(),
+        id: "next-segment",
+        toolCalls: [{ id: "ask-2", name: "ask_user_question", args: {}, status: "running" }],
+      });
+    });
+    const next = [
+      { tool_call_id: "ask-2", questions: [{ question: "When?", allow_custom: true }] },
+    ];
+    receive("user_question_required", { run_id: "r-1", questions: next });
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions?.[0]?.question).toBe("When?");
+  });
+
+  it("offers a persisted run's question even when its message has no tool calls", () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage({ ...askedTurn(), toolCalls: undefined });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    receive("user_question_required", { run_id: "r-1", questions: ASKED });
+    expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?");
+  });
+
+  it.each(["message_save_failed", "unrelated_error"])(
+    "preserves committed questions after the unscoped %s error",
+    (code) => {
+      useConversationStore.getState().setCurrentConversationId("c-1");
+      const { result } = renderHook(() => useChat(), { wrapper });
+      offer();
+      receive("error", { code, message: "Save failed" });
+      receive("complete", {});
+      expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?");
+    },
+  );
+});
+
 describe("useChat - a question its person came back to", () => {
   it("puts the card back when a reloaded conversation is waiting on an answer", async () => {
     get.mockResolvedValue(ASKED);
@@ -2984,7 +4696,9 @@ describe("useChat - a question its person came back to", () => {
     const { result } = renderHook(() => useChat(), { wrapper });
     await act(async () => {});
 
-    expect(get.mock.calls).toEqual([["/runs/r-1/questions"]]);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/questions"))).toEqual([
+      ["/runs/r-1/questions"],
+    ]);
     expect(result.current.pendingQuestions?.[0]).toMatchObject({
       question: "How formal?",
       header: "Tone",
@@ -2992,9 +4706,185 @@ describe("useChat - a question its person came back to", () => {
     });
   });
 
-  it("answers over HTTP, closes the step and draws the continuation", async () => {
+  it("stops a restored question by its parked run id without resuming it", async () => {
     get.mockResolvedValue(ASKED);
-    post.mockResolvedValue({
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.pendingQuestions).toBeNull());
+    expect(post).toHaveBeenCalledWith("/runs/r-1/cancel");
+    expect(sent).not.toHaveBeenCalledWith({ type: "stop" });
+    expect(useChatStore.getState().messages[0]?.wasStopped).toBe(true);
+  });
+
+  it("keeps the question available when stopping fails", async () => {
+    get.mockResolvedValue(ASKED);
+    post.mockRejectedValue(new Error("Network down"));
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(result.current.pendingQuestions).not.toBeNull();
+    expect(useChatStore.getState().messages[0]?.wasStopped).not.toBe(true);
+  });
+
+  it("does not toast a failed stop after its chat unmounts", async () => {
+    get.mockResolvedValue(ASKED);
+    let refuse!: (error: Error) => void;
+    post.mockReturnValue(
+      new Promise((_, reject) => {
+        refuse = reject;
+      }),
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result, unmount } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    unmount();
+    await act(async () => refuse(new Error("offline")));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("ignores a cancellation error after leaving its conversation", async () => {
+    get.mockResolvedValue(ASKED);
+    let refuse!: (error: Error) => void;
+    post.mockReturnValue(
+      new Promise((_, reject) => {
+        refuse = reject;
+      }),
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+    await act(async () => refuse(new Error("offline")));
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(result.current.isStopping).toBe(false);
+  });
+
+  it("does not clear another conversation after a delayed stop", async () => {
+    get.mockResolvedValue(ASKED);
+    let finish!: () => void;
+    post.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+    receive("connect_account", { server_id: "new", name: "New connection" });
+    const connection = result.current.pendingConnection;
+    expect(connection).not.toBeNull();
+    await act(async () => finish());
+    expect(result.current.pendingConnection).toEqual(connection);
+  });
+
+  it("blocks competing responses and repeated Stop while cancellation is pending", async () => {
+    get.mockResolvedValue(ASKED);
+    let finish!: (result: string) => void;
+    post.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    expect(result.current.isStopping).toBe(true);
+    await act(async () => {
+      result.current.stopGeneration();
+      result.current.sendAskUserResponses([]);
+      await result.current.sendResumeDecisions([]);
+      result.current.sendConnectionResponse(true);
+      result.current.sendComputerAccessResponse(true);
+    });
+    expect(post.mock.calls).toEqual([["/runs/r-1/cancel"]]);
+    expect(sent.mock.calls.map(([value]) => value.type)).toEqual(["attach"]);
+    await act(async () => finish("Not performed: the run was stopped."));
+    expect(result.current.isStopping).toBe(false);
+    expect(useChatStore.getState().messages[0]?.toolCalls?.[0]).toMatchObject({
+      status: "completed",
+      result: "Not performed: the run was stopped.",
+    });
+  });
+
+  it("keeps another run's approval after stopping the restored question", async () => {
+    get.mockResolvedValue(ASKED);
+    post.mockResolvedValue("Not performed: the run was stopped.");
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    useChatStore.getState().addMessage({
+      ...askedTurn(),
+      id: "other-message",
+      runId: "other-run",
+      toolCalls: [{ id: "approve-other", name: "execute", args: {}, status: "awaiting_approval" }],
+    });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    receive("tool_approval_required", {
+      run_id: "other-run",
+      action_requests: [
+        { id: "approval-other", tool_call_id: "approve-other", tool_name: "execute", args: {} },
+      ],
+      review_configs: [],
+    });
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.pendingQuestions).toBeNull());
+    expect(result.current.pendingApproval?.runId).toBe("other-run");
+  });
+
+  it("refetches the exact result if the run was already cancelled", async () => {
+    get.mockResolvedValue(ASKED);
+    post.mockResolvedValue(null);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const refetch = vi.fn();
+    const { result } = renderHook(() => useChat({ onTurnInterrupted: refetch }), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.pendingQuestions).toBeNull());
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("dismisses a stale question and refetches when another tab already resumed it", async () => {
+    get.mockResolvedValue(ASKED);
+    post.mockRejectedValue(
+      new ApiError(400, "Already running", {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Already running",
+          details: { run_id: "r-1", status: "running" },
+        },
+      }),
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const refetch = vi.fn();
+    const { result } = renderHook(() => useChat({ onTurnInterrupted: refetch }), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions).not.toBeNull());
+    act(() => result.current.stopGeneration());
+    await waitFor(() => expect(result.current.pendingQuestions).toBeNull());
+    expect(refetch).toHaveBeenCalledOnce();
+    expect(useChatStore.getState().messages[0]?.wasStopped).not.toBe(true);
+  });
+
+  it("answers on the socket, closes the step and draws the continuation", async () => {
+    get.mockResolvedValue(ASKED);
+    const resumed: Partial<ResumedRun> = {
       run_id: "r-1",
       output: "Here it is, casually.",
       status: "completed",
@@ -3003,7 +4893,7 @@ describe("useChat - a question its person came back to", () => {
       cost_is_partial: false,
       input_tokens: 5,
       output_tokens: 5,
-    });
+    };
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(askedTurn());
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -3012,11 +4902,14 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([{ answer: "", selected: ["Casual"], skipped: false }]);
     });
+    await act(async () => acknowledgeAnswer(resumed));
 
-    expect(post).toHaveBeenCalledWith("/runs/r-1/answers", {
+    expect(runAnswerFrame()).toMatchObject({
+      type: "answer_run",
+      run_id: "r-1",
       responses: { "ask-1": [{ answer: "", selected: ["Casual"], skipped: false }] },
     });
-    // Nothing went over the socket: its turn ended when the run parked.
+    // The durable answer starts its own run continuation; live delegate replies use ask_user_response.
     expect(sent.mock.calls.some(([sentFrame]) => sentFrame.type === "ask_user_response")).toBe(
       false,
     );
@@ -3027,11 +4920,22 @@ describe("useChat - a question its person came back to", () => {
     });
     expect(messages.at(-1)?.content).toBe("Here it is, casually.");
     expect(result.current.pendingQuestions).toBeNull();
+    expect(toast.info).not.toHaveBeenCalled();
   });
 
-  it("puts the question back when the answer never landed", async () => {
+  it("answers a chat run's question here and says the answer also went to the chat", async () => {
     get.mockResolvedValue(ASKED);
-    post.mockRejectedValue(new Error("Network down"));
+    const resumed: Partial<ResumedRun> = {
+      run_id: "r-1",
+      output: "Here it is, casually.",
+      status: "completed",
+      continues_in_chat: true,
+      settled: [{ tool_call_id: "ask-1", result: '{"Tone": ["Casual"]}' }],
+      cost_usd: "0.01",
+      cost_is_partial: false,
+      input_tokens: 5,
+      output_tokens: 5,
+    };
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(askedTurn());
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -3040,6 +4944,34 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([{ answer: "", selected: ["Casual"], skipped: false }]);
     });
+    await act(async () => acknowledgeAnswer(resumed));
+
+    const messages = useChatStore.getState().messages;
+    expect(messages[0]?.toolCalls?.[0]).toMatchObject({ status: "completed" });
+    expect(messages.at(-1)?.content).toBe("Here it is, casually.");
+    expect(toast.info).toHaveBeenCalledWith(
+      "The answer is also sent to the chat this was asked in.",
+    );
+  });
+
+  it("puts the question back when the server rejects it before resuming", async () => {
+    get.mockResolvedValue(ASKED);
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage(askedTurn());
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await act(async () => {});
+
+    await act(async () => {
+      result.current.sendAskUserResponses([{ answer: "", selected: ["Casual"], skipped: false }]);
+    });
+    await act(async () =>
+      refuseAnswer({
+        status: 503,
+        message: "Unavailable",
+        code: "TEMPORARILY_UNAVAILABLE",
+        details: null,
+      }),
+    );
 
     expect(result.current.pendingQuestions?.[0]).toMatchObject({ question: "How formal?" });
     expect(useChatStore.getState().messages[0]?.toolCalls?.[0]?.status).toBe("awaiting_answer");
@@ -3047,15 +4979,13 @@ describe("useChat - a question its person came back to", () => {
 
   it("does not offer it again once the continuation itself failed", async () => {
     get.mockResolvedValue(ASKED);
-    post.mockRejectedValue(
-      new ApiError(500, "The run failed", {
-        error: {
-          code: "RUN_EXECUTION_FAILED",
-          message: "The run failed",
-          details: { run_id: "r-1", status: "failed" },
-        },
-      }),
-    );
+    const refused = new ApiError(500, "The run failed", {
+      error: {
+        code: "RUN_EXECUTION_FAILED",
+        message: "The run failed",
+        details: { run_id: "r-1", status: "failed" },
+      },
+    });
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(askedTurn());
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -3064,23 +4994,31 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([{ answer: "", selected: ["Casual"], skipped: false }]);
     });
+    await act(async () =>
+      refuseAnswer({
+        status: refused.status,
+        message: refused.message,
+        code: refused.code,
+        details: refused.details,
+      }),
+    );
 
     expect(result.current.pendingQuestions).toBeNull();
   });
 
   it("puts a question asked again on the continuation back up", async () => {
     get.mockResolvedValue(ASKED);
-    post.mockResolvedValue({
+    const resumed: Partial<ResumedRun> = {
       run_id: "r-1",
       output: "",
       status: "awaiting_answer",
-      steps: [{ tool_call_id: "ask-2", tool_name: "ask_user_question", args: {} }],
-      questions: [{ ...ASKED[0], tool_call_id: "ask-2" }],
+      steps: [{ tool_call_id: "ask-2", tool_name: "ask_user_question", args: {}, result: null }],
+      questions: [{ ...ASKED[0]!, tool_call_id: "ask-2" }],
       cost_usd: "0.01",
       cost_is_partial: false,
       input_tokens: 5,
       output_tokens: 5,
-    });
+    };
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(askedTurn());
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -3089,6 +5027,7 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([{ answer: "", selected: ["Formal"], skipped: false }]);
     });
+    await act(async () => acknowledgeAnswer(resumed));
 
     expect(result.current.pendingQuestions).not.toBeNull();
     expect(useChatStore.getState().messages.at(-1)?.toolCalls?.[0]?.status).toBe("awaiting_answer");
@@ -3105,7 +5044,7 @@ describe("useChat - a question its person came back to", () => {
         ],
       },
     ]);
-    post.mockResolvedValue({
+    const resumed: Partial<ResumedRun> = {
       run_id: "r-1",
       output: "Booked.",
       status: "completed",
@@ -3117,7 +5056,7 @@ describe("useChat - a question its person came back to", () => {
       cost_is_partial: false,
       input_tokens: 5,
       output_tokens: 5,
-    });
+    };
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage({
       ...askedTurn(),
@@ -3140,8 +5079,11 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([formal, monday, ann]);
     });
+    await act(async () => acknowledgeAnswer(resumed));
 
-    expect(post).toHaveBeenCalledWith("/runs/r-1/answers", {
+    expect(runAnswerFrame()).toMatchObject({
+      type: "answer_run",
+      run_id: "r-1",
       responses: { "ask-1": [formal], "ask-2": [monday, ann] },
     });
     expect(useChatStore.getState().messages[0]?.toolCalls?.map((call) => call.status)).toEqual([
@@ -3162,13 +5104,12 @@ describe("useChat - a question its person came back to", () => {
     act(() => useChatStore.getState().addMessage({ ...askedTurn(), id: "m-2", runId: "r-1" }));
     await act(async () => {});
 
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/questions"))).toHaveLength(2);
     expect(result.current.pendingQuestions?.[0]).toMatchObject({ question: "How formal?" });
   });
 
   it("says why when the answer could not continue the run", async () => {
     get.mockResolvedValue(ASKED);
-    post.mockRejectedValue(new Error("nope"));
     useConversationStore.getState().setCurrentConversationId("c-1");
     useChatStore.getState().addMessage(askedTurn());
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -3177,6 +5118,14 @@ describe("useChat - a question its person came back to", () => {
     await act(async () => {
       result.current.sendAskUserResponses([{ answer: "", skipped: true }]);
     });
+    await act(async () =>
+      refuseAnswer({
+        status: 503,
+        message: "Unavailable",
+        code: "TEMPORARILY_UNAVAILABLE",
+        details: null,
+      }),
+    );
 
     expect(toast.error).toHaveBeenCalled();
   });
@@ -3195,7 +5144,7 @@ describe("useChat - a question its person came back to", () => {
     });
     await act(async () => {});
 
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/questions"))).toHaveLength(1);
     expect(result.current.pendingQuestions).toBeNull();
   });
 
@@ -3309,4 +5258,1763 @@ describe("useChat - adding to a running turn (#2087)", () => {
     ]);
     expect(result.current.steers).toEqual([]);
   });
+});
+
+describe("useChat - coming back to a turn still being written", () => {
+  function storedQuestion(conversationId = "c-1") {
+    act(() =>
+      useChatStore.getState().addMessage({
+        id: "u-1",
+        role: "user",
+        content: "build a landing page",
+        timestamp: new Date(),
+        conversationId,
+      }),
+    );
+  }
+
+  it("attributes a background answer to its agent without inventing a user message", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("background_task_turn", { conversation_id: "c-other", agent_id: "wrong" });
+    receive("background_task_turn", { conversation_id: "c-1", agent_id: "background-agent" });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "The research is ready." });
+    expect(streaming()).toMatchObject({
+      agentId: "background-agent",
+      content: "The research is ready.",
+    });
+    expect(useChatStore.getState().messages.filter((m) => m.role === "user")).toHaveLength(1);
+  });
+
+  it("asks to follow the conversation's turn once its transcript is here", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    expect(sent).not.toHaveBeenCalled();
+
+    storedQuestion();
+
+    expect(sent).toHaveBeenCalledWith({ type: "attach", conversation_id: "c-1" });
+  });
+
+  it("leaves the room it was in when a new chat opens, and not before one was joined", () => {
+    const { rerender } = renderHook(
+      ({ conversationId }: { conversationId: string | null }) => useChat({ conversationId }),
+      { wrapper, initialProps: { conversationId: null as string | null } },
+    );
+    expect(sent).not.toHaveBeenCalled();
+
+    rerender({ conversationId: "c-1" });
+    storedQuestion();
+    rerender({ conversationId: null });
+
+    expect(sent).toHaveBeenLastCalledWith({ type: "attach", conversation_id: null });
+  });
+
+  it("detaches a newly created chat when leaving with an unanswered question", () => {
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string | null }) => useChat({ conversationId }),
+      { wrapper, initialProps: { conversationId: null as string | null } },
+    );
+    receive("conversation_created", { conversation_id: "c-new" });
+    rerender({ conversationId: "c-new" });
+    receive("ask_user", { questions: [{ question: "Which region?", options: [] }] });
+    expect(result.current.pendingQuestions).toHaveLength(1);
+    act(() => useConversationStore.getState().setCurrentConversationId(null));
+    rerender({ conversationId: null });
+    expect(sent).toHaveBeenLastCalledWith({ type: "attach", conversation_id: null });
+    expect(result.current.pendingQuestions).toBeNull();
+  });
+
+  it("draws nothing of a turn announced for a chat no longer on screen", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+
+    receive("turn_attached", { conversation_id: "c-other" });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "Somebody else's answer" });
+    expect(streaming()).toBeUndefined();
+
+    // Its end lets the next turn's frames through again.
+    receive("turn_followed_to_end", { conversation_id: "c-other" });
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "This chat's answer" });
+    expect(streaming()?.content).toContain("This chat's answer");
+  });
+
+  it("draws the followed turn as it would have been drawn live, and re-reads it at the end", () => {
+    const onTurnInterrupted = vi.fn();
+    const { result } = renderHook(() => useChat({ conversationId: "c-1", onTurnInterrupted }), {
+      wrapper,
+    });
+    storedQuestion();
+
+    receive("turn_attached", { conversation_id: "c-1" });
+    expect(result.current.isProcessing).toBe(true);
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "Writing index.html" });
+    expect(streaming()?.content).toContain("Writing index.html");
+    receive("message_saved", { message_id: "stored-answer" });
+
+    receive("turn_followed_to_end", { conversation_id: "c-1" });
+    expect(result.current.isProcessing).toBe(false);
+    expect(streaming()?.isStreaming).toBe(false);
+    expect(onTurnInterrupted).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a turn of another conversation, and an end it was not following", () => {
+    const onTurnInterrupted = vi.fn();
+    const { result } = renderHook(() => useChat({ conversationId: "c-1", onTurnInterrupted }), {
+      wrapper,
+    });
+
+    receive("turn_attached", { conversation_id: "c-other" });
+    receive("turn_followed_to_end", { conversation_id: "c-other" });
+
+    expect(result.current.isProcessing).toBe(false);
+    expect(onTurnInterrupted).not.toHaveBeenCalled();
+  });
+
+  it("draws the followed answer as the agent's that answers it, from its first word", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "m-9",
+      content: "and the budget?",
+      sender: anna,
+      agent_id: "a-9",
+    });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "Up 4%." });
+
+    expect(useChatStore.getState().messages.at(-1)?.agentId).toBe("a-9");
+  });
+
+  it("draws a teammate's question before the answer it is following", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+
+    // Not followed yet: nothing to draw it under.
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "m-9",
+      content: "x",
+      sender: anna,
+    });
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "m-9",
+      content: "and the budget?",
+      sender: anna,
+      agent_id: "a-9",
+    });
+    // Already in the transcript - a person who came back mid-turn read it there.
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "u-1",
+      content: "x",
+      sender: anna,
+    });
+    receive("turn_prompt", { conversation_id: "c-1", message_id: null, content: "", sender: anna });
+
+    const asked = useChatStore.getState().messages.filter((message) => message.role === "user");
+    expect(asked.map((message) => message.content)).toEqual([
+      "build a landing page",
+      "and the budget?",
+      "",
+    ]);
+    expect(asked[1]?.sender).toEqual(anna);
+  });
+
+  it("draws a teammate's reply with the quote it answers", () => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "m-9",
+      content: "yes, do that",
+      sender: anna,
+      reply_to: { message_id: "m-1", role: "assistant", excerpt: "Plan: A, B", agent_id: "a-9" },
+    });
+
+    expect(useChatStore.getState().messages.at(-1)?.replyTo).toEqual({
+      messageId: "m-1",
+      role: "assistant",
+      excerpt: "Plan: A, B",
+      sender: undefined,
+      agentId: "a-9",
+    });
+  });
+
+  it("says who has the open conversation, and nobody for another one", () => {
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+    expect(result.current.present).toEqual([]);
+
+    receive("presence", { conversation_id: "c-1", people: [anna] });
+    expect(result.current.present).toEqual([anna]);
+
+    receive("presence", { conversation_id: "c-other", people: [anna] });
+    expect(result.current.present).toEqual([]);
+  });
+
+  it("says who else is typing here, until a while after their last keystroke", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+      const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+      const ola = { user_id: "u-3", name: "Ola", has_avatar: false, avatar_color: null };
+
+      receive("typing", { conversation_id: "c-1", person: anna });
+      receive("typing", { conversation_id: "c-other", person: ola });
+      expect(result.current.typing).toEqual([anna]);
+
+      // Renewed by the next keystroke, not doubled.
+      act(() => vi.advanceTimersByTime(4000));
+      receive("typing", { conversation_id: "c-1", person: anna });
+      act(() => vi.advanceTimersByTime(4000));
+      expect(result.current.typing).toEqual([anna]);
+
+      act(() => vi.advanceTimersByTime(3000));
+      expect(result.current.typing).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops saying somebody types once their message lands, or they leave", () => {
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+    const ola = { user_id: "u-3", name: "Ola", has_avatar: false, avatar_color: null };
+    receive("typing", { conversation_id: "c-1", person: anna });
+    receive("typing", { conversation_id: "c-1", person: ola });
+
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: "m-1",
+      content: "hi",
+      sender: anna,
+    });
+    expect(result.current.typing).toEqual([ola]);
+
+    receive("presence", { conversation_id: "c-1", people: [anna] });
+    expect(result.current.typing).toEqual([]);
+  });
+
+  it("tells the room it types only when somebody else is in it, and not every keystroke", () => {
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    const me = { user_id: "u-1", name: "Kacper", has_avatar: false, avatar_color: null };
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+    const typed = () => sent.mock.calls.filter(([frame]) => frame.type === "typing").length;
+
+    receive("presence", { conversation_id: "c-1", people: [me] });
+    act(() => result.current.notifyTyping());
+    expect(typed()).toBe(0);
+
+    receive("presence", { conversation_id: "c-1", people: [me, anna] });
+    act(() => result.current.notifyTyping());
+    act(() => result.current.notifyTyping());
+    expect(typed()).toBe(1);
+  });
+
+  it("stops following rather than stopping a turn this socket does not own", () => {
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    storedQuestion();
+    receive("turn_attached", { conversation_id: "c-1" });
+    sent.mockClear();
+
+    act(() => result.current.stopGeneration());
+
+    expect(sent).toHaveBeenCalledWith({ type: "unfollow" });
+    expect(sent).not.toHaveBeenCalledWith({ type: "stop" });
+    expect(result.current.isProcessing).toBe(false);
+  });
+});
+
+describe("useChat - the outbox (#2097)", () => {
+  // A failed expectation skips a test's own `useRealTimers`; the next test's
+  // `waitFor` would wait on a clock nobody advances.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Ask, queue `queued` behind it, and let the first turn end so the queue drains. */
+  async function drainOne(result: { current: ReturnType<typeof useChat> }, queued: string) {
+    act(() => result.current.sendMessage("first"));
+    act(() => result.current.sendMessage(queued));
+    receive("complete", {});
+    receive("session_ready", {});
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+  }
+
+  it("keeps what is queued under its conversation, and lets it go once it is sent", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    await act(async () => {});
+
+    await drainOne(result, "second");
+
+    expect(keepOutbox).toHaveBeenCalledWith("c-1", [
+      expect.objectContaining({ content: "second" }),
+    ]);
+    expect(keepOutbox).toHaveBeenLastCalledWith("c-1", []);
+    expect(frame(1).message).toBe("second");
+    expect(result.current.sentTurnId).toBe(
+      result.current.messages.find((message) => message.content === "first")?.clientMessageId,
+    );
+    expect(result.current.sentTurnId).not.toBe(
+      result.current.messages.find((message) => message.content === "second")?.clientMessageId,
+    );
+    vi.useRealTimers();
+  });
+
+  it("brings a conversation's outbox back when it is opened, and sends it", async () => {
+    vi.useFakeTimers();
+    keptOutbox.mockResolvedValueOnce([{ id: "q-1", content: "written on the train" }]);
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    await act(async () => {});
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    expect(keptOutbox).toHaveBeenCalledWith("c-1");
+    expect(lastFrame().message).toBe("written on the train");
+    vi.useRealTimers();
+  });
+
+  it("holds a kept message while the network is gone, saying it waits", async () => {
+    socket.isConnected = false;
+    keptOutbox.mockResolvedValueOnce([{ id: "q-1", content: "written on the train" }]);
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("puts what was kept ahead of what was typed while it was being read", async () => {
+    socket.isConnected = false;
+    let answer!: (kept: unknown[]) => void;
+    keptOutbox.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    act(() => result.current.sendMessage("typed just now"));
+
+    await act(async () => {
+      answer([
+        { id: "q-1", content: "written on the train" },
+        { id: result.current.queuedMessages[0]!.id, content: "typed just now" },
+      ]);
+    });
+
+    expect(result.current.queuedMessages.map((q) => q.content)).toEqual([
+      "written on the train",
+      "typed just now",
+    ]);
+  });
+
+  it("takes a new chat's queue along when the chat gets its id", async () => {
+    socket.isConnected = false;
+    let conversationId: string | null = null;
+    const { result, rerender } = renderHook(() => useChat({ conversationId }), { wrapper });
+    await act(async () => {});
+    act(() => result.current.sendMessage("the first question"));
+    expect(keepOutbox).toHaveBeenLastCalledWith(null, [
+      expect.objectContaining({ content: "the first question" }),
+    ]);
+
+    receive("conversation_created", { conversation_id: "c-new" });
+    conversationId = "c-new";
+    rerender();
+
+    expect(keepOutbox).toHaveBeenCalledWith(null, []);
+    expect(keepOutbox).toHaveBeenLastCalledWith("c-new", [
+      expect.objectContaining({ content: "the first question" }),
+    ]);
+  });
+
+  it("puts a queued message the server refused back, saying why, instead of a dead question", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    await act(async () => {});
+    await drainOne(result, "second");
+    act(() => result.current.sendMessage("third"));
+
+    receive("error", { message: "The monthly budget is spent." });
+    receive("session_ready", {});
+
+    expect(result.current.queuedMessages).toEqual([
+      expect.objectContaining({ content: "second", refused: "The monthly budget is spent." }),
+      expect.objectContaining({ content: "third" }),
+    ]);
+    const texts = useChatStore.getState().messages.map((message) => message.content);
+    expect(texts).not.toContain("second");
+    expect(texts.join(" ")).not.toContain("budget");
+
+    // Held: the refused one is at the head, and the queue is the order they go in.
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(sent).toHaveBeenCalledTimes(2);
+
+    const refused = result.current.queuedMessages[0]!;
+    act(() => result.current.retryQueued(refused.id));
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(frame(2).message).toBe("second");
+    expect(result.current.queuedMessages).toEqual([expect.objectContaining({ content: "third" })]);
+    vi.useRealTimers();
+  });
+
+  it("leaves a refusal after the message was saved where it was", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    await act(async () => {});
+    await drainOne(result, "second");
+
+    receive("user_prompt", { content: "second" });
+    receive("error", { message: "The model failed." });
+
+    expect(result.current.queuedMessages).toEqual([]);
+    const texts = useChatStore.getState().messages.map((message) => message.content);
+    expect(texts).toContain("second");
+    vi.useRealTimers();
+  });
+
+  it.each(["saved-question", null])(
+    "does not requeue an accepted prompt when its replay with id %s reports a save failure",
+    async (messageId) => {
+      vi.useFakeTimers();
+      useAuthStore.setState({
+        user: {
+          id: "me",
+          email: "me@example.com",
+          full_name: "Me",
+          is_active: true,
+          created_at: "2026-10-01",
+        },
+      });
+      const { result, rerender } = renderHook(() => useChat({ conversationId: "c-1" }), {
+        wrapper,
+      });
+      await act(async () => {});
+      await drainOne(result, "second");
+      const prompt = useChatStore
+        .getState()
+        .messages.find((message) => message.content === "second")!;
+      act(() => result.current.sendMessage("third"));
+
+      // The server accepted the queued prompt, but its acknowledgement was lost.
+      socket.isConnected = false;
+      rerender();
+      socket.isConnected = true;
+      rerender();
+      receive("turn_attached", { conversation_id: "c-1" });
+      receive("turn_prompt", {
+        conversation_id: "c-1",
+        message_id: messageId,
+        client_message_id: prompt.clientMessageId,
+        content: "second",
+        sender: prompt.sender,
+      });
+      receive("model_request_start", {});
+      receive("text_delta", { content: "The answer to second." });
+      receive("error", { code: "message_save_failed", message: "The reply could not be saved." });
+      receive("complete", {});
+
+      expect(result.current.queuedMessages).toEqual([
+        expect.objectContaining({ content: "third" }),
+      ]);
+      const prompts = useChatStore
+        .getState()
+        .messages.filter((message) => message.content === "second");
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ id: messageId ?? prompt.id, renderKey: prompt.id });
+      expect(streaming()?.content).toContain("The answer to second.");
+      expect(streaming()?.runError).toBe("The reply could not be saved.");
+
+      receive("turn_followed_to_end", { conversation_id: "c-1" });
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(result.current.queuedMessages).toEqual([]);
+      expect(
+        sent.mock.calls.filter(([value]) => value.message).map(([value]) => value.message),
+      ).toEqual(["first", "second", "third"]);
+    },
+  );
+
+  it("does not take a message typed straight in for a queued one", () => {
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    act(() => result.current.sendMessage("typed"));
+
+    receive("error", { message: "Pick an agent." });
+
+    expect(result.current.queuedMessages).toEqual([]);
+    expect(useChatStore.getState().messages.at(-1)?.runError).toBe("Pick an agent.");
+  });
+
+  it("takes the queue off the screen on a switch without dropping it from the device", () => {
+    socket.isConnected = false;
+    const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    act(() => result.current.sendMessage("later"));
+    keepOutbox.mockClear();
+
+    act(() => result.current.clearQueued());
+
+    expect(result.current.queuedMessages).toEqual([]);
+    expect(keepOutbox).not.toHaveBeenCalled();
+  });
+});
+
+it("sends the chosen folder, browser, model and MCP grants with a new turn", () => {
+  const target = {
+    folder: "/approved",
+    mode: "read_only" as const,
+    browser: true,
+    model_service: "model-grant",
+    mcp_services: ["mcp-grant"],
+  };
+  useWorkOnStore.getState().set(null, target);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("read the project"));
+    expect(lastFrame().local).toEqual(target);
+  } finally {
+    useWorkOnStore.setState({ byConversation: {}, draft: null });
+  }
+});
+
+it("files the local target when the conversation is created with settings closed", () => {
+  const target = { folder: "/approved", mode: "full_access" as const };
+  useWorkOnStore.getState().set(null, target);
+  try {
+    const initialProps: { conversationId?: string } = {};
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId?: string }) => useChat({ conversationId }),
+      { wrapper, initialProps },
+    );
+    act(() => result.current.sendMessage("read local files"));
+    expect(lastFrame().local).toEqual(target);
+    receive("conversation_created", { conversation_id: "created-local" });
+    expect(useWorkOnStore.getState().targetFor(null)).toEqual(target);
+    expect(useWorkOnStore.getState().targetFor("created-local")).toEqual(target);
+    receive("complete", {});
+    receive("session_ready", {});
+    rerender({ conversationId: "created-local" });
+    sent.mockClear();
+    act(() => result.current.sendMessage("and now?"));
+    expect(lastFrame().conversation_id).toBe("created-local");
+    expect(lastFrame().local).toEqual(target);
+  } finally {
+    useWorkOnStore.setState({ byConversation: {}, draft: null });
+  }
+});
+
+it("sends the inherited local project target on the first frame and keeps it after creation", () => {
+  const target = { folder: "/approved/project", mode: "read_only" as const };
+  useConversationStore.getState().setPendingProjectId("p-local");
+  useWorkOnStore.getState().applyProject("alice:org:p-local", target);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("read my project files"));
+    expect(lastFrame().project_id).toBe("p-local");
+    expect(lastFrame().local).toEqual(target);
+    receive("conversation_created", { conversation_id: "project-created" });
+    expect(useWorkOnStore.getState().targetFor("project-created")).toEqual(target);
+  } finally {
+    useWorkOnStore.setState({ byConversation: {}, draft: null, draftProjectKey: null });
+    useConversationStore.getState().setPendingProjectId(null);
+  }
+});
+
+it("resolves the project folder even when sending beats project metadata rendering", () => {
+  const target = { folder: "/approved/instant", mode: "read_only" as const };
+  const key = projectFolderKey("u-1", "org-a", "p-instant");
+  if (!key) throw new Error("Expected authenticated project key");
+  useAuthStore.setState({
+    user: {
+      id: "u-1",
+      email: "test@example.com",
+      is_active: true,
+      created_at: "2026-10-25T00:00:00Z",
+    },
+  });
+  useOrgStore.setState({ activeOrgId: "org-a" });
+  useConversationStore.getState().setPendingProjectId("p-instant");
+  window.__AGENTICOS_SHELL__ = {
+    platform: "macos",
+    window: "main",
+    version: "0.2.0",
+    vibrancy: false,
+  };
+  useProjectFoldersStore.getState().bind(key, target);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("inspect local project"));
+    expect(lastFrame().local).toEqual(target);
+    expect(lastFrame().project_id).toBe("p-instant");
+  } finally {
+    delete window.__AGENTICOS_SHELL__;
+    useProjectFoldersStore.setState({ byProject: {} });
+    useWorkOnStore.setState({ byConversation: {}, draft: null, draftProjectKey: null });
+  }
+});
+
+it("adopts the persisted prompt id before reconciling a live transcript", () => {
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("A question"));
+  const temporary = useChatStore.getState().messages[0]!;
+  receive("user_prompt", { message_id: "stored-question", content: "A question" });
+  expect(useChatStore.getState().messages[0]).toMatchObject({
+    id: "stored-question",
+    isTemporaryId: false,
+    renderKey: temporary.id,
+  });
+});
+
+it("holds queued prompts when the socket drops after completion but before admission is ready", async () => {
+  vi.useFakeTimers();
+  try {
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("first"));
+    act(() => result.current.sendMessage("waiting"));
+    receive("complete", {});
+    socket.isConnected = false;
+    rerender();
+    socket.isConnected = true;
+    rerender();
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(result.current.interrupted).toBe(true);
+    expect(result.current.queuedMessages.map((message) => message.content)).toEqual(["waiting"]);
+    expect(sent.mock.calls.filter(([value]) => value.message)).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("waits for the followed turn to detach before releasing a queued prompt", async () => {
+  vi.useFakeTimers();
+  try {
+    const { result } = renderHook(() => useChat({ conversationId: "followed" }), { wrapper });
+    receive("turn_attached", { conversation_id: "followed" });
+    receive("model_request_start", {});
+    receive("text_delta", { index: 0, content: "An answer" });
+    act(() => result.current.sendMessage("next question"));
+    receive("complete", {});
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(sent.mock.calls.filter(([value]) => value.message)).toHaveLength(0);
+    receive("turn_followed_to_end", { conversation_id: "followed" });
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(
+      sent.mock.calls.filter(([value]) => value.message).map(([value]) => value.message),
+    ).toEqual(["next question"]);
+    expect(streaming()?.isStreaming).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each(["saved-question", null])(
+  "reconciles its own prompt when reconnect replay carries %s",
+  (messageId) => {
+    renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+    const sender = { user_id: "me", name: "Me", has_avatar: false, avatar_color: null };
+    act(() =>
+      useChatStore.getState().addMessage({
+        id: "local",
+        clientMessageId: "nonce",
+        role: "user",
+        content: "repeat",
+        timestamp: new Date(),
+        conversationId: "c-1",
+        isTemporaryId: true,
+        sender,
+      }),
+    );
+    receive("turn_attached", { conversation_id: "c-1" });
+    receive("turn_prompt", {
+      conversation_id: "c-1",
+      message_id: messageId,
+      client_message_id: "nonce",
+      content: "repeat",
+      sender,
+    });
+    const prompts = useChatStore.getState().messages.filter((item) => item.role === "user");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.id).toBe(messageId ?? "local");
+    expect(prompts[0]?.renderKey).toBe("local");
+    expect(prompts[0]?.isTemporaryId).toBe(messageId === null);
+  },
+);
+
+it("sends the prompt correlation retained beside its authenticated author", () => {
+  useAuthStore.setState({
+    user: {
+      id: "me",
+      email: "me@example.com",
+      full_name: "Me",
+      is_active: true,
+      created_at: "2026-10-01",
+      avatar_url: "/avatar/me",
+      avatar_color: 1,
+    },
+  });
+  const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+  act(() => result.current.sendMessage("repeat"));
+  const prompt = useChatStore.getState().messages.find((message) => message.role === "user");
+  expect(prompt?.clientMessageId).toEqual(expect.any(String));
+  expect(lastFrame().client_message_id).toBe(prompt?.clientMessageId);
+  expect(prompt?.sender).toEqual({ user_id: "me", name: "Me", has_avatar: true, avatar_color: 1 });
+});
+
+describe("useChat - next steps arrive after the answer", () => {
+  function saved(id = "answer-1", conversationId = "c-1") {
+    return {
+      id,
+      conversationId,
+      role: "assistant" as const,
+      content: "Original answer",
+      timestamp: new Date(),
+      isStreaming: false,
+    };
+  }
+  it("updates only the saved answer while another answer is streaming", () => {
+    useConversationStore.setState({ currentConversationId: "c-1" });
+    useChatStore.setState({
+      messages: [saved(), { ...saved("answer-2"), isStreaming: true, content: "Still writing" }],
+    });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const before = useChatStore.getState().messages[1];
+    receive("next_steps", {
+      conversation_id: "c-1",
+      message_id: "answer-1",
+      steps: ["Make a table"],
+    });
+    expect(useChatStore.getState().messages[0]?.toolCalls?.[0]?.args.steps).toEqual([
+      "Make a table",
+    ]);
+    expect(useChatStore.getState().messages[1]).toBe(before);
+    expect(result.current.isProcessing).toBe(false);
+  });
+  it("keeps a very fast result until message_saved renames its bubble", async () => {
+    useConversationStore.setState({ currentConversationId: "c-1" });
+    renderHook(() => useChat(), { wrapper });
+    receive("model_request_start", {});
+    receive("text_delta", { content: "Answer" });
+    receive("next_steps", {
+      conversation_id: "c-1",
+      message_id: "saved-1",
+      steps: ["Make a table"],
+    });
+    receive("message_saved", { message_id: "saved-1", conversation_id: "c-1" });
+    await waitFor(() =>
+      expect(
+        useChatStore.getState().messages.find((m) => m.id === "saved-1")?.toolCalls?.[0]?.args
+          .steps,
+      ).toEqual(["Make a table"]),
+    );
+  });
+  it("drops another conversation's late result and malformed events", () => {
+    useConversationStore.setState({ currentConversationId: "c-1" });
+    useChatStore.setState({ messages: [saved()] });
+    renderHook(() => useChat(), { wrapper });
+    const before = useChatStore.getState().messages[0];
+    receive("next_steps", {
+      conversation_id: "c-2",
+      message_id: "answer-1",
+      steps: ["Make a table"],
+    });
+    receive("next_steps", { conversation_id: "c-1", message_id: "answer-1", steps: [1] });
+    expect(useChatStore.getState().messages[0]).toBe(before);
+  });
+});
+
+it("bounds suggestions waiting for a saved bubble", async () => {
+  useConversationStore.setState({ currentConversationId: "c-1" });
+  renderHook(() => useChat(), { wrapper });
+  for (let i = 0; i <= 20; i++)
+    receive("next_steps", {
+      conversation_id: "c-1",
+      message_id: `saved-${i}`,
+      steps: ["Make a table"],
+    });
+  receive("model_request_start", {});
+  receive("message_saved", { message_id: "saved-20", conversation_id: "c-1" });
+  await waitFor(() =>
+    expect(
+      useChatStore.getState().messages.find((m) => m.id === "saved-20")?.toolCalls,
+    ).toHaveLength(1),
+  );
+  act(() =>
+    useChatStore.getState().addMessage({
+      id: "saved-0",
+      conversationId: "c-1",
+      role: "assistant",
+      content: "Older",
+      timestamp: new Date(),
+    }),
+  );
+  expect(
+    useChatStore.getState().messages.find((m) => m.id === "saved-0")?.toolCalls,
+  ).toBeUndefined();
+});
+
+it("discards pending suggestions when the conversation changes", () => {
+  useConversationStore.setState({ currentConversationId: "c-1" });
+  renderHook(() => useChat(), { wrapper });
+  receive("next_steps", {
+    conversation_id: "c-1",
+    message_id: "old-answer",
+    steps: ["Make a table"],
+  });
+  act(() => useConversationStore.setState({ currentConversationId: "c-2" }));
+  act(() => useConversationStore.setState({ currentConversationId: "c-1" }));
+  act(() =>
+    useChatStore.getState().addMessage({
+      id: "old-answer",
+      conversationId: "c-1",
+      role: "assistant",
+      content: "Old answer",
+      timestamp: new Date(),
+    }),
+  );
+  expect(
+    useChatStore.getState().messages.find((m) => m.id === "old-answer")?.toolCalls,
+  ).toBeUndefined();
+});
+
+it("refreshes the conversation bill even when the helper offers no buttons", async () => {
+  useConversationStore.setState({ currentConversationId: "c-1" });
+  get.mockResolvedValue({ cost: null });
+  renderHook(() => useChat(), { wrapper });
+  receive("next_steps", { conversation_id: "c-1", message_id: "answer", steps: [] });
+  await waitFor(() =>
+    expect(get).toHaveBeenCalledWith("/conversations/c-1/messages?skip=0&limit=1"),
+  );
+  expect(useChatStore.getState().messages).toHaveLength(0);
+});
+
+it.each(["account", "organization"])(
+  "does not apply a late helper bill after changing %s",
+  async (changed) => {
+    useConversationStore.setState({ currentConversationId: "c-1" });
+    const bill = { input_tokens: 10, output_tokens: 20, cost_usd: "0.25", cost_is_partial: false };
+    let resolve!: (value: { cost: typeof bill }) => void;
+    const pendingBill = new Promise<{ cost: typeof bill }>((done) => {
+      resolve = done;
+    });
+    get.mockImplementation((path: string) => {
+      if (path === "/me/permissions") {
+        return Promise.resolve({
+          organization_id: "new-org",
+          role: "member",
+          is_app_admin: false,
+          permissions: [],
+        });
+      }
+      if (path === "/conversations/c-1/messages?skip=0&limit=1") return pendingBill;
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    renderHook(() => useChat(), { wrapper });
+    receive("next_steps", { conversation_id: "c-1", message_id: "answer", steps: [] });
+    act(() => {
+      if (changed === "organization") useOrgStore.setState({ activeOrgId: "new-org" });
+      else
+        useAuthStore.setState({
+          user: {
+            id: "new-account",
+            email: "new@example.com",
+            full_name: "New",
+            is_active: true,
+            created_at: "2026-10-01",
+          },
+        });
+      resolve({ cost: bill });
+    });
+    await act(async () => {});
+    expect(useConversationStore.getState().currentCost).not.toEqual(bill);
+  },
+);
+
+it("sends a browser-only override without a folder or sandbox target", () => {
+  const store = useWorkOnStore.getState();
+  store.setBrowser(null, true);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("open the local browser"));
+    expect(lastFrame().local).toEqual({ browser: true });
+    expect(store.targetFor(null)).toBeNull();
+  } finally {
+    store.resetDraft();
+  }
+});
+
+it("keeps a finished browser preview through a follow-up turn", () => {
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("browser_opened", {
+    kind: "browser_opened",
+    call_id: "c1",
+    step: 0,
+    goal: "first",
+    navigable: true,
+    tab_id: "main",
+  });
+  receive("browser_finished", {
+    kind: "browser_finished",
+    call_id: "c1",
+    step: 1,
+    outcome: "done",
+  });
+  act(() => result.current.sendMessage("continue on that page"));
+  expect(result.current.browses).toHaveLength(1);
+  expect(result.current.browses[0]).toMatchObject({ tabId: "main", outcome: "done" });
+});
+
+it("sends a screen-only override without giving the agent a local folder", () => {
+  const store = useWorkOnStore.getState();
+  store.setComputer(null, true);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("use my computer"));
+    expect(lastFrame().local).toEqual({ computer: true });
+    expect(store.targetFor(null)).toBeNull();
+  } finally {
+    store.resetDraft();
+  }
+});
+
+it("sends no local field when a chat chose no skills", () => {
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("no skills"));
+  expect(lastFrame().local).toBeUndefined();
+});
+
+it("sends the skill sources a chat chose, alone, without a folder", () => {
+  const store = useWorkOnStore.getState();
+  store.setSkills(null, ["claude", "codex"]);
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("skills only"));
+    expect(lastFrame().local).toEqual({ skills: ["claude", "codex"] });
+    expect(store.targetFor(null)).toBeNull();
+  } finally {
+    store.resetDraft();
+  }
+});
+
+it("sends the skill sources together with the folder the chat works in", () => {
+  const store = useWorkOnStore.getState();
+  store.setSkills(null, ["agents"]);
+  store.set(null, { folder: "/Users/me/work", mode: "full_access" });
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("skills in a folder"));
+    expect(lastFrame().local).toEqual({
+      folder: "/Users/me/work",
+      mode: "full_access",
+      skills: ["agents"],
+    });
+  } finally {
+    store.set(null, null);
+    store.resetDraft();
+  }
+});
+
+it("reads approval-waiver policy for the active organization", () => {
+  useOrgStore.setState({ activeOrgId: "org-1" });
+  const { result } = renderHook(() => useChat(), {
+    wrapper: makeWrapper(
+      ["approvals:decide"],
+      [
+        { id: "elsewhere", chat_may_waive_approvals: false },
+        { id: "org-1", chat_may_waive_approvals: true },
+      ],
+    ),
+  });
+  act(() => result.current.sendMessage("hello"));
+  expect(lastFrame()).not.toHaveProperty("approval_mode");
+});
+
+const nativeStop = vi.hoisted(() => ({ handler: (_payload: unknown) => {} }));
+vi.mock("./use-desktop", async (original) => {
+  const real = await original<typeof import("./use-desktop")>();
+  return {
+    ...real,
+    useShellEvent: (...args: Parameters<typeof real.useShellEvent>) => {
+      if (args[0] === "desktop:stop-conversation") nativeStop.handler = args[1];
+      real.useShellEvent(...args);
+    },
+  };
+});
+it("stops the originating live conversation from the desktop activity command", () => {
+  window.__AGENTICOS_SHELL__ = {
+    platform: "macos",
+    window: "main",
+    version: "0.2.0",
+    vibrancy: false,
+  };
+  useConversationStore.getState().setCurrentConversationId("native-chat");
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("Keep working"));
+  expect(result.current.isProcessing).toBe(true);
+  act(() => nativeStop.handler("native-chat"));
+  expect(sent).toHaveBeenLastCalledWith(expect.objectContaining({ type: "stop" }));
+  delete window.__AGENTICOS_SHELL__;
+});
+
+it("sends a per-chat coding choice alongside its approved folder", () => {
+  const store = useWorkOnStore.getState();
+  store.set(null, { folder: "/approved", mode: "full_access" });
+  store.setCoding(null, "codex");
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("use the local coding agent"));
+    expect(lastFrame().local).toEqual({
+      folder: "/approved",
+      mode: "full_access",
+      coding_agent: "codex",
+      coding_model: null,
+      coding_effort: null,
+    });
+  } finally {
+    store.set(null, null);
+    store.resetDraft();
+  }
+});
+
+it("sends the person's chosen coding model and effort without changing the main model", () => {
+  const store = useWorkOnStore.getState();
+  store.set(null, { folder: "/approved", mode: "full_access" });
+  store.setCoding(null, "codex");
+  store.setCodingPreferences(null, { model: "chosen-coding-model", effort: "low" });
+  try {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    act(() => result.current.sendMessage("work on this"));
+    expect(lastFrame().local).toMatchObject({
+      coding_agent: "codex",
+      coding_model: "chosen-coding-model",
+      coding_effort: "low",
+    });
+    expect(lastFrame().model_profile_id).not.toBe("chosen-coding-model");
+  } finally {
+    store.set(null, null);
+    store.resetDraft();
+  }
+});
+
+it("retains the server-recorded file origin after composer workspace changes", () => {
+  renderHook(() => useChat(), { wrapper });
+  receive("user_prompt", { file_source: { kind: "local", id: "original-source" } });
+  receive("model_request_start", {});
+  act(() => useWorkOnStore.getState().set(null, { folder: "/different", mode: "full_access" }));
+  receive("text_delta", { index: 0, content: "Done" });
+  expect(streaming()?.fileSource).toEqual({ kind: "local", id: "original-source" });
+  useWorkOnStore.setState({ byConversation: {}, draft: null });
+});
+
+it("keeps local folder mappings private while recording only opaque turn origins", () => {
+  const store = useWorkOnStore.getState();
+  store.set(null, { folder: "/private/original", mode: "full_access" });
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("Make a file"));
+  act(() => store.set(null, { folder: "/private/different", mode: "full_access" }));
+  receive("user_prompt", { file_source: { kind: "local", id: "opaque-source" } });
+  expect(store.fileRootFor("opaque-source")).toBe("/private/original");
+  receive("model_request_start", {});
+  receive("text_delta", { index: 0, content: "Done" });
+  expect(streaming()?.fileSource).toEqual({ kind: "local", id: "opaque-source" });
+  expect(JSON.stringify(streaming()?.fileSource)).not.toContain("/private");
+  useWorkOnStore.setState({ byConversation: {}, draft: null, fileRoots: {} });
+});
+
+it("does not file a pending local origin under a newly selected organization", () => {
+  const store = useWorkOnStore.getState();
+  const organization = useOrgStore.getState().activeOrgId;
+  store.set(null, { folder: "/private/original", mode: "full_access" });
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("Make a file"));
+  act(() => useOrgStore.setState({ activeOrgId: "other-organization" }));
+  receive("user_prompt", { file_source: { kind: "local", id: "late-source" } });
+  expect(store.fileRootFor("late-source")).toBeUndefined();
+  act(() => useOrgStore.setState({ activeOrgId: organization }));
+  expect(store.fileRootFor("late-source")).toBeUndefined();
+  useWorkOnStore.setState({ byConversation: {}, draft: null, fileRoots: {} });
+});
+
+it("recovers a second approval batch of the same run after a server continuation", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  const { result } = renderHook(() => useChat(), { wrapper: decider });
+  receive("tool_approval_required", {
+    run_id: "r-1",
+    action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "write", args: {} }],
+    review_configs: [],
+  });
+  post.mockResolvedValue({ continues_in_chat: true });
+  await act(async () => {
+    await result.current.sendResumeDecisions([{ type: "approve" }]);
+  });
+  get.mockResolvedValue([
+    { id: "ar-2", tool_call_id: "tc-2", tool_name: "create_task", tool_args: {} },
+  ]);
+  act(() =>
+    useChatStore.getState().addMessage({
+      ...parkedTurn(),
+      id: "m-2",
+      toolCalls: [{ id: "tc-2", name: "create_task", args: {}, status: "awaiting_approval" }],
+    }),
+  );
+  await waitFor(() => expect(result.current.pendingApproval?.actionRequests[0]?.id).toBe("ar-2"));
+});
+
+it("finds an older pending run when the latest parked-looking run has no approvals", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  useChatStore.getState().addMessage({ ...parkedTurn(), id: "older", runId: "older-run" });
+  useChatStore.getState().addMessage(parkedTurn());
+  get.mockImplementation(async (url: string) =>
+    url === "/runs/older-run/parked"
+      ? [{ id: "older-approval", tool_call_id: "tc-1", tool_name: "write", tool_args: {} }]
+      : [],
+  );
+  const { result } = renderHook(() => useChat(), { wrapper: decider });
+  await waitFor(() => expect(result.current.pendingApproval?.runId).toBe("older-run"));
+});
+
+describe("human decisions inside delegated tasks", () => {
+  it("restores a child approval when the parent only records a running task call", async () => {
+    get.mockImplementation(async (url: string) =>
+      url.endsWith("/parked")
+        ? [
+            {
+              id: "child-approval",
+              tool_call_id: "child-tool",
+              tool_name: "execute",
+              tool_args: { cmd: "review" },
+            },
+          ]
+        : false,
+    );
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage({
+      ...parkedTurn(),
+      runWaitingFor: "approval",
+      toolCalls: [{ id: "parent-task", name: "task", args: {}, status: "running" }],
+    });
+    const { result } = renderHook(() => useChat(), { wrapper: decider });
+    await waitFor(() =>
+      expect(result.current.pendingApproval?.actionRequests[0]?.id).toBe("child-approval"),
+    );
+    expect(result.current.pendingApproval?.messageId).toBe("m-1");
+    expect(get).toHaveBeenCalledWith("/runs/r-1/parked");
+  });
+
+  it("does not expose a child decision to a non-decider", async () => {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore
+      .getState()
+      .addMessage({ ...parkedTurn(), runWaitingFor: "approval", toolCalls: [] });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await act(async () => {});
+    expect(result.current.pendingApproval).toBeNull();
+    expect(get.mock.calls.filter(([url]) => url.endsWith("/parked"))).toHaveLength(0);
+  });
+
+  it("restores a child question absent from the parent's task timeline", async () => {
+    get.mockImplementation(async (url: string) => (url.endsWith("/questions") ? ASKED : false));
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage({
+      ...askedTurn(),
+      runWaitingFor: "answer",
+      toolCalls: [{ id: "parent-task", name: "task", args: {}, status: "running" }],
+    });
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.pendingQuestions?.[0]?.question).toBe("How formal?"));
+    expect(get).toHaveBeenCalledWith("/runs/r-1/questions");
+  });
+
+  it.each(["completed", "awaiting_approval"] as const)(
+    "shows a delegate working during resume and settled when its parent is %s",
+    async (status) => {
+      let finish!: (value: object) => void;
+      const continued = new Promise<object>((resolve) => {
+        finish = resolve;
+      });
+      post.mockImplementation((url: string) =>
+        url.endsWith("/resume") ? continued : Promise.resolve({}),
+      );
+      const { result } = renderHook(() => useChat(), { wrapper });
+      receive("model_request_start", {});
+      receive("subagent_start", {
+        kind: "subagent_start",
+        task_id: "architect-task",
+        subagent: "Architect",
+        depth: 0,
+        mode: "sync",
+        prompt: "Review",
+        parent_task_id: null,
+      });
+      receive("subagent_awaiting_approval", {
+        kind: "subagent_awaiting_approval",
+        task_id: "architect-task",
+        subagent: "Architect",
+        depth: 0,
+      });
+      receive("tool_approval_required", {
+        run_id: "r-1",
+        action_requests: [
+          { id: "child-approval", tool_call_id: "child-tool", tool_name: "execute", args: {} },
+        ],
+        review_configs: [],
+      });
+      receive("complete", {});
+      let submitting!: Promise<void>;
+      await act(async () => {
+        submitting = result.current.sendResumeDecisions([{ type: "approve" }]);
+      });
+      expect(result.current.delegations[0]?.status).toBe("running");
+      await act(async () => {
+        finish({
+          status,
+          output: "Reviewed.",
+          delegations: [{ task_id: "architect-task", status: "completed" }],
+        });
+        await submitting;
+      });
+      expect(result.current.delegations[0]?.status).toBe("completed");
+    },
+  );
+});
+
+it("settles a resumed tool in its original segment even before a new segment opens", () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  renderHook(() => useChat(), { wrapper });
+  receive("model_request_start", {});
+  receive("tool_call", { tool_name: "agenticos_get_project", args: {}, tool_call_id: "old-read" });
+  receive("complete", {});
+  const original = useChatStore.getState().messages.at(-1)!;
+  receive("turn_attached", { conversation_id: "c-1" });
+  receive("tool_result", { tool_call_id: "old-read", content: '{"name":"Fall launch"}' });
+  expect(
+    useChatStore.getState().messages.find((m) => m.id === original.id)?.toolCalls?.[0],
+  ).toMatchObject({
+    status: "completed",
+    result: '{"name":"Fall launch"}',
+  });
+  receive("model_request_start", {});
+  receive("text_delta", { index: 0, content: "Checked." });
+  receive("tool_result", { tool_call_id: "old-read", content: '{"name":"Updated launch"}' });
+  expect(
+    useChatStore.getState().messages.find((m) => m.id === original.id)?.toolCalls?.[0]?.result,
+  ).toBe('{"name":"Updated launch"}');
+});
+
+it("does not recover a second parked turn after leaving during the first failed lookup", async () => {
+  let fail!: (reason: Error) => void;
+  const pending = new Promise<never>((_resolve, reject) => {
+    fail = reject;
+  });
+  get.mockReturnValue(pending);
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  useChatStore.getState().addMessage({ ...parkedTurn(), id: "older", runId: "older-run" });
+  useChatStore.getState().addMessage(parkedTurn());
+  const view = renderHook(() => useChat(), { wrapper: decider });
+  await waitFor(() => expect(get).toHaveBeenCalledWith("/runs/r-1/parked"));
+  view.unmount();
+  await act(async () => {
+    fail(new Error("Connection lost"));
+  });
+  expect(get).not.toHaveBeenCalledWith("/runs/older-run/parked");
+});
+
+it("binds the stopped partial reply to its saved row and immediately clears sidebar activity", () => {
+  const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+  receive("model_request_start", {});
+  receive("text_delta", { content: "Partial answer" });
+  receive("tool_call", {
+    tool_name: "web_fetch",
+    tool_call_id: "call",
+    args: { url: "https://example.com" },
+  });
+  const partial = useChatStore.getState().messages.find((m) => m.role === "assistant")!;
+  act(() => result.current.stopGeneration());
+  expect(useWorkingStore.getState().finishedAt["c-1"]).toBeDefined();
+  expect(useWorkingStore.getState().since["c-1"]).toBeUndefined();
+  expect(useChatStore.getState().messages.find((m) => m.id === partial.id)?.wasStopped).toBe(true);
+  receive("thinking_delta", { content: "Late thought" });
+  receive("model_request_start", {});
+  act(() =>
+    useChatStore.getState().rereadMessages([
+      {
+        ...partial,
+        id: "saved-stop",
+        isTemporaryId: false,
+        isStreaming: false,
+        wasStopped: true,
+      },
+    ]),
+  );
+  receive("message_saved", { message_id: "saved-stop", conversation_id: "c-1" });
+  receive("complete", { stopped: true });
+  receive("session_ready", {});
+  const replies = useChatStore.getState().messages.filter((m) => m.role === "assistant");
+  expect(replies).toHaveLength(1);
+  expect(replies[0]).toMatchObject({
+    id: "saved-stop",
+    wasStopped: true,
+    isStreaming: false,
+    content: "Partial answer",
+  });
+  expect(result.current.isProcessing).toBe(false);
+});
+
+it("ignores buffered model frames after Stop before the first assistant message", () => {
+  const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+  act(() => result.current.sendMessage("start"));
+  act(() => result.current.stopGeneration());
+  receive("model_request_start", {});
+  receive("thinking_delta", { content: "Too late" });
+  receive("text_delta", { content: "Too late" });
+  receive("complete", { stopped: true });
+  expect(useChatStore.getState().messages.filter((m) => m.role === "assistant")).toHaveLength(0);
+  expect(useWorkingStore.getState().finishedAt["c-1"]).toBeDefined();
+  receive("session_ready", {});
+  act(() => result.current.sendMessage("next"));
+  receive("user_prompt", { message_id: "next-prompt" });
+  receive("model_request_start", {});
+  receive("text_delta", { content: "Next answer" });
+  expect(useChatStore.getState().messages.find((m) => m.role === "assistant")?.content).toBe(
+    "Next answer",
+  );
+});
+
+it.each(["completed", "awaiting_approval"] as const)(
+  "shows a streamed HTTP continuation once when it is %s",
+  async (status) => {
+    useConversationStore.getState().setCurrentConversationId("c-resume");
+    let finish!: (value: object) => void;
+    const continued = new Promise<object>((resolve) => {
+      finish = resolve;
+    });
+    post.mockImplementation((url: string) =>
+      url.endsWith("/resume") ? continued : Promise.resolve({}),
+    );
+    const reread = vi.fn();
+    const { result } = renderHook(() => useChat({ onTurnInterrupted: reread }), { wrapper });
+    receive("model_request_start", {});
+    receive("tool_approval_required", {
+      run_id: "resume-run",
+      action_requests: [
+        { id: "approval", tool_call_id: "change", tool_name: "change_record", args: {} },
+      ],
+      review_configs: [],
+    });
+    receive("complete", {});
+    let submitting!: Promise<void>;
+    await act(async () => {
+      submitting = result.current.sendResumeDecisions([{ type: "approve" }]);
+    });
+    receive("turn_attached", { conversation_id: "c-resume" });
+    receive("background_task_turn", {
+      conversation_id: "c-resume",
+      agent_id: "a-1",
+      resumed_run_id: "resume-run",
+    });
+    receive("model_request_start", {});
+    receive("tool_call", { tool_call_id: "next-call", tool_name: "change_record", args: {} });
+    receive("tool_call", { tool_call_id: "read-call", tool_name: "read_record", args: {} });
+    receive("tool_result", { tool_call_id: "read-call", result: "Read" });
+    receive("text_delta", { index: 0, content: "Approved and done" });
+    act(() => {
+      useWorkingStore.getState().start("c-resume", "2026-11-06T09:00:00Z");
+      useWorkingStore.getState().handOff("c-resume");
+    });
+    receive("message_saved", {
+      message_id: "persisted-resume",
+      conversation_id: "c-resume",
+      run_id: "resume-run",
+    });
+    receive("turn_followed_to_end", { conversation_id: "c-resume" });
+    await act(async () => {
+      finish({
+        status,
+        output: "Approved and done",
+        parked:
+          status === "awaiting_approval"
+            ? [
+                {
+                  id: "next-approval",
+                  tool_call_id: "next-call",
+                  tool_name: "change_record",
+                  tool_args: {},
+                },
+              ]
+            : [],
+      });
+      await submitting;
+    });
+    expect(
+      result.current.messages.filter((message) => message.content === "Approved and done"),
+    ).toHaveLength(1);
+    receive("tool_approval_required", {
+      run_id: "resume-run",
+      action_requests: [
+        { id: "approval", tool_call_id: "change", tool_name: "change_record", args: {} },
+      ],
+      review_configs: [],
+    });
+    expect(result.current.messages.some((message) => message.isStreaming)).toBe(false);
+    expect(
+      result.current.messages.filter((message) => message.id === "persisted-resume"),
+    ).toHaveLength(1);
+    expect(useWorkingStore.getState().since["c-resume"]).toBeUndefined();
+    expect(useWorkingStore.getState().handedOff["c-resume"]).toBeUndefined();
+    expect(reread).toHaveBeenCalled();
+    expect(result.current.pendingApproval?.actionRequests[0]?.id ?? null).toBe(
+      status === "awaiting_approval" ? "next-approval" : null,
+    );
+    receive("tool_approval_required", {
+      run_id: "resume-run",
+      action_requests: [
+        { id: "approval", tool_call_id: "change", tool_name: "change_record", args: {} },
+        { id: "next-approval", tool_call_id: "next-call", tool_name: "change_record", args: {} },
+        { id: "send-approval", tool_call_id: "send-call", tool_name: "send_email", args: {} },
+      ],
+      review_configs: [
+        { tool_name: "change_record", allow_edit: false },
+        { tool_name: "send_email", allow_edit: false },
+      ],
+    });
+    expect(
+      result.current.pendingApproval?.reviewConfigs.map((config) => config.tool_name) ?? [],
+    ).toEqual(status === "awaiting_approval" ? ["change_record", "send_email"] : []);
+  },
+);
+
+it("dismisses an obsolete approval when a saved continuation confirms it is complete", () => {
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("model_request_start", {});
+  receive("tool_approval_required", {
+    run_id: "r-done",
+    action_requests: [
+      { id: "decided-elsewhere", tool_call_id: "c-done", tool_name: "write", args: {} },
+    ],
+    review_configs: [],
+  });
+  expect(result.current.pendingApproval).not.toBeNull();
+  receive("message_saved", { message_id: "saved", run_id: "r-done", run_status: "completed" });
+  expect(result.current.pendingApproval).toBeNull();
+  receive("tool_approval_required", {
+    run_id: "r-done",
+    action_requests: [
+      { id: "decided-elsewhere", tool_call_id: "c-done", tool_name: "write", args: {} },
+    ],
+    review_configs: [],
+  });
+  expect(result.current.pendingApproval).toBeNull();
+});
+
+it("does not reopen a terminal approval from a late parked-call lookup", async () => {
+  let finish!: (calls: unknown[]) => void;
+  get.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  useConversationStore.getState().setCurrentConversationId("c-late");
+  useChatStore.getState().addMessage({
+    id: "parked-message",
+    role: "assistant",
+    content: "",
+    timestamp: new Date(),
+    conversationId: "c-late",
+    runId: "r-late",
+    runWaitingFor: "approval",
+    toolCalls: [{ id: "late-call", name: "write", args: {}, status: "awaiting_approval" }],
+  });
+  const { result } = renderHook(() => useChat(), { wrapper: decider });
+  await waitFor(() => expect(get).toHaveBeenCalledWith("/runs/r-late/parked"));
+  receive("message_saved", { message_id: "saved", run_id: "r-late", run_status: "completed" });
+  await act(async () =>
+    finish([
+      { id: "stale-approval", tool_call_id: "late-call", tool_name: "write", tool_args: {} },
+    ]),
+  );
+  expect(result.current.pendingApproval).toBeNull();
+});
+
+it("uses a new segment when the HTTP resume beats its first streamed model frame", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-resume");
+  let finish!: (value: object) => void;
+  post.mockImplementation((url: string) =>
+    url.endsWith("/resume")
+      ? new Promise((done) => {
+          finish = done;
+        })
+      : Promise.resolve({}),
+  );
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("model_request_start", {});
+  receive("tool_approval_required", {
+    run_id: "resume-run",
+    action_requests: [{ id: "first", tool_call_id: "old-call", tool_name: "change", args: {} }],
+    review_configs: [],
+  });
+  receive("complete", {});
+  const old = result.current.messages.at(-1)?.id;
+  let submission!: Promise<void>;
+  await act(async () => {
+    submission = result.current.sendResumeDecisions([{ type: "approve" }]);
+  });
+  receive("background_task_turn", {
+    conversation_id: "c-resume",
+    agent_id: "a-1",
+    resumed_run_id: "resume-run",
+  });
+  await act(async () => {
+    finish({
+      status: "awaiting_approval",
+      output: "Next step",
+      tool_calls: [{ tool_call_id: "next-call", tool_name: "change", args: {} }],
+      parked: [{ id: "next", tool_call_id: "next-call", tool_name: "change", tool_args: {} }],
+    });
+    await submission;
+  });
+  expect(result.current.messages.filter((message) => message.content === "Next step")).toHaveLength(
+    1,
+  );
+  expect(result.current.pendingApproval?.messageId).not.toBe(old);
+  expect(result.current.pendingApproval?.messageId).toBe(result.current.messages.at(-1)?.id);
+});
+
+it("does not restore approvals from stale transcript rows after a terminal receipt", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  renderHook(() => useChat(), { wrapper: decider });
+  receive("message_saved", { message_id: "finished", run_id: "r-1", run_status: "completed" });
+  act(() => useChatStore.getState().addMessage(parkedTurn()));
+  await act(async () => {});
+  expect(get).not.toHaveBeenCalledWith("/runs/r-1/parked");
+});
+
+it("renders a setup reply as an AgenticOS message and receipt without inventing a run", () => {
+  renderHook(() => useChat(), { wrapper });
+  receive("model_setup_required", { agent_id: "starter", text: "Connect a model to continue." });
+  const reply = useChatStore.getState().messages.at(-1);
+  expect(reply).toMatchObject({
+    role: "assistant",
+    agentId: "starter",
+    content: "Connect a model to continue.",
+    animateSetupReply: true,
+    isStreaming: false,
+  });
+  expect(reply?.parts?.map((part) => part.type)).toEqual(["text", "model_setup"]);
+  expect(reply?.runId).toBeUndefined();
+  receive("message_saved", { message_id: "saved-setup" });
+  receive("complete", {});
+  expect(useChatStore.getState().messages.at(-1)?.id).toBe("saved-setup");
+});
+
+describe("useChat - computer access continues only its successful turn", () => {
+  function asking() {
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const view = renderHook(() => useChat(), { wrapper });
+    act(() => view.result.current.sendMessage("Read my files"));
+    receive("model_request_start", {});
+    receive("computer_access", { reason: "Read the project" });
+    return view;
+  }
+
+  it("queues exactly one continuation after successful completion", async () => {
+    const { result } = asking();
+    act(() => result.current.sendComputerAccessResponse(true));
+    expect(result.current.queuedMessages).toHaveLength(0);
+    receive("complete", {});
+    receive("session_ready", {});
+    await waitFor(() =>
+      expect(sent).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Access granted - please continue." }),
+      ),
+    );
+    receive("complete", {});
+    expect(
+      sent.mock.calls.filter(([frame]) => frame.message === "Access granted - please continue."),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    "stop",
+    "server-stop",
+    "error",
+    "failed-run",
+    "disconnect",
+    "navigation",
+    "declined",
+    "approval",
+  ])("does not continue after %s", async (termination) => {
+    const { result, rerender } = asking();
+    act(() => result.current.sendComputerAccessResponse(termination !== "declined"));
+    if (termination === "stop") act(() => result.current.stopGeneration());
+    if (termination === "error") receive("error", { message: "Failed" });
+    if (termination === "approval")
+      receive("tool_approval_required", {
+        run_id: "r-1",
+        action_requests: [{ id: "ar-1", tool_call_id: "tc-1", tool_name: "send_email", args: {} }],
+        review_configs: [],
+      });
+    if (termination === "failed-run")
+      receive("message_saved", { message_id: "failed", run_id: "r-1", run_status: "failed" });
+    if (termination === "disconnect") {
+      socket.isConnected = false;
+      rerender();
+    }
+    if (termination === "navigation")
+      act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+    receive("complete", { stopped: termination === "server-stop" });
+    receive("session_ready", {});
+    await act(async () => {});
+    expect(result.current.queuedMessages).toHaveLength(0);
+    expect(
+      sent.mock.calls.filter(([frame]) => frame.message === "Access granted - please continue."),
+    ).toHaveLength(0);
+  });
+
+  it("ignores a native answer returned after Stop", () => {
+    const { result } = asking();
+    const respond = result.current.sendComputerAccessResponse;
+    act(() => result.current.stopGeneration());
+    act(() => respond(true));
+    receive("complete", {});
+    expect(sent.mock.calls.some(([frame]) => frame.type === "computer_access_response")).toBe(
+      false,
+    );
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+});
+
+it("declines the outstanding computer request when leaving its conversation", () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("computer_access", { reason: "Read files" });
+  const respond = result.current.sendComputerAccessResponse;
+  act(() => useConversationStore.getState().setCurrentConversationId("c-2"));
+  expect(sent).toHaveBeenCalledWith({ type: "computer_access_response", granted: false });
+  act(() => respond(true));
+  expect(
+    sent.mock.calls.some(([frame]) => frame.type === "computer_access_response" && frame.granted),
+  ).toBe(false);
+});
+
+it("keeps a computer answer off a disconnected socket", () => {
+  socket.isConnected = false;
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("computer_access", { reason: "Read files" });
+  act(() => result.current.sendComputerAccessResponse(true));
+  expect(sent.mock.calls.some(([frame]) => frame.type === "computer_access_response")).toBe(false);
+});
+
+it("does not apply an older native answer to a replacement computer request", () => {
+  const { result } = renderHook(() => useChat(), { wrapper });
+  receive("computer_access", { reason: "First turn" });
+  const respond = result.current.sendComputerAccessResponse;
+  receive("error", { message: "Turn failed" });
+  receive("computer_access", { reason: "Later turn" });
+  act(() => respond(true));
+  expect(sent.mock.calls.some(([frame]) => frame.type === "computer_access_response")).toBe(false);
+});
+
+it("continues with the folder granted during the requesting turn", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  const { result } = renderHook(() => useChat({ conversationId: "c-1" }), { wrapper });
+  act(() => result.current.sendMessage("Read files"));
+  receive("model_request_start", {});
+  receive("computer_access", { reason: "Read project" });
+  const target = { folder: "/approved", mode: "read_only" as const };
+  try {
+    useWorkOnStore.getState().set("c-1", target, false);
+    act(() => result.current.sendComputerAccessResponse(true));
+    receive("complete", {});
+    receive("session_ready", {});
+    await waitFor(() =>
+      expect(sent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Access granted - please continue.",
+          local: target,
+        }),
+      ),
+    );
+  } finally {
+    useWorkOnStore.setState({ byConversation: {}, draft: null });
+  }
+});
+
+it("pins computer consent and continuation to the requesting agent across picker changes", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  useAgentSelectionStore.getState().select("agent-1");
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("Read files"));
+  receive("model_request_start", {});
+  act(() => useAgentSelectionStore.getState().select("agent-2"));
+  receive("computer_access", { reason: "Read project", agent_id: "agent-1" });
+  expect(result.current.pendingComputerAccess?.agent_id).toBe("agent-1");
+  act(() => result.current.sendComputerAccessResponse(true));
+  receive("complete", {});
+  receive("session_ready", {});
+  await waitFor(() =>
+    expect(sent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Access granted - please continue.",
+        agent_id: "agent-1",
+      }),
+    ),
+  );
+  expect(useAgentSelectionStore.getState().selectedAgentId).toBe("agent-2");
+});
+
+it("keeps the first granted computer continuation when a later delegate declines", async () => {
+  useConversationStore.getState().setCurrentConversationId("c-1");
+  useAgentSelectionStore.getState().select("agent-1");
+  const { result } = renderHook(() => useChat(), { wrapper });
+  act(() => result.current.sendMessage("Delegate local work"));
+  receive("model_request_start", {});
+  receive("computer_access", { reason: "First delegate", agent_id: "agent-1" });
+  act(() => result.current.sendComputerAccessResponse(true));
+  receive("computer_access", { reason: "Second delegate", agent_id: "agent-1" });
+  act(() => result.current.sendComputerAccessResponse(false));
+  receive("complete", {});
+  receive("session_ready", {});
+  await waitFor(() =>
+    expect(sent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Access granted - please continue.",
+        agent_id: "agent-1",
+      }),
+    ),
+  );
+  expect(
+    sent.mock.calls.filter(([frame]) => frame.message === "Access granted - please continue."),
+  ).toHaveLength(1);
+});
+
+it.each([
+  null,
+  {},
+  { agent_id: "starter" },
+  { agent_id: 7, text: "Connect a model" },
+  { agent_id: "starter", text: 7 },
+])("ignores a malformed setup response without adding a transcript row: %j", (data) => {
+  renderHook(() => useChat(), { wrapper });
+  act(() =>
+    socket.onMessage?.(
+      new MessageEvent("message", { data: JSON.stringify({ type: "model_setup_required", data }) }),
+    ),
+  );
+  expect(useChatStore.getState().messages).toEqual([]);
 });

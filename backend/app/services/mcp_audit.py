@@ -23,8 +23,6 @@ anything. Whether a server's tools work once signed in is the connection's own
 test, which already exists.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from collections import Counter
@@ -183,7 +181,9 @@ async def _resolves(url: str) -> bool:
         return False
     try:
         await asyncio.get_running_loop().getaddrinfo(host, None)
-    except OSError:
+    except OSError, UnicodeError:
+        # `UnicodeError`: the IDNA codec refuses an empty or over-long label
+        # before any query is made (#2352).
         return False
     return True
 
@@ -244,7 +244,8 @@ async def probe_listing(
 
     # The handshake answered without a credential; listing the tools is what says
     # whether the rest of the server does too. The MCP client resolves the name
-    # again, so the address is checked again first, as a connection's test does.
+    # again, so this probe checks the address again first. A connection's test
+    # does not: its URL was checked once, when the connection was saved.
     try:
         await validate_mcp_url(url)
         tools = await probe_mcp_server(url, timeout=timeout)
@@ -252,7 +253,10 @@ async def probe_listing(
         return Probe(CheckOutcome.REFUSED, detail="address refused by the outbound guard")
     except Exception as exc:  # `probe_mcp_server` raises only McpProbeError or cancellation
         return Probe(CheckOutcome.OPEN, detail=f"handshake only: {exc}")
-    return Probe(CheckOutcome.OPEN, tools=tuple(tools))
+    # Some servers (Google) expose discovery/tools publicly but require OAuth
+    # to call them. An open tool list is not evidence of anonymous tool access.
+    outcome = CheckOutcome.SIGN_IN if await _publishes_oauth(url) else CheckOutcome.OPEN
+    return Probe(outcome, tools=tuple(tools))
 
 
 async def probe_many(
@@ -420,6 +424,9 @@ async def write_checks(db: AsyncSession, rows: Iterable[CheckRow], *, prune: boo
 
 _SNAPSHOT_ROWS: TypeAdapter[tuple[StoredCheck, ...]] = TypeAdapter(tuple[StoredCheck, ...])
 _REPORT_ROWS: TypeAdapter[tuple[CheckRow, ...]] = TypeAdapter(tuple[CheckRow, ...])
+BUNDLED_CHECKS: dict[str, StoredCheck] = {
+    row.key: row for row in catalog.load(SNAPSHOT, _SNAPSHOT_ROWS) if row.source == "catalog"
+}
 
 
 def snapshot_json(rows: Iterable[CheckRow]) -> str:

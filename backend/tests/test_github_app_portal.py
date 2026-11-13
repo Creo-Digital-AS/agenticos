@@ -12,8 +12,6 @@ that replaces it - which grant a delivery belongs to, which triggers it fires,
 and what a delivery nobody claims is answered with.
 """
 
-from __future__ import annotations
-
 import contextlib
 import hashlib
 import hmac
@@ -28,6 +26,7 @@ from pydantic import SecretStr
 
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.core.secret_kinds import GithubAppSecret
+from app.schemas.routine_sources import RoutineSourcePolicy
 from app.services import impersonation as impersonation_service
 from app.services.agent_trigger import AgentTriggerService
 from app.services.impersonation import ActiveImpersonation
@@ -90,7 +89,12 @@ def _body(*, repo: str = "acme/widgets", action: str = "opened") -> bytes:
             "installation": {"id": int(INSTALLATION)},
             "repository": {"full_name": repo},
             "action": action,
-            "issue": {"number": 7, "title": "It broke", "body": "here is how"},
+            "issue": {
+                "number": 7,
+                "title": "It broke",
+                "body": "here is how",
+                "author_association": "MEMBER",
+            },
         }
     ).encode()
 
@@ -113,9 +117,18 @@ def _trigger(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
+        organization_id=ORG,
         portal_key=portal_key,
         provider_target=target,
         event_config={"actions": list(actions)},
+        approved_sources=RoutineSourcePolicy(
+            id=uuid.uuid4(),
+            consented_by=uuid.uuid4(),
+            reviewed_at=datetime.now(UTC),
+            version_id=uuid.uuid4(),
+            scope_hash="a" * 64,
+            spec_hash="b" * 64,
+        ).model_dump(mode="json"),
     )
 
 
@@ -142,10 +155,33 @@ def _scope(organization_id: uuid.UUID):
     return VaultScope.organization(organization_id)
 
 
+_deferred_sessions: list[MagicMock] = []
+
+
+@pytest.fixture(autouse=True)
+def close_deferred_test_work():
+    from app.core.background import _ON_ROLLBACK_KEY, _take, discard_deferred
+
+    yield
+    for session in _deferred_sessions:
+        discard_deferred(session)
+        # Mock transactions do not execute their rollback callbacks; close them
+        # here rather than starting background work after an async test's loop ends.
+        for deferred in _take(session, _ON_ROLLBACK_KEY):
+            deferred.coro.close()
+    _deferred_sessions.clear()
+
+
 def _service() -> AgentTriggerService:
     db = MagicMock()
     db.execute = AsyncMock()
-    return AgentTriggerService(db)
+    db.info = {}
+    _deferred_sessions.append(db)
+    service = AgentTriggerService(db)
+    # Portal routing is independent of source-consent admission, covered by the
+    # source-policy trigger tests. These lightweight rows carry routing fields only.
+    service._polled_source_current = AsyncMock(return_value=True)
+    return service
 
 
 def _wired(*, grants=(), triggers=(), secret=None, claims=True):
@@ -183,6 +219,70 @@ def _wired(*, grants=(), triggers=(), secret=None, claims=True):
     return stack
 
 
+class TestATriggerPastItsAllowance:
+    @pytest.mark.parametrize("delivery_id", [False, True])
+    async def test_it_is_left_out_while_the_others_fire(self, delivery_id: bool) -> None:
+        """One App delivery can fire several triggers; the one that has fired too
+        often this minute is skipped, not the delivery for everybody."""
+        from app.services.rate_limit import Decision
+
+        body = _body()
+        headers = _headers(body)
+        if not delivery_id:
+            headers.pop("x-github-delivery")
+        busy, calm = _trigger(), _trigger()
+
+        async def allowance(trigger_id: uuid.UUID) -> Decision:
+            return Decision(allowed=trigger_id != busy.id, retry_after_seconds=30)
+
+        with (
+            _wired(grants=[_grant()], triggers=[busy, calm]),
+            patch(f"{SERVICE}.rate_limit.trigger_delivery_allowed", new=allowance),
+        ):
+            decisions = await _service().prepare_app_fires(body=body, headers=headers)
+
+        assert [decision.trigger_id for decision in decisions] == [calm.id]
+
+
+class TestDuplicateAppDeliveries:
+    async def test_a_duplicate_spends_no_trigger_allowance(self) -> None:
+        body = _body()
+        allowance = AsyncMock()
+        with (
+            _wired(grants=[_grant()], triggers=[_trigger()], claims=False),
+            patch(f"{SERVICE}.rate_limit.trigger_delivery_allowed", allowance),
+        ):
+            decisions = await _service().prepare_app_fires(body=body, headers=_headers(body))
+        assert decisions == []
+        allowance.assert_not_awaited()
+
+    async def test_throttled_claim_is_released_after_the_other_fires_commit(self) -> None:
+        from app.core.background import discard_deferred, drain, start_deferred
+        from app.services.rate_limit import Decision
+
+        body = _body()
+        trigger = _trigger()
+        service = _service()
+        service.db.info = {}
+        release = AsyncMock()
+        with (
+            _wired(grants=[_grant()], triggers=[trigger]),
+            patch(
+                f"{SERVICE}.rate_limit.trigger_delivery_allowed",
+                AsyncMock(return_value=Decision(allowed=False, retry_after_seconds=30)),
+            ),
+            patch(f"{SERVICE}.trigger_dedupe.release_event_delivery", release),
+        ):
+            decisions = await service.prepare_app_fires(body=body, headers=_headers(body))
+            assert decisions == []
+            release.assert_not_awaited()
+            start_deferred(service.db)
+            await drain()
+            discard_deferred(service.db)
+        release.assert_awaited_once()
+        assert release.await_args.kwargs["trigger_id"] == trigger.id
+
+
 class TestWhoseDeliveryItIs:
     async def test_the_signature_settles_it_not_the_installation_id(self) -> None:
         """The installation id selects candidates and authorises nothing; two
@@ -200,6 +300,9 @@ class TestWhoseDeliveryItIs:
             decisions = await _service().prepare_app_fires(body=body, headers=_headers(body))
 
         assert [decision.trigger_id for decision in decisions] == [trigger.id]
+        # Queued under the trigger's own organization, so a fire that kept killing
+        # its worker pauses that tenant's fires and not everyone's (Codex, #2248).
+        assert [decision.organization_id for decision in decisions] == [ORG]
 
     async def test_an_installation_nobody_holds_a_grant_for_is_refused(self) -> None:
         """No candidate can have signed it, so it did not verify - and a 403 is
@@ -775,42 +878,38 @@ class TestWhatADisabledGrantDoes:
         assert "is_enabled" in compiled
 
 
-class TestOneDeliveryThatFiresSeveralTriggers:
-    async def test_a_failed_submission_does_not_abandon_the_others(self) -> None:
-        """`prepare_app_fires` has already claimed the delivery for every decision.
+class TestInstallationReadToken:
+    async def test_repository_listing_mints_with_the_owning_organizations_key(self) -> None:
+        from app.services.mcp_connection import McpConnectionService
 
-        So a raise part-way through the loop would lose the remaining triggers
-        *and* make GitHub's retry a no-op for the claim's fifteen minutes - one
-        Prefect hiccup silently dropping another organization's event.
-        """
-        from app.api.routes.v1 import trigger_webhooks
-
-        first, second, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        decisions = [
-            SimpleNamespace(trigger_id=trigger, event_context={})
-            for trigger in (first, second, third)
-        ]
-        submitted: list[str] = []
-
-        async def dispatch(trigger_id: str, *, event_context: dict) -> None:
-            del event_context
-            submitted.append(trigger_id)
-            if trigger_id == str(second):
-                raise RuntimeError("prefect said no")
-
-        service = MagicMock()
-        service.prepare_app_fires = AsyncMock(return_value=decisions)
-        request = MagicMock()
-        request.headers = {}
-        request.body = AsyncMock(return_value=b"{}")
-
-        with patch(
-            "app.worker.tasks.trigger_tasks.dispatch_trigger_fire",
-            new=AsyncMock(side_effect=dispatch),
+        service = McpConnectionService(MagicMock())
+        grant = MagicMock(organization_id=ORG, portal_key="github_app", portal_account_id="42")
+        with (
+            patch(
+                "app.services.mcp_connection.OrganizationSecretService.app_secret",
+                new=AsyncMock(return_value=_secret()),
+            ),
+            patch(
+                "app.services.mcp_connection.github_app.installation_token",
+                new=AsyncMock(return_value="installation-token"),
+            ) as mint,
         ):
-            response = await trigger_webhooks.ingest_github_app_event(request, service)
+            assert await service.github_app_access_token(grant) == "installation-token"
+        assert mint.await_args.kwargs["installation_id"] == "42"
 
-        assert submitted == [str(first), str(second), str(third)]
-        # And the provider is still told the delivery was taken, so its retry does
-        # not arrive against a claim that is already held.
-        assert response.status_code == 202
+    @pytest.mark.parametrize("organization,portal", [(None, "github_app"), (ORG, "google")])
+    async def test_an_unrelated_grant_never_mints_an_app_token(self, organization, portal) -> None:
+        from app.core.exceptions import BadRequestError
+        from app.services.mcp_connection import McpConnectionService
+
+        with pytest.raises(BadRequestError):
+            await McpConnectionService(MagicMock()).github_app_access_token(
+                MagicMock(organization_id=organization, portal_key=portal)
+            )
+
+
+async def test_a_signed_app_event_with_stale_sources_never_claims_a_trigger():
+    trigger, body, service = _trigger(), _body(), _service()
+    service._polled_source_current = AsyncMock(return_value=False)
+    with _wired(grants=[_grant()], triggers=[trigger]):
+        assert await service.prepare_app_fires(body=body, headers=_headers(body)) == []

@@ -18,8 +18,6 @@ Telegram all rate-limit. One edit a second, and only when the text actually
 changed, keeps it readable and keeps us a good citizen of a server we do not own.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -29,18 +27,18 @@ import anyio
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
+    ERROR_OUTCOMES,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
-    ToolReturnPart,
 )
 
 from app.agents.browser_events import BrowserEvent
 from app.agents.deps import AgentDeps
+from app.core.tool_identity import ToolIdentity
 from app.services import live_browse
 from app.services.agent_runner import AgentIteration, RunStream
 from app.services.channels.base import AnswerStep, NativeAnswer, StepSource
@@ -68,6 +66,8 @@ _DOING: dict[str, str] = {
     "web_fetch": "Reading a web page…",
     "browse_web": "Browsing the web…",
     "generate_image": "Drawing an image…",
+    "generate_speech": "Recording the audio…",
+    "generate_video": "Making the video…",
     "publish_artifact": "Building a page…",
     "search_conversations": "Looking through earlier conversations…",
     "read_context": "Reading the background notes…",
@@ -381,6 +381,7 @@ def channel_stream(reply: AnswerSink) -> RunStream:
     async def walk(
         agent_run: AgentIteration[Any, Any], followed: anyio.abc.TaskGroup, run_id: str | None
     ) -> None:
+        deps = agent_run.ctx.deps.user_deps
         async for node in agent_run:
             if Agent.is_model_request_node(node):
                 async with node.stream(agent_run.ctx) as request_stream:
@@ -396,8 +397,21 @@ def channel_stream(reply: AnswerSink) -> RunStream:
                     async for event in tool_stream:
                         if isinstance(event, FunctionToolCallEvent):
                             call_id = event.part.tool_call_id
-                            titles[call_id] = doing(event.part.tool_name)
-                            live = _live_view(run_id, event.part.tool_name, call_id)
+                            identity = (
+                                deps.tool_identities.get(
+                                    call_id,
+                                    deps.tool_definitions.get(event.part.tool_name, ToolIdentity()),
+                                )
+                                if isinstance(deps, AgentDeps)
+                                else ToolIdentity()
+                            )
+                            name = (
+                                ""
+                                if identity.presentation_kind == "generic"
+                                else identity.tool_id or event.part.tool_name
+                            )
+                            titles[call_id] = doing(name)
+                            live = _live_view(run_id, name, call_id)
                             await reply.step(
                                 AnswerStep(
                                     call_id,
@@ -412,7 +426,7 @@ def channel_stream(reply: AnswerSink) -> RunStream:
                             call_id = event.tool_call_id
                             if call_id in followers:
                                 followers.pop(call_id).cancel()
-                            failed = isinstance(event.part, RetryPromptPart)
+                            failed = event.part.outcome in ERROR_OUTCOMES
                             await reply.step(
                                 AnswerStep(
                                     call_id,
@@ -420,7 +434,7 @@ def channel_stream(reply: AnswerSink) -> RunStream:
                                     "error" if failed else "complete",
                                     sources=(
                                         step_sources(event.part.content)
-                                        if isinstance(event.part, ToolReturnPart)
+                                        if event.part.outcome == "success"
                                         else ()
                                     ),
                                 )

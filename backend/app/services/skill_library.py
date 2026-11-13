@@ -19,8 +19,6 @@ lead can fix the refund policy without a deploy, and a live link back to this
 directory would take that away.
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 from collections.abc import Iterable
@@ -187,6 +185,22 @@ def gallery() -> tuple[GalleryIndustry, ...]:
         if skills:
             industries.append(GalleryIndustry(id=folder.name, skills=tuple(skills)))
     return tuple(industries)
+
+
+def architect_names() -> frozenset[str]:
+    """The names of the skills the AI Architect's template binds, bundled or from the gallery.
+
+    Installing it copies them into the organization as ordinary rows, so a listing tells
+    them apart by name, as it does the bundled ones.
+    """
+    from app.services import agent_templates
+
+    template = agent_templates.get(agent_templates.ARCHITECT_KEY)
+    if template is None:  # pragma: no cover - the template ships with the image
+        return frozenset()
+    return frozenset(
+        entry.name for key in template.skills if (entry := get(key) or gallery_get(key)) is not None
+    )
 
 
 def gallery_get(key: str) -> LibrarySkill | None:

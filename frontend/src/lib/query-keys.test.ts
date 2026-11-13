@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 
 import { qk } from "./query-keys";
@@ -108,8 +109,10 @@ describe("the query key factory", () => {
       "any-rating",
       "any-status",
       "any-surface",
+      "any-modality",
       "any-model",
       "anyone",
+      "any-conversation",
       "any-version",
       "tests-included",
       0,
@@ -125,8 +128,10 @@ describe("the query key factory", () => {
       "any-rating",
       "any-status",
       "any-surface",
+      "any-modality",
       "any-model",
       "anyone",
+      "any-conversation",
       "any-version",
       "tests-included",
       0,
@@ -164,8 +169,10 @@ describe("the query key factory", () => {
       "down",
       "any-status",
       "any-surface",
+      "any-modality",
       "any-model",
       "anyone",
+      "any-conversation",
       "any-version",
       "tests-included",
       0,
@@ -193,4 +200,17 @@ describe("the query key factory", () => {
     // while its own request is still in flight - a leak that looks like a delay.
     expect(qk.integrations.reusable("org-a")).not.toEqual(qk.integrations.reusable("org-b"));
   });
+});
+
+it("keeps trigger conversation histories separate from each other and Activity", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
+  for (const conversationId of [undefined, "thread-a", "thread-b"]) {
+    const answer = await client.fetchQuery({
+      queryKey: qk.runs.list({ conversationId }),
+      queryFn: async () => ({ conversationId: conversationId ?? "unfiltered" }),
+    });
+    expect(answer.conversationId).toBe(conversationId ?? "unfiltered");
+  }
+  expect(client.getQueryCache().getAll()).toHaveLength(3);
+  client.clear();
 });

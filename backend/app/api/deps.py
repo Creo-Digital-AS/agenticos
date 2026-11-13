@@ -14,6 +14,7 @@ is why every write in this API used to be acknowledged before it was durable
 # ruff: noqa: I001 - Imports structured for Jinja2 template conditionals
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends
@@ -86,10 +87,18 @@ from app.services.personal_data import PersonalDataService
 from app.services.browser_sign_in import BrowserSignInService
 from app.services.user import UserService
 from app.services.session import SessionService
+from app.services.web_push import WebPushService
+from app.services.apns import ApnsService
+from app.services.push import PushService
 from app.services.impersonation import ImpersonationService
 from app.services.ws_auth import authenticate_socket_key, authenticate_socket_token
+from app.services.device_pairing import DevicePairingService
 from app.services.oauth_exchange import OAuthExchangeService
 from app.services.conversation import ConversationService
+from app.services.coding_task_changes import CodingTaskChangeService
+from app.services.conversation_tasks import ConversationTaskService
+from app.services.tasks import TaskService
+from app.services.visual import VisualService
 from app.services.local_service import LocalServiceService
 from app.services.ml import MLService
 from app.services.sandbox_connection import SandboxConnectionService
@@ -122,11 +131,55 @@ def get_oauth_exchange_service(redis: Redis) -> OAuthExchangeService:
     return OAuthExchangeService(redis)
 
 
+def get_device_pairing_service(redis: Redis, db: DBSession) -> DevicePairingService:
+    """Create DevicePairingService over Redis and the request's database session."""
+    return DevicePairingService(redis, UserService(db), SessionService(db))
+
+
 UserSvc = Annotated[UserService, Depends(get_user_service)]
 PersonalDataSvc = Annotated[PersonalDataService, Depends(get_personal_data_service)]
 SessionSvc = Annotated[SessionService, Depends(get_session_service)]
 ImpersonationSvc = Annotated[ImpersonationService, Depends(get_impersonation_service)]
 OAuthExchangeSvc = Annotated[OAuthExchangeService, Depends(get_oauth_exchange_service)]
+DevicePairingSvc = Annotated[DevicePairingService, Depends(get_device_pairing_service)]
+
+
+def get_web_push_service(db: DBSession) -> WebPushService:
+    """Create WebPushService with the request's database session."""
+    return WebPushService(db)
+
+
+WebPushSvc = Annotated[WebPushService, Depends(get_web_push_service)]
+
+
+def get_apns_service(db: DBSession) -> ApnsService:
+    """Create ApnsService with the request's database session."""
+    return ApnsService(db)
+
+
+ApnsSvc = Annotated[ApnsService, Depends(get_apns_service)]
+
+
+def get_push_service(db: DBSession) -> PushService:
+    """Create PushService - Web Push and APNs - with the request's database session."""
+    return PushService(db)
+
+
+PushSvc = Annotated[PushService, Depends(get_push_service)]
+
+
+def get_conversation_task_service(db: DBSession) -> ConversationTaskService:
+    return ConversationTaskService(db)
+
+
+ConversationTaskSvc = Annotated[ConversationTaskService, Depends(get_conversation_task_service)]
+
+
+def get_coding_task_change_service(db: DBSession) -> CodingTaskChangeService:
+    return CodingTaskChangeService(db)
+
+
+CodingTaskChangeSvc = Annotated[CodingTaskChangeService, Depends(get_coding_task_change_service)]
 
 
 def get_conversation_service(db: DBSession) -> ConversationService:
@@ -135,6 +188,13 @@ def get_conversation_service(db: DBSession) -> ConversationService:
 
 
 ConversationSvc = Annotated[ConversationService, Depends(get_conversation_service)]
+
+
+def get_visual_service(db: DBSession) -> VisualService:
+    return VisualService(db)
+
+
+VisualSvc = Annotated[VisualService, Depends(get_visual_service)]
 
 
 def get_sandbox_workspace_service(db: DBSession) -> SandboxWorkspaceService:
@@ -185,6 +245,35 @@ def get_channel_bot_service(db: DBSession) -> ChannelBotService:
 
 
 ChannelBotSvc = Annotated[ChannelBotService, Depends(get_channel_bot_service)]
+
+from app.services.imessage_webhook import ImessageWebhookService
+
+
+def get_imessage_webhook_service(db: DBSession) -> ImessageWebhookService:
+    return ImessageWebhookService(db)
+
+
+ImessageWebhookSvc = Annotated[ImessageWebhookService, Depends(get_imessage_webhook_service)]
+
+from app.services.channels.sms_media import SmsMediaService
+
+
+def get_sms_media_service(redis: Redis) -> SmsMediaService:
+    return SmsMediaService(redis)
+
+
+SmsMediaSvc = Annotated[SmsMediaService, Depends(get_sms_media_service)]
+
+
+from app.services.channels.feedback import ChannelFeedback
+
+
+def get_channel_feedback_service(db: DBSession) -> ChannelFeedback:
+    """Record a signed channel rating in the callback request's transaction."""
+    return ChannelFeedback(db)
+
+
+ChannelFeedbackSvc = Annotated[ChannelFeedback, Depends(get_channel_feedback_service)]
 
 
 from app.services.channel_link import ChannelLinkService
@@ -275,7 +364,7 @@ def get_file_upload_service(db: DBSession) -> FileUploadService:
 
 
 FileUploadSvc = Annotated[FileUploadService, Depends(get_file_upload_service)]
-from app.repositories import member_repo, organization_repo
+from app.repositories import member_repo
 from app.services.organization import OrganizationService
 from app.services.retention import RetentionService
 from app.services.member import MemberService
@@ -389,13 +478,50 @@ from app.core.exceptions import (
     RateLimitError,
 )
 from app.services import rate_limit
+from app.api.embed_cors import allow_embed_origin
 from app.core.audit import set_api_key
 from app.core.security import encode_untrusted, verify_token
 from app.db.models.user import User
-from app.api.public_api import is_public_route
+from app.api.public_api import ASSISTANT_SURFACES, is_assistant_route, is_public_route
 from app.services.api_key import ApiKeyService, KeyCaller, is_api_key
 from app.services.assistant import AssistantService
 from app.services.oauth_server import OAuthServerService
+from app.services.a2a_server import A2AServerService
+
+
+def get_a2a_server_service(db: DBSession) -> A2AServerService:
+    return A2AServerService(db)
+
+
+A2AServerSvc = Annotated[A2AServerService, Depends(get_a2a_server_service)]
+
+from app.services.external_agent import ExternalAgentService
+
+
+def get_external_agent_service(db: DBSession) -> ExternalAgentService:
+    return ExternalAgentService(db)
+
+
+ExternalAgentSvc = Annotated[ExternalAgentService, Depends(get_external_agent_service)]
+
+from app.services.project import ProjectService
+
+
+def get_project_service(db: DBSession) -> ProjectService:
+    return ProjectService(db)
+
+
+ProjectSvc = Annotated[ProjectService, Depends(get_project_service)]
+
+from app.services.project_tracking import ProjectTrackingService
+
+
+def get_project_tracking_service(db: DBSession) -> ProjectTrackingService:
+    return ProjectTrackingService(db)
+
+
+ProjectTrackingSvc = Annotated[ProjectTrackingService, Depends(get_project_tracking_service)]
+
 from app.services.change_feed import CONSOLE_TAB_HEADER, ChangeOrigin, console_tab
 from app.schemas.change_event import ChangeSurface
 
@@ -435,11 +561,13 @@ async def _authenticate_api_key(request: Request, token: str, api_keys: ApiKeySe
     request for :func:`get_auth_context`, which every public route depends on.
     """
     route = request.scope.get("route")
-    if not is_public_route(route):
-        raise AuthorizationError(
-            message="API keys are not accepted on this endpoint",
-            details={"path": getattr(route, "path", request.url.path)},
-        )
+    public = is_public_route(route)
+    refusal = AuthorizationError(
+        message="API keys are not accepted on this endpoint",
+        details={"path": getattr(route, "path", request.url.path)},
+    )
+    if not public and not is_assistant_route(route):
+        raise refusal
     refused = await rate_limit.key_attempt_refused(request, token)
     if refused is not None:
         _refuse_if_over(*refused)
@@ -448,8 +576,14 @@ async def _authenticate_api_key(request: Request, token: str, api_keys: ApiKeySe
     except AuthenticationError:
         await rate_limit.count_refused_key(request)
         raise
+    if not public and caller.surface not in ASSISTANT_SURFACES:
+        raise refusal
     request.state.api_key_caller = caller
-    set_api_key(caller.api_key_id, caller.prefix)
+    set_api_key(
+        caller.api_key_id,
+        caller.prefix,
+        assistant=caller.name if caller.surface == "assistant" else None,
+    )
     return caller.user
 
 
@@ -516,6 +650,23 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_optional_current_user(
+    request: Request,
+    token: Annotated[str | None, Depends(oauth2_scheme_optional)],
+    user_service: UserSvc,
+    impersonation: ImpersonationSvc,
+    session: SessionSvc,
+    api_keys: ApiKeySvc,
+) -> User | None:
+    """Authenticate a supplied session; keep state-only OAuth callbacks reachable."""
+    if token is None:
+        return None
+    return await get_current_user(request, token, user_service, impersonation, session, api_keys)
+
+
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]
+
+
 async def get_current_session_id(
     token: Annotated[str | None, Depends(oauth2_scheme_optional)],
 ) -> UUID | None:
@@ -544,7 +695,7 @@ async def get_current_session_id(
 
 
 CurrentSessionId = Annotated[UUID | None, Depends(get_current_session_id)]
-from app.db.models.organization import Organization, OrgRole
+from app.db.models.organization import Organization, OrganizationMember, OrgRole
 
 # Module-level alias so tests can patch via `app.api.deps._member_repo`.
 # RequireOrgRole methods reference this alias instead of importing the repo
@@ -564,8 +715,10 @@ async def get_active_organization(
     acts there and nowhere else; an `X-Organization-Id` naming another one is a
     400 naming the header rather than a silent switch (#1903).
 
-    A session reads the `X-Organization-Id` header and falls back to the user's
-    Personal Org when it is absent. Raises 404 if the user is not a member.
+    A session reads the `X-Organization-Id` header. Without it, the request acts
+    in the deployment's default organization when the user belongs to it, then
+    in their personal one, then in their only one; a user with a choice and no
+    header is a 400 asking for it (#2156). Raises 404 if the user is not a member.
     """
     caller = _key_caller(request)
     if caller is not None:
@@ -581,22 +734,30 @@ async def get_active_organization(
         return caller.organization
 
     if x_organization_id is None:
-        org = await organization_repo.get_personal_for_user(db, user.id)
-        if not org:
-            raise NotFoundError(message="Personal organization not found - please re-register")
+        org = await OrganizationService(db).fallback_for(user.id)
+        if org is None:
+            raise BadRequestError(
+                message=(
+                    "Name the organization this request acts in with the X-Organization-Id header."
+                ),
+                details={"header": "X-Organization-Id"},
+            )
         return org
 
-    membership = await member_repo.get(db, organization_id=x_organization_id, user_id=user.id)
-    if not membership:
+    # The membership and the organization in one query, and the membership kept
+    # for `get_auth_context`, which read the same row again on every request
+    # (#2248). A membership names an existing organization - the foreign key
+    # sees to that - so a missing pair is one answer.
+    found = await member_repo.get_with_organization(
+        db, organization_id=x_organization_id, user_id=user.id
+    )
+    if found is None:
         raise NotFoundError(
             message="Organization not found or access denied",
             details={"org_id": str(x_organization_id)},
         )
-    org = await organization_repo.get_by_id(db, x_organization_id)
-    if not org:
-        raise NotFoundError(
-            message="Organization not found", details={"org_id": str(x_organization_id)}
-        )
+    membership, org = found
+    request.state.active_membership = membership
     return org
 
 
@@ -609,6 +770,18 @@ def get_org_channel_bot_service(db: DBSession, org: ActiveOrg) -> ChannelBotServ
 
 
 OrgChannelBotSvc = Annotated[ChannelBotService, Depends(get_org_channel_bot_service)]
+
+from app.services.discord_role_mapping import DiscordRoleMappingService
+
+
+def get_discord_role_mapping_service(db: DBSession) -> DiscordRoleMappingService:
+    """Create DiscordRoleMappingService instance with database session."""
+    return DiscordRoleMappingService(db)
+
+
+DiscordRoleMappingSvc = Annotated[
+    DiscordRoleMappingService, Depends(get_discord_role_mapping_service)
+]
 
 from app.services.model_profile import ModelProfileService
 
@@ -629,6 +802,16 @@ def get_agent_registry_service(db: DBSession) -> AgentRegistryService:
 
 
 AgentRegistrySvc = Annotated[AgentRegistryService, Depends(get_agent_registry_service)]
+
+from app.services.system_agents import SystemAgentService as EvalHelperService
+
+
+def get_eval_helper_service(db: DBSession) -> EvalHelperService:
+    """Create SystemAgentService instance with database session."""
+    return EvalHelperService(db)
+
+
+EvalHelperSvc = Annotated[EvalHelperService, Depends(get_eval_helper_service)]
 
 
 from app.services.knowledge_reach import KnowledgeReachService
@@ -680,6 +863,18 @@ def get_agent_embed_service(db: DBSession) -> AgentEmbedService:
 
 EmbedSvc = Annotated[AgentEmbedService, Depends(get_agent_embed_service)]
 
+from app.services.embed_generated_media import EmbedGeneratedMediaService, token_opens
+
+
+def get_embed_generated_media_service(db: DBSession) -> EmbedGeneratedMediaService:
+    """Create EmbedGeneratedMediaService instance with database session."""
+    return EmbedGeneratedMediaService(db)
+
+
+EmbedGeneratedMediaSvc = Annotated[
+    EmbedGeneratedMediaService, Depends(get_embed_generated_media_service)
+]
+
 from app.services.agent_runner import AgentRunnerService
 from app.services.approvals import ApprovalService
 
@@ -696,6 +891,18 @@ def get_approval_service(db: DBSession) -> ApprovalService:
 
 AgentRunnerSvc = Annotated[AgentRunnerService, Depends(get_agent_runner_service)]
 ApprovalSvc = Annotated[ApprovalService, Depends(get_approval_service)]
+
+from app.services.parked_runs import ParkedRunService
+
+
+def get_parked_run_service(
+    db: DBSession, runner: AgentRunnerSvc, approvals: ApprovalSvc
+) -> ParkedRunService:
+    """Create ParkedRunService from the runner and approvals services of the same request."""
+    return ParkedRunService(db, runner=runner, approvals=approvals)
+
+
+ParkedRunSvc = Annotated[ParkedRunService, Depends(get_parked_run_service)]
 
 from app.services.run_export import RunExportService
 
@@ -724,6 +931,9 @@ def get_stats_service(db: DBSession) -> StatsService:
 StatsSvc = Annotated[StatsService, Depends(get_stats_service)]
 
 from app.services.skill_proposal import SkillProposalService
+from app.services.skill_agents import SkillAgentService
+from app.services.skill_catch_up import SkillCatchUpService
+from app.services.skill_versions import SkillVersionService
 from app.services.skills import SkillService
 
 
@@ -733,6 +943,30 @@ def get_skill_service(db: DBSession) -> SkillService:
 
 
 SkillSvc = Annotated[SkillService, Depends(get_skill_service)]
+
+
+def get_skill_version_service(db: DBSession) -> SkillVersionService:
+    """Create SkillVersionService instance with database session."""
+    return SkillVersionService(db)
+
+
+SkillVersionSvc = Annotated[SkillVersionService, Depends(get_skill_version_service)]
+
+
+def get_skill_agent_service(db: DBSession) -> SkillAgentService:
+    """Create SkillAgentService instance with database session."""
+    return SkillAgentService(db)
+
+
+SkillAgentSvc = Annotated[SkillAgentService, Depends(get_skill_agent_service)]
+
+
+def get_skill_catch_up_service(db: DBSession) -> SkillCatchUpService:
+    """Create SkillCatchUpService instance with database session."""
+    return SkillCatchUpService(db)
+
+
+SkillCatchUpSvc = Annotated[SkillCatchUpService, Depends(get_skill_catch_up_service)]
 
 from app.services.context import ContextService
 
@@ -744,6 +978,121 @@ def get_context_service(db: DBSession) -> ContextService:
 
 ContextSvc = Annotated[ContextService, Depends(get_context_service)]
 
+from app.services.dataset import DatasetService
+
+
+def get_dataset_service(db: DBSession) -> DatasetService:
+    """Create DatasetService instance with database session."""
+    return DatasetService(db)
+
+
+DatasetSvc = Annotated[DatasetService, Depends(get_dataset_service)]
+
+from app.services.knowledge_gaps import KnowledgeGapService
+
+
+def get_knowledge_gap_service(db: DBSession) -> KnowledgeGapService:
+    """Create KnowledgeGapService instance with database session."""
+    return KnowledgeGapService(db)
+
+
+KnowledgeGapSvc = Annotated[KnowledgeGapService, Depends(get_knowledge_gap_service)]
+from app.services.scoring import ScoringService
+
+
+def get_scoring_service(db: DBSession) -> ScoringService:
+    """Create ScoringService instance with database session."""
+    return ScoringService(db)
+
+
+ScoringSvc = Annotated[ScoringService, Depends(get_scoring_service)]
+
+from app.services.eval_run import EvalRunService
+
+
+def get_eval_run_service(db: DBSession) -> EvalRunService:
+    """Create EvalRunService instance with database session."""
+    return EvalRunService(db)
+
+
+EvalRunSvc = Annotated[EvalRunService, Depends(get_eval_run_service)]
+
+from app.services.eval_suite import EvalSuiteService
+
+
+def get_eval_suite_service(db: DBSession) -> EvalSuiteService:
+    """Create EvalSuiteService instance with database session."""
+    return EvalSuiteService(db)
+
+
+EvalSuiteSvc = Annotated[EvalSuiteService, Depends(get_eval_suite_service)]
+
+from app.services.promotion_gate import PromotionGateService
+
+
+def get_promotion_gate_service(db: DBSession) -> PromotionGateService:
+    """Create PromotionGateService instance with database session."""
+    return PromotionGateService(db)
+
+
+PromotionGateSvc = Annotated[PromotionGateService, Depends(get_promotion_gate_service)]
+
+
+from app.services.authoring import AuthoringService
+
+
+def get_authoring_service(db: DBSession) -> AuthoringService:
+    """Create AuthoringService instance with database session."""
+    return AuthoringService(db)
+
+
+AuthoringSvc = Annotated[AuthoringService, Depends(get_authoring_service)]
+from app.services.virtual_tables import VirtualTableService
+
+
+def get_virtual_table_service(db: DBSession) -> VirtualTableService:
+    """Create VirtualTableService instance with database session."""
+    return VirtualTableService(db)
+
+
+VirtualTableSvc = Annotated[VirtualTableService, Depends(get_virtual_table_service)]
+
+
+def get_streaming_virtual_table_service(db: StreamingDBSession) -> VirtualTableService:
+    """The table service for a CSV export, and nothing else.
+
+    The export's lines are read from the database while the response is being
+    sent, after an ordinary `DBSession` has committed and closed. The export
+    writes nothing, which is what makes a request-scoped session acceptable
+    here; see `StreamingDBSession`.
+    """
+    return VirtualTableService(db)
+
+
+StreamingVirtualTableSvc = Annotated[
+    VirtualTableService, Depends(get_streaming_virtual_table_service)
+]
+
+from app.services.virtual_tables import TableViewService
+
+
+def get_table_view_service(db: DBSession) -> TableViewService:
+    """Create TableViewService instance with database session."""
+    return TableViewService(db)
+
+
+TableViewSvc = Annotated[TableViewService, Depends(get_table_view_service)]
+
+from app.services.virtual_tables.triggers import TableTriggerService
+
+
+def get_table_trigger_service(db: DBSession) -> TableTriggerService:
+    """Create TableTriggerService instance with database session."""
+    return TableTriggerService(db)
+
+
+TableTriggerSvc = Annotated[TableTriggerService, Depends(get_table_trigger_service)]
+
 
 def get_mention_service(db: DBSession) -> MentionService:
     return MentionService(db)
@@ -752,6 +1101,8 @@ def get_mention_service(db: DBSession) -> MentionService:
 MentionSvc = Annotated[MentionService, Depends(get_mention_service)]
 
 from app.services.artifact import ArtifactService
+from app.services.artifact_public_data import ArtifactPublicDataService
+from app.services.artifact_request_service import ArtifactRequestService
 
 
 def get_artifact_service(db: DBSession) -> ArtifactService:
@@ -761,7 +1112,28 @@ def get_artifact_service(db: DBSession) -> ArtifactService:
 
 ArtifactSvc = Annotated[ArtifactService, Depends(get_artifact_service)]
 
+
+def get_artifact_request_service(db: DBSession) -> ArtifactRequestService:
+    """Create ArtifactRequestService instance with database session."""
+    return ArtifactRequestService(db)
+
+
+ArtifactRequestSvc = Annotated[ArtifactRequestService, Depends(get_artifact_request_service)]
+
+
+def get_artifact_public_data_service(db: DBSession) -> ArtifactPublicDataService:
+    """Create ArtifactPublicDataService instance with database session."""
+    return ArtifactPublicDataService(db)
+
+
+ArtifactPublicDataSvc = Annotated[
+    ArtifactPublicDataService, Depends(get_artifact_public_data_service)
+]
+
 from app.services.memory import MemoryService
+from app.services.outcome import OutcomeService
+from app.services.primary_conversation import PrimaryConversationService
+from app.services.system_agent import SystemAgentService
 
 
 def get_memory_service(db: DBSession) -> MemoryService:
@@ -770,6 +1142,39 @@ def get_memory_service(db: DBSession) -> MemoryService:
 
 
 MemorySvc = Annotated[MemoryService, Depends(get_memory_service)]
+
+
+def get_system_agent_service(db: DBSession) -> SystemAgentService:
+    """Create SystemAgentService instance with database session."""
+    return SystemAgentService(db)
+
+
+SystemAgentSvc = Annotated[SystemAgentService, Depends(get_system_agent_service)]
+
+
+def get_durable_task_service(db: DBSession) -> TaskService:
+    return TaskService(db)
+
+
+DurableTaskSvc = Annotated[TaskService, Depends(get_durable_task_service)]
+
+
+def get_outcome_service(db: DBSession) -> OutcomeService:
+    """Create OutcomeService instance with database session."""
+    return OutcomeService(db)
+
+
+OutcomeSvc = Annotated[OutcomeService, Depends(get_outcome_service)]
+
+
+def get_primary_conversation_service(db: DBSession) -> PrimaryConversationService:
+    """Create PrimaryConversationService instance with database session."""
+    return PrimaryConversationService(db)
+
+
+PrimaryConversationSvc = Annotated[
+    PrimaryConversationService, Depends(get_primary_conversation_service)
+]
 
 
 def get_browser_sign_in_service(db: DBSession) -> BrowserSignInService:
@@ -785,6 +1190,120 @@ def get_skill_proposal_service(db: DBSession) -> SkillProposalService:
 
 
 SkillProposalSvc = Annotated[SkillProposalService, Depends(get_skill_proposal_service)]
+
+from app.services.skill_check import SkillCheckService
+
+
+def get_skill_check_service(db: DBSession) -> SkillCheckService:
+    return SkillCheckService(db)
+
+
+SkillCheckSvc = Annotated[SkillCheckService, Depends(get_skill_check_service)]
+
+from app.services.context_proposal import ContextProposalService
+
+
+def get_context_proposal_service(db: DBSession) -> ContextProposalService:
+    """Create ContextProposalService instance with database session."""
+    return ContextProposalService(db)
+
+
+ContextProposalSvc = Annotated[ContextProposalService, Depends(get_context_proposal_service)]
+from app.services.workflow_registry import WorkflowRegistryService
+
+
+def get_workflow_registry_service(db: DBSession) -> WorkflowRegistryService:
+    """Create WorkflowRegistryService instance with database session."""
+    return WorkflowRegistryService(db)
+
+
+WorkflowRegistrySvc = Annotated[WorkflowRegistryService, Depends(get_workflow_registry_service)]
+
+from app.services.workflow_stats import WorkflowStatsService
+
+
+def get_workflow_stats_service(db: DBSession) -> WorkflowStatsService:
+    """Create WorkflowStatsService instance with database session."""
+    return WorkflowStatsService(db)
+
+
+WorkflowStatsSvc = Annotated[WorkflowStatsService, Depends(get_workflow_stats_service)]
+
+from app.services.workflow_evals import WorkflowEvalService
+
+
+def get_workflow_eval_service(db: DBSession) -> WorkflowEvalService:
+    """Create WorkflowEvalService instance with database session."""
+    return WorkflowEvalService(db)
+
+
+WorkflowEvalSvc = Annotated[WorkflowEvalService, Depends(get_workflow_eval_service)]
+
+from app.services.workflow_log_alerts import WorkflowLogAlertService
+
+
+def get_workflow_log_alert_service(db: DBSession) -> WorkflowLogAlertService:
+    """Create WorkflowLogAlertService instance with database session."""
+    return WorkflowLogAlertService(db)
+
+
+WorkflowLogAlertSvc = Annotated[WorkflowLogAlertService, Depends(get_workflow_log_alert_service)]
+
+from app.services.workflow_portable import WorkflowPortableService
+
+
+def get_workflow_portable_service(db: DBSession) -> WorkflowPortableService:
+    return WorkflowPortableService(db)
+
+
+WorkflowPortableSvc = Annotated[WorkflowPortableService, Depends(get_workflow_portable_service)]
+
+from app.services.workflow_execution import WorkflowExecutionService
+
+
+def get_workflow_execution_service(db: DBSession) -> WorkflowExecutionService:
+    return WorkflowExecutionService(db)
+
+
+WorkflowExecutionSvc = Annotated[WorkflowExecutionService, Depends(get_workflow_execution_service)]
+
+from app.services.workflow_execution.approvals import WorkflowApprovalService
+
+
+def get_workflow_approval_service(db: DBSession) -> WorkflowApprovalService:
+    return WorkflowApprovalService(db)
+
+
+WorkflowApprovalSvc = Annotated[WorkflowApprovalService, Depends(get_workflow_approval_service)]
+
+from app.services.workflow_exposure import WorkflowExposureService
+
+
+def get_workflow_exposure_service(db: DBSession) -> WorkflowExposureService:
+    return WorkflowExposureService(db)
+
+
+WorkflowExposureSvc = Annotated[WorkflowExposureService, Depends(get_workflow_exposure_service)]
+
+from app.services.workflow_execution.resume import WorkflowResumeService
+
+
+def get_workflow_resume_service(db: DBSession) -> WorkflowResumeService:
+    return WorkflowResumeService(db)
+
+
+WorkflowResumeSvc = Annotated[WorkflowResumeService, Depends(get_workflow_resume_service)]
+
+from app.services.workflow_webhook_test import WorkflowWebhookTestService
+
+
+def get_workflow_webhook_test_service(db: DBSession, redis: Redis) -> WorkflowWebhookTestService:
+    return WorkflowWebhookTestService(db, redis)
+
+
+WorkflowWebhookTestSvc = Annotated[
+    WorkflowWebhookTestService, Depends(get_workflow_webhook_test_service)
+]
 
 from app.core.permissions import AuthContext, Perm
 from app.services.sharing import SharingService
@@ -828,7 +1347,9 @@ async def get_auth_context(
     caller = _key_caller(request)
     if caller is not None:
         return _attributed(request, user, caller.context, caller.surface)
-    membership = await _member_repo.get(db, organization_id=org.id, user_id=user.id)
+    membership = _membership_read(request, org, user) or await _member_repo.get(
+        db, organization_id=org.id, user_id=user.id
+    )
     if membership is None and not user.is_app_admin:
         raise NotFoundError(
             message="Organization not found or access denied",
@@ -841,6 +1362,18 @@ async def get_auth_context(
         is_app_admin=user.is_app_admin,
     )
     return _attributed(request, user, ctx, "console")
+
+
+def _membership_read(request: Request, org: Organization, user: User) -> OrganizationMember | None:
+    """The membership `get_active_organization` already read for this request, if it is this one."""
+    membership = getattr(request.state, "active_membership", None)
+    if (
+        isinstance(membership, OrganizationMember)
+        and membership.organization_id == org.id
+        and membership.user_id == user.id
+    ):
+        return membership
+    return None
 
 
 Auth = Annotated[AuthContext, Depends(get_auth_context)]
@@ -982,6 +1515,25 @@ async def limit_agent_run(ctx: Auth) -> None:
     _refuse_if_over(decision, "Too many runs in the last minute. Wait and try again.")
 
 
+async def limit_workflow_run(ctx: Auth) -> None:
+    """Refuse a caller starting more workflow runs than its share.
+
+    The same allowance as `limit_agent_run`, counted on a surface of its own:
+    each start queues dispatch work - outbox rows, worker flow runs, events -
+    and a run's nodes can spend the organization's budget.
+
+    Usage::
+
+        @router.post("", dependencies=[Depends(limit_workflow_run)])
+    """
+    decision = await rate_limit.consume(
+        surface="workflow_run",
+        caller=f"user:{ctx.subject_id}",
+        limit=rate_limit.run_limit(),
+    )
+    _refuse_if_over(decision, "Too many workflow runs in the last minute. Wait and try again.")
+
+
 async def limit_ml_call(ctx: Auth) -> None:
     """Refuse a caller asking the ML services for more than their share.
 
@@ -1001,6 +1553,104 @@ async def limit_ml_call(ctx: Auth) -> None:
         limit=rate_limit.ml_limit(),
     )
     _refuse_if_over(decision, "Too many ML service calls in the last minute. Wait and try again.")
+
+
+async def limit_table_write(ctx: Auth) -> None:
+    """Refuse a member writing to Virtual Tables faster than the deployment allows.
+
+    Keyed on the member and the organization, so one person's loop does not spend
+    another's allowance and the same person in two organizations has two. Unlike the
+    run and ML limits this one also covers the console: a table write from the browser
+    stores exactly what the same write from a script does, so metering only the script
+    would leave the cheap way in open.
+
+    Unlike the run and ML limits this one is a storage boundary, not just a load
+    control: every write stores a history row and, when keyed, a receipt, faster
+    than the retention sweep can remove them if left unbounded. So it keeps a
+    per-process floor when the shared limiter cannot count (Redis down or
+    unconfigured), rather than inheriting the fail-open default that would leave
+    every table write unmetered for the length of a cache outage (#1823).
+
+    Usage::
+
+        @router.post("/{table_id}/records", dependencies=[Depends(limit_table_write)])
+    """
+    decision = await rate_limit.consume_with_local_floor(
+        surface="table_write",
+        caller=f"org:{ctx.organization_id}:user:{ctx.subject_id}",
+        limit=rate_limit.table_write_limit(),
+    )
+    _refuse_if_over(decision, "Too many table writes in the last minute. Wait and try again.")
+
+
+async def limit_fork(ctx: Auth) -> None:
+    """Refuse a member forking conversations faster than the deployment allows.
+
+    Keyed on the member and the organization, as table writes are, and for the
+    same reason: each fork stores a copy of a whole conversation, so this is a
+    storage boundary and keeps a per-process floor while the shared limiter
+    cannot count.
+
+    Usage::
+
+        @router.post("/{conversation_id}/fork", dependencies=[Depends(limit_fork)])
+    """
+    decision = await rate_limit.consume_with_local_floor(
+        surface="conversation_fork",
+        caller=f"org:{ctx.organization_id}:user:{ctx.subject_id}",
+        limit=rate_limit.fork_limit(),
+    )
+    _refuse_if_over(decision, "Too many forks in the last minute. Wait and try again.")
+
+
+async def limit_artifact_data(ctx: Auth, rows: bool = Query(True)) -> None:
+    """Refuse a member loading live pages' data faster than the deployment allows.
+
+    A read that loads no records (`rows=false`, an editor's strip asking why a source
+    is empty) still runs each page query, so it has an allowance of its own, of the
+    same size, and does not use up the one for loads.
+
+    Keyed on the member and the organization, as table writes are. Every load runs
+    each of the page's bindings as a query, so like table writes it keeps a
+    per-process floor while the shared limiter cannot count, rather than leaving
+    every page unmetered for the length of a cache outage.
+
+    Usage::
+
+        @router.get("/{artifact_id}/versions/{version_id}/data",
+                    dependencies=[Depends(limit_artifact_data)])
+    """
+    decision = await rate_limit.consume_with_local_floor(
+        surface="artifact_data" if rows else "artifact_data_reasons",
+        caller=f"org:{ctx.organization_id}:user:{ctx.subject_id}",
+        limit=rate_limit.artifact_data_limit(),
+    )
+    _refuse_if_over(decision, "Too many data loads in the last minute. Wait and try again.")
+
+
+async def limit_dictation(ctx: Auth) -> None:
+    """Refuse a person dictating more than their share - each one is a paid call.
+
+    Its own bucket rather than `limit_ml_call`'s, so a person dictating into the
+    composer and an integration calling the ML surface do not spend each other's
+    allowance.
+    """
+    decision = await rate_limit.consume(
+        surface="dictation",
+        caller=f"user:{ctx.subject_id}",
+        limit=rate_limit.dictation_limit(),
+    )
+    _refuse_if_over(decision, "Too many dictations in the last minute. Wait and try again.")
+
+
+async def limit_voice_preview(ctx: Auth) -> None:
+    """Refuse a person listening to more voices than their share - each is a paid session."""
+    decision = await rate_limit.consume(
+        surface="voice_preview",
+        caller=f"user:{ctx.subject_id}",
+        limit=rate_limit.voice_preview_limit(),
+    )
+    _refuse_if_over(decision, "Too many voice previews in the last minute. Wait and try again.")
 
 
 def _refuse_if_over(decision: rate_limit.Decision, message: str) -> None:
@@ -1118,11 +1768,65 @@ async def limit_public_artifact(public_key: str) -> None:
     )
 
 
+async def limit_form_page(token: str) -> None:
+    """Refuse a workflow's public form read too often. Per form, before any read."""
+    _refuse_if_over(
+        await rate_limit.form_page_allowed(token), "Too many requests. Try again shortly."
+    )
+
+
+async def limit_form_submission(token: str) -> None:
+    """Refuse a workflow's public form submitted too often. Per form, before any read."""
+    _refuse_if_over(
+        await rate_limit.form_submission_allowed(token),
+        "This form is taking too many answers. Try again in a minute.",
+    )
+
+
+async def limit_workflow_webhook(request: Request) -> None:
+    """Refuse an address sending the workflow webhook doors too much. Before any read.
+
+    The per-webhook allowance is spent later, inside the service, once a delivery's
+    signature has verified.
+    """
+    _refuse_if_over(
+        await rate_limit.workflow_webhook_ip_allowed(request),
+        "Too many requests. Try again shortly.",
+    )
+
+
 async def limit_artifact_content(token: str) -> None:
     """Refuse a signed artifact address loaded too often. Per address, before any read."""
     _refuse_if_over(
         await rate_limit.artifact_content_allowed(token),
         "Too many requests. Try again shortly.",
+    )
+
+
+async def limit_embed_generated_media(
+    public_key: str,
+    filename: str,
+    token: Annotated[str | None, Query(max_length=128)] = None,
+) -> None:
+    """Refuse a signed link to a generated file fetched too often. Per link, before any read.
+
+    Only a link whose signature opens this file on this embed is counted. Any
+    other token - none, a forged one, an expired one - is left to the route, which
+    refuses it with the 404 a missing file gets before any query or read, so it
+    has nothing to spend and costs no counter in Redis.
+    """
+    if token is None or not token_opens(public_key, filename, token, now=datetime.now(UTC)):
+        return
+    _refuse_if_over(
+        await rate_limit.embed_generated_media_allowed(token),
+        "Too many requests. Try again shortly.",
+    )
+
+
+async def limit_map_tiles(request: Request) -> None:
+    """Refuse an address fetching map tiles through the deployment too fast."""
+    _refuse_if_over(
+        await rate_limit.map_tiles_allowed(request), "Too many requests. Try again shortly."
     )
 
 
@@ -1150,6 +1854,20 @@ async def limit_embed_upload(
         ),
         "Too many uploads. Try again shortly.",
     )
+
+
+async def limit_embed_dictation(request: Request) -> None:
+    """Refuse a caller sending recordings to a hosted page or a widget too fast.
+
+    Per address, before the key is looked up; the link's own ceiling is spent
+    once the visitor is admitted (`rate_limit.embed_dictation_link_allowed`). A
+    refusal is readable by the site that asked: it runs before admission and says
+    the same to every origin (`app.api.embed_cors`).
+    """
+    decision = await rate_limit.embed_dictation_allowed(request)
+    if not decision.allowed:
+        allow_embed_origin(request, request.headers.get("origin"))
+    _refuse_if_over(decision, "Too many dictations in the last minute. Wait and try again.")
 
 
 class RequireOrgRole:
@@ -1220,7 +1938,7 @@ def _extract_ws_auth(websocket: WebSocket) -> tuple[str | None, str | None]:
 
 async def get_current_user_ws(
     websocket: WebSocket,
-    access_token: str | None = Cookie(None),
+    access_token: str | None = Cookie(None, alias="agenticos_access_token"),
 ) -> User:
     """Authenticate a WebSocket connection.
 
@@ -1228,7 +1946,7 @@ async def get_current_user_ws(
     1. `Sec-WebSocket-Protocol` header, in the form `access_token.<JWT>`.
        The chosen application subprotocol (e.g. `chat`) is echoed back on
        `accept()` via `websocket.state.accept_subprotocol`.
-    2. Same-origin `access_token` cookie (fallback for same-origin clients).
+    2. Same-origin `agenticos_access_token` cookie (fallback for same-origin clients).
 
     Tokens in query strings are NOT accepted - they leak into logs and
     Referer headers.
@@ -1302,12 +2020,13 @@ async def get_active_organization_ws(
     token, an org id is not a secret - membership is verified here, so an id the
     user does not belong to closes the socket rather than granting anything.
 
-    Falls back to the user's Personal organization when the parameter is absent,
-    which keeps single-org clients working unchanged.
+    Falls back as the HTTP dependency does when the parameter is absent - the
+    default organization, the personal one, the only one - which keeps
+    single-org clients working unchanged.
 
     Raises:
-        WebSocketException: If the user has no Personal org (4001), or is not a
-            member of the requested org (4003). Membership failure and a
+        WebSocketException: If the fallback leaves a choice (4001), or the user is
+            not a member of the requested org (4003). Membership failure and a
             non-existent org return the same reason so the socket cannot be used
             to probe which organizations exist.
     """
@@ -1320,18 +2039,18 @@ async def get_active_organization_ws(
 
     async with get_db_context() as db:
         if organization_id is None:
-            org = await organization_repo.get_personal_for_user(db, user.id)
+            org = await OrganizationService(db).fallback_for(user.id)
             if org is None:
-                raise WebSocketException(code=4001, reason="Personal organization not found")
+                raise WebSocketException(code=4001, reason="Name the organization_id")
         else:
-            membership = await _member_repo.get(
+            # One query, as `get_active_organization` reads it: the foreign key
+            # means a membership always names an organization that exists.
+            found = await _member_repo.get_with_organization(
                 db, organization_id=organization_id, user_id=user.id
             )
-            if membership is None:
+            if found is None:
                 raise WebSocketException(code=4003, reason="Organization access denied")
-            org = await organization_repo.get_by_id(db, organization_id)
-            if org is None:
-                raise WebSocketException(code=4003, reason="Organization access denied")
+            _membership, org = found
 
         # Detach so attribute access survives the session closing (same reason as
         # the user in get_current_user_ws).
@@ -1371,8 +2090,6 @@ async def verify_api_key(
 ValidAPIKey = Annotated[str, Depends(verify_api_key)]
 
 
-from fastapi import Request
-
 from app.core.config import settings
 from app.services.rag.embeddings import EmbeddingService
 from app.services.rag.ingestion import IngestionService
@@ -1407,6 +2124,28 @@ def get_vectorstore(request: Request, embedder: EmbeddingSvc) -> BaseVectorStore
 
 
 VectorStoreSvc = Annotated[BaseVectorStore, Depends(get_vectorstore)]
+
+from app.services.case_generation import CaseGenerationService
+
+
+def get_case_generation_service(
+    db: DBSession, vector_store: VectorStoreSvc
+) -> CaseGenerationService:
+    """Create CaseGenerationService instance with database session."""
+    return CaseGenerationService(db, vector_store=vector_store)
+
+
+CaseGenerationSvc = Annotated[CaseGenerationService, Depends(get_case_generation_service)]
+
+from app.services.agent_test_set import AgentTestSetService
+
+
+def get_agent_test_set_service(db: DBSession, vector_store: VectorStoreSvc) -> AgentTestSetService:
+    """Create AgentTestSetService instance with database session."""
+    return AgentTestSetService(db, vector_store=vector_store)
+
+
+AgentTestSetSvc = Annotated[AgentTestSetService, Depends(get_agent_test_set_service)]
 
 
 def get_organization_teardown_service(
@@ -1507,6 +2246,22 @@ def get_mcp_connection_service(db: DBSession) -> McpConnectionService:
 
 
 McpConnectionSvc = Annotated[McpConnectionService, Depends(get_mcp_connection_service)]
+from app.services.suggestions import SuggestionService
+
+
+def get_suggestion_service(db: DBSession) -> SuggestionService:
+    return SuggestionService(db)
+
+
+SuggestionSvc = Annotated[SuggestionService, Depends(get_suggestion_service)]
+from app.services.watches import WatchService
+
+
+def get_watch_service(db: DBSession) -> WatchService:
+    return WatchService(db)
+
+
+WatchSvc = Annotated[WatchService, Depends(get_watch_service)]
 from app.services.organization_secret import OrganizationSecretService
 
 
@@ -1516,6 +2271,15 @@ def get_secret_service(db: DBSession) -> OrganizationSecretService:
 
 
 SecretSvc = Annotated[OrganizationSecretService, Depends(get_secret_service)]
+from app.services.openai_codex import OpenAICodexService
+
+
+def get_openai_codex_service(db: DBSession, redis: Redis) -> OpenAICodexService:
+    """Create OpenAICodexService with the session and the Redis client its sign-in waits in."""
+    return OpenAICodexService(db, redis)
+
+
+OpenAICodexSvc = Annotated[OpenAICodexService, Depends(get_openai_codex_service)]
 from app.services.audit import AuditService
 
 
@@ -1536,6 +2300,14 @@ def get_notification_center_service(db: DBSession) -> NotificationCenterService:
 NotificationCenterSvc = Annotated[
     NotificationCenterService, Depends(get_notification_center_service)
 ]
+from app.services.notification_routes import NotificationRouteService
+
+
+def get_notification_route_service(db: DBSession) -> NotificationRouteService:
+    return NotificationRouteService(db)
+
+
+NotificationRouteSvc = Annotated[NotificationRouteService, Depends(get_notification_route_service)]
 from app.services.notification_delivery import NotificationDeliveryService
 
 
@@ -1556,3 +2328,157 @@ def get_announcement_service(db: DBSession) -> AnnouncementService:
 
 
 AnnouncementSvc = Annotated[AnnouncementService, Depends(get_announcement_service)]
+from app.services.voice import VoicePreviewService, VoiceSettingsService, VoiceUsageService
+
+
+def get_voice_settings_service(db: DBSession) -> VoiceSettingsService:
+    """Create VoiceSettingsService instance with database session."""
+    return VoiceSettingsService(db)
+
+
+VoiceSettingsSvc = Annotated[VoiceSettingsService, Depends(get_voice_settings_service)]
+
+
+def get_voice_usage_service(db: DBSession) -> VoiceUsageService:
+    """Create VoiceUsageService instance with database session."""
+    return VoiceUsageService(db)
+
+
+VoiceUsageSvc = Annotated[VoiceUsageService, Depends(get_voice_usage_service)]
+
+
+def get_voice_preview_service(db: DBSession, redis: Redis) -> VoicePreviewService:
+    """Create VoicePreviewService instance with database session and Redis."""
+    return VoicePreviewService(db, redis)
+
+
+VoicePreviewSvc = Annotated[VoicePreviewService, Depends(get_voice_preview_service)]
+from app.services.background_jobs import BackgroundJobService
+
+
+def get_background_job_service(db: DBSession) -> BackgroundJobService:
+    """Create BackgroundJobService instance with database session."""
+    return BackgroundJobService(db)
+
+
+BackgroundJobSvc = Annotated[BackgroundJobService, Depends(get_background_job_service)]
+from app.services.api_runs import ApiRunService
+
+
+def get_api_run_service(db: DBSession) -> ApiRunService:
+    """Create ApiRunService instance with database session."""
+    return ApiRunService(db)
+
+
+ApiRunSvc = Annotated[ApiRunService, Depends(get_api_run_service)]
+
+
+def prefers_async(
+    prefer: Annotated[
+        str | None, Header(description="`respond-async` (RFC 7240) queues the request.")
+    ] = None,
+) -> bool:
+    """Whether the caller's `Prefer` header asks for `respond-async`, among whatever else it asks."""
+    if prefer is None:
+        return False
+    return any(
+        token.strip().split("=", 1)[0].strip().lower() == "respond-async"
+        for token in prefer.split(",")
+    )
+
+
+PrefersAsync = Annotated[bool, Depends(prefers_async)]
+
+
+from app.services.improvement_pipeline import ImprovementPipelineService
+
+
+def get_improvement_service(db: DBSession) -> ImprovementPipelineService:
+    return ImprovementPipelineService(db)
+
+
+ImprovementSvc = Annotated[ImprovementPipelineService, Depends(get_improvement_service)]
+
+
+from app.services.skill_improvement import SkillImprovementService
+
+
+def get_skill_improvement_service(db: DBSession) -> SkillImprovementService:
+    return SkillImprovementService(db)
+
+
+SkillImprovementSvc = Annotated[SkillImprovementService, Depends(get_skill_improvement_service)]
+
+
+from app.services.project_workspace_transfer import ProjectWorkspaceTransferService
+
+
+def get_project_transfer_service(db: DBSession) -> ProjectWorkspaceTransferService:
+    return ProjectWorkspaceTransferService(db)
+
+
+ProjectTransferSvc = Annotated[
+    ProjectWorkspaceTransferService, Depends(get_project_transfer_service)
+]
+
+
+from app.services.diagnostics import DiagnosticsService
+
+
+def get_diagnostics_service(db: DBSession) -> DiagnosticsService:
+    return DiagnosticsService(db)
+
+
+DiagnosticsSvc = Annotated[DiagnosticsService, Depends(get_diagnostics_service)]
+
+
+from app.services.updates import UpdateService
+
+
+def get_update_service() -> UpdateService:
+    return UpdateService()
+
+
+UpdateSvc = Annotated[UpdateService, Depends(get_update_service)]
+
+
+from app.services.telephony.policy import PhonePolicyService
+from app.services.telephony.calls import PhoneCallService
+from app.services.telephony.webhooks import PhoneWebhookService
+
+
+def get_phone_policy(db: DBSession) -> PhonePolicyService:
+    return PhonePolicyService(db)
+
+
+def get_phone_calls(db: DBSession) -> PhoneCallService:
+    return PhoneCallService(db)
+
+
+def get_phone_webhooks(db: DBSession) -> PhoneWebhookService:
+    return PhoneWebhookService(db)
+
+
+PhonePolicySvc = Annotated[PhonePolicyService, Depends(get_phone_policy)]
+PhoneCallsSvc = Annotated[PhoneCallService, Depends(get_phone_calls)]
+PhoneWebhooksSvc = Annotated[PhoneWebhookService, Depends(get_phone_webhooks)]
+
+
+from app.services.coding_accounts import CodingAccountService
+
+
+def get_coding_account_service(db: DBSession) -> CodingAccountService:
+    return CodingAccountService(db)
+
+
+CodingAccountSvc = Annotated[CodingAccountService, Depends(get_coding_account_service)]
+
+
+from app.services.onboarding import OnboardingService
+
+
+def get_onboarding_service(db: DBSession) -> OnboardingService:
+    return OnboardingService(db)
+
+
+OnboardingSvc = Annotated[OnboardingService, Depends(get_onboarding_service)]

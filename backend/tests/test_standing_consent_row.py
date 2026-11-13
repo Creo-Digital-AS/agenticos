@@ -12,8 +12,6 @@ worth pinning: `_write_approvals` is the one place rows are made, and a second
 writer for waived calls would be a second thing to keep in step.
 """
 
-from __future__ import annotations
-
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -55,7 +53,7 @@ async def test_a_waived_call_is_written_approved_and_named() -> None:
         ),
         patch.object(service.approvals, "request", new=AsyncMock()) as written,
     ):
-        await service._write_approvals(_prepared(channel))
+        await service._write_approvals(_prepared(channel), include_pending=True)
 
     assert written.await_args.kwargs["standing_consent_by"] == consenter
     # The arguments too: nobody read them before they ran, so the row is the only
@@ -99,7 +97,7 @@ async def test_a_parked_call_on_the_same_run_names_nobody() -> None:
         ),
         patch.object(service.approvals, "request", new=AsyncMock()) as written,
     ):
-        await service._write_approvals(_prepared(channel))
+        await service._write_approvals(_prepared(channel), include_pending=True)
 
     consented = [call.kwargs["standing_consent_by"] for call in written.await_args_list]
     assert consented[0] is not None

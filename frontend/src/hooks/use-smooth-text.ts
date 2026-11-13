@@ -2,6 +2,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { prefersReducedMotion } from "@/lib/motion";
+
 /** How long a frame waits before painting more text: ~30 fps, enough to read as flow. */
 const FRAME_MS = 32;
 /**
@@ -10,12 +12,6 @@ const FRAME_MS = 32;
  * fraction of a second behind the stream whatever its speed, and eases into the end.
  */
 const CATCH_UP = 0.1;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-  );
-}
 
 /**
  * How much text a bubble may open on and still flow in from nothing. A fast model
@@ -70,11 +66,12 @@ function safeCut(text: string, length: number): number {
  * opening flows in from nothing; a long one is a conversation reopened mid-turn and
  * is shown at once, and a turn that ends with text still waiting finishes its
  * reveal rather than jumping. Anyone who asked the system for less motion gets the text
- * as it arrives.
+ * as it arrives. `replay` explicitly animates a newly received local reply,
+ * including a long one; loaded history must leave it false.
  */
-export function useSmoothText(text: string, streaming: boolean): string {
+export function useSmoothText(text: string, streaming: boolean, replay = false): string {
   const [shown, setShown] = useState(() =>
-    streaming && text.length <= REPLAY_LIMIT ? 0 : text.length,
+    replay || (streaming && text.length <= REPLAY_LIMIT) ? 0 : text.length,
   );
   // The frame loop reads the newest text without restarting on every token.
   const target = useRef(text);

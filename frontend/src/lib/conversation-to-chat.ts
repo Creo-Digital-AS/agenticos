@@ -1,6 +1,14 @@
 import { storedUsage } from "./message-usage";
 import type { MentionKind, Mentionable } from "@/types/mention";
-import type { ChatMessage, ChatMessageFile, MessagePart, ToolCall } from "@/types";
+import type {
+  ChatMessage,
+  ChatMessageFile,
+  ChatPerson,
+  MessagePart,
+  MessageReply,
+  ToolCall,
+  TurnFileSource,
+} from "@/types";
 
 /**
  * Shape of a persisted message as returned by the backend (MessageRead).
@@ -9,6 +17,8 @@ import type { ChatMessage, ChatMessageFile, MessagePart, ToolCall } from "@/type
 export interface RawToolCall {
   tool_call_id: string;
   tool_name: string;
+  tool_id?: string | null;
+  presentation_kind?: "draft" | "generic" | "platform" | null;
   args: Record<string, unknown>;
   result?: unknown;
   status: string;
@@ -16,7 +26,18 @@ export interface RawToolCall {
 
 /** One entry of a stored timeline - see `MessagePart` in the backend schemas. */
 export interface RawMessagePart {
-  type: "text" | "thinking" | "tool" | "ask_user" | "steer" | "mention";
+  setup_agent_id?: string | null;
+  type:
+    | "text"
+    | "thinking"
+    | "tool"
+    | "ask_user"
+    | "steer"
+    | "mention"
+    | "workflow_run"
+    | "phone_call"
+    | "model_setup";
+  file_source?: TurnFileSource | null;
   text?: string | null;
   /** For a `mention` entry on a user turn (#2189). */
   mention_kind?: MentionKind | null;
@@ -25,9 +46,16 @@ export interface RawMessagePart {
   question?: string | null;
   answer?: string | null;
   asked_by?: string | null;
+  run_id?: string | null;
+  phone_call_id?: string | null;
+  workflow_id?: string | null;
+  workflow_name?: string | null;
+  status?: string | null;
+  error?: string | null;
 }
 
 export interface RawMessage {
+  client_message_id?: string | null;
   id: string;
   conversation_id: string;
   role: "user" | "assistant" | "system";
@@ -38,7 +66,9 @@ export interface RawMessage {
   /** The run that produced this turn. Null for a turn written outside one. */
   run_id?: string | null;
   run_status?: string | null;
+  run_error?: string | null;
   run_duration_ms?: number | null;
+  run_started_at?: string | null;
   /** The version number of the frozen spec that produced it. */
   agent_version?: number | null;
   tool_calls?: RawToolCall[] | null;
@@ -54,10 +84,17 @@ export interface RawMessage {
   user_rating?: number | null;
   rating_count?: { likes: number; dislikes: number } | null;
   files?: ChatMessageFile[] | null;
+  sender?: ChatPerson | null;
+  sender_gone?: boolean;
+  reply_to?: WireReply | null;
   /** What the turn cost. Absent on a message written before it was recorded. */
   input_tokens?: number | null;
   output_tokens?: number | null;
   cost_usd?: string | null;
+  /** A spoken turn's id within its voice call; null for a typed turn. */
+  turn_id?: string | null;
+  /** Whether the caller talked over this spoken answer. */
+  interrupted?: boolean;
 }
 
 /**
@@ -93,6 +130,38 @@ export function replayStoredParts(
         question: entry.question ?? "",
         answer: entry.answer ?? "",
         ...(entry.asked_by ? { askedBy: entry.asked_by } : {}),
+      });
+      return;
+    }
+    if (entry.type === "model_setup") {
+      parts.push({
+        id: `${msgId}-setup-${index}`,
+        type: "model_setup",
+        content: entry.text ?? "",
+        setupAgentId: entry.setup_agent_id ?? undefined,
+      });
+      return;
+    }
+    if (entry.type === "phone_call") {
+      if (entry.phone_call_id)
+        parts.push({
+          id: `${msgId}-phone-${index}`,
+          type: "phone_call",
+          phoneCallId: entry.phone_call_id,
+        });
+      return;
+    }
+    if (entry.type === "workflow_run") {
+      parts.push({
+        id: `${msgId}-workflow_run-${index}`,
+        type: "workflow_run" as const,
+        workflowRun: {
+          workflowId: entry.workflow_id ?? "",
+          workflowName: entry.workflow_name ?? null,
+          runId: entry.run_id ?? null,
+          status: entry.status ?? "succeeded",
+          error: entry.error ?? null,
+        },
       });
       return;
     }
@@ -160,6 +229,8 @@ export function conversationMessageToChatMessage(msg: RawMessage): ChatMessage {
   const toolCalls: ToolCall[] | undefined = msg.tool_calls?.map((tc) => ({
     id: tc.tool_call_id,
     name: tc.tool_name,
+    tool_id: tc.tool_id,
+    presentation_kind: tc.presentation_kind,
     args: tc.args,
     result: tc.result,
     status: replayedStatus(tc.status),
@@ -181,17 +252,35 @@ export function conversationMessageToChatMessage(msg: RawMessage): ChatMessage {
 
   return {
     id: msg.id,
+    clientMessageId: msg.client_message_id ?? undefined,
     role: msg.role,
     content: msg.content,
     thinking: msg.thinking ?? undefined,
     timestamp: new Date(msg.created_at),
     conversationId: msg.conversation_id,
+    fileSource: msg.parts?.find((part) => part.file_source != null)?.file_source ?? undefined,
+    sender: msg.sender ?? undefined,
+    senderGone: msg.sender_gone === true || undefined,
+    replyTo: replyFromWire(msg.reply_to),
     agentId: msg.agent_id ?? undefined,
     agentVersion: msg.agent_version ?? undefined,
     runId: msg.run_id ?? undefined,
+    runStartedAt: msg.run_started_at ? new Date(msg.run_started_at) : undefined,
+    runWaitingFor:
+      msg.run_status === "awaiting_approval"
+        ? "approval"
+        : msg.run_status === "awaiting_answer"
+          ? "answer"
+          : undefined,
     // Only the one worth drawing. A completed run needs no marker, and a run
     // still going has no answer on screen to mark.
     wasStopped: msg.run_status === "cancelled",
+    runFailed: ["failed", "budget_exceeded", "guardrail_blocked", "loop_stopped"].includes(
+      msg.run_status ?? "",
+    ),
+    runError: msg.run_status === "failed" ? (msg.run_error ?? undefined) : undefined,
+    turnId: msg.turn_id ?? undefined,
+    interrupted: msg.interrupted === true || undefined,
     runDurationMs: msg.run_duration_ms ?? undefined,
     usage: storedUsage(msg) ?? undefined,
     toolCalls,
@@ -206,4 +295,26 @@ export function conversationMessageToChatMessage(msg: RawMessage): ChatMessage {
 
 export function conversationMessagesToChatMessages(msgs: RawMessage[]): ChatMessage[] {
   return msgs.map(conversationMessageToChatMessage);
+}
+
+/** The message a turn answers, as the API and the live turn frame both send it. */
+export interface WireReply {
+  message_id: string;
+  role: ChatMessage["role"];
+  excerpt: string;
+  sender?: ChatPerson | null;
+  agent_id?: string | null;
+}
+
+/** The quote a turn carries, or nothing for a turn that answers no message. */
+export function replyFromWire(reply: WireReply | null | undefined): MessageReply | undefined {
+  return reply
+    ? {
+        messageId: reply.message_id,
+        role: reply.role,
+        excerpt: reply.excerpt,
+        sender: reply.sender ?? undefined,
+        agentId: reply.agent_id ?? undefined,
+      }
+    : undefined;
 }

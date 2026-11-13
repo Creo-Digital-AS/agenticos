@@ -52,8 +52,11 @@ would make the token unreadable the moment they switched.
 probe before the turn; failures log a warning and the turn proceeds without those
 tools. Pydantic AI enters every toolset when a run starts, so raising would let one
 expired token abort every agent that names the connection. The trade is real: a
-skipped server means the model answers *without* the tools. `/test` and `last_status`
-are how you find out.
+skipped server means the model answers *without* the tools. It is briefed, though:
+`UnavailableUnreachableServer` for a failed probe, and `AnsweredRecently` for a
+server that answered within two minutes and fails on connect, both through
+`unreachable_briefing` in `app/agents/mcp.py`. `/test` and `last_status` are how you
+find out.
 
 **Tools are prefixed with the connection name.** `github-work` → `github_work_*`.
 Two servers exposing the same tool name make Pydantic AI raise on duplicates, which
@@ -104,15 +107,54 @@ The **connection's own URL** is checked at save and resolved again at run time �
 point-in-time check (#840), bearable only because an operator typed it. A URL a *model*
 chose belongs in neither; it needs `safe_download`.
 
+The MCP allowlist (`sanitize.mcp_allowlist()`: `MCP_ALLOWED_HOSTS` plus
+`OUTBOUND_PRIVATE_ALLOWLIST`) exempts a listed host's private answer from the address half of the
+check on a connection's own URL: `_checked_url` (save, update, the sign-in probe
+and the OAuth start) always passes `honour_allowlist=True` to `validate_mcp_url`.
+Every host is resolved and every answer checked: a private answer passes only for a
+host the list admits, loopback and metadata never, and a host admitted by name
+that does not resolve yet is accepted (#840). The OAuth requests after it get
+`sanitize.allowlist_for(server_url, mcp_allowlist())` (the origin rule): the whole
+list when the connection's own host needs it, nothing otherwise.
+`resolve_pinned_url` still resolves and pins a listed host and refuses loopback,
+link-local and metadata answers for it. The catalog audit stays strict. Never
+compute the allowlist from a URL a remote server named: that is how a public
+server would aim its token endpoint at a listed host.
+
+Google's authorization endpoint additionally needs `access_type=offline` and
+`prompt=consent`; requesting the OIDC `offline_access` scope alone is insufficient.
+The provider-specific consent parameters live in `authorization_url`.
+
 An organization's OAuth connection is still the consenting person's grant at the
 provider. Revoking their access there breaks the organization's server.
 
-## MCP tools are not gated
+## MCP approvals
 
-`approval_required_tools` iterates `spec.capabilities` only. MCP tools are discovered
-at run time, so nothing declared them and nothing approves them. Say so plainly when
-reviewing a change that adds a connection to a published agent — do not imply a gate
-exists.
+`approval_required_tools` covers capability tools; MCP tools are marked separately
+by `ApprovalMarked` and enforced by the same `ApprovalGate`. A binding's `writes`
+policy trusts only `readOnlyHint: true`; missing or false hints require approval.
+`all` also gates reads, and `none` waives the binding's gate. The platform server
+always enforces at least `writes`, with the explicit `UNGATED` exceptions in
+`services/platform_mcp/_tools.py`.
+
+An organization or personal binding's `tool_approval` overrides that per tool,
+keyed by the server's own tool name like `allowed_tools`: `required` asks and
+`never` runs, whatever the policy and the hint say (#2884). `approval_needed` in
+`app/agents/mcp.py` is the one copy of the rule, which `routine_actions` reuses
+for standing consent. `ApprovalMarked` reads it by the prefixed, fitted name the
+model calls, which `_make_toolset` computes. The field is left out of a dump
+while empty - routine source reviews and eval baselines fingerprint the dumped
+spec - and its keys are sorted, because the Builder compares drafts key by key
+and JSONB reorders them. The platform binding has no `tool_approval`: a `never`
+there would undercut its `writes` floor.
+
+Channel runs, including delegates and resumptions, enforce at least `writes` on
+all MCP bindings, and drop a tool's own `never`: there only `readOnlyHint` lets
+a tool run unasked. Read-only calls no longer acquire an extra approval merely by
+running in a chat app for a linked member. Unlinked room participants still
+require approval for every MCP call, including organization reads. Personal
+connections resolve for each message's linked sender, never the publisher or a
+different participant. A watch leaves out a read its binding asks before.
 
 Cost is the same story: what a server does on its own side is outside this platform's
 budget. Only model tokens are counted.

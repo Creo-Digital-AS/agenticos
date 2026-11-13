@@ -46,15 +46,14 @@ function textFile(path: string, body = "body"): File {
 
 const name = () => screen.getByLabelText("Name");
 const description = () => screen.getByLabelText("Description");
-// The body is SKILL.md in the file pane, as the workbench has it - editable
-// only once the pane is flipped to Source.
-const content = () => screen.getByLabelText("SKILL.md source");
+// The body is Instructions in the file pane, as the workbench has it - editable
+// directly in its source view.
+const content = () => screen.getByLabelText("Instructions source");
 const create = () => screen.getByRole("button", { name: "Create" });
 
 async function fill() {
   await userEvent.type(name(), "refund-policy");
   await userEvent.type(description(), "How refunds work.");
-  await userEvent.click(screen.getByRole("button", { name: "Source" }));
   await userEvent.type(content(), "## Refunds");
 }
 
@@ -65,7 +64,7 @@ async function fill() {
  * typed into - which is the flow a person goes through too.
  */
 async function fillWithBody() {
-  await userEvent.click(screen.getByRole("button", { name: "SKILL.md" }));
+  await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
   await fill();
 }
 
@@ -81,14 +80,14 @@ describe("CreateSkillDialog", () => {
     render(<CreateSkillDialog open onOpenChange={vi.fn()} />, { wrapper });
   });
 
-  it("lays the body out as SKILL.md, the way the editor will show it forever after", async () => {
+  it("lays the body out as Instructions, the way the editor will show it forever after", async () => {
     // The create form used to be the only place a skill did not look like a
     // folder. The second time anybody saw their skill it looked nothing like
     // the first - same tree, same pane, from the start.
     // Twice: once in the tree, once naming the open pane.
-    expect(screen.getAllByText("SKILL.md")).toHaveLength(2);
+    expect(screen.getAllByText("Instructions")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Source" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Source" })).toBeNull();
   });
 
   it("offers the shelves in use and the predefined ones, without constraining the field", async () => {
@@ -108,12 +107,35 @@ describe("CreateSkillDialog", () => {
     expect(screen.getByLabelText("Category")).toHaveValue("something-nobody-suggested");
   });
 
+  it("keeps typing intact and normalizes the name before submitting, even without blur", async () => {
+    vi.mocked(apiClient.post).mockResolvedValue({ id: "skill-new", name: "strategic-diagnostic" });
+    fireEvent.change(name(), { target: { value: "Strategic Diagnostic" } });
+    expect(name()).toHaveValue("Strategic Diagnostic");
+    fireEvent.change(description(), { target: { value: "A diagnostic" } });
+    fireEvent.click(create());
+    await waitFor(() =>
+      expect(apiClient.post).toHaveBeenCalledWith(
+        "/skills",
+        expect.objectContaining({ name: "strategic-diagnostic" }),
+      ),
+    );
+  });
+
+  it("formats a pasted name on blur and keeps its hint connected", () => {
+    fireEvent.change(name(), { target: { value: "Zażółć GĘŚLĄ" } });
+    fireEvent.blur(name());
+    expect(name()).toHaveValue("zazolc-gesla");
+    expect(name()).toHaveAttribute("aria-describedby", "new-skill-name-hint");
+  });
+
   it("keeps the whole draft when the name is taken", async () => {
     // Content is a ten row editor. Losing it - or making somebody re-open a
     // dialog to find out what a toast said - is the cost of treating an
     // expected refusal as a failure.
     vi.mocked(apiClient.post).mockRejectedValue(NAME_TAKEN);
     await fill();
+    await userEvent.clear(name());
+    await userEvent.type(name(), "Refund Policy");
     await userEvent.click(create());
 
     await waitFor(() => expect(name()).toHaveAttribute("aria-invalid", "true"));
@@ -229,6 +251,7 @@ describe("CreateSkillDialog", () => {
  */
 describe("CreateSkillDialog files", () => {
   const onOpenChange = vi.fn();
+  const onCreated = vi.fn();
 
   // jsdom's File does not implement `.text()`, which `PendingFilePane` uses to
   // read a pending file into the pane. Polyfilled rather than mocked away: the
@@ -254,7 +277,9 @@ describe("CreateSkillDialog files", () => {
     });
     vi.mocked(apiClient.post).mockResolvedValue({ id: "s-1", name: "refund-policy" });
     vi.mocked(apiClient.uploadMany).mockResolvedValue({ items: [] });
-    render(<CreateSkillDialog open onOpenChange={onOpenChange} />, { wrapper });
+    render(<CreateSkillDialog open onOpenChange={onOpenChange} onCreated={onCreated} />, {
+      wrapper,
+    });
   });
 
   it("cannot be created without a name and a description", async () => {
@@ -324,6 +349,30 @@ describe("CreateSkillDialog files", () => {
     await waitFor(() =>
       expect(screen.getByText(/uploads when the skill is created/)).toBeInTheDocument(),
     );
+  });
+
+  it("keeps creation busy until the files finish uploading", async () => {
+    let finish: (() => void) | undefined;
+    vi.mocked(apiClient.uploadMany).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ items: [] });
+        }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "New" }));
+    await userEvent.type(screen.getByLabelText("Path"), "a.md");
+    await userEvent.click(screen.getByRole("button", { name: "Add file" }));
+    await fillWithBody();
+    await userEvent.click(create());
+    await waitFor(() => expect(create()).toHaveAttribute("aria-busy", "true"));
+    expect(create()).toBeDisabled();
+    await userEvent.click(create());
+    expect(apiClient.post).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(onCreated).not.toHaveBeenCalled();
+    finish?.();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(onCreated).toHaveBeenCalledWith({ id: "s-1", name: "refund-policy" });
   });
 
   it("uploads the pending files once the skill exists", async () => {
@@ -438,9 +487,9 @@ describe("CreateSkillDialog files", () => {
     await userEvent.type(screen.getByLabelText("Path"), "a.md");
     await userEvent.click(screen.getByRole("button", { name: "Add file" }));
 
-    await userEvent.click(screen.getByRole("button", { name: "SKILL.md" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
 
-    expect(screen.getByRole("button", { name: "SKILL.md" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Instructions" })).toHaveAttribute(
       "aria-current",
       "true",
     );
@@ -470,6 +519,7 @@ describe("CreateSkillDialog files", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     // The dialog stays open, so the failure is not dismissed along with it.
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(onCreated).not.toHaveBeenCalled();
   });
 
   it("clears a field's refusal as soon as that field changes", async () => {

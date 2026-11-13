@@ -8,8 +8,6 @@ from a lookup would make one organization's workspace reachable by an id, and
 the files in it are whatever somebody uploaded to a chat.
 """
 
-from __future__ import annotations
-
 import uuid
 from unittest.mock import MagicMock
 
@@ -191,14 +189,15 @@ class TestWhoAListingIsFor:
 
 class TestWriting:
     async def test_creating_records_who_the_workspace_belongs_to(self):
-        session = _RecordingSession()
+        row = _workspace()
+        session = _RecordingSession(None, MagicMock(scalar_one=MagicMock(return_value=row)))
         organization_id, agent_id, conversation_id = (
             uuid.uuid4(),
             uuid.uuid4(),
             uuid.uuid4(),
         )
 
-        await agent_workspace_repo.create(
+        created = await agent_workspace_repo.create(
             session,
             organization_id=organization_id,
             agent_id=agent_id,
@@ -209,14 +208,17 @@ class TestWriting:
             backend="docker",
         )
 
-        [created] = session.added
-        assert created.organization_id == organization_id
-        assert created.agent_id == agent_id
-        assert created.conversation_id == conversation_id
-        assert created.owner_ref == "U123"
+        inserted = session.statements[0].compile(dialect=postgresql.dialect())
+        assert inserted.params["organization_id"] == organization_id
+        assert inserted.params["agent_id"] == agent_id
+        assert inserted.params["conversation_id"] == conversation_id
+        assert inserted.params["owner_ref"] == "U123"
+        assert inserted.params["last_used_at"] is not None
         # Recorded when a session is opened, not when the row is: see `record_session`.
-        assert created.session_id is None
-        assert created.last_used_at is not None
+        assert "session_id" not in inserted.params
+        # A first open racing another takes the row on the key, whichever wrote it.
+        assert "ON CONFLICT ON CONSTRAINT uq_agent_workspace_scope DO NOTHING" in str(inserted)
+        assert created is row
 
     async def test_recording_a_session_sets_it_and_forgetting_clears_it(self):
         session = _RecordingSession()
@@ -259,3 +261,19 @@ class TestWriting:
         await agent_workspace_repo.delete(session, workspace=row)
 
         assert session.deleted == [row]
+
+
+@pytest.mark.security
+async def test_project_file_mutations_refresh_the_snapshot_under_a_tenant_scoped_lock() -> None:
+    db = _RecordingSession(None)
+    organization, project = uuid.uuid4(), uuid.uuid4()
+    await agent_workspace_repo.lock_project_files(
+        db, project_id=project, organization_id=organization
+    )
+    statement = db.statements[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert organization in compiled.params.values()
+    assert project in compiled.params.values()
+    assert "project" in compiled.params.values()
+    assert "FOR UPDATE" in str(compiled)
+    assert statement.get_execution_options()["populate_existing"] is True

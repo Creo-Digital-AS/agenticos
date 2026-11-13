@@ -10,7 +10,9 @@ import { apiClient } from "@/lib/api-client";
 import { useAuthStore, useOrgStore } from "@/stores";
 import { permissionsOf, ROLE_CATALOG } from "@/test-utils/role-catalog";
 import { assignableRoles } from "@/lib/assignable-roles";
-import type { OrgRole } from "@/types/organization";
+import type { MyPermissions } from "@/types/permissions";
+import { Perm } from "@/types/permissions";
+import type { Organization, OrgRole } from "@/types/organization";
 
 /**
  * Which rows offer a role picker, and which offer a label instead.
@@ -39,9 +41,10 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 // The tenant is the organization in the path, so this file needs to move it.
 // The rest are what `vitest.setup.ts` provides, and for its reason.
 const path = vi.fn(() => "/");
+const query = vi.fn(() => new URLSearchParams());
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => query(),
   usePathname: () => path(),
   useParams: () => ({}),
   redirect: vi.fn(),
@@ -91,13 +94,37 @@ function member(
 }
 
 /** Answer every request the page makes, as a caller holding `role`. */
-function serve(role: string) {
+function serve(
+  role: string,
+  extraPermissions: MyPermissions["permissions"] = [],
+  configuration: Partial<Organization> = {},
+) {
   vi.mocked(apiClient.get).mockImplementation((url: string) => {
     if (url === "/roles/catalog") return Promise.resolve(ROLE_CATALOG);
-    if (url.startsWith("/me/permissions")) return Promise.resolve(permissionsOf(role));
+    if (url.startsWith("/me/permissions"))
+      return Promise.resolve({
+        ...permissionsOf(role),
+        permissions: [...permissionsOf(role).permissions, ...extraPermissions],
+      });
+    if (url === "/system-agents")
+      return Promise.resolve({
+        items: [
+          {
+            role: "memory_maintenance",
+            enabled: false,
+            model_profile_id: null,
+            model_label: null,
+            monthly_budget_usd: null,
+            spent_this_month: "0",
+            unavailable: null,
+            managed_in: null,
+            runs: [],
+          },
+        ],
+      });
     if (url === "/orgs")
       return Promise.resolve({
-        items: [{ id: "org-1", name: "Acme", avatar_color: null }],
+        items: [{ id: "org-1", name: "Acme", avatar_color: null, ...configuration }],
         total: 1,
       });
     if (url.includes("/members")) {
@@ -139,9 +166,12 @@ async function mount(orgId = "org-1") {
       <Suspense>{children}</Suspense>
     </QueryClientProvider>
   );
+  const params = Promise.resolve({ id: orgId });
+  const result: { view?: { rerender: (ui: ReactNode) => void } } = {};
   await act(async () => {
-    render(<MembersPage params={Promise.resolve({ id: orgId })} />, { wrapper });
+    result.view = render(<MembersPage params={params} />, { wrapper });
   });
+  return () => result.view?.rerender(<MembersPage params={params} />);
 }
 
 /** The table cell holding `email`'s role. */
@@ -154,6 +184,8 @@ async function roleCell(email: string): Promise<HTMLElement> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  query.mockImplementation(() => new URLSearchParams());
+  window.history.replaceState({}, "", "/orgs/org-1/members");
   path.mockReturnValue("/orgs/org-1/members");
   useOrgStore.setState({ activeOrgId: "org-1", refusedOrgIds: [] });
   useAuthStore.setState({
@@ -214,6 +246,22 @@ describe("the members table's role control", () => {
         const asked = useOrgStore.getState().activeOrgId;
         return Promise.resolve(permissionsOf(asked === URL_ORG ? "owner" : "admin"));
       }
+      if (url === "/system-agents")
+        return Promise.resolve({
+          items: [
+            {
+              role: "memory_maintenance",
+              enabled: false,
+              model_profile_id: null,
+              model_label: null,
+              monthly_budget_usd: null,
+              spent_this_month: "0",
+              unavailable: null,
+              managed_in: null,
+              runs: [],
+            },
+          ],
+        });
       if (url === "/orgs")
         return Promise.resolve({
           items: [
@@ -257,6 +305,22 @@ describe("the members table's role control", () => {
     vi.mocked(apiClient.get).mockImplementation((url: string) => {
       if (url === "/roles/catalog") return Promise.reject(new Error("nope"));
       if (url.startsWith("/me/permissions")) return Promise.resolve(permissionsOf("admin"));
+      if (url === "/system-agents")
+        return Promise.resolve({
+          items: [
+            {
+              role: "memory_maintenance",
+              enabled: false,
+              model_profile_id: null,
+              model_label: null,
+              monthly_budget_usd: null,
+              spent_this_month: "0",
+              unavailable: null,
+              managed_in: null,
+              runs: [],
+            },
+          ],
+        });
       if (url === "/orgs")
         return Promise.resolve({
           items: [{ id: "org-1", name: "Acme", avatar_color: null }],
@@ -323,4 +387,184 @@ describe("the members table's role control", () => {
 
     await waitFor(() => expect(within(row).getByRole("combobox")).toBeVisible());
   });
+});
+
+describe("organization settings tabs", () => {
+  it("keeps setup hint controls outside the tablist's interaction model", async () => {
+    serve("owner");
+    await mount();
+    const list = screen.getByRole("tablist");
+    expect(within(list).getAllByRole("tab").length).toBeGreaterThan(1);
+    expect(within(list).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows members by default and preserves a profile draft while switching tabs", async () => {
+    serve("owner");
+    await mount();
+    expect(await screen.findByRole("tab", { name: "Members" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    window.history.replaceState({}, "", "?tab=voice#org-voice");
+    await userEvent.click(screen.getByRole("tab", { name: "Workspace" }));
+    expect(window.location.hash).toBe("");
+    expect(screen.getByTitle("Change organization avatar")).toHaveClass("rounded-full");
+    const name = screen.getByDisplayValue("Acme");
+    await userEvent.clear(name);
+    await userEvent.type(name, "New workspace");
+    expect(new URL(window.location.href).searchParams.get("tab")).toBe("profile");
+    await userEvent.click(screen.getByRole("tab", { name: "Members" }));
+    expect(name).not.toBeVisible();
+    expect(new URL(window.location.href).searchParams.has("tab")).toBe(false);
+    await userEvent.click(screen.getByRole("tab", { name: "Workspace" }));
+    expect(screen.getByDisplayValue("New workspace")).toBeVisible();
+  });
+
+  it("keeps public page data controls reachable with only the organization settings grant", async () => {
+    serve("viewer", [{ permission: Perm.orgSettings, scope: "all" }]);
+    await mount();
+    const governance = await screen.findByRole("tab", { name: "Budget and approvals" });
+    expect(screen.queryByRole("switch", { name: "Public pages with live data" })).toBeNull();
+    await userEvent.click(governance);
+    expect(screen.getByRole("switch", { name: "Public pages with live data" })).toBeVisible();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("data-tour", "org-governance");
+  });
+
+  it("opens a settings tab directly from its URL", async () => {
+    query.mockImplementation(() => new URLSearchParams("tab=voice"));
+    serve("owner", [{ permission: Perm.orgSettings, scope: "all" }]);
+    await mount();
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Workspace" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("data-state", "active");
+    expect(screen.getByDisplayValue("Acme")).toBeVisible();
+    expect(document.querySelector('[data-tour="org-voice"]')).toBeVisible();
+  });
+
+  it("follows a query change without remounting the page", async () => {
+    serve("viewer");
+    const rerender = await mount();
+    await screen.findByText("peer@acme.test");
+    query.mockImplementation(() => new URLSearchParams("tab=profile"));
+    rerender();
+    expect(screen.getByRole("tab", { name: "Workspace" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByDisplayValue("Acme")).toBeVisible();
+  });
+
+  it("shows the settings sections only with their matching grants", async () => {
+    serve("owner", [
+      { permission: Perm.orgSettings, scope: "all" },
+      { permission: Perm.budgetsManage, scope: "all" },
+      { permission: Perm.approvalsDecide, scope: "all" },
+    ]);
+    await mount();
+    await waitFor(() =>
+      expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual([
+        "Members",
+        "Workspace",
+        "Budget and approvals",
+        "Proactivity",
+        "AI & services",
+      ]),
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "Proactivity" }));
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Assistant suggestions and monitoring");
+    expect(screen.queryByRole("heading", { name: "Background services" })).not.toBeInTheDocument();
+  });
+
+  it("groups system services with AI and keeps them reachable for a budget manager", async () => {
+    serve("viewer", [{ permission: Perm.budgetsManage, scope: "all" }]);
+    await mount();
+    await userEvent.click(await screen.findByRole("tab", { name: "AI & services" }));
+    expect(await screen.findByRole("region", { name: "Memory maintenance" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "AI Architect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Voice" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Proactivity" }));
+    expect(screen.queryByRole("region", { name: "Memory maintenance" })).not.toBeInTheDocument();
+  });
+
+  it("describes unfinished setup on the matching tabs and cards", async () => {
+    serve(
+      "owner",
+      [
+        { permission: Perm.orgSettings, scope: "all" },
+        { permission: Perm.budgetsManage, scope: "all" },
+      ],
+      {
+        speech_to_text_provider: null,
+        speech_to_text_model: null,
+        speech_to_text_secret_id: null,
+        proactive_enabled: false,
+      },
+    );
+    await mount();
+    const workspace = await screen.findByRole("tab", { name: "Workspace" });
+    await waitFor(() =>
+      expect(workspace).toHaveAccessibleDescription(/Voice has no default provider or model/),
+    );
+    expect(screen.getByRole("tab", { name: "Proactivity" })).toHaveAccessibleDescription(
+      /Nightly suggestions are off/,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "AI & services" })).toHaveAccessibleDescription(
+        /Memory maintenance has no model/,
+      ),
+    );
+    await userEvent.click(workspace);
+    expect(
+      within(screen.getByRole("tabpanel")).getByRole("button", {
+        name: /Voice has no default provider/,
+      }),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "Proactivity" }));
+    expect(
+      within(screen.getByRole("tabpanel")).getByRole("button", {
+        name: /Nightly suggestions are off/,
+      }),
+    ).toBeVisible();
+  });
+
+  it("does not advertise setup controls a viewer cannot use", async () => {
+    serve("viewer", [], {
+      speech_to_text_provider: null,
+      speech_to_text_model: null,
+      speech_to_text_secret_id: null,
+      proactive_enabled: false,
+    });
+    await mount();
+    const tabs = await screen.findByRole("tablist");
+    expect(
+      within(tabs).queryByRole("button", {
+        name: /Voice has|Nightly suggestions|Memory maintenance/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Workspace" })).not.toHaveAttribute("aria-describedby");
+  });
+
+  it.each(["voice", "governance", "proactivity", "assistant", "unknown"])(
+    "falls back to members for unavailable tab %s",
+    async (tab) => {
+      query.mockImplementation(() => new URLSearchParams({ tab }));
+      serve("viewer");
+      await mount();
+      await waitFor(() =>
+        expect(screen.getByRole("tab", { name: "Members" })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        ),
+      );
+      expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual([
+        "Members",
+        "Workspace",
+      ]);
+      expect(await screen.findByText("peer@acme.test")).toBeVisible();
+    },
+  );
 });

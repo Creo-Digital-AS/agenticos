@@ -11,8 +11,6 @@ Every test drives the real services, so what it asserts is what the platform
 does - not what a stub was told to return.
 """
 
-from __future__ import annotations
-
 import copy
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -20,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
@@ -37,6 +35,7 @@ from app.agents.spec import (
     OrgMcpServerRef,
     PersonalMcpServerRef,
     SpecialistSpec,
+    SpeechToTextSpec,
 )
 from app.api import deps
 from app.core.config import settings
@@ -53,6 +52,7 @@ from app.core.vault import VaultScope, unseal
 from app.db.models.agent import Agent, AgentStatus, AgentVersion
 from app.db.models.agent_exposure import AgentExposure
 from app.db.models.agent_run import AgentRun, ApprovalStatus, RunStatus, RunSurface, ToolApproval
+from app.db.models.background_job import BackgroundJob
 from app.db.models.channel_bot import ChannelBot
 from app.db.models.channel_identity import ChannelIdentity
 from app.db.models.channel_session import ChannelSession
@@ -76,12 +76,14 @@ from app.repositories import (
     channel_session_repo,
     conversation_repo,
     credential_repo,
+    deployment_settings_repo,
     ingestion_spend_repo,
     mcp_connection_repo,
     organization_secret_repo,
     rag_document_repo,
 )
 from app.repositories.agent_run import RunFilters
+from app.repositories.rag_document import CollectionScope, IngestionCounts
 from app.schemas.agent_environment import EnvironmentCreate, EnvironmentUpdate
 from app.schemas.api_key import ApiKeyCreate
 from app.schemas.knowledge_base import KnowledgeBaseCreate, KnowledgeBaseUpdate
@@ -116,6 +118,8 @@ from app.services.rag.documents import LiteParseParser
 from app.services.rag_document import RAGDocumentService
 from app.services.sharing import SharingService
 from app.services.skills import SkillService
+from app.worker.jobs import CLEANUP_EXTERNAL_STATE, BasePurge
+from tests.integration._keys import provider_key
 
 pytestmark = pytest.mark.anyio
 
@@ -193,6 +197,7 @@ async def _default_model(db, tenant: Tenant) -> ModelProfile:
         label="Default",
         provider="openai",
         model="gpt-4.1",
+        secret_id=await provider_key(db, tenant.organization.id),
     )
     db.add(profile)
     await db.flush()
@@ -929,6 +934,60 @@ class TestTenantIsolation:
         assert await db.get(KnowledgeBase, rag_estate.other_collection.id) is not None
         assert await db.get(RAGDocument, rag_estate.other_document.id) is not None
 
+    @pytest.mark.security
+    async def test_dropping_a_shared_name_leaves_the_other_organizations_documents(
+        self, db, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        """Two organizations' bases share one collection name (#913); dropping
+        one's collection deletes only that base's documents (#2560).
+
+        The drop deleted every `rag_documents` row under the name, with no
+        base or organization predicate, and queued the other organization's
+        stored files for unlinking with its own. The shared table stays for
+        the base that still holds the name; the dropped base's chunks in it
+        are handed to the cleanup by the base's id instead.
+        """
+        home, other = rag_estate.home, rag_estate.other
+        ours_kb = await _kb_row(db, tenant=home, collection_name="shared_name")
+        theirs_kb = await _kb_row(db, tenant=other, collection_name="shared_name")
+        documents = {}
+        for tenant, kb in ((home, ours_kb), (other, theirs_kb)):
+            doc = RAGDocument(
+                id=uuid.uuid4(),
+                organization_id=tenant.organization.id,
+                knowledge_base_id=kb.id,
+                collection_name="shared_name",
+                filename=f"{kb.id}.txt",
+                filesize=12,
+                filetype="txt",
+                status=DocumentStatus.DONE,
+                storage_path=f"rag/shared_name/{kb.id}.txt",
+                vector_document_id=str(uuid.uuid4()),
+            )
+            db.add(doc)
+            documents[kb.id] = doc.id
+        await db.flush()
+
+        response = await rag_api(home.ctx).delete(_rag("/collections/shared_name"))
+
+        assert response.status_code == 204
+        db.expunge_all()
+        assert await db.get(RAGDocument, documents[ours_kb.id]) is None
+        assert await db.get(KnowledgeBase, ours_kb.id) is None
+        assert await db.get(RAGDocument, documents[theirs_kb.id]) is not None
+        assert await db.get(KnowledgeBase, theirs_kb.id) is not None
+        jobs = (
+            await db.execute(
+                select(BackgroundJob).where(BackgroundJob.kind == CLEANUP_EXTERNAL_STATE.kind)
+            )
+        ).scalars()
+        [cleanup] = [CLEANUP_EXTERNAL_STATE.load(job.payload) for job in jobs]
+        assert cleanup.storage_paths == [f"rag/shared_name/{ours_kb.id}.txt"]
+        assert cleanup.collections == []
+        assert cleanup.base_purges == [
+            BasePurge(collection="shared_name", knowledge_base_id=ours_kb.id)
+        ]
+
     async def test_a_search_naming_one_unreachable_collection_is_refused_entirely(
         self, rag_api: RagClient, rag_estate: RagEstate
     ) -> None:
@@ -1315,6 +1374,199 @@ class TestReadingOneSyncSourcesHistory:
         assert body["total"] == 3
 
 
+class TestSyncSourcesStayWithTheirAudience:
+    """A source's settings and runs reach only who may see or change its base (#2745).
+
+    Three routes authorized less than they returned or changed: the wizard's
+    integration listing answered every reader of one base with every source of
+    the organization, an app-scoped base - read by every member of every
+    organization - reached other organizations' sources and runs, and the
+    `/rag` routes changed a source without asking about the base it feeds.
+    """
+
+    @pytest.mark.security
+    async def test_the_wizard_lists_the_organizations_integrations_only_to_their_managers(
+        self, db, kb_api: KbClient, rag_estate: RagEstate
+    ) -> None:
+        # A base every member of the organization reads, so a refusal is the gate's.
+        wiki = await _kb_row(db, tenant=rag_estate.home, collection_name="home_wiki")
+        url = f"{settings.API_V1_STR}/kb/{wiki.id}/sync-sources/org-integrations"
+        viewer = await _joined_tenant(db, rag_estate.home, OrgRoleName.VIEWER)
+        # An edit grant on the base whose source would be listed: a grant widens
+        # access to that base, not to the organization's integrations.
+        grantee = await _joined_tenant(db, rag_estate.home, OrgRoleName.MEMBER)
+        await SharingService(db).share(
+            rag_estate.home.ctx,
+            rag_estate.home_collection,
+            resource_type=COLLECTION,
+            subject_user_id=grantee.user.id,
+            level=GrantLevel.EDIT,
+        )
+        builder = await _joined_tenant(db, rag_estate.home, OrgRoleName.BUILDER)
+
+        assert (await kb_api(viewer).get(url)).status_code == 403
+        assert (await kb_api(grantee).get(url)).status_code == 403
+        for manager in (rag_estate.home, builder):
+            response = await kb_api(manager).get(url)
+            assert response.status_code == 200
+            assert [item["id"] for item in response.json()["items"]] == [
+                str(rag_estate.home_source.id)
+            ]
+
+    @pytest.mark.security
+    async def test_the_rag_source_listing_is_the_whole_list_only_for_a_manager(
+        self, db, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        """`GET /rag/sync/sources` served the same rows as the wizard's listing to
+        `collections:view`; without `connections:manage` it now lists the sources
+        of bases the caller reads - not another member's personal base, nor a
+        template."""
+        personal = await _sync_source_row(
+            db, tenant=rag_estate.home, collection_name=rag_estate.home_private.collection_name
+        )
+        template = SyncSource(
+            id=uuid.uuid4(),
+            organization_id=rag_estate.home.organization.id,
+            name="Drive",
+            connector_type="gdrive",
+            collection_name=None,
+            config={"folder_id": "abc"},
+        )
+        db.add(template)
+        await db.flush()
+        viewer = await _join(db, rag_estate.home, OrgRoleName.VIEWER)
+
+        def ids(response: Response) -> set[str]:
+            assert response.status_code == 200
+            return {item["id"] for item in response.json()["items"]}
+
+        listed = _rag("/sync/sources")
+        for reader in (viewer, rag_estate.home_member):
+            assert ids(await rag_api(reader).get(listed)) == {str(rag_estate.home_source.id)}
+        assert ids(await rag_api(rag_estate.home.ctx).get(listed)) == {
+            str(rag_estate.home_source.id),
+            str(personal.id),
+            str(template.id),
+        }
+        refused = await rag_api(viewer).get(f"{listed}?collection_name=home_notes")
+        assert refused.status_code == 404
+
+    @pytest.mark.security
+    async def test_an_app_base_shows_another_organizations_runs_only_to_a_platform_admin(
+        self, db, kb_api: KbClient, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        """The other organization has no base of the name, so its source feeds the
+        app base every organization reads - and its runs are still its own."""
+        app_kb = KnowledgeBase(
+            id=uuid.uuid4(),
+            name="Shared handbook",
+            collection_name="shared_handbook",
+            scope=KBScope.APP.value,
+            organization_id=None,
+            visibility=Visibility.PRIVATE.value,
+            ingestion_config=deployment_defaults().model_dump(mode="json"),
+            embedding_model=_BUILT_WITH,
+            embedding_dim=_BUILT_WIDTH,
+        )
+        db.add(app_kb)
+        await db.flush()
+        theirs = await _sync_source_row(
+            db, tenant=rag_estate.other, collection_name=app_kb.collection_name
+        )
+        run = await _sync_log_row(
+            db, collection_name=app_kb.collection_name, sync_source_id=theirs.id
+        )
+        logs_url = f"{settings.API_V1_STR}/kb/{app_kb.id}/sync-sources/{theirs.id}/logs"
+        admin_user = await _new_user(db)
+        admin = Tenant(
+            organization=rag_estate.home.organization,
+            user=admin_user,
+            ctx=AuthContext(
+                user_id=admin_user.id,
+                organization_id=rag_estate.home.organization.id,
+                role=OrgRoleName.MEMBER.value,
+                is_app_admin=True,
+            ),
+        )
+
+        assert (await kb_api(rag_estate.home).get(logs_url)).status_code == 404
+        listed = await rag_api(rag_estate.home.ctx).get(
+            _rag("/sync/logs?collection_name=shared_handbook")
+        )
+        assert listed.status_code == 200
+        assert listed.json()["items"] == []
+
+        response = await kb_api(admin).get(logs_url)
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["items"]] == [str(run.id)]
+
+    @pytest.mark.security
+    async def test_a_source_is_changed_only_by_a_writer_of_the_base_it_feeds(
+        self, db, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        """A member holds `collections:edit` for their own bases, not the
+        organization's - so detaching, reconfiguring, running or deleting that
+        base's source through `/rag` is refused as if it did not exist."""
+        member = rag_estate.home_member
+        url = _rag(f"/sync/sources/{rag_estate.home_source.id}")
+
+        responses = [
+            await rag_api(member).patch(url, json={"collection_name": None}),
+            await rag_api(member).patch(url, json={"config": {"folder_id": "elsewhere"}}),
+            await rag_api(member).patch(url, json={"schedule_minutes": 5}),
+            await rag_api(member).post(f"{url}/trigger"),
+            await rag_api(member).delete(url),
+        ]
+
+        assert [response.status_code for response in responses] == [404] * 5
+        await db.refresh(rag_estate.home_source)
+        assert rag_estate.home_source.collection_name == "home_handbook"
+        assert rag_estate.home_source.config == {"folder_id": "abc"}
+        assert rag_estate.home_source.schedule_minutes is None
+
+    @pytest.mark.security
+    async def test_an_edit_grant_on_the_base_lets_a_member_change_its_source(
+        self, db, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        member = rag_estate.home_member
+        await SharingService(db).share(
+            rag_estate.home.ctx,
+            rag_estate.home_collection,
+            resource_type=COLLECTION,
+            subject_user_id=member.user_id,
+            level=GrantLevel.EDIT,
+        )
+        url = _rag(f"/sync/sources/{rag_estate.home_source.id}")
+
+        renamed = await rag_api(member).patch(url, json={"name": "Renamed"})
+        removed = await rag_api(member).delete(url)
+
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "Renamed"
+        assert removed.status_code == 204
+        assert await db.get(SyncSource, rag_estate.home_source.id) is None
+
+    async def test_an_unassigned_template_takes_only_the_organization(
+        self, db, rag_api: RagClient, rag_estate: RagEstate
+    ) -> None:
+        template = SyncSource(
+            id=uuid.uuid4(),
+            organization_id=rag_estate.home.organization.id,
+            name="Drive",
+            connector_type="gdrive",
+            collection_name=None,
+            config={"folder_id": "abc"},
+        )
+        db.add(template)
+        await db.flush()
+
+        response = await rag_api(rag_estate.home_member).patch(
+            _rag(f"/sync/sources/{template.id}"), json={"name": "Renamed"}
+        )
+
+        assert response.status_code == 200
+
+
 # -- how a collection reads its documents -------------------------------------
 
 
@@ -1335,11 +1587,12 @@ class _AcceptingStore:
 
 @pytest.fixture
 def uploads(tmp_path, monkeypatch):
-    """Accept uploads without writing files or starting a parse.
+    """Accept uploads without writing files to permanent storage.
 
-    Storage and task dispatch are stubbed; everything that decides *how* a
-    document will be read is real, because that is what is under test. The
-    queued call is captured so a test can assert an upload was accepted at all.
+    Storage is stubbed; everything that decides *how* a document will be read is
+    real, because that is what is under test - and so is the parse job, queued
+    on the test's session like any other row. Its kind is recorded so a test can
+    assert an upload was accepted at all.
     """
     monkeypatch.setattr(settings, "MEDIA_DIR", str(tmp_path))
     storage = MagicMock()
@@ -1351,18 +1604,15 @@ def uploads(tmp_path, monkeypatch):
         lambda: storage,
     )
 
-    def capture(session, coroutine, *, name: str) -> None:
-        """Record the dispatch and close what would have parsed the file.
+    from app.services import rag_document
 
-        It patches `spawn_after_commit` rather than `spawn` because that is what
-        the upload path now hands the flow to (#417), and these tests run
-        against a real session: left queued, the flow would start for real when
-        the session committed.
-        """
-        coroutine.close()
-        queued.append(name)
+    real_enqueue = rag_document.enqueue
 
-    monkeypatch.setattr("app.core.background.spawn_after_commit", capture)
+    async def capture(db, task, payload, **options):
+        queued.append(task.kind)
+        return await real_enqueue(db, task, payload, **options)
+
+    monkeypatch.setattr(rag_document, "enqueue", capture)
     return queued
 
 
@@ -1771,10 +2021,10 @@ class TestTheEmbeddingModelACollectionWasBuiltWith:
 
 
 class TestWhatACollectionReportsItHolds:
-    """The counts a picker shows, against a real `GROUP BY`.
+    """The counts a picker shows, against a real aggregate.
 
-    Aggregation is the half a mock cannot check: whether the grouping keys on
-    the right column, whether the `FILTER` clause counts what it claims, and
+    Aggregation is the half a mock cannot check: whether each base counts its
+    own rows, whether the `FILTER` clause counts what it claims, and
     whether a collection with nothing in it comes back absent rather than zero.
     """
 
@@ -1784,26 +2034,30 @@ class TestWhatACollectionReportsItHolds:
         busy = await _collection_with(db, tenant, name="busy", config=IngestionConfig())
         quiet = await _collection_with(db, tenant, name="quiet", config=IngestionConfig())
         for index in range(3):
-            await _rag_document(db, collection_name=busy.collection_name, filename=f"{index}.txt")
-        await _rag_document(db, collection_name=quiet.collection_name, filename="only.txt")
-
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[busy.collection_name, quiet.collection_name]
+            await _rag_document(
+                db, collection_name=busy.collection_name, filename=f"{index}.txt", tenant=tenant
+            )
+        await _rag_document(
+            db, collection_name=quiet.collection_name, filename="only.txt", tenant=tenant
         )
 
-        assert counts[busy.collection_name].documents == 3
-        assert counts[quiet.collection_name].documents == 1
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(busy), CollectionScope.of(quiet)]
+        )
+
+        assert counts[busy.id].documents == 3
+        assert counts[quiet.id].documents == 1
 
     async def test_a_collection_nothing_was_uploaded_to_is_absent_not_zero(self, db) -> None:
         """No row to group means no key, which is what the route defaults."""
         tenant = await _tenant(db, name="Empty")
         collection = await _collection_with(db, tenant, name="empty", config=IngestionConfig())
 
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[collection.collection_name]
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(collection)]
         )
 
-        assert collection.collection_name not in counts
+        assert collection.id not in counts
 
     async def test_only_finished_documents_count_as_indexed(self, db) -> None:
         """A failed upload stays in `documents` and drops out of `indexed`.
@@ -1821,30 +2075,152 @@ class TestWhatACollectionReportsItHolds:
         tenant = await _tenant(db, name="Partial")
         collection = await _collection_with(db, tenant, name="partial", config=IngestionConfig())
         done = await _rag_document(
-            db, collection_name=collection.collection_name, filename="ok.txt"
+            db, collection_name=collection.collection_name, filename="ok.txt", tenant=tenant
         )
         done.status = DocumentStatus.DONE
         done.chunk_count = 7
         broken = await _rag_document(
-            db, collection_name=collection.collection_name, filename="dead.txt"
+            db, collection_name=collection.collection_name, filename="dead.txt", tenant=tenant
         )
         broken.status = DocumentStatus.ERROR
         broken.chunk_count = 0
         await db.flush()
 
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[collection.collection_name]
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(collection)]
         )
 
-        assert counts[collection.collection_name].documents == 2
-        assert counts[collection.collection_name].indexed == 1
-        assert counts[collection.collection_name].chunks == 7
+        assert counts[collection.id].documents == 2
+        assert counts[collection.id].indexed == 1
+        assert counts[collection.id].chunks == 7
+
+    async def test_ingestion_counts_report_each_status_and_hold_indexing_on_processing(
+        self, db
+    ) -> None:
+        """What `GET /rag/collections/{name}/info` reads to say `indexing` (#2486).
+
+        One aggregate with a `FILTER` per status - checked here because a mock
+        cannot say whether a filter counts the value the pipeline writes.
+        """
+        tenant = await _tenant(db, name="Ingesting")
+        collection = await _collection_with(db, tenant, name="ingesting", config=IngestionConfig())
+        for status, count in (
+            (DocumentStatus.PROCESSING, 3),
+            (DocumentStatus.DONE, 2),
+            (DocumentStatus.ERROR, 1),
+        ):
+            for index in range(count):
+                doc = await _rag_document(
+                    db,
+                    collection_name=collection.collection_name,
+                    filename=f"{status}-{index}.txt",
+                    tenant=tenant,
+                )
+                doc.status = status
+        await db.flush()
+
+        counts = await rag_document_repo.ingestion_counts(db, scope=CollectionScope.of(collection))
+
+        assert counts == IngestionCounts(processing=3, indexed=2, failed=1)
+
+    @pytest.mark.security
+    async def test_ingestion_counts_do_not_include_another_tenants_same_named_collection(
+        self, db
+    ) -> None:
+        """A shared name must not hold one tenant's collection at `indexing`.
+
+        Two organizations can pick the same collection name. The other tenant's
+        upload still processing is theirs; counted here it would report this
+        collection as indexing for as long as theirs takes.
+        """
+        ours = await _tenant(db, name="Ours")
+        theirs = await _tenant(db, name="Theirs")
+        await _rag_document(db, collection_name="shared_name", filename="ours.txt", tenant=ours)
+        busy = await _rag_document(
+            db, collection_name="shared_name", filename="theirs.txt", tenant=theirs
+        )
+        busy.status = DocumentStatus.PROCESSING
+        ours_kb = await _kb_row(db, tenant=ours, collection_name="shared_name")
+        await db.flush()
+
+        mine = await rag_document_repo.ingestion_counts(db, scope=CollectionScope.of(ours_kb))
+
+        assert mine == IngestionCounts(processing=0, indexed=1, failed=0)
+
+    @pytest.mark.security
+    async def test_ingestion_counts_keep_an_app_base_and_a_same_named_tenant_base_apart(
+        self, db
+    ) -> None:
+        """An app-scoped base and a tenant base sharing a name count only their own rows.
+
+        An app base has no organization, and its rows carry whichever one
+        uploaded into it - so neither "no organization condition" nor the
+        uploader's organization says whose a row is. The vectors are split by
+        tag (`NULL` for the app base, the organization for the tenant's), and
+        the counts follow the same split, in both directions.
+        """
+        tenant = await _tenant(db, name="Beside")
+        uploader = await _tenant(db, name="Uploader")
+        theirs = await _kb_row(db, tenant=tenant, collection_name="app_and_tenant")
+        app_kb = await _kb_row(
+            db, tenant=tenant, collection_name="app_and_tenant", scope=KBScope.APP
+        )
+        app_kb.organization_id = None
+        # The tenant's own batch, still processing.
+        busy = await _rag_document(
+            db, collection_name="app_and_tenant", filename="tenant.txt", tenant=tenant
+        )
+        busy.knowledge_base_id = theirs.id
+        busy.status = DocumentStatus.PROCESSING
+        # Uploads into the app base, stamped with their uploaders' organizations -
+        # one of them the tenant's own - and a deployment-wide sync's untagged row.
+        for who, status in (
+            (uploader, DocumentStatus.DONE),
+            (tenant, DocumentStatus.ERROR),
+            (None, DocumentStatus.DONE),
+        ):
+            doc = await _rag_document(
+                db, collection_name="app_and_tenant", filename=f"app-{status}.txt", tenant=who
+            )
+            doc.knowledge_base_id = app_kb.id if who is not None else None
+            doc.writer_kind = "document" if who is not None else "operator"
+            doc.status = status
+        await db.flush()
+
+        app_wide = await rag_document_repo.ingestion_counts(db, scope=CollectionScope.of(app_kb))
+        tenants = await rag_document_repo.ingestion_counts(db, scope=CollectionScope.of(theirs))
+
+        assert app_wide == IngestionCounts(processing=0, indexed=2, failed=1)
+        assert tenants == IngestionCounts(processing=1, indexed=0, failed=0)
+
+    async def test_a_knowledge_bases_ingestion_counts_only_its_own_documents(self, db) -> None:
+        """What `GET /kb/{kb_id}/ingestion` reads - the rows its page lists.
+
+        Counted by the base, not by the collection its rows are filed under: a
+        batch still processing in another base's rows in the same collection
+        must not hold this base's page at `indexing`.
+        """
+        tenant = await _tenant(db, name="Siblings")
+        ours = await _collection_with(db, tenant, name="ours_kb")
+        theirs = await _collection_with(db, tenant, name="theirs_kb")
+        # Both rows in one collection, as two bases sharing its name file them.
+        for kb, status in ((ours, DocumentStatus.DONE), (theirs, DocumentStatus.PROCESSING)):
+            doc = await _rag_document(
+                db, collection_name="shared_kb", filename=f"{kb.id}.txt", tenant=tenant
+            )
+            doc.knowledge_base_id = kb.id
+            doc.status = status
+        await db.flush()
+
+        counts = await rag_document_repo.ingestion_counts_for_kb(db, ours.id)
+
+        assert counts == IngestionCounts(processing=0, indexed=1, failed=0)
 
     async def test_the_pipeline_marking_a_document_done_makes_it_count_as_indexed(self, db) -> None:
         """The writer and the reader, in one test, with no status written by hand.
 
         `complete_ingestion` is the only thing that finishes a document, and
-        `counts_by_collection` is what the listing reads - so a filter on a
+        `counts_by_scope` is what the listing reads - so a filter on a
         value the pipeline does not write can only be caught by running both.
         Nothing here names a status literal, which is the point: the two agree
         or this fails.
@@ -1852,7 +2228,7 @@ class TestWhatACollectionReportsItHolds:
         tenant = await _tenant(db, name="Finished")
         collection = await _collection_with(db, tenant, name="finished", config=IngestionConfig())
         doc = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         doc.status = DocumentStatus.PROCESSING
         await db.flush()
@@ -1865,13 +2241,13 @@ class TestWhatACollectionReportsItHolds:
             attempt=1,
         )
 
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[collection.collection_name]
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(collection)]
         )
 
-        assert counts[collection.collection_name].documents == 1
-        assert counts[collection.collection_name].indexed == 1
-        assert counts[collection.collection_name].chunks == 4
+        assert counts[collection.id].documents == 1
+        assert counts[collection.id].indexed == 1
+        assert counts[collection.id].chunks == 4
 
     async def test_a_settlement_for_an_attempt_a_retry_already_superseded_is_ignored(
         self, db
@@ -1883,7 +2259,7 @@ class TestWhatACollectionReportsItHolds:
         tenant = await _tenant(db, name="Superseded")
         collection = await _collection_with(db, tenant, name="superseded", config=IngestionConfig())
         doc = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         doc.status = DocumentStatus.PROCESSING
         doc.ingestion_attempt = 2
@@ -1918,7 +2294,7 @@ class TestWhatACollectionReportsItHolds:
             db, tenant, name="notify_quiet", config=IngestionConfig()
         )
         doc = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         doc.status = DocumentStatus.PROCESSING
         await db.flush()
@@ -1975,7 +2351,7 @@ class TestWhatACollectionReportsItHolds:
             db, tenant, name="notify_fails_failure", config=IngestionConfig()
         )
         doc = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         doc.status = DocumentStatus.PROCESSING
         await db.flush()
@@ -2007,11 +2383,11 @@ class TestWhatACollectionReportsItHolds:
         tenant = await _tenant(db, name="Reingested")
         collection = await _collection_with(db, tenant, name="again", config=IngestionConfig())
         first = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         first.chunk_count = 12
         second = await _rag_document(
-            db, collection_name=collection.collection_name, filename="handbook.md"
+            db, collection_name=collection.collection_name, filename="handbook.md", tenant=tenant
         )
         second.chunk_count = 12
         await db.flush()
@@ -2024,24 +2400,20 @@ class TestWhatACollectionReportsItHolds:
             attempt=1,
         )
 
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[collection.collection_name]
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(collection)]
         )
 
-        assert counts[collection.collection_name].documents == 1
-        assert counts[collection.collection_name].chunks == 12
+        assert counts[collection.id].documents == 1
+        assert counts[collection.id].chunks == 12
         assert await rag_document_repo.get_by_id(db, first.id) is None
 
     @pytest.mark.security
     async def test_another_tenants_documents_are_not_counted(self, db) -> None:
-        """The counts are keyed on `collection_name`, and `rag_documents` carries a
-        nullable `organization_id` that a sync task never stamps - so the tenant
-        boundary here is the set of collection names the caller was allowed to see,
-        not a column on the document.
-
-        That makes it worth asserting rather than assuming: a collection name is
-        slug-plus-random and unique in practice, but the query is only ever safe
-        because the caller hands it names `list_accessible` already filtered.
+        """The counts are taken per base the caller hands in - the ones
+        `list_accessible` already filtered - and each base counts only the rows
+        its own scope holds, so a collection the caller cannot see contributes
+        nothing.
         """
         mine = await _tenant(db, name="Mine")
         theirs = await _tenant(db, name="Theirs")
@@ -2049,19 +2421,21 @@ class TestWhatACollectionReportsItHolds:
         their_collection = await _collection_with(
             db, theirs, name="theirs", config=IngestionConfig()
         )
-        await _rag_document(db, collection_name=my_collection.collection_name, filename="a.txt")
+        await _rag_document(
+            db, collection_name=my_collection.collection_name, filename="a.txt", tenant=mine
+        )
         for index in range(5):
             await _rag_document(
                 db, collection_name=their_collection.collection_name, filename=f"{index}.txt"
             )
 
         # What the route does: count only over the names this caller may read.
-        counts = await rag_document_repo.counts_by_collection(
-            db, collections=[my_collection.collection_name]
+        counts = await rag_document_repo.counts_by_scope(
+            db, scopes=[CollectionScope.of(my_collection)]
         )
 
-        assert counts[my_collection.collection_name].documents == 1
-        assert their_collection.collection_name not in counts
+        assert counts[my_collection.id].documents == 1
+        assert their_collection.id not in counts
 
 
 # -- publish, run, approve ----------------------------------------------------
@@ -2112,7 +2486,7 @@ class TestPublishAndRollback:
         # starting prompt a new agent is created with, not the rewrite that only
         # ever reached the draft.
         assert stored.spec["instructions"] != "rewritten"
-        assert stored.spec["instructions"].startswith("You are a helpful assistant.")
+        assert stored.spec["instructions"].startswith("You are {{agent_name}}")
 
     async def test_rolling_back_writes_a_new_version_instead_of_moving_the_pointer(
         self, db
@@ -2625,9 +2999,11 @@ class TestBindingAnMcpServerToAnAgent:
         )
         seen: list[list[tuple[str, str]]] = []
 
-        async def fake_build(specs) -> list[tuple[Any, None]]:
+        # Answering: a server that did not would be briefed as unreachable, and
+        # the question here is only which connection the lookup found.
+        async def fake_build(specs) -> list[tuple[Any, str]]:
             seen.append([(spec.name, spec.url) for spec in specs])
-            return [(spec, None) for spec in specs]
+            return [(spec, spec.name) for spec in specs]
 
         monkeypatch.setattr("app.services.mcp_connection.probe_toolsets", fake_build)
 
@@ -2822,6 +3198,54 @@ class TestDecidingAnApproval:
             await approvals.decide(tenant.ctx, approval.id, approved=True)
 
         assert (await db.get(ToolApproval, approval.id)).status == ApprovalStatus.REJECTED.value
+
+    async def test_the_names_a_call_was_asked_with_are_kept_on_its_row(self, db) -> None:
+        """The queue reads what the describer resolved at park time, beside the arguments."""
+        tenant = await _tenant(db, name="Named")
+        agent = await _agent_row(
+            db,
+            organization_id=tenant.organization.id,
+            owner_user_id=tenant.user.id,
+            slug="support",
+        )
+        run = await _run_row(
+            db,
+            organization_id=tenant.organization.id,
+            agent_id=agent.id,
+            cost=Decimal("0"),
+            started_at=datetime.now(UTC),
+        )
+        approvals = ApprovalService(db)
+        table_id = str(uuid.uuid4())
+        named = await approvals.request(
+            approval_id=uuid.uuid4(),
+            organization_id=tenant.organization.id,
+            run_id=run.id,
+            agent_id=agent.id,
+            tool_id="change_ticket",
+            tool_args={"table_id": table_id},
+            capability_tool_id="update_record",
+            context={"table": "Support"},
+        )
+        await approvals.request(
+            approval_id=uuid.uuid4(),
+            organization_id=tenant.organization.id,
+            run_id=run.id,
+            agent_id=agent.id,
+            tool_id="send_email",
+            tool_args={},
+        )
+
+        queue, _total = await approvals.list_approvals(tenant.ctx)
+
+        assert {row.tool_id: (row.capability_tool_id, row.context) for row in queue} == {
+            # Renamed by its binding, so the queue words it by the stable id.
+            "change_ticket": ("update_record", {"table": "Support"}),
+            "send_email": (None, None),
+        }
+        stored = await db.get(ToolApproval, named.id)
+        assert stored.tool_args == {"table_id": table_id}
+        assert stored.capability_tool_id == "update_record"
 
 
 # -- money --------------------------------------------------------------------
@@ -3251,6 +3675,113 @@ class TestAnAgentsOwnMonthlyCap:
         assert refused.value.scope is BudgetScope.ORGANIZATION
 
 
+class TestTheCurrentVersionSetsTheAgentsCap:
+    """A pinned version decides how the agent behaves, not what it may spend.
+
+    `docs/governance.md`: a version pin keeps its behaviour while "current
+    access, budgets and approvals still apply". The cap used to come from the
+    version being run, so a routine, an environment or a workflow step pinned to
+    a version published before the limit spent past it.
+    """
+
+    @staticmethod
+    async def _two_versions(
+        db, tenant: Tenant, *, first: AgentSpec, second: AgentSpec, spent: Decimal
+    ) -> tuple[Agent, uuid.UUID]:
+        """An agent whose v1 is `first` and current v2 is `second`, with `spent` booked."""
+        profile = await _keyed_model_profile(db, tenant)
+        agent = await _published_agent(db, tenant, spec=first)
+        assert agent.current_version_id is not None
+        pinned = agent.current_version_id
+        registry = AgentRegistryService(db)
+        await registry.save_draft(
+            tenant.ctx, agent.id, second.model_copy(update={"model_profile_id": profile.id})
+        )
+        await registry.publish(tenant.ctx, agent.id)
+        await db.refresh(agent)
+        assert agent.current_version_id != pinned
+        await _run_row(
+            db,
+            organization_id=tenant.organization.id,
+            agent_id=agent.id,
+            cost=spent,
+            started_at=datetime.now(UTC),
+        )
+        await db.commit()
+        return agent, pinned
+
+    async def test_a_run_pinned_to_an_older_version_is_held_to_the_current_cap(self, db) -> None:
+        tenant = await _tenant(db, name="Pinned")
+        agent, v1 = await self._two_versions(
+            db,
+            tenant,
+            first=AgentSpec(name="Support"),
+            second=AgentSpec(name="Support", budget={"monthly_usd": 5}),
+            spent=Decimal("6"),
+        )
+
+        prepared = await AgentRunnerService(db).prepare(tenant.ctx, agent.id, version_id=v1)
+
+        with pytest.raises(BudgetExceeded) as refused:
+            await _answer(prepared)
+
+        assert refused.value.scope is BudgetScope.AGENT
+        assert refused.value.limit_usd == Decimal("5")
+        assert refused.value.spent_usd == Decimal("6")
+
+    async def test_an_environment_on_an_older_version_is_held_to_the_current_cap(self, db) -> None:
+        tenant = await _tenant(db, name="Staged")
+        agent, v1 = await self._two_versions(
+            db,
+            tenant,
+            first=AgentSpec(name="Support"),
+            second=AgentSpec(name="Support", budget={"monthly_usd": 5}),
+            spent=Decimal("6"),
+        )
+        staging = await AgentEnvironmentService(db).create(
+            tenant.ctx, agent.id, EnvironmentCreate(name="staging", version_id=v1)
+        )
+        await db.commit()
+
+        prepared = await AgentRunnerService(db).prepare(
+            tenant.ctx, agent.id, environment_id=staging.id
+        )
+
+        with pytest.raises(BudgetExceeded) as refused:
+            await _answer(prepared)
+
+        assert refused.value.scope is BudgetScope.AGENT
+        assert refused.value.limit_usd == Decimal("5")
+
+    async def test_a_cap_the_current_version_dropped_no_longer_binds_an_older_one(self, db) -> None:
+        tenant = await _tenant(db, name="Lifted")
+        agent, v1 = await self._two_versions(
+            db,
+            tenant,
+            first=AgentSpec(name="Support", budget={"monthly_usd": 5}),
+            second=AgentSpec(name="Support"),
+            spent=Decimal("6"),
+        )
+
+        prepared = await AgentRunnerService(db).prepare(tenant.ctx, agent.id, version_id=v1)
+
+        assert await _answer(prepared) == "thirty days"
+
+    async def test_a_pinned_run_under_the_current_cap_answers(self, db) -> None:
+        tenant = await _tenant(db, name="Roomy")
+        agent, v1 = await self._two_versions(
+            db,
+            tenant,
+            first=AgentSpec(name="Support", budget={"monthly_usd": 5}),
+            second=AgentSpec(name="Support", budget={"monthly_usd": 50}),
+            spent=Decimal("6"),
+        )
+
+        prepared = await AgentRunnerService(db).prepare(tenant.ctx, agent.id, version_id=v1)
+
+        assert await _answer(prepared) == "thirty days"
+
+
 # -- grants -------------------------------------------------------------------
 
 
@@ -3395,6 +3926,244 @@ class TestGrantWidenedAccess:
                 subject_user_id=outsider.id,
                 level=GrantLevel.READ,
             )
+
+
+class TestDictationReachesOnlyAgentsTheCallerMayRun:
+    """`POST /agents/{id}/dictation` asks the registry for run access (#1797).
+
+    Against real grant rows, because the route test stubs the registry: what is
+    proven here is that a Viewer's `use` grant is what opens the door, and that
+    nothing short of it - no grant, another organization's agent - reaches the
+    paid engine. The engine itself is stubbed; it is not what is under test.
+    """
+
+    @pytest.fixture
+    async def dictate(self, db) -> AsyncIterator[tuple[Callable[[AuthContext], AsyncClient], Any]]:
+        async def unmetered() -> None:
+            return None
+
+        app.dependency_overrides[deps.get_db_session] = lambda: db
+        app.dependency_overrides[deps.limit_dictation] = unmetered
+        engine = AsyncMock(return_value="ok")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+
+            def as_caller(ctx: AuthContext) -> AsyncClient:
+                app.dependency_overrides[deps.get_auth_context] = lambda: ctx
+                return client
+
+            with patch("app.services.ml.facade.MLService.dictate", new=engine):
+                yield as_caller, engine
+        app.dependency_overrides.clear()
+
+    @staticmethod
+    def _post(client: AsyncClient, agent_id: uuid.UUID) -> Any:
+        return client.post(
+            f"{settings.API_V1_STR}/agents/{agent_id}/dictation",
+            files={"file": ("blob", b"audio", "audio/webm")},
+        )
+
+    async def test_a_viewer_without_a_grant_is_refused_and_nothing_is_transcribed(
+        self, db, dictate
+    ) -> None:
+        as_caller, engine = dictate
+        tenant = await _tenant(db, name="Quiet")
+        viewer = await _join(db, tenant, OrgRoleName.VIEWER)
+        agent = await _agent_row(
+            db, organization_id=tenant.organization.id, owner_user_id=tenant.user.id, slug="support"
+        )
+
+        response = await self._post(as_caller(viewer), agent.id)
+
+        assert response.status_code == 404
+        engine.assert_not_awaited()
+
+    async def test_a_viewer_with_a_use_grant_may_dictate(self, db, dictate) -> None:
+        as_caller, engine = dictate
+        tenant = await _tenant(db, name="Spoken")
+        viewer = await _join(db, tenant, OrgRoleName.VIEWER)
+        agent = await _agent_row(
+            db, organization_id=tenant.organization.id, owner_user_id=tenant.user.id, slug="support"
+        )
+        await SharingService(db).share(
+            tenant.ctx,
+            agent,
+            resource_type=AGENT,
+            subject_user_id=viewer.user_id,
+            level=GrantLevel.USE,
+        )
+
+        response = await self._post(as_caller(viewer), agent.id)
+
+        assert response.status_code == 200
+        assert response.json() == {"text": "ok"}
+
+    async def test_a_read_grant_is_not_enough(self, db, dictate) -> None:
+        """Seeing an agent's configuration is not talking to it."""
+        as_caller, engine = dictate
+        tenant = await _tenant(db, name="Looker")
+        viewer = await _join(db, tenant, OrgRoleName.VIEWER)
+        agent = await _agent_row(
+            db, organization_id=tenant.organization.id, owner_user_id=tenant.user.id, slug="support"
+        )
+        await SharingService(db).share(
+            tenant.ctx,
+            agent,
+            resource_type=AGENT,
+            subject_user_id=viewer.user_id,
+            level=GrantLevel.READ,
+        )
+
+        response = await self._post(as_caller(viewer), agent.id)
+
+        assert response.status_code == 404
+        engine.assert_not_awaited()
+
+    @pytest.mark.security
+    async def test_another_organizations_agent_is_not_found(self, db, dictate) -> None:
+        """Even to that organization's peer - an owner here is a stranger there."""
+        as_caller, engine = dictate
+        ours = await _tenant(db, name="Ours")
+        theirs = await _tenant(db, name="Theirs")
+        agent = await _agent_row(
+            db, organization_id=theirs.organization.id, owner_user_id=theirs.user.id, slug="support"
+        )
+
+        response = await self._post(as_caller(ours.ctx), agent.id)
+
+        assert response.status_code == 404
+        engine.assert_not_awaited()
+
+
+class TestDictationReadinessFollowsTheAgent:
+    """`GET /agents/{id}/dictation` against real rows (#1797).
+
+    Nothing stubbed but the auth context: the grant decides who may ask, the
+    agent's *published* override decides the provider, and the key named beside
+    it is what makes it ready. This is the agent
+    override making server dictation work in an organization with no provider
+    of its own.
+    """
+
+    @pytest.fixture
+    async def as_caller(self, db) -> AsyncIterator[Callable[[AuthContext], AsyncClient]]:
+        app.dependency_overrides[deps.get_db_session] = lambda: db
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+
+            def bind(ctx: AuthContext) -> AsyncClient:
+                app.dependency_overrides[deps.get_auth_context] = lambda: ctx
+                return client
+
+            yield bind
+        app.dependency_overrides.clear()
+
+    async def _set_up(
+        self, db, name: str, *, visibility: Visibility = Visibility.ORG
+    ) -> tuple[Tenant, Agent, uuid.UUID]:
+        """An organization with no provider of its own, and an agent publishing
+        a Groq override with a Groq key named beside it and its Dictation switch on."""
+        tenant = await _tenant(db, name=name)
+        await _default_model(db, tenant)
+        key = await OrganizationSecretService(db).create(
+            tenant.ctx,
+            name="Team Groq",
+            value=ApiKeySecret(api_key="gsk-team-1234"),
+            purpose="groq",
+            visibility=visibility,
+        )
+        agent = await _published_agent(
+            db,
+            tenant,
+            spec=AgentSpec(
+                name="Polish desk",
+                speech_to_text=SpeechToTextSpec(
+                    provider="groq",
+                    model="whisper-large-v3",
+                    language="pl",
+                    secret_id=key.id,
+                    dictation=True,
+                ),
+            ),
+        )
+        return tenant, agent, key.id
+
+    async def test_a_viewer_with_a_use_grant_is_ready_on_the_agents_provider(
+        self, db, as_caller
+    ) -> None:
+        tenant, agent, _ = await self._set_up(db, "Spoken")
+        viewer = await _join(db, tenant, OrgRoleName.VIEWER)
+        await SharingService(db).share(
+            tenant.ctx,
+            agent,
+            resource_type=AGENT,
+            subject_user_id=viewer.user_id,
+            level=GrantLevel.USE,
+        )
+
+        response = await as_caller(viewer).get(f"{settings.API_V1_STR}/agents/{agent.id}/dictation")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "engine": "server",
+            "requested": True,
+            "server_available": True,
+            "unavailable": None,
+            "max_seconds": 300,
+            "provider": "groq",
+            # Raw PCM until the deployment accepts compressed audio.
+            "format": "wav",
+        }
+
+    async def test_a_deployment_accepting_compressed_audio_records_webm_for_groq(
+        self, db, as_caller
+    ) -> None:
+        """The format is the deployment's setting and the catalog's together:
+        Groq takes WebM, so once the deployment accepts it the browser records it."""
+        tenant, agent, _ = await self._set_up(db, "Compressed")
+        await deployment_settings_repo.upsert(db, update_data={"dictation_compressed_audio": True})
+
+        response = await as_caller(tenant.ctx).get(
+            f"{settings.API_V1_STR}/agents/{agent.id}/dictation"
+        )
+
+        assert response.json()["format"] == "webm"
+
+    async def test_a_private_key_its_publisher_lent_makes_the_agent_ready(
+        self, db, as_caller
+    ) -> None:
+        """An agent's key follows the lending rule, not the organization's: the
+        publisher could view it, so the agent may spend it for whoever runs it."""
+        tenant, agent, _ = await self._set_up(db, "Lent", visibility=Visibility.PRIVATE)
+
+        response = await as_caller(tenant.ctx).get(
+            f"{settings.API_V1_STR}/agents/{agent.id}/dictation"
+        )
+
+        assert response.json()["engine"] == "server"
+
+    async def test_a_deleted_key_leaves_the_agent_asking_for_one(self, db, as_caller) -> None:
+        """The spec still names it, but nothing is opened in its place."""
+        tenant, agent, key_id = await self._set_up(db, "Deleted")
+        await OrganizationSecretService(db).delete(tenant.ctx, key_id)
+
+        response = await as_caller(tenant.ctx).get(
+            f"{settings.API_V1_STR}/agents/{agent.id}/dictation"
+        )
+
+        # The browser transcribes meanwhile, and the composer can say why.
+        assert response.json()["engine"] == "browser"
+        assert response.json()["unavailable"] == "no_key"
+        assert response.json()["provider"] == "groq"
+
+    @pytest.mark.security
+    async def test_another_organizations_agent_is_not_found(self, db, as_caller) -> None:
+        ours = await _tenant(db, name="Ours")
+        _, agent, _ = await self._set_up(db, "Theirs")
+
+        response = await as_caller(ours.ctx).get(
+            f"{settings.API_V1_STR}/agents/{agent.id}/dictation"
+        )
+
+        assert response.status_code == 404
 
 
 class TestMentioningAnAgentFromAChannel:

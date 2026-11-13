@@ -1,5 +1,5 @@
 ---
-source_sha: "27fe488f738b"
+source_sha: "1555844ea407"
 ---
 
 # Przetwarzanie plików { #file-processing }
@@ -7,6 +7,12 @@ source_sha: "27fe488f738b"
 Ten dokument opisuje, jak traktowane są pliki w dwóch kontekstach: uploady
 plików w czacie, które należą do osoby, która je zrobiła, oraz ingestia
 dokumentów RAG, która należy do kolekcji i jest uzależniona od tego,
+Usunięcie bazy odłącza i dezaktywuje źródła synchronizacji, których celem była ta baza.
+Zachowują konfigurację konektora, ale przed kolejną synchronizacją wymagają jawnego
+przypisania; inna baza o tej samej nazwie ich nie przejmuje. Czyszczenie domyślnej bazy
+zachowuje jej źródła, bo wiersz celu pozostaje. Ingest z CLI odrzuca nazwę zarezerwowaną
+przez oczekujące usunięcie, dopóki cleanup jej nie zwolni.
+
 [kto może do niej sięgnąć](#who-may-reach-a-collection).
 
 ## Uploady plików w czacie { #chat-file-uploads }
@@ -109,6 +115,7 @@ plik, który może otworzyć, a agent bez niego dostaje tekst w swoim prompcie.
 | **Dokument (OpenDocument)** | …opendocument.text | .odt | Akapity przez `odfpy`. Doklejane do promptu jako kontekst. |
 | **E-mail** | application/vnd.ms-outlook | .msg | Nagłówki i treść czytane ze strumieni OLE/MAPI przez `olefile` (BSD); załączniki osadzone są wypisywane po nazwie, nie wypakowywane rekurencyjnie. Doklejane do promptu jako kontekst. |
 | **Tekst** | text/plain, text/markdown, text/csv, text/html, text/xml, application/xml, application/json | .txt, .md, .csv, .html, .xml, .json | Dekodowany wprost jako UTF-8 (XML wg zadeklarowanego BOM/kodowania). Doklejany do promptu jako kontekst. |
+| **Archiwum** | application/zip, application/x-zip-compressed, application/gzip, application/x-gzip | .zip, .tar.gz, .tgz | Czytane w całości przy przesłaniu i odrzucane, jeśli jest niebezpieczne (zob. [Archiwa](#archives)). Jego tekstem jest lista tego, co zawiera. Rozpakowywane do workspace'u; agent bez workspace'u je odrzuca. |
 
 ### Dokąd trafia załącznik, zależy od agenta { #where-an-attachment-goes-depends-on-the-agent }
 
@@ -127,6 +134,54 @@ plik zamiast tekstu:
 | pdf, docx, spreadsheet, document, presentation, email | sparsowany tekst wklejony inline | zapisany do `uploads/`, z wyciągniętym tekstem obok, chyba że runtime umie go przeczytać (`email` dostaje go zawsze — `lit` nie czyta `.msg`); referencja i 20 pierwszych linii |
 | obraz | `BinaryContent` | `BinaryContent` **oraz** zapis; referencja podaje ścieżkę |
 | tiff | strona(-y) PNG jako `BinaryContent`, z odnotowanym limitem stron | zapisany oryginał `.tiff`; pokazane strony PNG, z odnotowanym limitem stron |
+| archiwum (`.zip`, `.tar.gz`) | odrzucone: model dowiaduje się, że agent nie ma workspace'u, do którego mógłby je rozpakować, i nic z niego nie trafia do promptu | rozpakowane do `uploads/<id>-<nazwa>/`; odwołanie podaje folder i początek drzewa |
+
+### Archiwa { #archives }
+
+`.zip` albo `.tar.gz` to sposób, by dać agentowi repozytorium albo dowolny folder
+plików. Platforma rozpakowuje archiwum na serwerze, zanim agent zacznie działać,
+a nie przekazuje go agentowi do rozpakowania. Przechowywany workspace nie ma
+powłoki, w której można uruchomić `unzip`, obraz sandboxa nie musi go mieć, a
+archiwum to znany sposób na zapis poza folderem. Jedno sprawdzenie na serwerze
+da się przetestować; agent uruchamiający `tar -xf` na tym, co dostał — nie.
+
+Archiwum jest czytane w całości przy przesłaniu. Przesłanie jest odrzucane z
+kodem 400 i nic nie zostaje zapisane, gdy:
+
+- ścieżka elementu wychodzi poza archiwum (`../`), zaczyna się od korzenia
+  (`/etc/x`) lub od dysku (`C:/`), zawiera ukośnik wsteczny albo znak sterujący;
+- element jest dowiązaniem symbolicznym, dowiązaniem twardym, plikiem urządzenia
+  albo FIFO;
+- ta sama ścieżka występuje dwa razy albo jednocześnie jako plik i folder;
+- element jest zaszyfrowany albo plik nie jest archiwum, którym nazywa go nazwa;
+- zawiera więcej niż `WORKSPACE_ARCHIVE_MAX_ENTRIES` plików i folderów (5000),
+  rozpakowuje się do więcej niż `WORKSPACE_ARCHIVE_MAX_BYTES` (200 MiB) albo do
+  więcej niż `WORKSPACE_ARCHIVE_MAX_RATIO` razy własny rozmiar (100) — to bomba
+  dekompresyjna. Rozmiary są mierzone podczas czytania elementów, a nie brane z
+  nagłówków archiwum, które mogą kłamać;
+- jeden plik w nim rozpakowuje się do więcej niż
+  `WORKSPACE_ARCHIVE_MAX_MEMBER_BYTES` (50 MiB), bo rozpakowywanie trzyma w pamięci
+  jeden plik naraz.
+
+Limit przesyłania, `CHAT_MAX_UPLOAD_SIZE_MB`, dotyczy samego archiwum.
+
+Dla agenta z workspace'em elementy są zapisywane w
+`uploads/<pierwsze 8 znaków hex id pliku>-<nazwa archiwum bez .zip>/` z
+zachowaniem folderów — `repo.zip` zawierające `repo/src/app.py` staje się
+`uploads/3f2a1b9c-repo/repo/src/app.py`. Odwołanie podaje ten folder i zaczyna
+się od pierwszych linii listy elementów. Elementy są zapisywane po jednym, więc w
+pamięci jest naraz tylko jeden. Jeśli workspace w połowie odmówi zapisu albo turn
+zostanie zatrzymany w trakcie rozpakowywania, folder jest usuwany: model dowiaduje
+się, że archiwum nie dało się zapisać, i nigdy nie bierze w połowie rozpakowanego
+drzewa za całe.
+
+Agent bez workspace'u nie ma gdzie go rozpakować. Model dowiaduje się, że nie
+może otworzyć archiwum, i nie dostaje listy elementów, bo lista ścieżek
+pozwoliłaby mu odpowiadać na pytania o kod, którego nie może przeczytać.
+
+Żeby wydobyć pliki z powrotem, panel **Files** w czacie oferuje każdy folder i
+cały workspace jako `.zip` — zob.
+[Sandbox: pobieranie folderu](sandbox.md#downloading-a-folder-as-a-zip).
 
 **Kolejna tura nadal ma plik.** To, co załącznik dodał do promptu - wklejony
 tekst albo odwołanie z pierwszymi liniami - jest zapisywane przy wiadomości i
@@ -134,6 +189,36 @@ odtwarzane razem z historią, więc pytanie „a co z marcem” trafia do modelu
 wciąż wie o pliku. Obraz jest w tej historii tylko nazwany, nie wysyłany ponownie;
 agent, który musi znów na niego spojrzeć, prosi o niego albo otwiera go z
 `uploads/`, jeśli ma workspace.
+
+**Plik z tury, która się przerwała, wraca w następnej.** Plik jest przypięty do
+wiadomości, z którą przyszedł, zanim run się zacznie, więc nie da się go załączyć
+ponownie. Jeśli run odpowiadający na tę wiadomość skończył się bez ukończenia —
+błędem, anulowaniem albo zatrzymaniem przez budżet lub strażnika pętli — następna
+tura tego samego agenta dla tej osoby w tej rozmowie zapisuje plik z powrotem w
+`uploads/` (z wyciągniętym tekstem tam, gdzie workspace nie umie przeczytać
+oryginału, a sam tekst, jeśli tylko jego brakuje), zanim pierwszy raz użyje
+workspace'u: od razu dla workspace'u zapisanego, przy pierwszym użyciu dla
+sandboxa. Run dostaje polecenie, by wylistować `uploads/`, zanim powie, że pliku
+brakuje, a jeśli pliku nadal nie ma — by powiedział, że nie dało się go przywrócić.
+
+Wracają tylko własne pliki tej osoby, tylko z przerwanych tur tego agenta, najwyżej
+50 najnowszych, i tylko do chwili, gdy ten agent ukończy dla tej samej osoby turę,
+która zaczęła się po zakończeniu przerwanej i faktycznie wykonała przygotowanie załączników w workspace.
+Ukończona tura bez workspace’u lub bez użycia sandboxa nie zamyka tego okresu. Tura uruchomiona kluczem API, dla
+gościa widgetu albo zwolniona z akceptacji przez kogoś innego tego okresu nie
+kończy. Plik usunięty później zostaje usunięty.
+
+Niektóre pliki nie wracają: pliki tury zablokowanej przez guardrail, bo guardrail
+wejścia odrzucił to, co niosła; pliki promptu, którego run nigdy się nie otworzył —
+nie należy on do żadnego agenta; pliki z tury uruchomionej kluczem API albo dla
+gościa widgetu.
+
+Gdy agent ma guardrail wejścia, każdy plik jest też sprawdzany, zanim wróci, na
+tym, co guardrail by z niego przeczytał: nazwie, ścieżce i pierwszych liniach. Tura
+może się zatrzymać, zanim guardrail przeczyta jej wejście, na przykład na budżecie,
+więc plik odrzucony przez guardrail nie jest zapisywany, a log podaje tylko jego
+identyfikator. Gdy odrzucone są wszystkie pliki, run nie dostaje informacji, że
+któryś może wrócić. Bez guardraila wejścia nic się nie zmienia.
 
 **Wyciągnięty tekst idzie w parze z plikiem tylko tam, gdzie nic nie umie
 przeczytać oryginału.** Kiedyś `.txt` z parsowania zapisywany był obok każdego
@@ -184,6 +269,11 @@ porażkę jako problem z poleceniem, które właśnie napisała, i próbowała d
 człowiekowi, przez dwie tury. Teraz jedno zdanie mówi, że workspace jest
 niedostępny i że kolejna próba zawiedzie tak samo.
 
+**Tura zablokowana przez guardrail wejścia nic nie zapisuje.** Odwołanie i jego
+nagłówek są sprawdzane przez krawędź wejścia agenta, zanim plik zostanie zapisany,
+więc plik z zablokowanej tury nigdy nie trafia do `uploads/` i późniejsza tura nie
+może go otworzyć. Zobacz [Zabezpieczenia](reference/capabilities.md#guardrails).
+
 Referencja jest tym, co model faktycznie czyta:
 
 ```
@@ -229,7 +319,9 @@ gdy powierzchnia składa swój prompt.
 
 Załączniki z czatu czyta **PyMuPDF** i nie da się tego skonfigurować. Załącznik
 nie należy do żadnej kolekcji, więc nie ma zapisanej konfiguracji, z której
-dałoby się odczytać wybór parsera.
+dałoby się odczytać wybór parsera. Znaki NUL są usuwane z wyodrębnionego
+tekstu przed zapisem, aby PostgreSQL mógł przyjąć przesłany plik. Oryginalne
+bajty pliku PDF pozostają bez zmian.
 
 Zmiennej `CHAT_PDF_PARSER`, która kiedyś wybierała między trzema parserami, już
 nie ma. Obie alternatywy były opakowane w `except Exception: return
@@ -286,6 +378,13 @@ media/
 domyślnie SSE-S3, a SSE-KMS kluczem, który nazywa wdrożenie. Ustawienia znajdziesz
 w [konfiguracji](configuration.md#uploaded-files-at-rest).
 
+Ingest bazy wiedzy przy lokalnym storage nadal wymaga współdzielenia
+`MEDIA_DIR/_rag_tmp` przez API i worker. Przy S3 każde wykonanie workera pobiera
+własny zapisany obiekt i usuwa kopię tymczasową po zakończeniu, błędzie parsera
+lub anulowaniu. Pody nie współdzielą dysku tymczasowego API; zobacz
+[wdrożenie Kubernetes](kubernetes.md). Zabite dziecko może pozostawić kopię do
+momentu wymiany poda.
+
 !!! info "Który backend uruchomić i czego każdy od Ciebie wymaga"
 
     Lokalny jest uczciwą odpowiedzią dla jednego hosta: zaszyfruj wolumen, a pliki
@@ -304,6 +403,24 @@ w [konfiguracji](configuration.md#uploaded-files-at-rest).
 
 `agenticos cmd doctor` wypisuje, którego backendu używa działające wdrożenie
 i czy szyfrowanie jest włączone.
+
+### Załączniki poczty w workflow { #mail-attachments-in-a-workflow }
+
+[Workflow](workflows.md#from-an-email) uruchomiony wiadomością z Gmaila lub Outlooka
+zapisuje jej załączniki jako pliki tego runa, wewnątrz runa, a nigdy w pollu, który
+czytał skrzynkę. Obowiązuje je lista dozwolonych typów plików i limit rozmiaru
+uploadu czatu: z załączników podanych przez skrzynkę brane jest pod uwagę tylko
+pierwsze 10 na wiadomość, oraz 25 MiB na wiadomość. Pominięty załącznik jest
+wypisany z powodem, a testowy run niczego nie pobiera.
+
+`.zip` albo `.tar.gz` jest
+pomijany jako `type_not_allowed`: czat sprawdza archiwum element po elemencie,
+zanim je rozpakuje (zob. [Archiwa](#archives)), a archiwum, które dostaje workflow,
+nie sprawdza nic.
+
+Plik HTML w workflow, na przykład zapisaną stronę albo załącznik, czyta
+[`html.parse`](reference/workflow-nodes.md#html-parse), a nie `text.extract`, który
+czyta dokumenty i oddałby znaczniki jako tekst.
 
 ### Model ChatFile { #chatfile-model }
 
@@ -361,6 +478,10 @@ flowchart TD
     wykonują się w zadaniu w tle z własną sesją - dlatego upload odpowiada
     `202 {"status": "processing"}`, zamiast czekać.
 
+Równoległe pierwsze zapisy do tej samej kolekcji czekają na utworzenie jej
+tabeli i indeksów w jednej transakcji. Jeśli tworzenie się nie powiedzie,
+transakcja jest wycofywana, a oczekujący zapis może utworzyć tabelę.
+
 Są dwa adresy, pod które może trafić upload —
 `POST /rag/collections/{name}/ingest` i `POST /kb/{kb_id}/documents` — i oba
 odpowiadają **202** tym samym `RAGIngestResponse`, każdym jego polem, łącznie
@@ -370,6 +491,23 @@ worker go nie zaindeksuje.
 Jeden z tych dwóch pomijał kiedyś ten klucz, zamiast wysyłać go jako null, więc
 klient normalizujący odpowiedź dostawał z każdego inny kształt
 ([#560](https://github.com/vstorm-co/agenticos/issues/560)).
+
+**Czekaj na `complete`, nie na wektory.** `GET /rag/collections/{name}/info`
+wylicza `indexing_status` ze śledzonych dokumentów kolekcji: `indexing`, dopóki
+którykolwiek z nich ma status `processing` - czeka w kolejce albo jest w
+trakcie ingestii - i `complete`, gdy żaden go nie ma. `processing_count`,
+`indexed_count` i `failed_count` mówią, ile dokumentów jest w każdym stanie.
+Dokument z błędem jest w stanie końcowym, więc nie trzyma kolekcji w
+`indexing`; widać go w `failed_count`. Pole było kiedyś stałą `complete`, a
+`total_vectors` rośnie, gdy worker przerabia partię, więc skrypt czekający na
+którekolwiek z nich odpytywał w połowie zbudowaną kolekcję
+([#2486](https://github.com/vstorm-co/agenticos/issues/2486)).
+`GET /kb/{kb_id}/ingestion` odpowiada na to samo dla jednej bazy wiedzy i
+liczy dokumenty, które wyświetla jej strona, a nie wszystko pod nazwą jej
+kolekcji, którą może współdzielić inna baza; strona bazy wiedzy pokazuje ten
+stan obok liczby dokumentów. Dokument, który utknie w `processing`, trzyma obie
+odpowiedzi w `indexing`, dopóki nie zostanie usunięty albo, w przypadku
+dokumentu synchronizowanego, dopóki jego źródło nie zsynchronizuje się ponownie.
 
 !!! danger "Zadanie startuje po zatwierdzeniu transakcji requestu"
 
@@ -391,11 +529,11 @@ z pracą tego flow.**
 **Jedna pętla jest właścicielem pul procesu, a wszystko inne buduje własny
 engine.** Lifespan API zajmuje je przy starcie: obsługuje każdy request i
 likwiduje je przy zamknięciu, więc to jedyna pętla, której połączenia mogą
-cache'ować. Poza tą pętlą `get_db_context` zachowuje się jak
-`get_worker_db_context` — engine z `NullPool` na czas wywołania, likwidowany na
-końcu — bo sięga się po niego z flow Prefecta (raport, odświeżanie MCP, zadania
-zaproszeń i zatwierdzeń, pętle kanałów) oraz z resolvera embeddingów agenta,
-każdy na własnej pętli
+cache'ować. Worker zajmuje je tak samo dla swojej jednej pętli, a każdy proces
+potomny ingestii dla własnej. Poza pętlą-właścicielem `get_db_context` zachowuje
+się jak `get_worker_db_context` — engine z `NullPool` na czas wywołania,
+likwidowany na końcu — bo sięga się po niego z pętli kanałów oraz z resolvera
+embeddingów agenta, każdy na własnej pętli
 ([#1079](https://github.com/vstorm-co/agenticos/issues/1079)).
 
 Wyszukiwanie w wiedzy przez agenta trzyma się tej samej reguły dla swojego
@@ -564,6 +702,20 @@ poświadczenie
 rozwiązuje więc własną konfigurację każdej organizacji, spadając na kolekcję
 o zasięgu app, ale nigdy na kolekcję trzeciego tenanta.
 
+Rozwiązaniem zapasowym jest wyłącznie baza o zasięgu app: baza osobista poza
+jakąkolwiek organizacją też nie ma organizacji, ale należy do jednej osoby
+([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Źródło synchronizacji zapisuje organizację i nazwę kolekcji, a nie bazę wiedzy,
+więc jego synchronizacja pisze do bazy, którą wybiera to rozwiązywanie - najstarszej
+bazy organizacji o tej nazwie - i tylko ta baza je wyświetla i uruchamia. Każdy
+route API, który kieruje źródło do kolekcji, sprawdza prawo zapisu do tej bazy, a
+dodanie źródła do innej bazy o tej samej nazwie jest odrzucane z kodem 400.
+
+Gdy osobista baza członka jest starsza niż baza organizacji o tej samej nazwie,
+synchronizacje organizacji o tej nazwie trafiają więc do bazy osobistej, a baza
+organizacji nie przyjmuje źródła: utwórz ją pod własną nazwą.
+
 !!! warning "Jedna nazwa kolekcji to jedna przestrzeń embeddingów"
 
     Rozwiązywanie per organizacja jest bezpieczne tylko dlatego, że wszystkie
@@ -585,6 +737,23 @@ jednego dostawcy pod adres drugiego. Tym samym katalogiem odpowiada
 provider faktycznie umie obsłużyć — kiedyś proponował każdy model, dla którego ta
 kompilacja znała *szerokość*, a trzy z nich to były wagi sentence-transformer,
 których nic tutaj nie umie wywołać.
+
+Kolekcja na OpenRouter może wskazać własny **endpoint** (`embedding_base_url`),
+na przykład regionalny `https://eu.openrouter.ai/api/v1`. Endpoint regionalny
+obsługuje tylko część katalogu i tylko on wie którą, więc
+`GET /rag/embedding-models/openrouter?base_url=…` pyta go i zwraca te modele
+z katalogu, które wymienia. Szerokość nadal pochodzi z katalogu, bo lista jej nie
+podaje. Formularz tworzenia proponuje tę węższą listę, a serwis odrzuca kolekcję,
+której modelu endpoint nie obsługuje: na `embedding_model` przy tworzeniu i na
+`embedding_base_url` przy przenoszeniu istniejącej.
+
+Endpointu, którego nie udało
+się zapytać, nie traktuje się jako odmowy: formularz pokazuje cały katalog
+i zaznacza, że lista jest niepotwierdzona. Model nieobsługiwany przez endpoint był
+kiedyś przyjmowany, a potem każdy upload kończył się błędem OpenRoutera "No
+endpoints found supporting your data region", zapisanym jako ogólna wskazówka, by
+sprawdzić klucz. Teraz 404 z endpointu embeddingów zapisuje się jako model, którego
+endpoint nie obsługuje.
 
 Klucz jest walidowany przy tworzeniu. Klucz należący do innej organizacji, klucz
 o niewłaściwym przeznaczeniu albo taki, którego wybierający sam nie widzi, jest
@@ -613,8 +782,8 @@ klucza ogólnowdrożeniowego, na który można by spaść, więc odmowa nigdy ni
 ustawić zmiennej.
 
 To zejście jest ogłaszane, a nie zakładane. Rozwiązanie niesie informację, na
-które z pięciu źródeł trafiło, a ingestia wpisuje każde gorsze do logu runu
-Prefecta, łącznie z kolekcją, która po prostu nie wskazuje żadnego klucza. Przed
+które z pięciu źródeł trafiło, a ingestia wpisuje każde gorsze do logu workera,
+łącznie z kolekcją, która po prostu nie wskazuje żadnego klucza. Przed
 zgłoszeniem #306 worker ingestii był jedynym wywołującym, który nigdy nie pytał
 resolvera, więc każdy wgrany dokument był embedowany modelem wdrożenia i kluczem
 ogólnowdrożeniowym, niezależnie od tego, co wybrała jego kolekcja; tamtego klucza
@@ -715,6 +884,23 @@ Nazwa, której wywołujący nie podaje, wyprowadzana jest z nazwy wyświetlanej 
 sześciu losowych znaków szesnastkowych i jest zajmowana tą samą ścieżką, a nie
 uznawana za bezpieczną dlatego, że jest losowa.
 
+**Nie jest też wolna nazwa z treścią, której nie posiada żadna baza.** `rag-ingest`
+zapisuje wiersze śledzące i tabelę `rag_<name>` bez bazy wiedzy i bez organizacji.
+Dlatego `claim` odrzuca nazwę, której nie trzyma żadna baza, dopóki ma ona wiersze bez
+bazy opisujące chunki dowolnego tenanta poza organizacją wywołującego albo tabelę
+wektorową z takimi chunkami. Wcześniej członek z `collections:edit` mógł utworzyć bazę
+na kolekcji operatora i ją usunąć, a razem z nią chunki operatora
+([#2747](https://github.com/vstorm-co/agenticos/issues/2747)). Nazwy trzymanej przez
+bazę to nie dotyczy: wywołujący może zapisywać każdą z tych baz, więc i tak mógłby je
+usunąć lub wyczyścić. Taką nazwę może przejąć administrator aplikacji; nieudany wiersz
+bez id wektorowego nie opisuje żadnego chunka i nazwy nie blokuje. `rag-ingest`
+przerwany w trakcie pliku zostawia wiersz `processing`, który blokuje nazwę, dopóki
+administrator aplikacji jej nie przejmie albo nie uruchomi `rag-drop <name>`.
+
+Treści, która trafia pod nazwę *po* zajęciu jej przez bazę, nie da się tu odrzucić,
+więc chroni ją rozbiórka: tabela ostatniej bazy zostaje, dopóki ma nieprzypisany chunk,
+którego ta baza nie przejmuje, jak opisano niżej przy usuwaniu bazy.
+
 **I nazwa w trakcie rozbiórki też nie jest wolna.** Usunięcie kolekcji kasuje jej
 wiersze bazy wiedzy w ramach requestu, ale fizyczną tabelę wektorów `rag_<name>`
 usuwa dopiero *po* zatwierdzeniu requestu, przekazując to trwałemu workerowi —
@@ -734,9 +920,10 @@ przy bramce `still_wanted` tuż przed zapisem wektorów, więc synchronizacja do
 wyczyszczonej kolekcji domyślnej (której wiersz czyszczenie zachowuje) zatrzymuje
 się, zamiast zapełniać tabelę, która jest właśnie usuwana (#1382). Oba są
 sprawdzeniami rezerwacji w trybie best-effort, a nie serializacją trzymaną na
-blokadzie: trzymanie blokady rozbiórki przez cały zapis zakleszczyłoby się
-z czyszczeniem organizacji, które najpierw blokuje wiersz `organizations`, więc
-zamknięcie ostatniego wąskiego okna zostawiono #1382.
+blokadzie. Zapis przypisany do bazy opiera się na nich oraz na blokadach swojej bazy
+i wiersza, a zamknięcie ostatniego wąskiego okna zostawiono #1382. Zapis chunków bez
+bazy trzyma blokadę rozbiórki do swojego zatwierdzenia, co opisano niżej przy
+rozbiórce ostatniej bazy.
 
 Rezerwacja, której usunięcie nigdy się nie wykonało — stracone przez awarię
 między zatwierdzeniem a rozesłaniem albo przez usunięcie, które zawiodło na
@@ -753,7 +940,25 @@ przestają być wyszukiwalne, zamiast zalegać w tabeli, której nic nie listuje
 (#1361). Wyszukiwanie czyta nieobecną tabelę jako pustą, a kolejny upload tworzy
 ją na nowo. Tabela jest oszczędzana tylko wtedy, gdy siostrzana baza wciąż trzyma
 tę samą nazwę, bo przestrzeń nazw wektorów nie jest unikalna per tenant
-i usunięcie zabrałoby także jej chunki (#913).
+i usunięcie zabrałoby także jej chunki (#913). Wtedy znikają tylko wiersze dokumentów
+i pliki usuwanej bazy, a jej chunki są usuwane z zachowanej tabeli, jak dla usuniętej
+bazy poniżej. Nieprzypisane wiersze dokumentów organizacji tej bazy (uploady z czasu,
+zanim dokumenty zaczęły zapisywać swoją bazę) też znikają, razem z plikami i chunkami,
+chyba że inna baza tej organizacji ma tę nazwę i nadal je listuje. Usunięcie kolekcji
+kasowało wcześniej każdy wiersz dokumentu pod tą nazwą, także innej organizacji
+(#2560).
+
+`rag-drop <name>` przechodzi przez ten sam teardown. Wcześniej usuwał tabelę wektorów
+bezpośrednio, bez sprawdzenia referencji, blokady ani rezerwacji, i zostawiał wiersze
+dokumentów, więc mógł zniszczyć tabelę, której nadal używała inna baza. Teraz czyści
+jedyną bazę, która ma tę nazwę, albo usuwa nazwę bez żadnej bazy (wypełnioną przez
+`rag-ingest`) razem z jej wierszami dokumentów. Gdy nazwę ma kilka baz, odmawia i
+wypisuje ich identyfikatory; `--knowledge-base <id>` wskazuje bazę do wyczyszczenia,
+a tabela zostaje dla pozostałych. Tabelę i pliki usuwa worker po commicie polecenia
+(#2560).
+
+Tabela ostatniej bazy znika niezależnie od zawartości: to operator zlecił usunięcie i
+to do niego należy treść, którą usuwanie w konsoli by oszczędziło (#2747).
 
 `documents` było też kolekcją **domyślną**, więc quickstart w CLI celował kiedyś
 w tabelę śledzącą; teraz domyślną jest `default`. Baza wiedzy utworzona pod starą
@@ -840,6 +1045,132 @@ filtr nie wyciągnie wiersza spoza zakresu. Kolekcja app-scoped, obejmująca ca�
 wdrożenie, dopasowywana jest po *braku ostemplowanego tenanta*, a nie po równości,
 której każda organizacja by nie spełniła — i to właśnie pozwala wszystkim czytać
 wspólną bazę, nie czytając siebie nawzajem.
+
+**Filtr nie sięgnie też innej bazy wiedzy o tej samej nazwie.** Sam tenant nie
+rozróżnia każdej pary: baza o zasięgu app i baza osobista poza jakąkolwiek organizacją
+nie mają go wcale, a baza organizacji i osobista baza członka w tej organizacji mają
+tę samą organizację. Dlatego każdy chunk zapisuje także bazę wiedzy, dla której został
+zaindeksowany, a wyszukiwanie, licznik wektorów, wyszukiwanie przy zastępowaniu i
+usuwanie czytają wyłącznie chunki danej bazy; usunięcie dokumentu usuwa też jego
+własne chunki, które nie zapisują bazy. Chunk zapisany, zanim chunki zaczęły
+zapisywać swoją bazę, i nieprzypisany przez aktualizację, pasuje jak dotąd po swoim
+tenancie — z wyjątkiem bazy osobistej poza jakąkolwiek organizacją, której
+wyszukiwanie i licznik nie biorą żadnego z nich ([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Usunięcie bazy wiedzy, której nazwę kolekcji wciąż ma inna baza, zostawia wspólną
+tabelę, a zadanie porządkowe zakolejkowane razem z usunięciem usuwa chunki przypisane
+do usuniętej bazy. Usunięcie organizacji i usunięcie konta robią to samo dla baz,
+które usuwają, i tak samo usunięcie kolekcji (`DELETE /rag/collections/{name}`),
+które kasuje też tylko wiersze dokumentów tej bazy; dla zachowanej domyślnej bazy
+usuwa tylko chunki usuniętych dokumentów, więc upload wykonany po usunięciu zachowuje
+swoje, a chunk bez wiersza dokumentu zostaje
+([#2560](https://github.com/vstorm-co/agenticos/issues/2560)).
+
+Usunięcie bazy wiedzy (`DELETE /kb/{id}`), gdy inna baza ma tę samą nazwę, usuwa też
+nieprzypisane wiersze dokumentów jej organizacji, razem z ich plikami i chunkami,
+chyba że inna baza tej organizacji ma tę nazwę i nadal je listuje - ta sama zasada
+co przy usuwaniu kolekcji ([#2560](https://github.com/vstorm-co/agenticos/issues/2560)). W pozostałych przypadkach nieprzypisane chunki
+zostają i pasują po swoim tenancie, a nieprzypisane wiersze dokumentów nadal są
+listowane w bazach swojego tenanta ([#2537](https://github.com/vstorm-co/agenticos/issues/2537)).
+
+Gdy żadna inna baza nie ma tej nazwy, obie ścieżki i `rag-drop` usuwają te same
+wiersze, razem z ich plikami: wiersze samej bazy i nieprzypisane wiersze jej tenanta.
+Dla bazy organizacji albo bazy osobistej są to wiersze jej organizacji, dla bazy
+app-scoped wiersze bez organizacji (te, które zapisuje `rag-ingest`), a dla bazy
+osobistej poza organizacją żadne.
+
+Obie ścieżki zachowują potem tabelę, jeśli ma nieprzypisany chunk, którego baza nie
+przejmuje: `rag-ingest` albo synchronizację z CLI operatora do zajętej nazwy albo
+chunk innego tenanta. Claim nie może odrzucić treści, która pojawia się po nim, a
+wywołujący nie ma do niej uprawnień. Czyszczone są tylko chunki, które baza przejmuje,
+a pozostałe wiersze pod tą nazwą zostają bez zmian.
+
+Poza bazą domyślną, która zostaje na tej nazwie, nazwa wraca do stanu, jaki zostawia
+`rag-ingest`: nie ma jej żadna baza, usuwa ją `rag-drop <name>`, a `claim` odrzuca ją
+wszystkim poza administratorem aplikacji i organizacją, której chunki są jedynymi, jakie
+zostały ([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
+
+Zapis chunków bez bazy trzyma nazwę do swojego zatwierdzenia, więc tabela jest
+sprawdzana dopiero po zakończeniu każdego takiego zapisu, który już trwa. Zapis, który
+dotrze do nazwy, gdy jest zarezerwowana, jest odrzucany i plik trzeba zaindeksować
+ponownie. Zadanie czyszczenia usuwa tylko zarezerwowaną nazwę, więc jego ponowne
+uruchomienie zostawia zapis wykonany po pierwszym usunięciu.
+
+Duży dokument może trzymać nazwę przez kilka sekund. Utworzenie na tej nazwie
+(`POST /kb`, `POST /rag/collections/{name}`) czeka sekundę, a potem odpowiada 409
+z prośbą o ponowienie, bo każde czekające żądanie zajmuje połączenie z bazą danych,
+a dość takich żądań odrzuca wszystkie pozostałe. Usunięcie czeka na koniec zapisu.
+
+Baza osobista poza organizacją nie przejmuje żadnego nieprzypisanego chunka, choć
+chunk wskazany przez jej własne wiersze znika razem z nią. Historyczny fragment bez
+bazy, organizacji i wiersza śledzącego ma nieznane pochodzenie. Zachowuje tabelę,
+ale **baza aplikacyjna nie może go odczytać**, nawet gdy administrator aplikacji
+przejmie nazwę ([#2773](https://github.com/vstorm-co/agenticos/issues/2773)).
+
+Baza aplikacyjna przejmuje globalne nieprzypisane fragmenty i wiersze śledzące tylko
+gdy ich `writer_kind` to `operator`. Nowe zapisy z `rag-ingest` i synchronizacji CLI
+utrwalają to pochodzenie; ingestowanie przez platformę zapisuje `document`, które
+pozostaje po usunięciu użytkownika lub bazy. Migracja
+`0300_unfiled_writer_provenance.py` nie ufa dawnym znacznikom pochodzenia, zachowuje
+pewne przypisania do dokumentów, a niejednoznaczne dane izoluje jako `legacy_unknown`.
+Odczyt nieprzypisanych danych organizacji nadal ogranicza tenant.
+
+**Po aktualizacji:** wykonaj audyt zachowanej kolekcji z powłoki serwera. Komenda
+korzysta wyłącznie z bazy danych i zwraca zagregowane liczby, bez treści dokumentów:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name>
+```
+
+Dopiero po sprawdzeniu źródła i potwierdzeniu, że nieznane globalne nieprzypisane dane
+są importem operatora przeznaczonym dla każdej organizacji, uruchom:
+
+```bash
+uv run agenticos cmd rag-unfiled-provenance <name> --confirm-operator
+```
+
+Wymagane jest interaktywne potwierdzenie (`--yes` zastępuje je w automatyzacji).
+Aktualizacja jest atomowa i powtarzalna; pomija fragmenty i wiersze o znanym
+pochodzeniu dokumentowym. Niepewne dane pozostaw w izolacji; ponownie zaimportuj je
+do uprawnionej bazy albo usuń istniejącą procedurą operatora `rag-drop <name>`.
+Przejęcie nazwy w konsoli nigdy nie potwierdza pochodzenia danych.
+
+W pozostałych przypadkach, a przy `rag-drop` zawsze, zadanie porządkowe usuwa tabelę.
+Nieprzypisane wiersze innego tenanta pod tą nazwą zostają, razem z plikami, bo
+wywołujący nie ma do nich uprawnień. Po usunięciu tabeli nic już za nimi nie stoi, więc
+zostają oznaczone jako nieudane: następna baza tego tenanta o tej nazwie listuje je
+jako nieudane, przesłany dokument trzeba przesłać jeszcze raz, a synchronizacja
+ponownie indeksuje zsynchronizowany dokument.
+
+Wcześniej `DELETE /kb/{id}` zostawiało nieprzypisane wiersze tenanta za usuniętą
+tabelą, nadal listowane jako zaindeksowane, a usunięcie kolekcji kasowało każdy
+wiersz pod tą nazwą, niezależnie od tenanta
+([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
+
+Przesłanie lub synchronizacja, która wciąż indeksuje plik dla bazy w chwili jej
+usunięcia, nie zostawia chunków. Zapis bierze blokadę wiersza bazy, która koliduje
+z blokadą usunięcia, w transakcji wstawiającej chunki: zapis, który przychodzi drugi, nie
+znajduje bazy, niczego nie zapisuje i kończy się błędem na etapie indeksowania, a
+zapis, który przychodzi pierwszy, zatwierdza się przed usunięciem, którego
+porządkowanie usuwa potem jego chunki
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+Pojedynczy dokument usunięty w trakcie indeksowania również nie zostawia chunków.
+Jego wiersz nie ma identyfikatora dokumentu wektorowego, dopóki ingest go nie
+zapisze, więc usunięcie może nie mieć czego usunąć; worker, który przy zapisie
+wyniku nie znajduje wiersza, kolejkuje w tej samej transakcji zadanie, które usuwa
+chunki, które właśnie zapisał, i jest ponawiane, gdy usunięcie się nie powiedzie. Usunięcie, które
+odczyta nowo zapisany identyfikator, kolejkuje takie samo trwałe zadanie
+według identyfikatora z usuniętego wiersza
+([#2565](https://github.com/vstorm-co/agenticos/issues/2565)).
+
+Lokalna synchronizacja zakolejkowana dla bazy usuniętej przed jej uruchomieniem
+kończy się błędem i niczego nie zapisuje
+([#2561](https://github.com/vstorm-co/agenticos/issues/2561)).
+
+Agent przeszukuje bazy wiedzy, do których jest przypięty, w ich własnych zakresach,
+a nie przez ponowne rozwiązywanie ich nazw. Agent przypięty do dwóch baz o tej samej
+nazwie przeszukuje ich połączony zakres, pomijając inne bazy o tej samej nazwie.
 
 **`GET /rag/collections/{name}/filter-values`** odpowiada wartościami
 `organizational_unit` faktycznie obecnymi w kolekcji, w tym samym zakresie. Istnieje,
@@ -955,7 +1286,7 @@ prosił. Adres `NULL` nie pasuje do żadnego porównania, co jest tu odpowiedzi�
 pożądaną, a nie taką, którą trzeba obchodzić, i jest tym, co ma każdy wiersz
 zapisany przed powstaniem tej kolumny.
 
-Trzy rzeczy decydują o tym, co wycofanie może zabrać, i każdą z nich najpierw
+Cztery rzeczy decydują o tym, co wycofanie może zabrać, i każdą z nich najpierw
 zrobiono źle:
 
 - **Po adresie, nigdy po nazwie pliku.** To ta sama kolizja, którą
@@ -963,6 +1294,12 @@ zrobiono źle:
   wektorów, osiągnięta z drugiej strony: `a/readme.md` i `b/readme.md` w jednym
   buckecie dzielą nazwę bazową, więc dopasowanie po nazwie kasuje wiersz drugiego
   pliku.
+- **W zakresie nowego wiersza, nigdy po nazwie kolekcji.** Nazwa nie jest
+  unikalna, więc dwie organizacje albo dwie bazy jednej mogą synchronizować do niej
+  tę samą ścieżkę. Wiersz przypisany do bazy wycofuje tylko wiersze, które ta baza
+  wyświetla — własne i niezaklasyfikowane wiersze swojego tenanta — a wiersz bez bazy
+  tylko wiersze bez bazy własnej organizacji
+  ([#2747](https://github.com/vstorm-co/agenticos/issues/2747)).
 - **`ERROR`, a nie „nie ma id wektorowego”.** To są różne zbiory, a traktowanie
   ich jako jednego to wyścig: wiersz `PROCESSING` należy do próby, która wciąż
   trwa, i przy dwóch nakładających się ingestiach jednego source'a druga
@@ -992,6 +1329,12 @@ pliku — sprzed czasu, gdy uploady zaczęły zachowywać swoje, albo wciągnię
 przez synchronizację — jest odrzucany z 400, zamiast być przestawiony na
 `processing`
 ([#441](https://github.com/vstorm-co/agenticos/issues/441)).
+
+Ponowienie odrzuca też dokument organizacji nieprzypisany do żadnej bazy wiedzy: jego
+chunki zostałyby zapisane dla całego wdrożenia, gdzie baza organizacji, która go
+listuje, nie czyta, więc trzeba go przesłać jeszcze raz. Dokument bez organizacji
+należy do bazy app-scoped, która tam czyta, i jest ponawiany
+([#2568](https://github.com/vstorm-co/agenticos/issues/2568)).
 
 ### Co mówi nieudana ingestia { #what-a-failed-ingest-says }
 
@@ -1027,12 +1370,15 @@ monthly budget exhausted: $40.15 spent of $40.00 limit”*.
 Tym, czego **nie** zapisujemy, jest własny tekst klienta, który zawiódł. SDK
 providera, `httpx`, `boto3` i klient Google Drive wkładają w komunikat swojego
 wyjątku request, który właśnie wykonywały, co rutynowo oznacza endpoint,
-wewnętrznego hosta, bucket albo URL z kluczem w query stringu — a w odróżnieniu
-od ciała błędu HTTP kolumnę czyta się ponownie tygodnie później, przez każdego,
-kto otworzy nieudany dokument. Ten tekst nie ginie: każde z tych miejsc wywołania
-loguje go przez `logger.exception`, więc log workera ma komunikat i traceback, a
-flow Prefecta, który rzuca ponownie, ma oba w swoim runie. Miejscem, gdzie te dwa
-są rozdzielane, jest `app/services/rag/failures.py`.
+wewnętrznego hosta, bucket albo URL z kluczem w query stringu — a w odróżnieniu od
+ciała błędu HTTP kolumnę czyta się ponownie tygodnie później, przez każdego, kto
+otworzy nieudany dokument.
+
+Ten tekst nie ginie: każde z tych miejsc wywołania loguje go przez
+`logger.exception`, więc log workera ma komunikat i traceback, a zadanie, które
+rzuca ponownie, ma typ, komunikat i ostatnie ramki w swoim wierszu w
+`background_jobs`, gdzie czyta je tylko właściciel wdrożenia. Miejscem, gdzie
+kolumna i log są rozdzielane, jest `app/services/rag/failures.py`.
 
 Log to mniejsza publiczność niż kolumna, a nie publiczność bezpieczna — traktuj
 log workera jako coś, co czytają wyłącznie operatorzy, i zobacz [#440], żeby
@@ -1327,9 +1673,11 @@ a konsekwencja jest ta sama (#982).
 
 Klonowanie mówi to samo, i z powodu podanego wyżej: to jedyny sposób, żeby
 zmienić publiczność source'a z własnego UI tego produktu. Przecelowanie
-istniejącego to `PATCH` na `collection_name`, którego dziś nie wysyła żaden
-ekran - nie ma edytora source'ów - więc jest osiągalne przez API i CLI, gdzie
-odnotowuje to powyższy wpis audytowy.
+istniejącego to `PATCH` na `collection_name` do `/rag/sync/sources/{id}`. Edytor
+source'ów w zakładce **Sync** bazy wiedzy go nie wysyła, a własny
+`PATCH /kb/{kb_id}/sync-sources/{source_id}` tej bazy odrzuca `collection_name`
+wskazujące inną bazę - więc przecelowanie jest osiągalne przez API i CLI, gdzie
+odnotowuje je powyższy wpis audytowy.
 
 ### Co jest winien nowy konektor { #what-a-new-connector-owes }
 
@@ -1442,13 +1790,19 @@ per kolekcja: włącz go w konfiguracji ingestii bazy wiedzy i wybierz tam profi
 modelu ze zdolnością wizyjną. Picker jest ten sam, którego używa builder agentów,
 więc provider, model i jego klucz da się zdefiniować bez wychodzenia z dialogu —
 wdrożenie bez żadnego profilu modelu nie jest ślepą uliczką. Czego nie oferuje,
-to usunięcie profilu: to należy tam, gdzie zarządza się modelami organizacji, bo
-każdy agent wycelowany w dany profil go traci. Wygenerowane opisy są dołączane do
-tekstu dokumentu dla lepszego wyszukiwania semantycznego.
+to usunięcie profilu: to należy tam, gdzie zarządza się modelami organizacji, a
+profilu, którego używają agenci, w ogóle nie da się usunąć.
+
+PyMuPDF pomija ekstrakcję osadzonych obrazów, gdy ich opisywanie jest wyłączone.
+Po włączeniu każdy xref obrazu jest wyodrębniany raz na dokument, powtórzone
+odwołania na stronie są scalane, a identyczne bajty obrazu są opisywane raz.
+Każda strona odwołująca się do obrazu nadal otrzymuje jego opis w tekście do
+wyszukiwania semantycznego. Chunki przenoszą ten tekst bez kopiowania osadzonych
+obrazów strony.
 
 ## Z kanału { #from-a-channel }
 
-Plik wysłany do bota Slacka, Telegrama albo Mattermosta wchodzi tutaj, a nie obok.
+Plik wysłany do bota Slacka, Teams, Telegrama albo Mattermosta wchodzi tutaj, a nie obok.
 Adapter pobiera go własnym poświadczeniem bota, plik przechodzi tę samą walidację
 co upload z przeglądarki i staje się tym samym wierszem `ChatFile` — więc
 powyższy routing stosuje się bez zmian, a kanał nie może stać się ścieżką

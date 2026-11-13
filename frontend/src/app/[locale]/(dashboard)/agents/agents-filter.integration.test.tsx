@@ -30,6 +30,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
   // The header's "?" reads the path to decide whether this page has tips.
   usePathname: () => "/agents",
+  // The System agents band opens for `?section=system`.
+  useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock("@/hooks/use-permissions", () => ({ usePermissions: () => ({ can: () => true }) }));
 
@@ -89,12 +91,22 @@ beforeEach(() => {
         tags: [],
       });
     }
+    if (path === "/stats/attention") {
+      return Promise.resolve({ from: "", to: "", items: attention.items });
+    }
     return Promise.resolve({ items: [], total: 0 });
   });
+  attention.items = [];
 });
 
 /** Tick one category in the facet menu - the choices are the server's, never typed. */
+async function revealFilters() {
+  const toggle = screen.getByRole("button", { name: /^Filters/ });
+  if (toggle.getAttribute("aria-expanded") === "false") await userEvent.click(toggle);
+}
+
 async function pickCategory(name: string) {
+  await revealFilters();
   await userEvent.click(screen.getByRole("button", { name: "Filter by category" }));
   await userEvent.click(await screen.findByRole("menuitemcheckbox", { name }));
 }
@@ -104,7 +116,51 @@ function statusFilter() {
   return screen.getByRole("combobox", { name: "Filter by status" });
 }
 
+const attention = { items: [] as unknown[] };
+
+describe("the agents gallery's attention badge", () => {
+  it("flags an agent with answers rated down lately, and no other", async () => {
+    attention.items = [
+      {
+        agent_id: "Live-id",
+        name: "Live",
+        rated_down: 2,
+        failed_runs: 0,
+        failing_suites: 0,
+        can_edit: false,
+      },
+    ];
+    render(<AgentsPage />, { wrapper });
+
+    expect(await screen.findByText("Needs attention")).toHaveAttribute(
+      "title",
+      "2 answers rated down",
+    );
+    expect(screen.getAllByText("Needs attention")).toHaveLength(1);
+    expect(vi.mocked(apiClient.get)).toHaveBeenCalledWith("/stats/attention", expect.anything());
+  });
+});
+
 describe("the agents gallery filter", () => {
+  it("keeps status visible while secondary label filters are collapsed and reopened", async () => {
+    render(<AgentsPage />, { wrapper });
+    await screen.findByText("Live");
+    const toggle = screen.getByRole("button", { name: "Filters" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(statusFilter());
+    await userEvent.click(screen.getByRole("option", { name: "Drafts" }));
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).not.toHaveTextContent("1");
+    expect(statusFilter()).toBeVisible();
+    await userEvent.click(toggle);
+    expect(statusFilter()).toHaveTextContent("Drafts");
+    expect(screen.getByText("Draft")).toBeVisible();
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
+  });
+
   it("shows every status on 'All'", async () => {
     render(<AgentsPage />, { wrapper });
 
@@ -200,6 +256,10 @@ describe("the agents gallery filter", () => {
     render(<AgentsPage />, { wrapper });
 
     expect(await screen.findByText("No agents yet")).toBeInTheDocument();
+    // The empty-state create waits for the agent limit to be known.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "New agent" })).toHaveLength(2),
+    );
     const create = screen.getAllByRole("button", { name: "New agent" });
     await userEvent.click(create[create.length - 1]!);
 
@@ -235,6 +295,7 @@ describe("the agents gallery filter", () => {
     render(<AgentsPage />, { wrapper });
     await screen.findByText("Live");
 
+    await revealFilters();
     await userEvent.click(screen.getByRole("button", { name: "Filter by category" }));
 
     const choices = await screen.findAllByRole("menuitemcheckbox");
@@ -254,6 +315,7 @@ describe("the agents gallery filter", () => {
       "2 categories",
     );
 
+    await revealFilters();
     await userEvent.click(screen.getByRole("button", { name: "Filter by category" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Clear filter" }));
 

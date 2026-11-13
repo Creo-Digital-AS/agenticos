@@ -16,6 +16,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
@@ -46,6 +48,27 @@ class AgentStatus(enum.StrEnum):
     DRAFT = "draft"
     PUBLISHED = "published"
     ARCHIVED = "archived"
+
+
+class AgentKind(enum.StrEnum):
+    """What an agent is for.
+
+    `AGENT` is one people use: chat, the API, channels, embeds, schedules,
+    delegation. `JUDGE` grades answers for evals; only the platform runs it, and
+    it is listed apart. An organization may hold many judges - the default one
+    the platform seeds, and one per dataset that wants its own. `DRAFTER` writes
+    the passage a knowledge gap is missing, `GENERATOR` drafts dataset cases,
+    and `CLASSIFIER` reads answers for the ones in which the agent did not know;
+    only the platform runs any of them. `IMPROVER` is the authoring assistant,
+    which reads an agent's evidence and proposes changes.
+    """
+
+    AGENT = "agent"
+    JUDGE = "judge"
+    DRAFTER = "drafter"
+    GENERATOR = "generator"
+    CLASSIFIER = "classifier"
+    IMPROVER = "improver"
 
 
 class Agent(Base, TimestampMixin):
@@ -89,6 +112,10 @@ class Agent(Base, TimestampMixin):
     # neither what runs nor what exports to git.
     avatar_color: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
+    # Hashes of the defaults last delivered to this installed platform agent.
+    # Model, budget and deployment credentials deliberately never belong here.
+    shipped_template: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
+
     # Editable discovery metadata, org-local and off the spec for the same reason
     # the avatar is: categories and tags change neither what runs nor what exports
     # to git. Stored as scalar arrays so a discovery filter is an array-overlap
@@ -123,6 +150,33 @@ class Agent(Base, TimestampMixin):
         nullable=True,
     )
 
+    # The key, not the slug, identifies a seeded agent: the slug derives from a
+    # name people may change, and a person's own agent may already hold it.
+    system_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AgentKind.AGENT.value, server_default="agent"
+    )
+
+    # Set on the agent a workflow's `agent.run` step configures in place: the
+    # workflow owns it, so it is kept out of the catalog, reached through the
+    # workflow's access, and gone with the workflow. Both or neither.
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    workflow_node_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    a2a_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    """Whether other systems may reach this agent over the A2A protocol (#2092).
+
+    Off until somebody who may publish it turns it on: the agent card is served
+    without a session, so turning it on is what makes its name and description
+    discoverable. A caller still needs an organization key or OAuth grant
+    allowed to run it - every task is an ordinary run.
+    """
+
     # Declared here as well as in the migration: a schema built from the models
     # - which is what the integration tests and some dev setups do - would
     # otherwise accept values the production database rejects, and the tests
@@ -131,11 +185,33 @@ class Agent(Base, TimestampMixin):
         UniqueConstraint("organization_id", "slug", name="uq_agent_org_slug"),
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_agent_status"),
         CheckConstraint("visibility IN ('private', 'team', 'org')", name="ck_agent_visibility"),
+        CheckConstraint(
+            "kind IN ('agent', 'judge', 'drafter', 'generator', 'classifier', 'improver')",
+            name="ck_agent_kind",
+        ),
         # GIN so the discovery filter's `categories && ARRAY[...]` overlap is an
         # index scan. Declared here as well as in the migration for the reason the
         # comment above says: a schema built from the models must carry them too.
         Index("ix_agents_categories", "categories", postgresql_using="gin"),
         Index("ix_agents_tags", "tags", postgresql_using="gin"),
+        Index(
+            "uq_agents_org_system_key",
+            "organization_id",
+            "system_key",
+            unique=True,
+            postgresql_where=text("system_key IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "(workflow_id IS NULL) = (workflow_node_id IS NULL)", name="ck_agent_workflow_node"
+        ),
+        # One agent per step: the step finds its own agent by this pair.
+        Index(
+            "uq_agents_workflow_node",
+            "workflow_id",
+            "workflow_node_id",
+            unique=True,
+            postgresql_where="workflow_id IS NOT NULL",
+        ),
     )
 
     @property

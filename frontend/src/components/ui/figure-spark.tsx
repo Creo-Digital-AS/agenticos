@@ -1,7 +1,10 @@
 "use client";
 
+import { CHART_TOOLTIP_CONTENT, CHART_TOOLTIP_ITEM, CHART_TOOLTIP_LABEL } from "@/lib/chart-styles";
+
+import { useLocale } from "next-intl";
 import { useId } from "react";
-import { Area, AreaChart, ResponsiveContainer } from "recharts";
+import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { AREA_FILL_OPACITY } from "@/lib/dashboard/system";
 
@@ -14,10 +17,24 @@ import { AREA_FILL_OPACITY } from "@/lib/dashboard/system";
  * Drawn in the chart token rather than in ink: it is data, and it obeys the
  * same wash and stroke the full-size charts do - a sparkline that invented
  * its own opacity is how two drawings of one number stop looking like one
- * product. No axes, no grid, no tooltip: the figure above it *is* the value, so
- * the shape only has to say which way it has been going.
+ * product. No axes or grid; a tooltip reveals the bucket behind the trend without
+ * turning the compact figure into a full chart.
  */
-export function FigureSpark({ spark, color }: { spark: number[]; color: string }) {
+export function FigureSpark({
+  spark,
+  color,
+  labels,
+  formatValue,
+  name,
+}: {
+  spark: number[];
+  color: string;
+  labels?: string[];
+  formatValue?: (value: number) => string;
+  name?: string;
+}) {
+  const locale = useLocale();
+  const numbers = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
   // `useId` answers with characters (`:` or `«`) a `url(#…)` reference cannot hold.
   const washId = `wash-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
@@ -29,7 +46,24 @@ export function FigureSpark({ spark, color }: { spark: number[]; color: string }
             <stop offset="100%" stopColor={color} stopOpacity={0} />
           </linearGradient>
         </defs>
+        <Tooltip
+          isAnimationActive={false}
+          reverseDirection={{ y: true }}
+          allowEscapeViewBox={{ x: true, y: true }}
+          labelFormatter={(index) => labels?.[Number(index)] ?? ""}
+          formatter={(value) =>
+            typeof value === "number"
+              ? formatValue
+                ? formatValue(value)
+                : numbers.format(value)
+              : ""
+          }
+          contentStyle={CHART_TOOLTIP_CONTENT}
+          itemStyle={CHART_TOOLTIP_ITEM}
+          labelStyle={CHART_TOOLTIP_LABEL}
+        />
         <Area
+          name={name}
           type="monotone"
           dataKey="value"
           stroke={color}

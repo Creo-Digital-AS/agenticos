@@ -116,6 +116,107 @@ describe("the tool approval dialog", () => {
     expect(screen.getByText("Allow Run Python?")).toBeVisible();
   });
 
+  it("says why the agent asks before what it would run", async () => {
+    mount([
+      action("a-1", {
+        tool_name: "update_record",
+        args: { table_id: "t-1", reason: "So the order shows as shipped." },
+      }),
+    ]);
+
+    expect(screen.getByText("So the order shows as shipped.")).toBeVisible();
+    // The reason is the sentence on top, not one more row.
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.queryByText("Reason")).toBeNull();
+    // Once as the call's one telling argument, once in the details.
+    expect(screen.getAllByText("t-1")).toHaveLength(2);
+  });
+
+  it("says what the call will do in names, under the reason and over the ids", async () => {
+    mount([
+      action("a-1", {
+        tool_name: "update_record",
+        args: { table_id: "t-1", reason: "So the order shows as shipped." },
+        capability_tool_id: "update_record",
+        context: { table: "E2E Live Tickets" },
+      }),
+    ]);
+
+    const sentence = screen.getByText("Change a record in E2E Live Tickets");
+    expect(sentence).toBeVisible();
+    // After the agent's own reason, and the ids it names are still there below.
+    expect(
+      screen.getByText("So the order shows as shipped.").compareDocumentPosition(sentence),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText("t-1")).toBeVisible();
+  });
+
+  it("names the table a record is written to, never the record", () => {
+    mount([
+      action("a-1", {
+        tool_name: "delete_record",
+        args: { table_id: "t-1", record_id: "r-1", expected_revision: 2 },
+        capability_tool_id: "delete_record",
+        context: { table: "Orders" },
+      }),
+      action("a-2", {
+        tool_name: "create_record",
+        args: { table_id: "t-1", values: { Quantity: 2 } },
+        capability_tool_id: "create_record",
+        context: { table: "Orders" },
+      }),
+    ]);
+
+    expect(screen.getByText("Delete a record from Orders")).toBeVisible();
+    expect(screen.getByText("Add a record to Orders")).toBeVisible();
+  });
+
+  it("finds the sentence for a renamed tool by its stable id, not its name", () => {
+    mount([
+      action("a-1", {
+        tool_name: "change_order",
+        args: { table_id: "t-1" },
+        capability_tool_id: "update_record",
+        context: { table: "Orders" },
+      }),
+      // The name of a described tool, with no stable id: an MCP server's tool under
+      // "ask about everything" is not the capability's tool and gets no sentence.
+      action("a-2", {
+        tool_name: "update_record",
+        args: { table_id: "t-2" },
+        context: { table: "Archive" },
+      }),
+    ]);
+
+    expect(screen.getByText("Change a record in Orders")).toBeVisible();
+    expect(screen.queryByText(/Archive/)).toBeNull();
+  });
+
+  it("draws the plain card when the call came with no names, or not the ones it needs", async () => {
+    mount([
+      action("a-1", {
+        tool_name: "update_record",
+        args: { table_id: "t-1" },
+        capability_tool_id: "update_record",
+      }),
+      action("a-2", {
+        tool_name: "update_record",
+        args: { table_id: "t-2" },
+        capability_tool_id: "update_record",
+        context: { view: "Orders" },
+      }),
+      action("a-3", { context: { recipient: "Ops" } }),
+    ]);
+
+    expect(screen.queryByText(/Change a record/)).toBeNull();
+    for (const details of screen.getAllByRole("button", { name: "Details" })) {
+      await userEvent.click(details);
+    }
+    expect(screen.getAllByText("t-1")).toHaveLength(2);
+    expect(screen.getAllByText("t-2")).toHaveLength(2);
+  });
+
   it("approves every call it is showing", async () => {
     const onDecisions = mount([action("a-1"), action("a-2")]);
 
@@ -180,6 +281,136 @@ describe("the tool approval dialog", () => {
     expect(screen.getByText("A new agent draft")).toBeVisible();
     expect(screen.getByText("Helpdesk")).toBeVisible();
     // Arguments that are not a draft are asked about as any call is.
-    expect(screen.getByText("Allow Agenticos create agent draft?")).toBeVisible();
+    expect(screen.getByText("Allow Create agent draft in AgenticOS?")).toBeVisible();
   });
+});
+
+it("keeps platform approvals compact while showing the task title", () => {
+  mount([
+    action("a-1", {
+      tool_name: "agenticos_create_task",
+      args: { task: { title: "Review supplier draft" } },
+    }),
+  ]);
+  expect(screen.getByText("Allow Create task in AgenticOS?")).toBeVisible();
+  expect(screen.getByText("Review supplier draft")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Approve" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Reject" })).toBeVisible();
+  expect(screen.queryByText("2 actions")).toBeNull();
+});
+
+it("renders a task description as readable text without loading embedded remote images", async () => {
+  mount([
+    action("a-1", {
+      tool_name: "agenticos_create_task",
+      args: {
+        task: {
+          title: "Review draft",
+          description:
+            "**Checklist**\n\n- Read the draft\n\n![private](https://example.test/tracking.png)",
+        },
+      },
+    }),
+  ]);
+  await userEvent.click(screen.getByRole("button", { name: "Details" }));
+  expect(await screen.findByText("Checklist")).toHaveProperty("tagName", "STRONG");
+  expect(screen.queryByRole("img", { name: "private" })).toBeNull();
+});
+
+it.each([
+  ["Allow this tool in this chat", "conversation"],
+  ["Always allow this tool for this agent", "agent"],
+] as const)("remembers only the chosen tool scope: %s", async (label, scope) => {
+  const onDecisions = vi.fn();
+  render(
+    <ToolApprovalDialog
+      actionRequests={[
+        action("a-1", { can_remember: true }),
+        action("a-2", { can_remember: true }),
+      ]}
+      reviewConfigs={[]}
+      onDecisions={onDecisions}
+      mayRemember
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "More approval options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: label }));
+  expect(onDecisions).toHaveBeenCalledWith([
+    { type: "approve", remember_scope: scope },
+    { type: "approve" },
+  ]);
+});
+
+it("does not offer remembered approval for delegates or mixed tools", () => {
+  const view = render(
+    <ToolApprovalDialog
+      actionRequests={[action("a-1", { subagent_name: "Architect" })]}
+      reviewConfigs={[]}
+      onDecisions={vi.fn()}
+      mayRemember
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "More approval options" })).toBeNull();
+  view.rerender(
+    <ToolApprovalDialog
+      actionRequests={[action("a-1"), action("a-2", { tool_name: "other" })]}
+      reviewConfigs={[]}
+      onDecisions={vi.fn()}
+      mayRemember
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "More approval options" })).toBeNull();
+});
+
+it("shows the fact share_memory would share, and offers no way to remember the answer", () => {
+  render(
+    <ToolApprovalDialog
+      actionRequests={[
+        action("a-1", {
+          tool_name: "share_memory",
+          capability_tool_id: "share_memory",
+          args: { claim_id: "c-1", to: "project" },
+          context: { claim: "Piotr takes over invoices", audience: "project" },
+          can_remember: false,
+        }),
+      ]}
+      reviewConfigs={[]}
+      onDecisions={vi.fn()}
+      mayRemember
+    />,
+  );
+
+  expect(
+    screen.getByText("Share with the project: “Piotr takes over invoices”"),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "More approval options" })).toBeNull();
+});
+
+it("offers only Reject on a call this person may not approve unread", async () => {
+  const onDecisions = vi.fn();
+  render(
+    <ToolApprovalDialog
+      actionRequests={[
+        action("a-1", {
+          tool_name: "share_memory",
+          capability_tool_id: "share_memory",
+          args: { claim_id: "c-1", to: "organization" },
+          context: { audience: "organization" },
+          content_hidden: true,
+          always_asks: true,
+          can_remember: false,
+        }),
+      ]}
+      reviewConfigs={[]}
+      onDecisions={onDecisions}
+      mayRemember
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(
+    screen.getByText("Only somebody who can see the run can approve this. You can reject it."),
+  ).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+  expect(onDecisions).toHaveBeenCalledWith([{ type: "reject" }]);
 });

@@ -79,6 +79,22 @@ describe("which mark a thing wears", () => {
 });
 
 describe("a group's tiles", () => {
+  it("keeps a large group compact and opens its complete list on demand", async () => {
+    render(
+      <AgentMap
+        agentName="Support"
+        instructions="Be brief."
+        nodes={[node({ items: Array.from({ length: 24 }, (_, i) => tile(`skill-${i}`)) })]}
+      />,
+    );
+    expect(screen.queryByText("skill-23")).not.toBeInTheDocument();
+    expect(screen.getByText("+18 more · open to view all")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Skills" }));
+    expect(
+      within(screen.getByRole("region", { name: "Details for Skills" })).getByText("skill-23"),
+    ).toBeVisible();
+  });
+
   it("draws one tile per thing rather than a paragraph of names", () => {
     // A list of names is read as one shape: a reader looking for "is Slack on
     // here" was scanning text. Each thing is its own tile with its own mark.
@@ -528,6 +544,20 @@ describe("AgentMap pan and zoom", () => {
     expect(content.style.transform).toBe("translate(0px, 0px) scale(1)");
   });
 
+  it("fits the whole diagram instead of returning an off-screen hub to the origin", async () => {
+    const { content, viewport } = draw();
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    Object.defineProperties(content, {
+      offsetWidth: { configurable: true, value: 1040 },
+      offsetHeight: { configurable: true, value: 1000 },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Reset view" }));
+    expect(content.style.transform).toBe("translate(156.64px, 16px) scale(0.468)");
+  });
+
   it("zooms in from the centre", async () => {
     const { content } = draw();
 
@@ -565,6 +595,16 @@ describe("AgentMap pan and zoom", () => {
     expect(scale).toBeGreaterThan(0);
   });
 
+  it("does not capture a node click as a canvas drag", async () => {
+    const { viewport } = draw();
+    viewport.setPointerCapture = vi.fn();
+    const skills = screen.getByRole("button", { name: "Skills" });
+    pointer(skills, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
+    expect(viewport.setPointerCapture).not.toHaveBeenCalled();
+    await userEvent.click(skills);
+    expect(screen.getByRole("region", { name: "Details for Skills" })).toBeVisible();
+  });
+
   it("pans with a pointer drag", () => {
     const { content, viewport } = draw();
     // jsdom does not implement pointer capture.
@@ -592,6 +632,40 @@ describe("AgentMap pan and zoom", () => {
 
     pointer(viewport, "pointermove", { pointerId: 1, clientX: 400, clientY: 400 });
 
+    expect(content.style.transform).toContain("translate(0px, 0px)");
+  });
+
+  it("pans from a node once the press moves past the threshold, and clicks it while it stays", () => {
+    const { content, viewport } = draw();
+    const capture = vi.fn();
+    viewport.setPointerCapture = capture;
+    const skills = screen.getByRole("button", { name: "Skills" });
+
+    pointer(skills, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
+    pointer(skills, "pointermove", { pointerId: 1, clientX: 102, clientY: 101 });
+    expect(capture).not.toHaveBeenCalled();
+    expect(content.style.transform).toContain("translate(0px, 0px)");
+    pointer(skills, "pointerup", { pointerId: 1 });
+    fireEvent.click(skills);
+    expect(skills).toHaveAttribute("aria-pressed", "true");
+
+    pointer(skills, "pointerdown", { pointerId: 2, clientX: 100, clientY: 100 });
+    pointer(skills, "pointermove", { pointerId: 2, clientX: 140, clientY: 120 });
+    pointer(skills, "pointermove", { pointerId: 2, clientX: 150, clientY: 125 });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(content.style.transform).toContain("translate(50px, 25px)");
+  });
+
+  it("forgets a press released outside the map, so a later move does not pan", () => {
+    const { content, viewport } = draw();
+    const capture = vi.fn();
+    viewport.setPointerCapture = capture;
+
+    pointer(viewport, "pointerdown", { pointerId: 1, clientX: 100, clientY: 100 });
+    pointer(document.body, "pointerup", { pointerId: 1 });
+    pointer(viewport, "pointermove", { pointerId: 1, clientX: 300, clientY: 300 });
+
+    expect(capture).not.toHaveBeenCalled();
     expect(content.style.transform).toContain("translate(0px, 0px)");
   });
 

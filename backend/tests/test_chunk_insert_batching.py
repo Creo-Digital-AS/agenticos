@@ -11,14 +11,14 @@ change is: it must not scale with the number of chunks. The integration half
 proves the `executemany` actually writes every row, which a counted mock cannot.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.db.vector_tables import VectorScope, VectorWriterKind
+from app.repositories import collection_teardown_repo
 from app.services.rag import vectorstore as vectorstore_module
 from app.services.rag.models import (
     Document,
@@ -92,13 +92,21 @@ def _store(session: RecordingSession, *, dim: int = 3) -> PgVectorStore:
     return store
 
 
+@pytest.fixture(autouse=True)
+def _name_free_to_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The name's hold is not one of the statements these count."""
+    monkeypatch.setattr(collection_teardown_repo, "hold_unreserved", AsyncMock(return_value=True))
+
+
 class TestHowManyStatementsOneDocumentCosts:
     async def test_a_document_of_many_chunks_is_written_in_batches(self, monkeypatch):
         """The statement count follows the batch size, not the chunk count."""
         monkeypatch.setattr(vectorstore_module, "_CHUNK_INSERT_BATCH", 100)
         session = RecordingSession()
 
-        await _store(session).insert_document("docs", _document(chunks=250))
+        await _store(session).insert_document(
+            "docs", _document(chunks=250), VectorScope(tenant=None)
+        )
 
         assert len(session.calls) == 3
         assert [len(batch) for batch in session.calls] == [100, 100, 50]  # ty: ignore[invalid-argument-type]
@@ -109,7 +117,7 @@ class TestHowManyStatementsOneDocumentCosts:
         monkeypatch.setattr(vectorstore_module, "_CHUNK_INSERT_BATCH", 200)
         session = RecordingSession()
 
-        await _store(session).insert_document("docs", _document(chunks=7))
+        await _store(session).insert_document("docs", _document(chunks=7), VectorScope(tenant=None))
 
         assert len(session.calls) == 1
         assert len(session.calls[0]) == 7  # ty: ignore[invalid-argument-type]
@@ -120,8 +128,8 @@ class TestHowManyStatementsOneDocumentCosts:
         monkeypatch.setattr(vectorstore_module, "_CHUNK_INSERT_BATCH", 500)
         small, large = RecordingSession(), RecordingSession()
 
-        await _store(small).insert_document("docs", _document(chunks=40))
-        await _store(large).insert_document("docs", _document(chunks=400))
+        await _store(small).insert_document("docs", _document(chunks=40), VectorScope(tenant=None))
+        await _store(large).insert_document("docs", _document(chunks=400), VectorScope(tenant=None))
 
         assert len(small.calls) == len(large.calls) == 1
 
@@ -131,7 +139,7 @@ class TestHowManyStatementsOneDocumentCosts:
         session = RecordingSession()
         document = _document(chunks=10)
 
-        await _store(session).insert_document("docs", document)
+        await _store(session).insert_document("docs", document, VectorScope(tenant=None))
 
         written = [row["id"] for batch in session.calls for row in batch]  # ty: ignore[invalid-argument-type]
         assert written == [chunk.chunk_id for chunk in document.chunked_pages]
@@ -145,7 +153,7 @@ class TestHowManyStatementsOneDocumentCosts:
         for index, chunk in enumerate(document.chunked_pages):
             chunk.page_num = index + 1
 
-        await _store(session).insert_document("docs", document)
+        await _store(session).insert_document("docs", document, VectorScope(tenant=None))
 
         rows = session.calls[0]
         assert [json.loads(row["metadata"])["page_num"] for row in rows] == [1, 2, 3, 4]  # ty: ignore[invalid-argument-type]
@@ -170,17 +178,20 @@ class TestHowManyStatementsOneDocumentCosts:
         original = store._build_chunk_metadata
 
         def counting(
-            chunk: object, document: object, organization_id: object = None
+            chunk: DocumentPageChunk,
+            document: Document,
+            scope: VectorScope,
+            writer_kind: VectorWriterKind | None = None,
         ) -> dict[str, object]:
             nonlocal built
             built += 1
-            return original(chunk, document, organization_id)  # ty: ignore[invalid-argument-type]
+            return original(chunk, document, scope, writer_kind)
 
         store._build_chunk_metadata = counting  # ty: ignore[invalid-assignment]
         seen: list[int] = []
         session.on_execute = lambda: seen.append(built)
 
-        await store.insert_document("docs", _document(chunks=30))
+        await store.insert_document("docs", _document(chunks=30), VectorScope(tenant=None))
 
         assert seen == [10, 20, 30]
 
@@ -190,6 +201,8 @@ class TestHowManyStatementsOneDocumentCosts:
         session = RecordingSession()
 
         with pytest.raises(ValueError, match="no chunked pages"):
-            await _store(session).insert_document("docs", _document(chunks=0))
+            await _store(session).insert_document(
+                "docs", _document(chunks=0), VectorScope(tenant=None)
+            )
 
         assert session.calls == []

@@ -58,20 +58,27 @@ The conftest also sets `POSTGRES_DB` to `<base>_p<pid>` *before* anything import
 checkout with a populated `.env` used to empty the development database, and a constant
 name meant two runs on one machine dropping each other's tables (#189).
 
-The same block seeds Prefect, which reads `backend/.env` on its own account:
-`PREFECT_API_URL` **empty** so that calling a `@flow` starts a temporary server rather
-than reaching for the one `make dev` names (#536), and `PREFECT_HOME` at a directory
-belonging to the tests so that server's SQLite database is not a developer's
-`~/.prefect`. `tests/test_prefect_test_environment.py` pins both, and
-`docs/testing.md#prefect-and-why-no-test-reaches-a-server` explains why an empty
-assignment is the shape that works.
+The worker needs no server and no variable of its own. Its guarantees are tested
+against the real `background_jobs` table and real child processes, with the
+misbehaving kinds in `tests/worker_handlers.py`; a service that queues a job is
+unit-tested by patching `enqueue` where it is imported (the `queued_fires`
+fixture in `tests/test_agent_triggers.py`).
+`docs/testing.md#the-workers-tests` has which file covers what.
+
+When listing files for one pytest run, keep the `tests/integration/` files
+together: an integration file, then a plain `tests/` file, then another
+integration file loses `tests/integration/conftest.py` for the last one and it
+errors with `fixture 'db' not found`. Whole directories, as CI runs them, are
+unaffected.
 
 `tests/integration/conftest.py` **creates that database for the session and drops it
 afterwards**, so two concurrent runs need nothing passed to them — `make test` and
 `uv run pytest tests/integration` are safe while another run is going. It skips the
-whole module when no database is reachable, and **refuses any database whose name
-contains neither `test` nor `ci`, or that is not a plain identifier** — it calls
-`drop_all` unconditionally and drops the database itself at the end.
+whole module when no database is reachable (`make test` starts a throwaway Postgres
+on :5433; for a scoped run, `make docker-test-db` and pass
+`POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres`), and **refuses any database whose name
+contains neither `test` nor `ci`, or that is not a plain identifier** — it truncates
+the populated tables between tests and drops the database itself at the end.
 
 ## A test earns its place by failing when the behaviour changes
 
@@ -95,6 +102,14 @@ field already stored as JSONB.
 
 For parser/routing changes, read the `rag-knowledge` skill; for stored JSONB
 validation changes, read `agent-spec` and `alembic-migration`.
+
+## Learnings
+
+Mark actual refusal tests with `@pytest.mark.security`; a coincidental keyword
+match belongs in `EXEMPT` in `tests/test_security_marker.py`, with its reason.
+When adding tests, include `.venv/bin/pytest tests/test_security_marker.py` alongside
+the touched files from `backend/`: its static inventory checks the whole tree even
+in a scoped run.
 
 ## Depth
 

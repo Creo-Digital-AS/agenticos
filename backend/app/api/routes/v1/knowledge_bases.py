@@ -23,14 +23,16 @@ from app.api.deps import (
 from app.api.public_api import PUBLIC
 from app.api.routes.v1._stored_bytes import stored_file_response
 from app.core.exceptions import NotFoundError
+from app.core.field_errors import refused_field
 from app.core.permissions import Perm
 from app.schemas.knowledge_base import (
     KnowledgeBaseCreate,
+    KnowledgeBaseDetailRead,
     KnowledgeBaseList,
-    KnowledgeBaseRead,
     KnowledgeBaseUpdate,
 )
 from app.schemas.rag import (
+    RAGIngestionStatus,
     RAGIngestResponse,
     RAGParsedContent,
     RAGSyncLogList,
@@ -43,8 +45,8 @@ from app.schemas.sync_source import (
     SyncSourceCreate,
     SyncSourceList,
     SyncSourceRead,
+    SyncSourceUpdate,
 )
-from app.services.collection_access import in_knowledge_base
 from app.services.ingestion_config import parse_override
 
 router = APIRouter(dependencies=[PUBLIC])
@@ -63,8 +65,8 @@ async def list_knowledge_bases(
 ) -> Any:
     """List the Knowledge Bases this caller may read in the active organization.
 
-    Carries each collection's document and chunk counts, which the single-row
-    responses do not. A picker choosing what an agent may search is choosing
+    Carries each collection's document and chunk counts, as its detail does.
+    A picker choosing what an agent may search is choosing
     between collections, and a name alone does not distinguish the one with four
     hundred documents in it from the one somebody made and never filled.
     """
@@ -73,7 +75,7 @@ async def list_knowledge_bases(
 
 @router.post(
     "",
-    response_model=KnowledgeBaseRead,
+    response_model=KnowledgeBaseDetailRead,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require(Perm.COLLECTIONS_EDIT))],
 )
@@ -93,20 +95,25 @@ async def create_knowledge_base(
     model is recorded from the deployment and is not settable - a collection's
     vectors are only comparable with themselves.
     """
-    return await service.create(data, ctx=ctx)
+    kb = await service.create(data, ctx=ctx)
+    return await service.describe(kb, ctx=ctx)
 
 
-@router.get("/{kb_id}", response_model=KnowledgeBaseRead)
+@router.get("/{kb_id}", response_model=KnowledgeBaseDetailRead)
 async def get_knowledge_base(
     kb_id: UUID,
     service: KnowledgeBaseSvc,
     ctx: Auth,
 ) -> Any:
-    """Get a Knowledge Base by ID."""
-    return await service.get(kb_id, ctx=ctx)
+    """Get a Knowledge Base with counts, usage and effective write access for this caller.
+
+    `can_edit` follows the same scope, ownership and grant rules as mutations.
+    """
+    kb = await service.get(kb_id, ctx=ctx)
+    return await service.describe(kb, ctx=ctx)
 
 
-@router.patch("/{kb_id}", response_model=KnowledgeBaseRead)
+@router.patch("/{kb_id}", response_model=KnowledgeBaseDetailRead)
 async def update_knowledge_base(
     kb_id: UUID,
     data: KnowledgeBaseUpdate,
@@ -119,7 +126,8 @@ async def update_knowledge_base(
     Nothing already indexed is re-parsed, and the embedding model cannot be
     changed here at all.
     """
-    return await service.update(kb_id, data, ctx=ctx)
+    kb = await service.update(kb_id, data, ctx=ctx)
+    return await service.describe(kb, ctx=ctx)
 
 
 @router.delete(
@@ -136,7 +144,9 @@ async def delete_knowledge_base(
 
     Default KBs cannot be deleted. The physical `rag_<collection>` table is dropped
     by the durable cleanup the service dispatches after the commit, which builds its
-    own vector engine - so the route no longer wires a store in (#1266, #1349).
+    own vector engine - so the route no longer wires a store in (#1266, #1349). It
+    stays, with this base's chunks purged, while another base holds the name or it
+    holds chunks this base does not take, such as an operator's `rag-ingest` (#2747).
     """
     await service.delete(kb_id, ctx=ctx)
 
@@ -159,6 +169,25 @@ async def list_kb_documents(
     """
     await service.get(kb_id, ctx=ctx)
     return await rag_doc_service.list_for_kb(kb_id=kb_id, skip=skip, limit=limit, filename=filename)
+
+
+@router.get("/{kb_id}/ingestion", response_model=RAGIngestionStatus)
+async def get_kb_ingestion(
+    kb_id: UUID,
+    service: KnowledgeBaseSvc,
+    rag_doc_service: RAGDocumentSvc,
+    ctx: Auth,
+) -> Any:
+    """Whether a Knowledge Base's documents are still indexing.
+
+    Counted over the documents `GET /kb/{kb_id}/documents` lists - all of them,
+    not one page - so it agrees with that list even when another base shares the
+    collection name. `indexing` while any is queued or being ingested and
+    `complete` once none is; a failed document shows in `failed_count` and does
+    not hold it at `indexing`.
+    """
+    await service.get(kb_id, ctx=ctx)
+    return await rag_doc_service.ingestion_for_kb(kb_id)
 
 
 @router.post(
@@ -223,16 +252,12 @@ async def download_kb_document(
     doc_id: UUID,
     service: KnowledgeBaseSvc,
     rag_doc_svc: RAGDocumentSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Response:
     """Download (or open inline) the original file for a KB document."""
     kb = await service.get(kb_id, ctx=ctx)
-    doc = await rag_doc_svc.get_document(str(doc_id))
-    if not in_knowledge_base(doc, kb):
-        raise NotFoundError(
-            message="Document not found in this knowledge base",
-            details={"kb_id": str(kb_id), "doc_id": str(doc_id)},
-        )
+    await access.kb_document(kb, str(doc_id))
     stored, filename, mime_type = await rag_doc_svc.get_download_info(str(doc_id))
     response = await stored_file_response(
         stored,
@@ -255,6 +280,7 @@ async def get_kb_document_parsed(
     service: KnowledgeBaseSvc,
     rag_doc_svc: RAGDocumentSvc,
     vector_store: VectorStoreSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
     """How a KB document parsed: the indexed chunks, grouped back into pages.
@@ -265,12 +291,7 @@ async def get_kb_document_parsed(
     is no parse to show yet.
     """
     kb = await service.get(kb_id, ctx=ctx)
-    doc = await rag_doc_svc.get_document(str(doc_id))
-    if not in_knowledge_base(doc, kb):
-        raise NotFoundError(
-            message="Document not found in this knowledge base",
-            details={"kb_id": str(kb_id), "doc_id": str(doc_id)},
-        )
+    await access.kb_document(kb, str(doc_id))
     return await rag_doc_svc.get_parsed_content(str(doc_id), vector_store)
 
 
@@ -285,6 +306,7 @@ async def delete_kb_document(
     service: KnowledgeBaseSvc,
     rag_doc_service: RAGDocumentSvc,
     ingestion_service: IngestionSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> None:
     """Remove a document from the KB (cascades to vectors + file storage).
@@ -301,12 +323,7 @@ async def delete_kb_document(
     route repeating it.
     """
     kb = await service.get_for_write(kb_id, ctx=ctx)
-    doc = await rag_doc_service.get_document(str(doc_id))
-    if not in_knowledge_base(doc, kb):
-        raise NotFoundError(
-            message="Document not found in this knowledge base",
-            details={"kb_id": str(kb_id), "doc_id": str(doc_id)},
-        )
+    await access.kb_document(kb, str(doc_id))
     await rag_doc_service.delete_document(str(doc_id), ingestion_service)
 
 
@@ -315,17 +332,23 @@ async def list_kb_sync_sources(
     kb_id: UUID,
     service: KnowledgeBaseSvc,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
-    """List sync sources feeding this KB's collection (org-scoped)."""
+    """List the caller organization's sync sources feeding this KB.
+
+    A source feeds the base its sync writes under, so a base sharing its
+    collection name with another lists only its own sources.
+    """
     kb = await service.get(kb_id, ctx=ctx)
-    return await sync_source_svc.list_sources(
-        organization_id=ctx.organization_id,
-        collection_name=kb.collection_name,
-    )
+    return sync_source_svc.as_list(await access.kb_sync_sources(ctx, kb))
 
 
-@router.get("/{kb_id}/sync-sources/org-integrations", response_model=SyncSourceList)
+@router.get(
+    "/{kb_id}/sync-sources/org-integrations",
+    response_model=SyncSourceList,
+    dependencies=[Depends(require(Perm.CONNECTIONS_MANAGE))],
+)
 async def list_org_integrations_for_kb(
     kb_id: UUID,
     service: KnowledgeBaseSvc,
@@ -336,6 +359,12 @@ async def list_org_integrations_for_kb(
 
     Used by the wizard's 'pick existing' step so the user can clone an
     existing integration's credentials into this knowledge base.
+
+    Gated on `connections:manage`, as `GET /org/integrations` is: the rows are
+    the organization's integrations - every other base's and the unassigned
+    ones, with their config, the vault secret each uses and their last error -
+    not this base's, so reading this base is not what grants them (#2745). A
+    grant on a base cannot widen it for the same reason.
     """
     kb = await service.get(kb_id, ctx=ctx)
     all_org = await sync_source_svc.list_sources(organization_id=ctx.organization_id)
@@ -365,14 +394,19 @@ async def create_kb_sync_source(
     data: SyncSourceCreate,
     service: KnowledgeBaseSvc,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
     """Wire up a sync source (Google Drive, S3, …) feeding this KB.
 
     The `collection_name` field on the request body is overridden with the
-    KB's own collection - clients should not need to know that detail.
+    KB's own collection - clients should not need to know that detail. A KB
+    that shares its collection name with an older base of the organization is
+    refused with 400: a source names a collection, not a KB, so its sync would
+    write into that other base.
     """
     kb = await service.get_for_write(kb_id, ctx=ctx)
+    await access.new_source_feeds(ctx, kb)
     payload = data.model_copy(update={"collection_name": kb.collection_name})
     return await sync_source_svc.create_source(payload, ctx=ctx)
 
@@ -402,6 +436,7 @@ async def clone_kb_sync_source(
     another tenant's Google Drive at their own collection and sync it.
     """
     kb = await service.get_for_write(kb_id, ctx=ctx)
+    await access.new_source_feeds(ctx, kb)
     source = await access.sync_source(ctx, str(source_id))
     clone_data = data.model_copy(update={"collection_name": kb.collection_name})
     return await sync_source_svc.clone_source(str(source.id), clone_data, ctx=ctx)
@@ -416,16 +451,13 @@ async def trigger_kb_sync_source(
     source_id: UUID,
     service: KnowledgeBaseSvc,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> Any:
     """Manually trigger a sync run for one of this KB's sources."""
     kb = await service.get_for_write(kb_id, ctx=ctx)
-    source = await sync_source_svc.get_source(str(source_id))
-    if not in_knowledge_base(source, kb):
-        raise NotFoundError(
-            message="Sync source not found in this knowledge base",
-            details={"kb_id": str(kb_id), "source_id": str(source_id)},
-        )
+    source = await access.kb_sync_source(ctx, kb, str(source_id), for_update=True)
+    sync_source_svc.refuse_paused(source)
     sync_log = await sync_source_svc.trigger_sync(str(source_id), user_id=ctx.user_id)
     return RAGSyncResponse(
         id=str(sync_log.id),
@@ -440,6 +472,7 @@ async def list_kb_sync_source_logs(
     source_id: UUID,
     service: KnowledgeBaseSvc,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
     limit: int = Query(20, ge=1, le=100),
 ) -> Any:
@@ -455,13 +488,40 @@ async def list_kb_sync_source_logs(
     per-resource read on this surface answers.
     """
     kb = await service.get(kb_id, ctx=ctx)
-    source = await sync_source_svc.get_source(str(source_id))
-    if not in_knowledge_base(source, kb):
-        raise NotFoundError(
-            message="Sync source not found in this knowledge base",
-            details={"kb_id": str(kb_id), "source_id": str(source_id)},
-        )
+    source = await access.kb_sync_source(ctx, kb, str(source_id))
     return await sync_source_svc.list_logs(source.id, limit=limit)
+
+
+@router.patch("/{kb_id}/sync-sources/{source_id}", response_model=SyncSourceRead)
+async def update_kb_sync_source(
+    kb_id: UUID,
+    source_id: UUID,
+    data: SyncSourceUpdate,
+    service: KnowledgeBaseSvc,
+    sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
+    ctx: Auth,
+) -> Any:
+    """Change one of this KB's sync sources - its name, config, credential or schedule.
+
+    Send only the fields that change. Resending an unchanged `secret_id` checks
+    it again, as the caller's own choice, and a credential private to whoever
+    set the source up is then refused.
+
+    The source stays filed under this KB: a `collection_name` naming another one,
+    or `null`, is refused rather than followed, because moving a source changes
+    who can read what it syncs and that is not a decision made from inside one
+    base.
+
+    A key set to `null` in `config` removes it from the stored config.
+    """
+    kb = await service.get_for_write(kb_id, ctx=ctx)
+    await access.kb_sync_source(ctx, kb, str(source_id), for_update=True)
+    if "collection_name" in data.model_fields_set and data.collection_name != kb.collection_name:
+        raise refused_field(
+            "collection_name", "A source cannot be moved to another knowledge base from here"
+        )
+    return await sync_source_svc.update_source(str(source_id), data, ctx=ctx)
 
 
 @router.delete(
@@ -474,14 +534,10 @@ async def delete_kb_sync_source(
     source_id: UUID,
     service: KnowledgeBaseSvc,
     sync_source_svc: SyncSourceSvc,
+    access: CollectionAccessSvc,
     ctx: Auth,
 ) -> None:
     """Remove a sync source from this KB."""
     kb = await service.get_for_write(kb_id, ctx=ctx)
-    source = await sync_source_svc.get_source(str(source_id))
-    if not in_knowledge_base(source, kb):
-        raise NotFoundError(
-            message="Sync source not found in this knowledge base",
-            details={"kb_id": str(kb_id), "source_id": str(source_id)},
-        )
+    await access.kb_sync_source(ctx, kb, str(source_id), for_update=True)
     await sync_source_svc.delete_source(str(source_id), ctx=ctx)

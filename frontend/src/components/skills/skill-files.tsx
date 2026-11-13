@@ -17,10 +17,11 @@
  */
 
 import { useMemo, useState } from "react";
-import { FileText, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 
-import { FileEditor, PathTree, type PathTreeNode } from "@/components/files";
+import { FileEditor, FileIcon, PathTree, type PathTreeNode } from "@/components/files";
 import { Button, Input, Label, Textarea } from "@/components/ui";
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { useSkillResource } from "@/hooks";
 import { folderPaths, type TreeNode } from "@/lib/file-tree";
 import type { SkillResourceSummary } from "@/types/providers";
@@ -79,8 +80,8 @@ export function FileTree({
       }
       renderFile={(node) => (
         <>
-          <FileText className="text-muted-foreground h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span className="truncate font-mono text-xs">{node.label}</span>
+          <FileIcon name={node.label} className="text-muted-foreground size-4 shrink-0" />
+          <span className="truncate text-[13px]">{node.label}</span>
         </>
       )}
     />
@@ -141,7 +142,7 @@ export function FilePane({
   resource: SkillResourceSummary;
   canEdit: boolean;
   busy: boolean;
-  onSave: (content: string) => void;
+  onSave: (content: string) => Promise<unknown>;
   onDelete: () => void;
 }) {
   const t = useTranslations("skills");
@@ -150,6 +151,22 @@ export function FilePane({
 
   const value = draft ?? loaded?.content ?? "";
   const dirty = draft !== null && draft !== loaded?.content;
+
+  const save = async (): Promise<boolean> => {
+    try {
+      await onSave(value);
+      setDraft((current) => (current === value ? null : current));
+      return true;
+    } catch {
+      // The resource mutation shows the error; preserve the text for another attempt.
+      return false;
+    }
+  };
+  useUnsavedChanges(`skill-resource:${skillId}:${resource.id}`, {
+    dirty: canEdit && dirty,
+    save,
+    discard: () => setDraft(null),
+  });
 
   return (
     <FileEditor
@@ -162,14 +179,7 @@ export function FilePane({
       footer={
         canEdit ? (
           <>
-            <Button
-              size="sm"
-              disabled={!dirty || busy}
-              onClick={() => {
-                onSave(value);
-                setDraft(null);
-              }}
-            >
+            <Button size="sm" loading={busy} disabled={!dirty} onClick={() => void save()}>
               {t("saveFile")}
             </Button>
             {dirty && (
@@ -249,7 +259,7 @@ export function NewFileForm({
             onChange={(event) => setName(event.target.value)}
             placeholder="references/workflows.md"
             spellCheck={false}
-            className="font-mono text-sm"
+            className="font-mono text-base md:text-sm"
             required
           />
           <p className="text-muted-foreground text-xs">{t("folderMadeByNaming")}</p>
@@ -270,10 +280,10 @@ export function NewFileForm({
         rows={10}
         placeholder={t("fileBody")}
         aria-label={t("fileContents")}
-        className="font-mono text-xs"
+        className="font-mono text-base md:text-xs"
       />
       <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" disabled={busy || name.trim() === ""}>
+        <Button type="submit" size="sm" loading={busy} disabled={name.trim() === ""}>
           {t("addFile")}
         </Button>
         <Button type="button" size="sm" variant="ghost" onClick={onCancel}>

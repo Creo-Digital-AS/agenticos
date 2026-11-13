@@ -34,6 +34,7 @@ Run these from the project root directory.
 | `make desktop-check` | `bun test` over the pet, then rustfmt, clippy with warnings denied and the shell's Rust tests. Not in `lint` or `check`, because CI has no Rust toolchain yet |
 | `make audit` | Audit the locked dependency set for known vulnerabilities. Needs the network — one request per locked distribution — so its last line says which of four states it ended in rather than leaving a red run ambiguous. See below |
 | `make sandbox-token` | Generate the sandbox service's own `SANDBOXD_TOKEN` into `backend/.env`, once. `make dev` runs it for you; it never regenerates, because a new token orphans every workspace the service is holding. The connection form offers to store the same value in the vault, so it does not have to be pasted anywhere |
+| `make seed-skills-lab` | Build the Skills lab organization on a running stack, for clicking through skill improvement: one skill, `returns-policy`, that several agents share, their test questions and rated chats. Talks to the stack over HTTP, so it creates only what is missing and a second run keeps what people changed. The owner's login and the provider key come from `SKILLS_LAB_EMAIL`, `SKILLS_LAB_PASSWORD` and `SKILLS_LAB_OPENROUTER_KEY`; `SKILLS_LAB_URL` names the stack. `PROBE=v1`, `broad`, `narrow` or `gift` measures one wording of the skill in an organization of its own, and `DROP_PROBES=1` deletes those organizations |
 | `make clean` | Remove cache files (__pycache__, .pytest_cache, etc.) |
 
 ### Before a pull request
@@ -145,16 +146,18 @@ advisories.
 | `make user-create` | Create new user (interactive) |
 | `make user-list` | List all users |
 
-### Prefect
+### Background jobs
 
-Prefect runs as two containers in the dev stack — they start automatically with `make dev`:
+The worker runs as one container in the dev stack and starts with `make dev`:
 
-- **`prefect-server`** — orchestration API + web UI at <http://localhost:4200>
-- **`prefect-runner`** — registers the scheduled deployments and polls for work
+- **`worker`** — `python -m app.worker`, from the backend image. It claims jobs
+  from the `background_jobs` table, runs the ingest pool in child processes,
+  and fires the deployment's schedules.
 
-The runner is `python -m app.worker.prefect_app`; flows live in `app/worker/tasks/`.
-Open the UI to watch flow runs, inspect logs, and trigger deployments manually.
-Self-hosted by default — set `PREFECT_API_KEY` (and a Cloud `PREFECT_API_URL`) to use Prefect Cloud instead.
+Job kinds are declared in `app/worker/jobs.py`, their handlers live in
+`app/worker/tasks/` and are bound in `app/worker/handlers.py`, and the
+schedules are in `app/worker/schedules.py`. Watch, retry, cancel and resume on
+the console's **Admin → Background jobs** page, as the deployment's owner.
 
 ### Docker (development)
 
@@ -308,6 +311,10 @@ uv run agenticos cmd <command-name> [options]
 
 ```bash
 # An organization, an owner, a model profile and a published agent. Idempotent.
+# --org names the organization bootstrap sets up. An account that already
+# exists gets one by that name, even if it runs another; its personal
+# organization is left alone. Without --org, it is the one the owner lands in.
+# A deployment's default organization still opens first at sign-in.
 uv run agenticos cmd bootstrap \
     --email owner@example.com --password secret \
     --org "Acme" --provider anthropic --api-key sk-ant-...
@@ -318,9 +325,9 @@ uv run agenticos cmd bootstrap --org "Acme"
 # Can this deployment actually run an agent? Database, vault, a usable model,
 # and every registered sandbox connection - probed one by one, credential
 # included, because `/healthz` is unauthenticated and answers for a service
-# holding the wrong token. Then whether scheduled jobs run: a trigger heartbeat
-# that has not completed for five intervals fails it, whatever Prefect's own
-# health endpoint says.
+# holding the wrong token. Then whether background work runs: no worker heard
+# from in two minutes, a minute schedule that has not fired for five intervals,
+# or a kind of job paused by its circuit breaker fails it.
 uv run agenticos cmd doctor
 
 # The same, plus a second sheet: one row per control of a security profile,
@@ -557,7 +564,17 @@ uv run agenticos cmd rag-drop my_collection
 
 # Drop without confirmation
 uv run agenticos cmd rag-drop my_collection --yes
+
+# Clear one of several knowledge bases that share the name
+uv run agenticos cmd rag-drop docs --knowledge-base <knowledge-base-id> --yes
 ```
+
+`rag-drop` clears the knowledge base that holds the name, the way the console's drop
+does, and a worker removes the vector table and the stored files after the command
+commits. A name that several knowledge bases hold - possibly in different
+organizations - is refused, with their ids, until `--knowledge-base` names one; the
+table then stays for the others. Unlike the console's drop, it also removes a last
+holder's table that holds chunks no base owns.
 
 #### Google Drive sync
 
@@ -642,3 +659,21 @@ uv run agenticos cmd my-command --name test
 ```
 
 For more details, see `docs/adding_features.md`.
+
+## Refreshing the Architect
+
+After upgrading, inspect installed Architect instructions and its AgenticOS guide, then refresh copies nobody edited:
+
+```bash
+uv run agenticos cmd refresh-assistant --dry-run
+uv run agenticos cmd refresh-assistant --org <org-id>
+uv run agenticos cmd refresh-assistant --org <org-id> --replace-edited
+```
+
+Omit `--org` to process every organization. The report distinguishes `current`, `update`, `edited` and `untracked`; `--dry-run` writes nothing. `edited` and `untracked` copies are skipped unless `--replace-edited` explicitly replaces organization changes.
+
+Instruction changes create and publish a new agent version, preserving published history, model, budget, capabilities, skills and assistant settings. If other draft fields differ from the published version, the entire refresh is blocked until those changes are published or discarded; the replacement flag does not bypass this check. An assistant that has never been published receives updated draft instructions and still needs a model and publication in the Builder. Missing and archived assistants are skipped. A missing or detached guide is reported without changing skill bindings.
+
+The guide is an ordinary shared skill: refreshing its content and resources increments its version and affects every agent using that copy. Edited guides receive the same protection as edited instructions. Existing copies with unknown provenance remain untracked; the upgrade recognizes only exact instructions previously shipped by AgenticOS. A deployment upgrade does not automatically overwrite an installed Architect: run this command to adopt the new template.
+
+Bulk runs report organizations without an owner as skipped and continue with the remaining organizations. A targeted `--org` run fails explicitly if that organization has no owner.

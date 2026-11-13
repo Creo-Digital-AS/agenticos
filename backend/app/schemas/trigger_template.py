@@ -6,8 +6,6 @@ schedule, an event source for an event - and the label and description to draw
 it.
 """
 
-from __future__ import annotations
-
 from typing import Literal
 
 from app.schemas.base import BaseSchema
@@ -30,7 +28,7 @@ class TriggerTemplateRead(BaseSchema):
     prompt: str
     trigger_type: Literal["schedule", "event"]
     suggested_cadence: SuggestedCadenceRead | None = None
-    event_source: Literal["github", "gmail", "webhook"] | None = None
+    event_source: Literal["github", "gmail", "outlook", "webhook"] | None = None
 
 
 class TriggerTemplateList(BaseSchema):

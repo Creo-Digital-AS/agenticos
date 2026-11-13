@@ -2,7 +2,7 @@
 
 This is the residual of #179. That change added a publish-time check: binding a
 skill hands its body and its files to every run of the agent, so the publisher
-has to be able to read it themselves (`AgentRegistryService._skill_problems`).
+has to be able to read it themselves (`AgentRegistryService.skill_problems`).
 Validation on this platform runs at publish and never at run time, deliberately -
 `SkillService.resolve_for_agent` resolves a frozen spec's `skill_ids` with the
 tenant filter only, because a runner-scoped check would refuse every subject-less
@@ -36,8 +36,6 @@ the publisher holds today. A publisher whose user row is gone
 (`published_by_user_id` is nullable, `ON DELETE SET NULL`) is reported as
 *unknown* rather than guessed either way.
 """
-
-from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
@@ -124,7 +122,7 @@ def _bindings(spec: AgentSpec) -> list[SkillBinding]:
 
     A delegating agent carries specialists inside its delegation capability, and
     each specialist has its own `skill_ids` that publish validates through the
-    same `_skill_problems`. An agent that does not delegate - see
+    same `skill_problems`. An agent that does not delegate - see
     :func:`_delegation_config` - has no specialists, so only its own `skill_ids`
     are returned.
     """
@@ -188,11 +186,9 @@ async def _findings_for(db: AsyncSession, agent: Agent, version: AgentVersion) -
     """Every problematic binding in one running spec.
 
     Only a skill that would actually load is judged, which is exactly what
-    `resolve_for_agent` loads: present, this organization's, and enabled. A
-    skill_id the org-scoped fetch does not return is deleted or another tenant's,
-    and a disabled one is skipped by `resolve_for_agent` too - both hand nothing
-    to a run, so both are dangling references left to that path rather than
-    reported as an exposure that would fail the audit.
+    `resolve_for_agent` loads: present and this organization's. A skill_id the
+    org-scoped fetch does not return is deleted or another tenant's, so it hands
+    nothing to a run and is left to that path rather than reported as an exposure.
     """
     spec = AgentSpec.model_validate(version.spec)
     bindings = _bindings(spec)
@@ -205,7 +201,7 @@ async def _findings_for(db: AsyncSession, agent: Agent, version: AgentVersion) -
     findings: list[Finding] = []
     for binding in bindings:
         skill = skills.get(binding.skill_id)
-        if skill is None or not skill.enabled:
+        if skill is None:
             continue
         status = await _classify(
             db,

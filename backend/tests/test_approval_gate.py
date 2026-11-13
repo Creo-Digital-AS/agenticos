@@ -9,15 +9,15 @@ The last test is the one that would have caught the bug this exists to fix: a
 parked run that never continues. It drives a real agent through park and resume.
 """
 
-from __future__ import annotations
-
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 from pydantic_ai import ApprovalRequired
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
@@ -99,6 +99,10 @@ def _ctx(decision: ApprovalDecision | None) -> MagicMock:
     return ctx
 
 
+class _Recipient(BaseModel):
+    address: str
+
+
 class _Recorder:
     """Stands in for the tool itself, remembering what it was actually run with."""
 
@@ -131,6 +135,45 @@ class TestGate:
 
         assert tool.calls == [{"to": "approved@example.com"}]
         assert result == "sent"
+
+    @pytest.mark.anyio
+    async def test_the_arguments_asked_about_can_be_stored(self):
+        """A tool taking an id is asked about with it as text, which a JSON column holds.
+
+        `share_view(view_id: UUID)` reached the approval queue as a `UUID`, and the
+        run died writing the row instead of showing the person anything.
+        """
+        view_id = uuid.uuid4()
+        ctx = _ctx(ApprovalPending())
+
+        with pytest.raises(ApprovalRequired):
+            await ApprovalGate(required_tool_names=GATED).wrap_tool_execute(
+                ctx,
+                call=_call({"view_id": str(view_id)}),
+                tool_def=_tool_def(),
+                args={"view_id": view_id},
+                handler=_Recorder(),
+            )
+
+        [request] = ctx.deps.request_approval.await_args.args
+        assert request.tool_args == {"view_id": str(view_id)}
+        json.dumps(request.tool_args)
+
+    @pytest.mark.anyio
+    async def test_an_approved_id_reaches_the_tool_as_the_type_it_takes(self):
+        """The approval holds the id as text; the tool still gets its `UUID` back."""
+        view_id = uuid.uuid4()
+        tool = _Recorder()
+
+        await ApprovalGate(required_tool_names=GATED).wrap_tool_execute(
+            _ctx(ApprovalGranted(tool_args={"view_id": str(view_id)})),
+            call=_call({"view_id": str(view_id)}),
+            tool_def=_tool_def(),
+            args={"view_id": view_id},
+            handler=tool,
+        )
+
+        assert tool.calls == [{"view_id": view_id}]
 
     @pytest.mark.anyio
     async def test_a_rejected_call_refuses_without_crashing_the_run(self):
@@ -184,6 +227,29 @@ class TestGate:
                 args={"to": "a@example.com"},
                 handler=_Recorder(),
             )
+
+    @pytest.mark.anyio
+    async def test_a_call_whose_arguments_are_models_is_asked_about_as_json(self):
+        """The request is stored as JSONB, so validated arguments cannot go in as they are.
+
+        A tool taking a list of models - `computer_act`'s actions - parked its run
+        with a serialization error instead of a request a person could answer.
+        """
+        ctx = _ctx(ApprovalPending())
+        gate = ApprovalGate(required_tool_names=GATED)
+
+        with pytest.raises(ApprovalRequired):
+            await gate.wrap_tool_execute(
+                ctx,
+                call=_call({"to": [{"address": "a@example.com"}]}),
+                tool_def=_tool_def(),
+                args={"to": [_Recipient(address="a@example.com")]},
+                handler=_Recorder(),
+            )
+
+        request = ctx.deps.request_approval.await_args.args[0]
+        assert request.tool_args == {"to": [{"address": "a@example.com"}]}
+        json.dumps(request.tool_args)
 
     @pytest.mark.anyio
     async def test_a_tool_that_needs_no_approval_is_untouched(self):
@@ -663,6 +729,9 @@ class TestApprovalQueue:
             "agent_id": agent_id,
             "tool_id": "send_email",
             "tool_args": {"to": "customer@example.com"},
+            "capability_tool_id": None,
+            # Nothing described it: the arguments alone are what the approver reads.
+            "context": None,
             # A capability's tool is nobody's account: only an MCP binding names one.
             "account": None,
             # Nobody delegated: the agent whose run this is asked directly. Pinned
@@ -674,6 +743,8 @@ class TestApprovalQueue:
             # Nobody waived it either: a parked call is one somebody still has to
             # read, and `None` here is what leaves the row `pending` (#925).
             "standing_consent_by": None,
+            # An ordinary gated tool: a person may remember their answer to it.
+            "always_asks": False,
         }
 
     @pytest.mark.anyio
@@ -682,7 +753,7 @@ class TestApprovalQueue:
         ctx = AuthContext(
             user_id=uuid.uuid4(), organization_id=uuid.uuid4(), role=OrgRoleName.OPERATOR
         )
-        waiting = MagicMock(id=uuid.uuid4())
+        waiting = MagicMock(id=uuid.uuid4(), parked_in_chat=False)
         db = MagicMock(flush=AsyncMock(), refresh=AsyncMock())
 
         with patch(
@@ -978,3 +1049,114 @@ class TestTheFrameThatCarriesTheMode:
         a run they think is running."""
         with pytest.raises(BadRequestError):
             requested_approval_mode({"approval_mode": "yolo"})
+
+
+@pytest.mark.anyio
+async def test_routine_standing_consent_executes_and_records_the_consenting_person():
+    from app.agents.routine_actions import RoutineToolDecision
+
+    person = uuid.uuid4()
+    channel = ApprovalChannel(
+        organization_id=uuid.uuid4(), agent_id=uuid.uuid4(), run_id=uuid.uuid4()
+    )
+    ctx = _ctx(None)
+    ctx.deps.request_approval = channel
+    tool = _Recorder()
+    gate = ApprovalGate(
+        routine_policy=AsyncMock(
+            return_value=RoutineToolDecision(required=True, consented_by=person)
+        )
+    )
+    assert (
+        await gate.wrap_tool_execute(
+            ctx,
+            call=_call({"to": "a@example.com"}),
+            tool_def=_tool_def(),
+            args={"to": "a@example.com"},
+            handler=tool,
+        )
+        == "sent"
+    )
+    (recorded,) = channel.requested
+    assert recorded.standing and recorded.routine_consented_by == person
+    assert recorded.tool_args == {"to": "a@example.com"}
+    assert channel.parked == {}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("explicit", ["agent", "ask-all", "connection"])
+async def test_a_routine_exception_never_weakens_an_explicit_gate(explicit):
+    from app.agents.routine_actions import RoutineToolDecision
+
+    callback = AsyncMock(return_value=ApprovalPending())
+    ctx = _ctx(None)
+    ctx.deps.request_approval = callback
+    definition = _tool_def(None if explicit == "connection" else "email")
+    if explicit == "connection":
+        definition.metadata = {NEEDS_APPROVAL: True}
+    gate = ApprovalGate(
+        required_tool_names=GATED if explicit == "agent" else frozenset(),
+        gate_every_tool=explicit == "ask-all",
+        routine_policy=AsyncMock(
+            return_value=RoutineToolDecision(required=True, consented_by=uuid.uuid4())
+        ),
+    )
+    tool = _Recorder()
+    with pytest.raises(ApprovalRequired):
+        await gate.wrap_tool_execute(
+            ctx, call=_call({}), tool_def=definition, args={}, handler=tool
+        )
+    assert tool.calls == []
+    assert callback.await_args.args[0].routine_consented_by is None
+
+
+@pytest.mark.anyio
+async def test_routine_default_gate_parks_or_refuses_without_a_channel_and_revocation_is_final():
+    from app.agents.routine_actions import RoutineToolDecision
+
+    tool = _Recorder()
+    policy = AsyncMock(return_value=RoutineToolDecision(required=True))
+    gate = ApprovalGate(routine_policy=policy)
+    refused = await gate.wrap_tool_execute(
+        _ctx(None), call=_call({}), tool_def=_tool_def(), args={}, handler=tool
+    )
+    assert "cannot ask" in refused and tool.calls == []
+    with pytest.raises(ApprovalRequired):
+        await gate.wrap_tool_execute(
+            _ctx(ApprovalPending()), call=_call({}), tool_def=_tool_def(), args={}, handler=tool
+        )
+    policy.side_effect = AuthorizationError(message="Routine paused")
+    refused = await gate.wrap_tool_execute(
+        _ctx(ApprovalGranted({})), call=_call({}), tool_def=_tool_def(), args={}, handler=tool
+    )
+    assert "Routine paused" in refused and tool.calls == []
+
+
+@pytest.mark.anyio
+async def test_a_routine_checks_authority_without_gating_a_question_to_the_person():
+    from app.agents.routine_actions import RoutineToolDecision
+
+    policy = AsyncMock(return_value=RoutineToolDecision(required=True))
+    gate = ApprovalGate(asking_tool_names=frozenset({"connect_account"}), routine_policy=policy)
+    handler = _Recorder()
+    assert (
+        await gate.wrap_tool_execute(
+            _ctx(None),
+            call=_call({}),
+            tool_def=_tool_def(None, "connect_account"),
+            args={},
+            handler=handler,
+        )
+        == "sent"
+    )
+    policy.assert_awaited_once()
+    policy.side_effect = AuthorizationError(message="Routine paused")
+    refused = await gate.wrap_tool_execute(
+        _ctx(None),
+        call=_call({}),
+        tool_def=_tool_def(None, "connect_account"),
+        args={},
+        handler=handler,
+    )
+    assert "Routine paused" in refused
+    assert handler.calls == [{}]

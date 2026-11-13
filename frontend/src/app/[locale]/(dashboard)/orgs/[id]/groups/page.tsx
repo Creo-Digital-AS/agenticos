@@ -31,22 +31,26 @@ export default function GroupsPage({ params }: PageProps) {
   const { id: orgId } = use(params);
   const { can } = usePermissions();
   const canManage = can(Perm.membersManage);
-  const { groups, isLoading, error, remove } = useGroups(orgId);
+  const { groups, isLoading, error, remove, refetch } = useGroups(orgId);
   // `"new"` for the create dialog, a group for the edit one.
   const [editing, setEditing] = useState<Group | "new" | null>(null);
   const [deleting, setDeleting] = useState<Group | null>(null);
   const [viewing, setViewing] = useState<Group | null>(null);
 
-  const confirmDelete = async (group: Group) => {
-    await remove.mutateAsync(group.id).catch(() => undefined);
-    setDeleting(null);
+  const confirmDelete = (group: Group) => {
+    remove.mutate(group.id, { onSuccess: () => setDeleting(null) });
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
-        title={t("title")}
-        description={t("description")}
+        title={<span data-tour="org-groups">{t("title")}</span>}
+        description={
+          <div className="space-y-2">
+            <p>{t("description")}</p>
+            <p>{t("intro")}</p>
+          </div>
+        }
         breadcrumbs={[
           { label: t("organizations"), href: ROUTES.ORGS },
           { label: t("members"), href: ROUTES.ORG_MEMBERS(orgId) },
@@ -62,15 +66,9 @@ export default function GroupsPage({ params }: PageProps) {
         }
       />
 
-      <p
-        data-tour="org-groups"
-        className="border-border bg-card text-muted-foreground rounded-xl border p-5 text-sm"
-      >
-        {t("intro")}
-      </p>
-
       <GroupList
         groups={groups}
+        onRetry={() => void refetch()}
         isLoading={isLoading}
         error={error}
         canManage={canManage}

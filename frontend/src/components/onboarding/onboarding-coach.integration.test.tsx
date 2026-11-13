@@ -30,10 +30,10 @@ vi.mock("@/components/onboarding/spotlight", async (importActual) => {
   return {
     ...actual,
     waitForElement: vi.fn(async () => document.createElement("div")),
-    activateTab: vi.fn(),
     onlyHiddenMatches: vi.fn(() => false),
   };
 });
+vi.mock("@/lib/activate-tab", () => ({ activateTab: vi.fn() }));
 
 const flow = vi.hoisted(() => ({ state: null as OnboardingFlowState | null }));
 vi.mock("@/hooks/use-onboarding-flow", () => ({
@@ -119,6 +119,32 @@ describe("OnboardingCoach", () => {
     // Last step, so the manual control reads Finish; clicking it advances.
     await userEvent.click(screen.getByRole("button", { name: "Finish" }));
     expect(next).toHaveBeenCalled();
+  });
+
+  it("says an optional step's control is not there, frees the page, and picks it up once it is", async () => {
+    const finish = vi.fn();
+    const optional = step({
+      id: "flow-test-draft",
+      target: "agent-test-draft",
+      signal: { kind: "opened" },
+      optional: true,
+    });
+    let appear: (element: Element) => void = () => undefined;
+    vi.mocked(waitForElement)
+      .mockImplementationOnce(async () => null)
+      .mockImplementationOnce(() => new Promise((resolve) => (appear = resolve)));
+    flow.state = makeState({ step: optional, steps: [optional], finish });
+    render(<OnboardingCoach />);
+
+    expect(await screen.findByText(/nothing to test yet/)).toBeVisible();
+    expect(document.querySelector("[data-coach-freeze]")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Finish" }));
+    expect(finish).toHaveBeenCalled();
+
+    // The draft changed meanwhile: the button is there, and the step is back on.
+    appear(document.createElement("div"));
+    expect(await screen.findByText(/differs from the live version/)).toBeVisible();
+    await waitFor(() => expect(document.querySelector("[data-coach-freeze]")).toBeInTheDocument());
   });
 
   it("navigates to the step's page when the reader is elsewhere", async () => {

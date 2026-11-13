@@ -97,7 +97,14 @@ export type IngestionOverride = Partial<Omit<IngestionConfig, "image_description
   image_description?: Partial<ImageDescriptionConfig>;
 };
 
+export interface KnowledgeBaseDetail extends KnowledgeBase {
+  /** Effective access returned by single-base reads and mutations. */
+  can_edit: boolean;
+}
+
 export interface KnowledgeBase {
+  gap_drafter_agent_id?: string | null;
+  gap_classifier_agent_id?: string | null;
   id: string;
   organization_id: string | null;
   owner_user_id: string | null;
@@ -135,6 +142,7 @@ export interface KnowledgeBase {
    * `embedding`. Null for a keyed provider, whose address is the vendor's.
    */
   embedding_endpoint_id: string | null;
+  embedding_base_url?: string | null;
   created_at: string;
   updated_at: string | null;
   /**
@@ -194,6 +202,7 @@ export interface CreateKnowledgeBaseInput {
   embedding_secret_id?: string;
   /** The local service a keyless provider is reached at. Required for one. */
   embedding_endpoint_id?: string;
+  embedding_base_url?: string | null;
 }
 
 /**
@@ -206,6 +215,7 @@ export interface EmbeddingProviderInput {
   embedding_provider?: string;
   embedding_secret_id?: string;
   embedding_endpoint_id?: string;
+  embedding_base_url?: string | null;
 }
 
 /** One provider a collection can embed through, from `GET /rag/embedding-models`. */
@@ -223,6 +233,18 @@ export interface EmbeddingProvider {
 
 export interface EmbeddingModels {
   providers: EmbeddingProvider[];
+}
+
+/**
+ * The models one custom endpoint serves, from `GET /rag/embedding-models/{provider}`.
+ *
+ * `live` is the endpoint's own listing narrowed to this build's catalog, and may
+ * be empty; `curated` is the whole catalog, because the endpoint could not be asked.
+ */
+export interface EndpointEmbeddingModels {
+  provider: string;
+  models: EmbeddingProvider["models"];
+  source: "live" | "curated";
 }
 
 /** A single document tracked in a KB's underlying vector collection. */
@@ -273,6 +295,19 @@ export interface KBDocument {
 export interface KBDocumentList {
   items: KBDocument[];
   total: number;
+}
+
+/**
+ * Whether a KB's documents are still indexing - all of them, not one loaded page.
+ *
+ * `indexing` while any is queued or being ingested and `complete` once none is;
+ * a failed document is terminal and shows in `failed_count` instead (#2486).
+ */
+export interface KBIngestion {
+  indexing_status: "indexing" | "complete";
+  processing_count: number;
+  indexed_count: number;
+  failed_count: number;
 }
 
 /**

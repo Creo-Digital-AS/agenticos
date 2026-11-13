@@ -1,20 +1,17 @@
 ---
-source_sha: "de38073f9286"
+source_sha: "0d080c65b077"
 ---
 
 # Auf einem Server deployen { #deploy-to-a-server }
 
-Ein Host, Docker Compose, ein Reverse Proxy davor. Das ist der gesamte
-ausgelieferte Weg, und genau er läuft in den Deployments, in denen dieses
-Projekt eingesetzt wird.
+Ein Host, Docker Compose und ein Reverse Proxy bleiben der ausgelieferte Weg
+für einen einzelnen Server. Für Cluster gibt es das gepflegte
+[Kubernetes-Helm-Chart](kubernetes.md) mit externen Datendiensten und einem
+blockierenden Migrationsjob. Die OpenShift-Konfiguration ist noch nicht validiert.
+Ein-Klick-Schnellstarts für PaaS-Anbieter gibt es nicht.
 
-Es gibt keine Kubernetes-Manifeste und keine Ein-Klick-Schnellstarts für die
-Platform-as-a-Service-Anbieter. Das ist keine Bescheidenheit in Bezug auf die
-Skalierung. Der Stack besteht aus sechs Containern, zwei davon halten Zustand,
-einer kann eigene Container starten, und einer ist ein Postgres, das pgvector
-haben muss - was bereits mehr ist, als ein `git push`-Deploy-Ziel abbildet, und
-eine Anleitung, die etwas anderes vorgäbe, würde ein Deployment beschreiben, das
-niemand betrieben hat.
+Über einen Host hinaus - ein verwaltetes Postgres, mehrere API-Hosts, mehrere
+Deployments - führt [Über einen Host hinaus skalieren](scaling.md).
 
 !!! tip "Lesen Sie zuerst die [Produktions-Checkliste](configuration.md#production-checklist)"
 
@@ -28,13 +25,14 @@ niemand betrieben hat.
 | | |
 |---|---|
 | **Einen Host** | 4 vCPU und 8 GB RAM genügen. Siehe [Dimensionierung](#sizing-the-host) |
-| **Docker** | Engine 24+ mit dem Compose-Plugin (2.24 oder neuer), und Ihr Benutzer in der Gruppe `docker`. Auf dem Host wird nichts gebaut: die Images werden von GHCR geholt |
+| **Container-Engine** | Engine 24+ mit dem Compose-Plugin (2.24 oder neuer), und Ihr Benutzer in der Gruppe `docker`. Auf dem Host wird nichts gebaut: die Images werden von GHCR geholt. Alternativ nutzen Sie den [manuellen Podman-Weg](#podman-support). |
 | **Zwei Hostnamen** | einen für die Website, einen für die API — siehe [warum zwei](#why-two-hostnames) |
 | **Einen Reverse Proxy** | [Traefik](#option-a-traefik) oder [Nginx](#option-b-nginx). Er terminiert TLS |
 | **Keinen Provider-Key** | Chat-Modelle und Embeds werden beide pro Organisation im Vault des Produkts hinterlegt. Die Umgebung hält für keines von beiden Zugangsdaten — siehe [Datenschutz](data-protection.md#nothing-leaves-by-default) |
 
-Der Host braucht außerdem die Ports 80 und 443 offen, und sonst nichts. Postgres,
-Redis und die Prefect-API sind auf keiner Schnittstelle veröffentlicht.
+Der Host braucht außerdem die Ports 80 und 443 offen, und sonst nichts. Postgres
+und Redis sind auf keiner Schnittstelle veröffentlicht, und der Worker bedient
+nichts.
 
 ### Warum zwei Hostnamen { #why-two-hostnames }
 
@@ -47,6 +45,98 @@ kann, und ein eigenes Zertifikat.
 Namen sein; was sie nicht sein dürfen, ist ein Name mit einem Pfadpräfix, denn
 die Cookies der API und die der Website sind auf den Host begrenzt.
 
+### Podman-Unterstützung { #podman-support }
+
+**Podman wird über die manuelle Installation mit Docker Compose als Provider
+unterstützt.** Getestet wurden Podman 6.1.4 und Docker Compose v2.40.3 auf
+Fedora CoreOS 44 (Podman-VM unter macOS, ARM64, cgroups v2, SELinux enforcing).
+Die gelieferte Datei benötigt Compose 2.24 oder neuer.
+
+**Verwenden Sie nicht `podman-compose` 1.6.0.** Der Stack startete und ein Agent
+antwortete, aber eine gezielt fehlgeschlagene Migration verhinderte den Start
+der abhängigen App nicht. Docker Compose verweigerte diesen Start korrekt.
+Die Versionsnummern der Provider sind unabhängig; `podman-compose` 1.6.0 ist
+nicht Docker Compose 1.6.0.
+
+Der Quickstart bleibt auf Docker beschränkt und verweist erkanntes Podman auf
+diesen manuellen Weg, auch mit `--no-sandbox`. Wählen Sie im konfigurierten
+Repository-Hauptverzeichnis die echte Docker-Compose-Datei (eigenständiges
+Programm oder CLI-Plugin):
+
+```bash
+export PODMAN_COMPOSE_PROVIDER=/absolute/path/to/docker-compose
+podman compose version
+podman compose -f docker-compose.yml up -d
+```
+
+Prüfen Sie, dass `podman compose version` Docker Compose identifiziert. Das
+explizite `-f` schließt den lokalen Quellcode-Build-Override aus; diese
+Installation verwendet veröffentlichte Images. Folgen Sie nach dem Start
+[Installation](install.md), um Organisation und Modell einzurichten.
+
+**Optionale Sandbox.** `pydantic-ai-backend` 0.2.39 funktionierte mit rootful
+und rootless Podman-Sockets. Ein neues Backend oder Release ist nicht nötig.
+Verwenden Sie `docker-compose-podman.yml` für die Socket- und Workspace-Mounts;
+bereiten Sie deren Berechtigungen vor dem Aktivieren des Profils vor.
+
+Auf nativem Linux mit rootless Podman:
+
+```bash
+systemctl --user enable --now podman.socket
+export SANDBOX_DOCKER_SOCKET="$XDG_RUNTIME_DIR/podman/podman.sock"
+export SANDBOX_WORKSPACE_ROOT="$HOME/.local/share/agenticos/sandbox-workspaces"
+mkdir -p "$SANDBOX_WORKSPACE_ROOT"
+podman unshare chown 10001:10001 "$SANDBOX_WORKSPACE_ROOT"
+export DOCKER_GID=0
+```
+
+Aktivieren Sie für rootful Linux stattdessen den systemweiten `podman.socket`,
+setzen Sie `SANDBOX_DOCKER_SOCKET=/run/podman/podman.sock` und erstellen Sie den
+Workspace mit `sudo install -d -o 10001 -g 10001 "$SANDBOX_WORKSPACE_ROOT"`.
+Richten Sie Compose auf diese rootful Engine. Die Socket-Gruppe ist gewöhnlich
+0; bei einem angepassten rootful Socket gehört seine tatsächliche Gruppe in
+`DOCKER_GID`.
+
+Bei einer rootless Podman-VM unter macOS liegen beide Bind-Quellen in der
+Linux-VM, nicht auf macOS. Bereiten Sie sie innerhalb der VM vor:
+
+```bash
+export SANDBOX_DOCKER_SOCKET="$(podman machine ssh 'printf "%s/podman/podman.sock" "$XDG_RUNTIME_DIR"')"
+export SANDBOX_WORKSPACE_ROOT=/tmp/agenticos-sandbox-workspaces
+podman machine ssh 'mkdir -p /tmp/agenticos-sandbox-workspaces && podman unshare chown 10001:10001 /tmp/agenticos-sandbox-workspaces'
+export DOCKER_GID=0
+```
+
+Behalten Sie bestehende Deployment-Schlüssel. Setzen Sie ein nichtleeres
+`SANDBOXD_TOKEN` und `SANDBOX_URL=http://sandboxd:8080` in der vom Stack gelesenen
+Env-Datei, wie unter [Sandbox-Konfiguration](sandbox.md) beschrieben. Starten Sie
+dann mit beiden Dateien:
+
+```bash
+podman compose -f docker-compose.yml -f docker-compose-podman.yml \
+  --profile sandbox up -d
+```
+
+Der Override deaktiviert SELinux-Labeling nur für `sandboxd`, das bereits den
+Engine-Socket hält. Der Workspace erhält mit `:z` ein gemeinsames Label, da ihn
+auch benachbarte Sandboxes mounten. Sandbox-Container behalten eigene Labels und
+`no-new-privileges`; ändern Sie nicht das Socket-Label und deaktivieren Sie
+SELinux nicht global. Rootless Socket-Eigentum wird im User-Namespace auf
+Gruppe 0 abgebildet.
+
+Verwenden Sie auf Servern einen dauerhaften Workspace-Pfad: `/tmp` ist nur ein
+lokales Beispiel. Behalten Sie Socket-, Workspace- und Gruppenwerte für spätere
+Compose-Aufrufe in der Operator-Umgebung. `DOCKER_HOST` auf dem Host ändert nicht
+den Socket-Mount in `sandboxd`.
+
+Verifiziert wurden ein HTTP-Agent-Run mit gespeicherter Fertigstellung,
+Workspace-Dateien, Fehlercodes, Timeouts, wirksame RAM/CPU/PID-Limits und
+Runtime-Builds. Das gelieferte Workbench-Image las/schrieb XLSX, zeichnete einen
+Plot und startete Node und LibreOffice. Das Modell war ein deterministischer
+OpenAI-kompatibler Testserver; Desktop-Runtime und sämtliche Linux-Distributionen
+wurden nicht getestet. Der [Testbericht](https://github.com/vstorm-co/agenticos/blob/main/docs/audits/podman-2026-11-03.md)
+nennt Versionen, Umfang und die Reproduktion des Migrationsfehlers.
+
 ## Den Host dimensionieren { #sizing-the-host }
 
 Auf einem im Leerlauf befindlichen Deployment gemessen, nicht geschätzt:
@@ -55,8 +145,7 @@ Auf einem im Leerlauf befindlichen Deployment gemessen, nicht geschätzt:
 |---|---|---|
 | `app` (2 uvicorn workers) | ~1,0 GB | 2,5 GB bei den standardmäßigen 4 Workern |
 | `db` | ~1,3 GB mit dem Tuning unten | 2 GB |
-| `prefect-runner` | 241 MiB | 1,5 GB |
-| `prefect-server` | 245 MiB | 768 MB |
+| `worker` (ein Ingest-Kindprozess) | 387 MiB | 2,5 GB (`WORKER_MEMORY_LIMIT`) |
 | `frontend` | ~300 MB | 1 GB |
 | `redis` | 9 MiB | 512 MB |
 
@@ -72,6 +161,25 @@ ein festgefahrenes Geschwister ersetzt. Ein Worker ist die Einstellung, die es z
 vermeiden gilt: eine blockierte Event Loop ist dann das gesamte Deployment, bis
 es sich selbst beendet.
 
+Ein Host, dem CPU fehlt, zeigt ein anderes Symptom: Zeilen `Child process [N] died`
+im Log von `app` ohne Watchdog-Urteil darüber, während jede Seite langsam ist. Das
+sind Worker, die uvicorns Supervisor getötet hat, weil sie seinen Ping zu spät
+beantwortet haben, keine Worker, die ausgefallen sind. Er wartet
+[`UVICORN_WORKER_HEALTHCHECK_TIMEOUT`](configuration.md#a-worker-whose-event-loop-has-stopped-turning)
+Sekunden, standardmäßig 60. Prüfe den CPU-Steal des Hosts, bevor du den Wert erhöhst.
+
+Zwei Einstellungen halten ein langsames Deployment diagnostizierbar:
+
+- **Jedes Log ist begrenzt.** Jeder Dienst in den Produktions-Compose-Dateien
+  schreibt höchstens fünf Dateien zu 20 MB. Docker behält das Log eines
+  Containers standardmäßig, bis der Container entfernt wird, und nichts auf dem
+  Host rotiert es.
+- **Postgres zeichnet auf, was jede Anweisung kostet.** Der Dienst `db` lädt
+  `pg_stat_statements` beim Start vor, und eine Migration legt die Erweiterung
+  an. Wo die Datenbankrolle sie nicht anlegen darf, protokolliert die Migration
+  einen Hinweis und läuft weiter. `agenticos cmd doctor` gibt in jedem Fall eine
+  Zeile `query statistics` aus.
+
 !!! note "Die Datenbank ist auf ihr eigenes Limit hin abgestimmt"
 
     `docker-compose-prod.yml` betreibt Postgres mit `shared_buffers=512MB` gegen ein
@@ -79,6 +187,13 @@ es sich selbst beendet.
     ein paralleler Scan über die Vektoren einer Collection erschöpft, mit der Meldung
     `could not resize shared memory segment`. Verschieben Sie das Limit, verschieben
     Sie das Tuning mit; sie stehen aus diesem Grund nebeneinander.
+
+    Außerdem setzt sie `max_connections=200`, denn die Pools können mehr
+    öffnen als die 100 von Postgres ab Werk: zwei Pools zu 15 je uvicorn-Worker,
+    also 120 bei den standardmäßigen vier, und 30 weitere für den
+    Hintergrund-Worker. Erhöhen Sie den Wert mit `UVICORN_WORKERS` oder
+    `DB_POOL_SIZE`, sonst lehnt Postgres Verbindungen mit „too many clients“ ab,
+    bevor ein Pool sie einreihen oder die Last abwerfen kann.
 
 ## Die Namen auf den Host zeigen lassen { #point-the-names-at-the-host }
 
@@ -129,7 +244,7 @@ veröffentlicht.
 
 | | |
 |---|---|
-| `ghcr.io/vstorm-co/agenticos-backend` | Die API, der Prefect-Runner und die Migrationen - ein Image, drei Kommandos |
+| `ghcr.io/vstorm-co/agenticos-backend` | Die API, der Worker und die Migrationen - ein Image, drei Kommandos |
 | `ghcr.io/vstorm-co/agenticos-frontend` | Die Konsole |
 
 Beide werden von `.github/workflows/images.yml` für `linux/amd64` und
@@ -161,6 +276,14 @@ einen Tag verlassen:
     schlechten Tag das holt, was gestern lief, und nicht das, was heute Morgen
     veröffentlicht wurde. `scripts/deploy.sh` pinnt für Sie - auf den `sha-`-Tag des
     Commits, den es deployt - für genau so lange, wie der Deploy läuft.
+
+    Pinnen Sie es aus dem Checkout dieses Releases: `git checkout v0.0.380` neben
+    der Variablen. Das Image des Sandbox-Dienstes ist in der Compose-Datei
+    gepinnt, auf die Version, die das Backend desselben Commits spricht. Ein
+    älteres Backend aus einem neueren Checkout trifft also auf ein neueres
+    `sandboxd` - und `latest` aus einem alten Checkout ist derselbe Versatz in die
+    andere Richtung. `scripts/deploy.sh` checkt den Commit aus, den es deployt,
+    also hält ein Deploy oder Rollback per Skript beides zusammen.
 
 Beide Pakete lassen sich anonym holen. Antwortet ein Pull mit `unauthorized`,
 wurde das Paket auf privat gestellt oder ein veraltetes `docker login ghcr.io`
@@ -231,10 +354,72 @@ annahm.
 
     Es ist die eine Einstellung in `traefik/traefik.yml`, die es sich zu lesen lohnt,
     bevor Sie ihn betreiben. Nur `app` und `frontend` tragen `traefik.enable=true`,
-    also sind Postgres, Redis, der Prefect-Server und der Sandbox-Daemon von nichts
+    also sind Postgres, Redis, der Worker und der Sandbox-Daemon von nichts
     außerhalb des Hosts erreichbar — und das ist eine Eigenschaft davon, *nicht
     gelabelt zu sein*, sie überlebt also, dass jemand einen Dienst hinzufügt, ohne an
     den Proxy zu denken.
+
+!!! warning "Manche Request-Pfade und Query-Strings sind Zugangsdaten"
+
+    Diese Pfadsegmente öffnen jedem, der sie liest, etwas:
+
+    - der Schlüssel eines öffentlichen Links, in `/a/<key>`,
+      `/api/v1/public/artifacts/<key>` und `/api/v1/artifact-embed/<key>`, bis
+      der Link rotiert wird;
+    - eine signierte Inhaltsadresse, `/api/v1/artifact-content/<token>`, für
+      ihre Lebensdauer;
+    - das Token einer geteilten Unterhaltung, in `/shared/<token>` und
+      `/api/v1/conversations/shared/<token>`;
+    - das Token eines Workflow-Formulars, in `/f/<token>` und
+      `/api/v1/public/workflow-forms/<token>`;
+    - das Token eines Webhook-Tests, in `/api/v1/workflow-webhook-tests/<token>`
+      und `/api/v1/workflows/<id>/webhook-test/<token>`;
+    - das Token einer Kanalverknüpfung, in `/link/<token>` und
+      `/api/v1/me/channel-link/<token>`;
+    - das Token einer Einladung, in `/invitations/<token>`,
+      `/api/v1/invitations/<token>` und `/api/v1/invitations/<token>/accept`;
+    - das Fortsetzungs-Token eines Workflow-Laufs, in
+      `/api/v1/workflow-resume/<run_id>/<token>`.
+
+    Dasselbe gilt für diese Query-Parameter:
+
+    - `visitor` und `token` am Socket des Agent-Widgets,
+      `/api/v1/embed/<key>/ws`: der Schlüssel einer gehosteten Seite, mit dem
+      sich die Unterhaltung des Besuchers fortsetzen lässt, und das signierte
+      Besucher-Token des Kunden;
+    - `code` und `state` bei der Rückkehr von einem Anmeldeanbieter,
+      `/api/v1/oauth/<provider>/callback`, und `code` auf `/auth/callback` der
+      Konsole;
+    - `invitation_handle` auf `/api/v1/oauth/<provider>/login` und
+      `/api/v1/auth/kerberos/login`, das die Einladung einlöst, für die es
+      steht;
+    - `token` auf `/reset-password`, `/auth/magic-link` und
+      `/auth/email-change` der Konsole, den Links, die eine
+      Passwort-Zurücksetzung, ein Anmeldelink und eine E-Mail-Änderung
+      verschicken.
+
+    Eine Anfrage, die von einer dieser Seiten ausgeht, kann deren Adresse im
+    Header `Referer` mitführen. Die API ersetzt die API-Segmente und die Werte
+    dieser Parameter durch `[REDACTED]` in ihrem eigenen Access-Log, in der
+    Zeile, die uvicorn für jedes angenommene WebSocket schreibt, in jedem
+    Log-Record und in Logfire-Spans, einschließlich der Konsolenausgabe, der
+    Argumente des Endpunkts und der Kopie, die Logfire beim Start eines Spans
+    anlegt. Andere Query-Parameter wie `q`, `skip`, `limit` und Ids bleiben
+    erhalten.
+
+    Traefik kann ein ganzes Feld behalten, verwerfen oder redigieren, aber keinen
+    Teil davon umschreiben, deshalb entfernt `traefik/traefik.yml` `RequestPath`,
+    das den Query-String enthält, aus dem Access-Log von Traefik. Nginx könnte
+    einen Teil eines Werts umschreiben, doch `nginx/nginx.conf` lässt den Pfad,
+    den Query-String und den `Referer` auf dieselbe Weise weg, mit dem Log-Format `agenticos_no_path`, das jeder
+    Server-Block nennt, sodass die Liste der geheimen Pfade an einer Stelle
+    gepflegt wird. Beide Logs enthalten weiterhin den Client, den Status, die
+    Größe und die Dauer. Das Error-Log von Nginx schreibt die Request-Zeile und
+    den `Referer` einer fehlgeschlagenen Anfrage, und keine Einstellung ändert
+    das, behalten Sie das Error-Log also auf dem Host. Wenn Sie die Pfade im
+    Access-Log brauchen, entfernen Sie diese Feldregel bzw. dieses Log-Format und
+    behandeln Sie das Log als Secret: Behalten Sie es auf dem Host und schicken
+    Sie es an keinen Log-Dienst.
 
 ### Option B: Nginx { #option-b-nginx }
 
@@ -252,7 +437,9 @@ ausliefert: der `server_name` in jedem Block ist `${DOMAIN:-localhost}`, und
 Nginx expandiert das nicht — tragen Sie die beiden Hostnamen von Hand ein.
 Zertifikate zu beschaffen und zu erneuern ist Ihre Sache, und ebenso der Header
 `Strict-Transport-Security`, den das Backend bewusst dem überlässt, was TLS
-terminiert.
+terminiert. Das Access-Log der Vorlage lässt den Request-Pfad, den Query-String
+und den `Referer` weg; *Manche Request-Pfade und Query-Strings sind
+Zugangsdaten* oben erklärt, warum, und was das Error-Log weiterhin schreibt.
 
 !!! warning "`BIND_HOST` ist eine Sicherheitseinstellung, keine Bequemlichkeit"
 
@@ -269,7 +456,7 @@ terminiert.
     `agenticos` — und das Hochfahren des Frontends meldete dann die fünf
     Backend-Container als **Waisen**, mit Composes eigenem Vorschlag, das Kommando
     erneut mit `--remove-orphans` auszuführen. Diesem Rat zu folgen stoppt die API,
-    die Datenbank, Redis und beide Prefect-Dienste. Die `make`-Targets und
+    die Datenbank, Redis und den Worker. Die `make`-Targets und
     `scripts/deploy.sh` übergeben `-p agenticos-frontend`, die Warnung ist damit weg.
     Die Compose-Dateien legen auch keine Containernamen fest - jedes Projekt benennt
     seine eigenen, zwei Stacks auf einem Host können einander also nicht die
@@ -319,7 +506,7 @@ Produkt hinzugefügt, pro Organisation, aus dem Vault.
     innerhalb des Hosts nicht sehen kann.
 
 Dann, einmal, von Hand: melden Sie sich an, laden Sie jemanden ein (was `SMTP_*`
-nachweist) und schicken Sie Claude Code like eine Nachricht (was den Provider-Key
+nachweist) und schicken Sie AgenticOS eine Nachricht (was den Provider-Key
 und den WebSocket nachweist). Jedes davon übt einen Pfad aus, den hier sonst
 nichts prüft.
 
@@ -334,6 +521,23 @@ nichts prüft.
 
     **HSTS ist bewusst dem Proxy überlassen**, denn dort terminiert TLS. Ein Proxy,
     der eine eigene CSP setzt, sollte mindestens so streng sein wie diese.
+
+### Dienste im eigenen Netzwerk { #services-on-your-own-network }
+
+Eine von einem Mitglied konfigurierte Anfrage - ein Workflow-HTTP-Schritt, eine
+Git-, Website- oder S3-Quelle, ein A2A-Agent oder eine MCP-Connection - wird
+abgelehnt, wenn ihr Host auf eine private Adresse auflöst. Ein Wiki, ein
+Git-Server oder ein MCP-Server in Ihrem Netz ist daher standardmäßig nicht
+erreichbar. Um einen zu öffnen, tragen Sie ihn in `OUTBOUND_PRIVATE_ALLOWLIST`
+in `backend/.env` ein, als Host, `.suffix`, Adresse oder CIDR-Bereich, und
+starten Sie API und Worker neu. Die Zeile dieser Einstellung in der
+[Konfigurationsreferenz](configuration.md#project-settings) nennt die Formen,
+was unabhängig von Ihrer Liste abgelehnt wird und was dann jedes Konto
+erreicht. Listen Sie nur Dienste, die ihre eigenen Zugangsdaten prüfen.
+
+`agenticos cmd doctor` meldet die Liste als Zeile `private network`. Er schlägt
+fehl, wenn ein gelisteter Bereich die Datenbank oder Redis abdeckt, und warnt
+vor einem Bereich, der größer ist als /16 (IPv4) oder /48 (IPv6).
 
 ### Die Sandbox einschalten { #turning-the-sandbox-on }
 
@@ -350,10 +554,10 @@ sudo chown 10001:10001 /var/lib/agenticos/sandbox-workspaces
 
 Ein Deploy bringt sie dann hoch: `scripts/deploy.sh` übergibt `--profile sandbox`,
 wenn `SANDBOXD_TOKEN` in `backend/.env` einen Wert hat, der Host selbst sagt also,
-ob er eine betreibt. Es exportiert außerdem `DOCKER_GID`, vom Socket gelesen —
-jede Compose-Datei hier interpoliert es in das `group_add` der Sandbox, und sein
-Standardwert `0` ist auf so gut wie keiner Linux-Distribution der Eigentümer des
-Sockets. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
+ob er eine betreibt. Wie `make` und Quickstart exportiert es `DOCKER_GID` in
+`group_add` der Sandbox: die Socket-Gruppe unter Linux (Symlinks werden verfolgt)
+oder `0` bei Docker Desktop, wo der eingebundene Socket der VM gehört. Ein explizites
+`DOCKER_GID` in der Umgebung oder auf der `make`-Befehlszeile hat Vorrang. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
 über eine Sandbox-*Connection*, die jemand in der Konsole anlegt, und
 `http://sandboxd:8080` wird als die eigene dieses Deployments erkannt.
 
@@ -366,6 +570,73 @@ Sockets. Sonst wird nichts in `.env` gebraucht: das Backend erreicht den Daemon
     liest das Skript den Token, statt ein Flag entgegenzunehmen.
 
 ## Eine Änderung deployen { #deploying-a-change }
+
+### Nativer Speicher und Kontinuität von Routinen { #native-memory-upgrade }
+
+Erstelle vor dem Upgrade [Sicherungen von Datenbank, Medien und Vault-Schlüsseln](#backups)
+und koordiniere API- und Worker-Rollout. Nutze den normalen Migrationsschritt des
+Deployments; kopiere keine Zeilen und lege keine Ersatzzeitpläne manuell an.
+
+Stoppe vor `0285_member_proactivity.py` API und Sweep-Erzeuger, lasse aktive proaktive Jobs auslaufen und stoppe dann die Worker. Die Migration verweigert laufende Watch- oder nächtliche Modelljobs und ergänzt wartende Jobs um einen gemeinsamen Parallelitätsschlüssel pro Person. Aktualisiere API und Worker gemeinsam, damit neue Jobs denselben Schlüssel nutzen; eine Watch und ein nächtlicher Durchlauf derselben Person dürfen nicht unabhängig dasselbe Restbudget ausgeben.
+
+- `0248_drop_memory_mem0.py` stoppt das Upgrade, solange `memory_mem0` in einem
+  gespeicherten Entwurf oder veröffentlichten Spec verbleibt. Inventarisiere vor
+  dem erneuten Versuch alle Endpunkte und Vault-Zugangsdatenzuordnungen aus der
+  Sicherung, lösche die externen Erinnerungen und bestätige den Abschluss bei jedem
+  Anbieter. Entferne erst danach diese Bindungen ausdrücklich aus `agents.draft_spec`
+  und `agent_versions.spec`. Ein Export allein ist keine Löschung. Bewahre die
+  Löschbelege auf, prüfe ungenutzte Vault-Schlüssel und widerrufe ausgemusterte
+  Zugangsdaten. Die Migration führt keine Remote-Anfrage aus und setzt keine
+  erfolgreiche Löschung voraus. Hat ein früherer Entwicklungsstand die Bindungen
+  bereits entfernt, stelle das Inventar aus der Sicherung vor dem Upgrade wieder
+  her und führe dieselbe Löschung durch; die native Personen-/Agentenlöschung
+  erreicht diese externen Daten nicht.
+- `0251_primary_conversations.py` und `0258_primary_channel_history.py` richten
+  primäre private Chats ein. Bestehende Zuordnungen haben Vorrang. Nur nachweislich
+  privater Verlauf eines verknüpften Kanals wird einmalig übernommen; Projekt-,
+  Gruppen- und unklare Verläufe bleiben getrennt. Wiederhole die Übernahme nicht,
+  nachdem jemand seinen primären Chat geleert hat.
+- Bestehende Routinen-IDs, Zeitpläne und Logs bleiben erhalten.
+  `0255_trigger_delivery.py` setzt alte Routinen auf `run_log`; neue verwenden
+  standardmäßig den primären Chat oder ihre vertrauenswürdige Quellunterhaltung.
+  Prüfe Ziel, handelnde Person, Ende und Budget unter **Routinen**, statt Kopien
+  anzulegen.
+- `0259_trigger_version_pin.py` erlaubt unveränderliche Versionspins. Ein Pin und
+  eine benannte Umgebung schließen sich aus. Entferne einen Pin vor dem Löschen
+  seiner Version. Ein geparkter Run behält seine zugelassene Version;
+  `0260_routine_run_origin.py` erhält seine Herkunft, damit das Löschen der Routine
+  ihre Berechtigungsprüfung nicht aufhebt.
+- `0261_watch_attempt_status.py` beginnt die explizite Versuchserfassung ohne
+  erfundene ältere Erfolgs-/Fehlerhistorie. Nicht verfügbare oder unvollständige
+  Prüfungen verschieben den Erfolgszeitpunkt nicht. Prüfe bestehende
+  Beobachtungen und ihren Kontozugriff: alte Zeilen beweisen nicht, wie die
+  ursprüngliche Einwilligung erteilt wurde.
+
+Wähle vor dem Einschalten der Speicherpflege ausdrücklich ein Modell; das
+Tagesbriefing behält die bisherigen Modell-/Budgeteinstellungen der Organisation.
+Seit `0262_watch_agent_sources.py` verwenden Beobachtungen den ausgewählten
+Agenten und behalten die genehmigten Quellen im Run. Bestehende Beobachtungen
+erfordern eine Agentenauswahl und Quellenfreigabe; IDs und Funde bleiben erhalten. Prüfe
+[Governance](governance.md#proactive-work) und die [Kanaleinrichtung](channels.md#sms),
+einschließlich `PUBLIC_BASE_URL` und abgelaufener SMS-Verknüpfungen. Prüfe in einer
+Testorganisation einen privaten Chat, Aktivität/Zustellung einer Routine,
+Pause/Ablauf und eine Beobachtung mit nicht verfügbarer Quelle vor einem breiten
+Rollout.
+
+### Die Grenze des Verlaufsformats in 1.25.0 { #retry-history-upgrade }
+
+Version 1.25.0 übernimmt die Tool-Ergebnisse `retried` und separate Nachrichten
+`retry-feedback` aus Pydantic AI 2.61. Vorhandene Verläufe und Run-Checkpoints
+werden ohne Datenbankmigration oder erneutes Veröffentlichen der Agenten gelesen.
+Verläufe mit diesen Teilen benötigen den neuen Leser: Ein älteres Backend kann diese
+Nachrichtenformen nicht wiedergeben.
+
+Aktualisieren Sie alle API- und Worker-Prozesse zusammen. Lassen Sie alte Prozesse
+auslaufen oder stoppen Sie sie, bevor neue Arbeit annehmen. Mischen Sie keine
+älteren und neueren Backend-Replikate an derselben Datenbank. Sobald eines der neuen Retry-Formate gespeichert wurde,
+wird ein reiner Code-Rollback über diese Grenze nicht unterstützt;
+der neue Leser muss bleiben oder ein Datenbank-Snapshot von vor dem Upgrade
+wiederhergestellt werden.
 
 ### Von Hand { #by-hand }
 
@@ -400,12 +671,60 @@ Es ist nicht ausfallfrei. Compose erstellt die Container neu, deren Image sich
 geändert hat, die Website ist also für die wenigen Sekunden, die das dauert,
 nicht verfügbar.
 
+### Aufbewahrung von Release-Images { #release-image-retention }
+
+Vor dem Herunterladen entfernt das Skript alte, ungenutzte Release-Images nur aus
+`ghcr.io/vstorm-co/agenticos-backend`, `agenticos-frontend` und `agenticos-browser`.
+Es behält je Repository zwei zusätzliche ungenutzte Image-IDs, die neuesten
+zuerst. Mehrere SHA- oder Versions-Tags derselben ID zählen als ein Image.
+Nur `sha-<hex>` und numerische Versions-Tags kommen infrage. Alle Aliasse einer
+entfernbaren ID werden gemeinsam und ohne `--force` entfernt. `--no-prune`
+verhindert auch das implizite Löschen unmarkierter Eltern-Images.
+
+Jeder laufende oder gestoppte Container auf dem Host schützt sein Image, auch in
+anderen Compose-Projekten. Das Ziel-Image, ein veränderlicher oder manueller Tag
+sowie ein Tag oder Digest in einem anderen Repository schützen ebenfalls die
+gesamte ID. Sandbox-/Laufzeit-Images, Images ohne Tags und Anwendungs-Volumes
+bleiben unberührt. Diese Schutzregeln können mehr Images als das Kontingent für
+ungenutzte Images erhalten.
+
+Der Hash des Deployment-Verzeichnisses trennt die Markierungen mehrerer Stacks
+auf einem Host. Lokale Tags `deploy-<stack-hash>-current` und `deploy-<stack-hash>-rollback` erhalten das letzte gesunde
+Image jeder Komponente und dessen Vorgänger nach dem Austausch der Container.
+Beim ersten Einsatz wird `deploy-<stack-hash>-current` aus den gesunden Containern dieses
+Stacks ermittelt, nicht aus dem Checkout; unterschiedliche gesunde IDs derselben
+Komponente verweigern das Deployment. Die Markierungen wechseln erst nach
+erfolgreichen Healthchecks der neuen Dienste. Fehlgeschlagene Deployments behalten
+die gespeicherten Markierungen; ein erneutes Deployment desselben Images ersetzt
+seinen Rollback nicht. Rollbacks erfolgen weiterhin über einen genehmigten
+Commit-SHA: Diese lokalen Tags sind Aufbewahrungsmarkierungen, keine Registry-Releases.
+
+Das Skript verlangt mindestens **5 GiB freien Speicher** im Docker-Dateisystem vor
+jedem Pull und nach der optionalen Vorbereitung von Laufzeitumgebungen. Es prüft
+`DockerRootDir` und, falls vorhanden, den Standardspeicher `/var/lib/containerd`.
+Dies ist ein Mindestwert, keine Reservierung oder Schätzung der Image-Größe;
+benutzerdefinierte containerd-Speicher müssen separat überwacht werden. Backend-
+und Frontend-Images werden heruntergeladen, bevor einer der Dienste neu startet.
+Bei zu wenig Speicher nennt die Ablehnung das Dateisystem und den verfügbaren
+Platz. Speicher außerhalb der Schutzregeln freigeben oder erweitern, dann das
+genehmigte Deployment erneut starten. Diese Richtlinie niemals durch ein globales
+`docker image prune -a` umsetzen.
+
+Bei Docker Desktop liegt das Speicherverzeichnis in der Linux-VM. Das Skript
+misst deren freien Speicher mit einem temporären, schreibgeschützten und vom
+Netz getrennten Container aus einem bereits lokal vorhandenen Backend-Image,
+vorzugsweise dem letzten gesunden. Die Prüfung darf keine Images herunterladen
+und der Container wird automatisch entfernt. Zusätzlich wird das Host-Dateisystem
+des Deployment-Verzeichnisses geprüft; das Host-Dateisystem eines eigenen
+VM-Datenträgers muss separat überwacht werden. Dieses Update-Verfahren benötigt
+ein lokal vorhandenes Backend-Image; zuerst die normale Erstinstallation abschließen.
+
 ### Aus GitHub, mit einer Freigabe { #from-github-with-an-approval }
 
-`.github/workflows/deploy.yml` bietet jeden Merge auf `main` zum Deployment an
+`.github/workflows/deploy.yml` bietet jedes veröffentlichte stabile Release zum Deployment an
 und wartet darauf, dass jemand ihn freigibt. Dieses Tor ist **eine
 Repository-Einstellung, kein Schritt in der Datei** — ohne es deployt der
-Workflow jeden Merge unbeaufsichtigt.
+Workflow jedes veröffentlichte stabile Release unbeaufsichtigt.
 
 Einmal einrichten:
 
@@ -421,7 +740,7 @@ Einmal einrichten:
     Jeder Lauf teilt sich die Concurrency-Gruppe `deploy-production`, und ein Lauf,
     der am Freigabe-Tor sitzt, hält sie. Er läuft nicht von selbst ab — GitHub bricht
     einen unbearbeiteten nach 30 Tagen ab — bis also jemand ihn freigibt oder
-    abbricht, stauen sich spätere Merges hinter einer Entscheidung, die niemand
+    abbricht, stauen sich spätere Releases hinter einer Entscheidung, die niemand
     treffen wird, und der Server betreibt weiter das, was zuletzt deployt wurde.
 
     Ein Deploy, gegen den Sie sich entschieden haben, wird also abgebrochen und nicht
@@ -431,9 +750,9 @@ Einmal einrichten:
     `deploy-queue.yml` ist das, was passiert, wenn er trotzdem stehen bleibt: alle
     sechs Stunden bricht es einen Deploy-Lauf ab, der länger als zwölf auf eine
     Freigabe gewartet hat, und legt ein Issue an, das den Lauf benennt und sagt,
-    wie weit `main` vom letzten erfolgreichen Deploy abgedriftet ist. Es gibt
-    nichts frei und deployt nichts — es leert die Warteschlange, damit der nächste
-    Merge das Tor erreicht, und sagt, dass es das getan hat. Von Hand mit
+    wie weit das neueste stabile Release vom letzten erfolgreichen Deploy abgedriftet ist. Es gibt
+    nichts frei und deployt nichts — es leert die Warteschlange, damit das nächste
+    veröffentlichte Release das Tor erreicht, und sagt, dass es das getan hat. Von Hand mit
     `gh workflow run deploy-queue.yml`.
 
 !!! danger "Eine Freigabe aus der Warteschlange der Environment gibt den **ältesten** Lauf frei"
@@ -442,7 +761,7 @@ Einmal einrichten:
     Moment, in dem die Warteschlange stecken blieb, und nicht den gerade
     gepushten — so kam ein zwei Wochen alter Commit auf diesen Server. Geben Sie
     von der Seite des Laufs frei, den Sie meinen, oder starten Sie mit
-    `gh workflow run deploy.yml --ref main` einen neuen und geben Sie den frei.
+    `gh workflow run deploy.yml --ref main -f ref=v1.34.3` einen neuen und geben Sie den frei.
 
 | Secret | Was |
 |---|---|
@@ -478,7 +797,6 @@ Ein Volume zählt, und welches, ist nicht offensichtlich:
 |---|---|---|
 | `postgres_data` | alles — Agents, Unterhaltungen, versiegelte Zugangsdaten | **ja** |
 | `media_data` | hochgeladene Dateien, vor der Ingestion | ja |
-| `prefect_data` | die Datenbank von Prefect: Deployments, Run-Historie, wartende Runs | nein |
 
 Der Cache hat überhaupt kein Volume mehr. Rate-Limit-Buckets, Dedupe-Claims der
 Kanäle und Mitgliedschaftsantworten tragen alle eine TTL und bauen sich selbst

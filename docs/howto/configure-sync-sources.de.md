@@ -1,5 +1,5 @@
 ---
-source_sha: "35cbb3d979ce"
+source_sha: "68bc85353023"
 ---
 
 # Sync-Quellen einrichten { #configure-sync-sources }
@@ -135,6 +135,11 @@ in der Auflistung von `rag-sources` steht.
 7. Mit **"Sync Now"** lösen Sie einen sofortigen Sync aus, oder Sie warten, bis
    der Zeitplan von selbst greift.
 
+Um eine Source später zu ändern, klicken Sie auf den Stift in ihrer Zeile. Derselbe
+Assistent öffnet sich mit den Werten der Source. Der Connector lässt sich nicht
+ändern, und **"Save Changes"** sendet nur die Felder, die Sie geändert haben. Die
+Source bleibt der Wissensdatenbank zugeordnet, in der sie ist.
+
 Die Oberfläche ruft dieselbe REST-API auf, die unten dokumentiert ist: Was Sie in
 der Oberfläche tun können, können Sie auch mit `curl` oder einem beliebigen
 HTTP-Client tun.
@@ -216,13 +221,14 @@ synchronisiert:
 | `120` | Alle 2 Stunden |
 | `1440` | Einmal am Tag |
 
-!!! warning "Ein Zeitplan braucht den Prefect-Runner"
+!!! warning "Ein Zeitplan braucht den Worker"
 
-    `check_scheduled_syncs_flow` ist ein Prefect-Deployment, das alle 60 Sekunden
-    aufwacht und auslöst, was fällig ist. Ohne die Container `prefect-server` und
-    `prefect-runner`, die `make dev` startet, bewirkt `schedule_minutes` nichts.
-    Läuft keiner von beiden, synchronisiert nur ein manueller Auslöser (CLI, API
-    oder Oberfläche) überhaupt etwas.
+    Der Zeitplan `dispatch-due-syncs` wacht alle 60 Sekunden auf und reiht für
+    jede fällige Quelle einen Sync ein, ohne den Container `worker`, den
+    `make dev` startet, bewirkt `schedule_minutes` also nichts. Ohne ihn reiht
+    auch ein manueller Auslöser (CLI, API oder Oberfläche) seinen Sync ein, und
+    der wartet ebenso auf einen Worker. Eine Quelle hat nie zwei Syncs
+    gleichzeitig.
 
 ## Google Drive einrichten { #google-drive-setup }
 
@@ -305,6 +311,13 @@ S3_RAG_REGION=us-east-1                    # required for AWS, optional for MinI
 Bei MinIO lautet der Endpunkt üblicherweise `http://minio:9000` (Docker) oder
 `http://localhost:9000` (lokal).
 
+Die `endpoint_url` einer Quelle wird wie die Start-URL einer Website-Quelle
+geprüft, beim Speichern der Quelle und erneut, wenn ein Sync startet: Eine
+Loopback-, Link-Local- oder Cloud-Metadata-Adresse wird immer abgelehnt, und ein
+Endpunkt im privaten Netz, etwa ein MinIO-Container, braucht seinen Host in
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). Das
+`S3_RAG_ENDPOINT` des Betreibers wird nicht geprüft.
+
 ### 2. Konfigurationsfelder des S3-Connectors { #2-s3-connector-config-fields }
 
 | Feld | Typ | Pflicht | Vorgabe | Beschreibung |
@@ -350,8 +363,9 @@ uv run agenticos cmd rag-source-add \
 - **Das Netz des Deployments ist unerreichbar.** Jede Anfrage - robots.txt, die
   Sitemap, jede Seite und jede Weiterleitung - wird gegen dieselbe SSRF-Richtlinie
   geprüft wie Webhooks und MCP-Server. Sie geht an die Adresse, die die Prüfung
-  bestanden hat. Eine Start-URL, die auf eine private, Loopback-, Link-Local- oder
-  Cloud-Metadata-Adresse auflöst, wird beim Speichern der Quelle abgelehnt.
+  bestanden hat. Eine Start-URL, die auf eine Loopback-, Link-Local- oder
+  Cloud-Metadata-Adresse auflöst, wird beim Speichern der Quelle immer abgelehnt.
+  Eine, die auf eine private Adresse auflöst, wird ebenfalls abgelehnt, es sei denn, der Betreiber hat ihren Host in [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings) eingetragen.
 - **robots.txt wird befolgt**, für Sitemaps und Seiten, einschließlich
   `Crawl-delay` bis zu zehn Sekunden. Der Crawler gibt sich als
   `AgenticOS-Crawler` zu erkennen. Er wartet zwischen Anfragen mindestens eine
@@ -462,7 +476,8 @@ Die URL muss `https://` sein. Ihr Host wird einmal aufgelöst und wie jede ander
 Adresse geprüft, die ein Mandant wählt: Ein Host, der auf eine private,
 Loopback- oder Link-Local-Adresse auflöst, wird beim Speichern der Quelle
 abgelehnt und beim Sync erneut, und git verbindet sich nur mit den Adressen, die
-diese Prüfung zugelassen hat. Weiterleitungen wird nicht gefolgt. Ein Deployment
+diese Prüfung zugelassen hat. Der Betreiber kann einen Host im Netz des Deployments
+mit [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings) zulassen. Weiterleitungen wird nicht gefolgt. Ein Deployment
 hinter einem Egress-Proxy (`HTTPS_PROXY`) nutzt ihn weiterhin; der Proxy löst
 den Host dann selbst auf.
 
@@ -604,15 +619,39 @@ und werden nicht unterstützt.
 
 Alle Endpunkte für Sync-Quellen liegen unter `/api/v1/rag/sync/`. Das Auflisten
 verlangt `collections:view`, und alles, was eine Quelle verändert, verlangt
-`collections:edit` — in beiden Fällen bezogen auf die Collection, zu der die
-Quelle gehört. Eine Adminrolle kommt darin nicht vor. Siehe
+`collections:edit`. Eine Adminrolle kommt darin nicht vor. Die Absätze unten
+sagen, welche Quellen jeweils erreicht werden. Siehe
 [wer eine Collection erreichen darf](../file-processing.md#who-may-reach-a-collection).
+
+`GET /api/v1/rag/sync/sources` listet alle Quellen Ihrer Organisation, auch nicht
+zugeordnete, nur mit `connections:manage`, wie `/org/integrations`. Ohne die
+Berechtigung enthält die Liste nur die Quellen, die eine Base speisen, die Sie
+lesen dürfen, und `collection_name` muss eine Collection nennen, die Sie lesen
+dürfen, sonst lautet die Antwort 404. Wenn Sie ohne die Berechtigung eine nicht
+zugeordnete Quelle anlegen oder lösen, behalten Sie ihre ID aus der Antwort, denn
+keine Liste zeigt sie Ihnen. Die Liste vorhandener Integrationen, die der Assistent der
+Knowledge Base zur Wiederverwendung anbietet, verlangt ebenfalls
+`connections:manage`. Siehe [Berechtigungen](../permissions.md).
+
+Um eine Quelle über `/api/v1/rag/sync/sources/{id}` zu aktualisieren, zu löschen
+oder auszulösen, müssen Sie außerdem in die Base schreiben dürfen, die von der
+Quelle gespeist wird. Das gilt auch für einen `PATCH`, der `collection_name` auf `null` setzt.
+Eine nicht zugeordnete Quelle braucht nur Ihre Organisation. `/org/integrations`
+verwaltet Quellen auf Ebene der Organisation und verlangt stattdessen
+`connections:manage`.
+
+Der Sync-Verlauf und das Laufprotokoll einer Quelle zeigen die Läufe der Quellen
+Ihrer Organisation, auch über eine app-weite Base, die jede Organisation liest.
+Ein Plattform-Admin sieht auch die Quellen anderer Organisationen in den Bases,
+die er liest. Ein Lauf ohne Quelle, etwa ein lokaler Sync oder ein Lauf, dessen
+Quelle gelöscht wurde, wird über den Namen seiner Collection jedem angezeigt, der
+diese Collection liest.
 
 ### CRUD für Sync-Quellen { #sync-sources-crud }
 
 | Methode | Endpunkt | Beschreibung |
 |--------|----------|-------------|
-| `GET` | `/api/v1/rag/sync/sources` | Alle eingerichteten Sync-Quellen auflisten |
+| `GET` | `/api/v1/rag/sync/sources` | Sync-Quellen auflisten (alle mit `connections:manage`) |
 | `POST` | `/api/v1/rag/sync/sources` | Eine neue Sync-Quelle anlegen |
 | `PATCH` | `/api/v1/rag/sync/sources/{id}` | Eine vorhandene Sync-Quelle ändern |
 | `DELETE` | `/api/v1/rag/sync/sources/{id}` | Eine Sync-Quelle löschen |
@@ -689,7 +728,19 @@ curl -X PATCH http://localhost:8000/api/v1/rag/sync/sources/{source_id} \
 `is_active`, `collection_name`.
 
 Setzen Sie `is_active` auf `false`, um eine Quelle anzuhalten, ohne sie zu
-löschen.
+löschen. Eine pausierte Quelle kann weder nach Zeitplan noch über API oder CLI
+synchronisiert werden. Die Konsole deaktiviert die Sync-Schaltfläche. Ein Job
+in der Warteschlange prüft den Zustand vor dem Herunterladen erneut und endet
+mit einem Fehler, wenn die Quelle während der Wartezeit pausiert wurde. Eine
+bereits gestartete Synchronisierung wird nicht unterbrochen. Setzen Sie
+`is_active` auf `true`, um neue Synchronisierungen zu erlauben.
+
+Beim Auflösen eines Sammlungsnamens wird die älteste Basis in der Organisation
+der Quelle gewählt, ersatzweise eine Basis mit App-Geltungsbereich. Gleiche
+Erstellungszeiten werden nach Basis-ID geordnet. Die API verweigert die
+Zuordnung einer Quelle über den Sammlungsnamen, wenn mehrere passende Basen
+dieselbe älteste Erstellungszeit haben. Verwenden Sie eine Wissensbasis mit
+eindeutigem Sammlungsnamen, um diese Mehrdeutigkeit zu beseitigen.
 
 ## Sync-Vorgänge überwachen { #monitoring-sync-operations }
 
@@ -789,9 +840,9 @@ den Port enthält (etwa `http://localhost:9000`).
 ### Website: "resolves to private/internal address" { #website-resolves-to-privateinternal-address }
 
 Die Start-URL oder die Sitemap zeigt in das Netz des Deployments, oder ihr Name
-löst dorthin auf. Eine Website-Quelle liest nur öffentliche Adressen. Um eine
-interne Website zu indexieren, veröffentlichen Sie ihre Seiten an einem
-öffentlichen Ort oder laden Sie die Dateien direkt hoch.
+löst dorthin auf. Eine Website-Quelle liest nur öffentliche Adressen, es sei denn, der Betreiber
+trägt den Host der Website in [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings) ein. Sonst veröffentlichen Sie ihre Seiten an
+einem öffentlichen Ort oder laden Sie die Dateien direkt hoch.
 
 ### Website: "The site's robots.txt could not be read, so it was not crawled" { #website-the-sites-robotstxt-could-not-be-read-so-it-was-not-crawled }
 
@@ -885,7 +936,8 @@ danach erneut aus, falls sich die Quelle in der Zwischenzeit geändert hat.
 
 Der Host des Repositorys löst innerhalb des Netzwerks des Deployments auf, also
 wird die Quelle abgelehnt. Ein selbst betriebener Git-Server unter einer internen
-Adresse ist für eine Sync-Quelle nicht erreichbar.
+Adresse ist für eine Sync-Quelle nicht erreichbar, es sei denn, der Betreiber
+trägt seinen Host in [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings) ein.
 
 ### Git: "git is not installed on this worker" { #git-git-is-not-installed-on-this-worker }
 

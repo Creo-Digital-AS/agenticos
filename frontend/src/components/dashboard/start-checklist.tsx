@@ -1,168 +1,75 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Check, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-
-import { Button, Card, CardContent } from "@/components/ui";
-import {
-  useAgents,
-  useChannelBots,
-  useGroups,
-  useKnowledgeBases,
-  useMembers,
-  usePermissions,
-} from "@/hooks";
-import { ROUTES } from "@/lib/constants";
+import { shouldOfferStart } from "@/lib/onboarding-api";
+import { useStart } from "@/hooks/use-start";
+import { Button } from "@/components/ui";
+import { LoadingState } from "@/components/states";
+import { StartCompanions } from "@/components/onboarding/start-companions";
+import styles from "./start-checklist.module.css";
+import { ArrowRight, NotebookPen, RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Perm } from "@/types/permissions";
 
-interface Step {
-  id: string;
-  done: boolean;
-  href: string;
-}
-
-const dismissedKey = (orgId: string) => `agenticos:start-checklist:${orgId}`;
-
-function readDismissed(orgId: string): boolean {
-  try {
-    return window.localStorage.getItem(dismissedKey(orgId)) === "dismissed";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The first things worth doing in a new organization, with what is already done
- * ticked (#2072).
- *
- * For whoever builds agents, on the dashboard until every step is done or they
- * close it. Each step's state is read from what exists, not recorded, so doing a
- * step anywhere ticks it here. Closing it is a per-browser convenience.
- */
-export function StartChecklist({ orgId }: { orgId: string }) {
-  const { can } = usePermissions();
-  return can(Perm.agentsEdit) ? <Checklist orgId={orgId} /> : null;
-}
-
-function Checklist({ orgId }: { orgId: string }) {
-  const t = useTranslations("dashboard.startChecklist");
-  const { can } = usePermissions();
-  const [dismissed, setDismissed] = useState(() => readDismissed(orgId));
-  const channels = can(Perm.channelsManage);
-  const { agents, isLoading: agentsLoading } = useAgents();
-  const { kbs } = useKnowledgeBases();
-  const { groups } = useGroups(orgId);
-  const { members } = useMembers(orgId);
-  const { bots } = useChannelBots(channels);
-
-  const steps: Step[] = [
-    { id: "agent", done: agents.length > 0, href: ROUTES.AGENTS },
-    {
-      id: "publish",
-      done: agents.some((agent) => agent.status === "published"),
-      href: ROUTES.AGENTS,
-    },
-    { id: "knowledge", done: kbs.length > 0, href: ROUTES.RAG },
-    { id: "departments", done: groups.length > 0, href: ROUTES.GROUPS },
-    { id: "teammate", done: members.length > 1, href: ROUTES.ORG_MEMBERS(orgId) },
-    ...(channels ? [{ id: "channel", done: bots.length > 0, href: ROUTES.CHANNELS }] : []),
-  ];
-  const left = steps.filter((step) => !step.done).length;
-  const next = steps.find((step) => !step.done);
-
-  if (dismissed || agentsLoading || left === 0) return null;
-
-  const dismiss = () => {
-    setDismissed(true);
-    try {
-      window.localStorage.setItem(dismissedKey(orgId), "dismissed");
-    } catch {
-      // Nowhere to keep it; it stays closed for this visit.
-    }
-  };
-
+/** The dashboard links to the same start as invitations and native apps. */
+export function StartChecklist({ orgId, className }: { orgId: string; className?: string }) {
+  const state = useStart();
+  const t = useTranslations("start");
+  const frame = cn(
+    "mt-6 flex min-h-[22rem] flex-col justify-center gap-4 rounded-xl border bg-card p-6 lg:h-[31rem]",
+    className,
+  );
+  if (state.isLoading || state.waitingForScope)
+    return (
+      <section aria-label={t("offerTitle")} className={frame}>
+        <h2 className="font-semibold">{t("offerTitle")}</h2>
+        <LoadingState variant="pending" />
+      </section>
+    );
+  if (state.error)
+    return (
+      <section aria-label={t("offerTitle")} className={frame}>
+        <h2 className="font-semibold">{t("offerTitle")}</h2>
+        <p role="alert" className="text-muted-foreground text-sm">
+          {t("loadFailed")}
+        </p>
+        <Button variant="outline" onClick={() => void state.refetch()}>
+          <RotateCw size={14} aria-hidden />
+          {t("retry")}
+        </Button>
+      </section>
+    );
+  if (!state.data || state.data.organization_id !== orgId || !shouldOfferStart(state.data))
+    return null;
   return (
-    <Card className="mt-6">
-      <CardContent className="space-y-3.5 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">{t("title")}</h2>
-            <p className="text-muted-foreground text-xs">
-              {t("progress", { done: steps.length - left, total: steps.length })}
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            aria-label={t("dismiss")}
-            onClick={dismiss}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-        <div
-          className="bg-muted h-1 overflow-hidden rounded-full"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={steps.length}
-          aria-valuenow={steps.length - left}
-          aria-label={t("title")}
+    <section aria-label={t("offerTitle")} className={cn(frame, "h-auto")}>
+      <div className={styles.artwork} aria-hidden="true">
+        <span className={styles.orbit} />
+        <span className={styles.task}>
+          <NotebookPen size={30} strokeWidth={1.5} />
+        </span>
+        <StartCompanions members={["pebble", "mochi", "byte"]} />
+      </div>
+      <h2 className="font-semibold">{t("offerTitle")}</h2>
+      <p className="text-muted-foreground text-sm">{t("offerHint")}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Link
+          href="/onboarding"
+          className="bg-primary text-primary-foreground inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm"
         >
-          <div
-            className="bg-success h-full rounded-full transition-[width]"
-            style={{ width: `${((steps.length - left) / steps.length) * 100}%` }}
-          />
-        </div>
-        {/* The one thing to do next, said once and plainly; the rest is a
-            compact record rather than six boxes with lines through them. */}
-        {next && (
-          <Link
-            href={next.href}
-            className="group bg-muted/60 hover:bg-accent flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors"
-          >
-            <span className="min-w-0">
-              <span aria-hidden className="text-muted-foreground block text-xs">
-                {t("next")}
-              </span>
-              <span className="font-medium">{t(`steps.${next.id}`)}</span>
-            </span>
-            <ArrowRight
-              className="text-muted-foreground group-hover:text-foreground h-4 w-4 shrink-0 transition-colors"
-              aria-hidden
-            />
-          </Link>
-        )}
-        <ol className="flex flex-wrap gap-x-4 gap-y-1.5">
-          {steps
-            .filter((step) => step !== next)
-            .map((step) => (
-              <li key={step.id}>
-                <Link
-                  href={step.href}
-                  className={cn(
-                    "hover:text-foreground flex items-center gap-1.5 text-xs transition-colors",
-                    step.done ? "text-muted-foreground" : "text-foreground",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
-                      step.done && "bg-success border-success text-white",
-                    )}
-                  >
-                    {step.done && <Check className="h-2.5 w-2.5" aria-hidden />}
-                    {step.done && <span className="sr-only">{t("doneLabel")}</span>}
-                  </span>
-                  {t(`steps.${step.id}`)}
-                </Link>
-              </li>
-            ))}
-        </ol>
-      </CardContent>
-    </Card>
+          {t("openStart")}
+          <ArrowRight size={14} aria-hidden />
+        </Link>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={state.save.isPending}
+          onClick={() => state.save.mutate({ dismissed: true })}
+        >
+          {t("snooze")}
+        </Button>
+      </div>
+      {state.save.isError && <p role="alert">{t("loadFailed")}</p>}
+    </section>
   );
 }

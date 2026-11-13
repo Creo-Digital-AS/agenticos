@@ -6,8 +6,6 @@ The queries are covered over a real database in
 `tests/integration/test_mcp_usage_and_calls.py`.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -51,12 +49,15 @@ async def test_each_server_names_the_agents_using_it(service: MagicMock) -> None
         secret_key_version=1,
         is_enabled=True,
         include_instructions=False,
+        trust_read_only_hints=False,
         auth_type="bearer",
         visibility="org",
         is_default=False,
         created_at=datetime.now(UTC),
     )
-    writer = AgentUsage(id=uuid.uuid4(), name="Writer")
+    writer = AgentUsage(
+        id=uuid.uuid4(), name="Writer", slug="writer", has_avatar=True, avatar_color=4
+    )
     service.list_for_org = AsyncMock(return_value=([connection], 1))
     service.used_by = AsyncMock(return_value={connection.id: [writer]})
 
@@ -64,7 +65,15 @@ async def test_each_server_names_the_agents_using_it(service: MagicMock) -> None
         resp = await client.get(f"{V1}/mcp-connections")
 
     assert resp.status_code == 200
-    assert resp.json()["items"][0]["used_by"] == [{"id": str(writer.id), "name": "Writer"}]
+    assert resp.json()["items"][0]["used_by"] == [
+        {
+            "id": str(writer.id),
+            "name": "Writer",
+            "slug": "writer",
+            "has_avatar": True,
+            "avatar_color": 4,
+        }
+    ]
 
 
 async def test_a_server_s_call_log(service: MagicMock) -> None:

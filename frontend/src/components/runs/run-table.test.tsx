@@ -39,6 +39,8 @@ function run(overrides: Partial<AgentRun> = {}): AgentRun {
     ended_at: "2026-08-04T09:00:30Z",
     parent_run_id: null,
     subagent_task_id: null,
+    modality: "text",
+    voice_chain: null,
     ...overrides,
   };
 }
@@ -49,6 +51,76 @@ function row() {
 }
 
 describe("a run history row", () => {
+  it("says what each run was asked, and what a judge's run graded", () => {
+    const link = {
+      eval_run_id: "eval-1",
+      agent_id: "agent-1",
+      case_id: "case-1",
+      dataset_name: "refunds",
+      case_input: "Can I return it?",
+    };
+    render(
+      <RunTable
+        runs={[
+          run({ id: "chat", preview: "Where is my order?" }),
+          run({
+            id: "answer",
+            surface: "eval",
+            preview: "Can I return it?",
+            eval_case: { ...link, graded: false },
+          }),
+          run({
+            id: "grade",
+            surface: "eval",
+            preview: "Can I return it?",
+            eval_case: { ...link, graded: true },
+          }),
+          run({ id: "api", preview: null }),
+        ]}
+      />,
+    );
+
+    const [chat, answer, grade, api] = screen.getAllByRole("row").slice(1);
+    expect(within(chat!).getByText("Where is my order?")).toBeInTheDocument();
+    expect(within(answer!).getByText("Can I return it?")).toBeInTheDocument();
+    expect(within(grade!).getByText("Grading: Can I return it?")).toBeInTheDocument();
+    expect(within(api!).queryByText(/\?/)).toBeNull();
+  });
+
+  it("names a platform agent no agent list holds, and says what it worked on", () => {
+    render(
+      <RunTable
+        runs={[
+          run({
+            surface: "eval",
+            agent_id: "improver-1",
+            origin: { kind: "improve", agent_name: "Improver", agent_id: "agent-1" },
+          }),
+        ]}
+        agentsById={new Map()}
+      />,
+    );
+
+    expect(within(row()).getAllByText("Improver").length).toBeGreaterThan(0);
+    expect(within(row()).getByText("Improve")).toBeInTheDocument();
+    expect(within(row()).getByRole("link", { name: "Open the agent" })).toHaveAttribute(
+      "href",
+      "/agents/agent-1",
+    );
+  });
+
+  it("names the platform role that did the work, not the agent it is recorded under", () => {
+    render(<RunTable runs={[run({ system_role: "memory_maintenance" })]} />);
+
+    expect(within(row()).getByText("Memory maintenance (system)")).toBeVisible();
+  });
+
+  it("names the daily briefing role the same way", () => {
+    render(<RunTable runs={[run({ system_role: "daily_briefing" })]} />);
+
+    expect(within(row()).getByText("Daily briefing (system)")).toBeVisible();
+  });
+
   it("says nothing about delegation for a run somebody started", () => {
     render(<RunTable runs={[run()]} />);
 
@@ -328,4 +400,99 @@ describe("the run the panel beside the table is showing", () => {
 
     expect(within(row()).getByText("test")).toBeVisible();
   });
+});
+
+describe("a voice call's row", () => {
+  it("wears a microphone and counts the whole call, every connection", () => {
+    render(
+      <RunTable
+        runs={[
+          run({
+            modality: "voice",
+            cost_usd: "0.100000",
+            voice_chain: { connections: 3, seconds: 545, cost_usd: "0.420000" },
+          }),
+        ]}
+      />,
+    );
+    expect(within(row()).getByText("Voice call")).toHaveClass("sr-only");
+    expect(within(row()).getByText("9:05")).toBeInTheDocument();
+    expect(within(row()).getByText(/\$0\.4200/)).toBeInTheDocument();
+    expect(within(row()).getByText("Reconnected 2 times")).toBeInTheDocument();
+  });
+
+  it("says nothing of reconnects for a call that never dropped", () => {
+    render(
+      <RunTable
+        runs={[
+          run({
+            modality: "voice",
+            voice_chain: { connections: 1, seconds: 30, cost_usd: "0.010000" },
+          }),
+        ]}
+      />,
+    );
+    expect(within(row()).getByText("0:30")).toBeInTheDocument();
+    expect(within(row()).queryByText(/Reconnected/)).toBeNull();
+  });
+
+  it("falls back to the run's own figures where the list sent no chain", () => {
+    render(<RunTable runs={[run({ modality: "voice" })]} />);
+    expect(within(row()).getByText("Voice call")).toBeInTheDocument();
+    expect(within(row()).getByText("30 s")).toBeInTheDocument();
+  });
+});
+
+it("names the unlinked channel sender instead of the publisher on desktop and mobile", () => {
+  render(
+    <RunTable
+      runs={[
+        run({
+          user_id: "publisher",
+          surface: "mattermost",
+          initiated_by_publisher_fallback: true,
+          asked_in_chat: { platform: "mattermost", name: "@participant", bot_name: "Sales bot" },
+        }),
+      ]}
+      membersById={
+        new Map([
+          [
+            "publisher",
+            {
+              user_id: "publisher",
+              email: "publisher@example.test",
+              full_name: "Publisher Person",
+            },
+          ],
+        ])
+      }
+    />,
+  );
+  expect(within(row()).getAllByText("@participant")).toHaveLength(2);
+  expect(within(row()).getAllByText("Unverified")).toHaveLength(2);
+  expect(within(row()).queryByText("Publisher Person")).toBeNull();
+  expect(
+    within(row()).getAllByTitle(
+      /Asked in Mattermost by @participant \(unverified\), through Sales bot/,
+    ),
+  ).toHaveLength(2);
+});
+
+it("can show an unverified chat account without a member-directory lookup", () => {
+  render(
+    <RunTable
+      runs={[
+        run({
+          initiated_by_publisher_fallback: true,
+          asked_in_chat: { platform: "mattermost", name: "@participant", bot_name: null },
+        }),
+      ]}
+    />,
+  );
+  expect(within(row()).getAllByText("@participant")).toHaveLength(2);
+});
+
+it("does not name a publisher when an external sender has no remaining chat identity", () => {
+  render(<RunTable runs={[run({ initiated_by_publisher_fallback: true })]} />);
+  expect(within(row()).getAllByText("Anonymous participant")).toHaveLength(2);
 });

@@ -10,8 +10,6 @@ which would confirm the id to a stranger. Only once the run is known to be the
 caller's organization's does a missing `runs:view` become a 403.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -305,3 +303,15 @@ class TestOpeningAnAttachmentOnSomebodyElsesRun:
             await AgentRunnerService(mock_db_session).get_run_attachment(
                 _ctx(role=OrgRoleName.OWNER.value), run.id, uuid4()
             )
+
+
+@pytest.mark.security
+async def test_channel_asker_metadata_still_requires_run_view_scope(
+    mock_db_session: AsyncMock,
+) -> None:
+    from dataclasses import replace
+
+    ctx = replace(_ctx(role=OrgRoleName.OWNER.value), api_key_id=uuid4(), key_scopes=frozenset())
+    with pytest.raises(AuthorizationError):
+        await AgentRunnerService(mock_db_session).run_chat_askers(ctx, [uuid4()])
+    mock_db_session.execute.assert_not_awaited()

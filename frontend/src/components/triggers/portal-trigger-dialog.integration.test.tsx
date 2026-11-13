@@ -39,6 +39,7 @@ const GITHUB: PortalCatalogEntry = {
   connection_id: null,
   connection_state: null,
   connection_covers_webhook_scopes: false,
+  poll_interval_minutes: null,
   connect_blocked_by: null,
   oauth_app_kind: "github_oauth_app",
   presets: [
@@ -60,6 +61,7 @@ const GMAIL: PortalCatalogEntry = {
   connection_id: null,
   connection_state: null,
   connection_covers_webhook_scopes: false,
+  poll_interval_minutes: null,
   connect_blocked_by: null,
   oauth_app_kind: "google_oauth_app",
   presets: [
@@ -81,6 +83,7 @@ const TRACKER: PortalCatalogEntry = {
   connection_id: null,
   connection_state: null,
   connection_covers_webhook_scopes: false,
+  poll_interval_minutes: null,
   connect_blocked_by: null,
   oauth_app_kind: null,
   presets: [{ key: "new_ticket", label: "A new ticket", description: "…", target_required: false }],
@@ -100,6 +103,8 @@ function agent(id: string, name: string, status = "published", can_run = true) {
 
 function serve(targets: { id: string; label: string }[] = []) {
   vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+    if (path === "/me/permissions")
+      return { permissions: [{ permission: "mcp:manage", scope: "all" }] };
     if (path === "/agents") return { items: [agent("a1", "Analyst")], total: 1 };
     if (path.includes("/targets")) return { items: targets, total: targets.length };
     // Any agent's environments and triggers.
@@ -171,6 +176,8 @@ describe("PortalTriggerDialog", () => {
     await user.click(within(dialog).getByRole("button", { name: /Any new message/ }));
     await user.type(within(dialog).getByLabelText("Subject contains"), "invoice");
     await user.type(within(dialog).getByLabelText("Sender contains"), "billing@acme.com");
+    // A sender filter is a trust decision, and the form says what makes it hold.
+    expect(within(dialog).getByText(/sender's domain signed/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Continue" }));
     await user.type(within(dialog).getByLabelText("Message"), "Read it");
     await user.click(within(dialog).getByRole("button", { name: "Create" }));
@@ -184,6 +191,56 @@ describe("PortalTriggerDialog", () => {
       portal_key: "google",
       preset_key: "any_message",
       event_config: { subject_contains: "invoice", sender_contains: "billing@acme.com" },
+    });
+  });
+
+  it("asks a OneDrive/SharePoint trigger where to look, blank meaning the own drive", async () => {
+    const user = userEvent.setup();
+    serve();
+    vi.mocked(apiClient.post).mockResolvedValue({
+      id: "t1",
+      trigger_type: "event",
+      delivery_mode: "polling",
+      webhook_url: null,
+      reveal_secret: null,
+    });
+    const files: PortalCatalogEntry = {
+      ...GMAIL,
+      key: "microsoft_files",
+      name: "OneDrive & SharePoint",
+      icon: "sharepoint",
+      event_source: "microsoft_files",
+      oauth_app_kind: "microsoft_oauth_app",
+      presets: [{ key: "new_files", label: "New files", description: "…", target_required: false }],
+    };
+    render(<PortalTriggerDialog portal={files} connectionId={null} open onOpenChange={vi.fn()} />, {
+      wrapper,
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /New files/ }));
+    // Where, not a filter: the generic "blank fires on everything" would mislead.
+    expect(within(dialog).getByText(/Leave blank for your own OneDrive/)).toBeInTheDocument();
+    await user.type(
+      within(dialog).getByLabelText("SharePoint site"),
+      "https://contoso.sharepoint.com/sites/Finance",
+    );
+    await user.type(within(dialog).getByLabelText("Folder"), "Invoices");
+    await user.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await user.type(within(dialog).getByLabelText("Message"), "File it");
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
+    const [, payload] = vi.mocked(apiClient.post).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(payload).toMatchObject({
+      portal_key: "microsoft_files",
+      event_config: {
+        site_url: "https://contoso.sharepoint.com/sites/Finance",
+        folder_path: "Invoices",
+      },
     });
   });
 
@@ -305,7 +362,7 @@ describe("PortalTriggerDialog", () => {
     await user.type(within(dialog).getByLabelText("Message"), "Read it");
     await user.click(within(dialog).getByRole("button", { name: "Create" }));
 
-    expect(await screen.findByText(/Nothing else to set up/)).toBeVisible();
+    expect(await screen.findByText(/connected service is checked every minute/)).toBeVisible();
     expect(screen.queryByLabelText("Webhook URL")).toBeNull();
     expect(screen.queryByLabelText("Signing secret")).toBeNull();
     expect(screen.queryByText(/add this webhook URL/i)).toBeNull();
@@ -369,4 +426,37 @@ describe("PortalTriggerDialog", () => {
     await screen.findByDisplayValue("https://api.example.com/api/v1/webhooks/triggers/webhook/t1");
     expect(screen.queryByLabelText("Signing secret")).toBeNull();
   });
+});
+
+it("blocks closing and stepping back while a portal write is pending", async () => {
+  serve([{ id: "acme/repo", label: "acme/repo" }]);
+  let reject!: (reason: Error) => void;
+  vi.mocked(apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, refuse) => {
+        reject = refuse;
+      }),
+  );
+  const onOpenChange = vi.fn();
+  render(
+    <PortalTriggerDialog portal={GITHUB} connectionId="o1" open onOpenChange={onOpenChange} />,
+    { wrapper },
+  );
+  const dialog = within(await screen.findByRole("dialog"));
+  await userEvent.click(dialog.getByRole("button", { name: /New issue opened/ }));
+  await userEvent.click(await dialog.findByRole("combobox", { name: "Repository" }));
+  await userEvent.click(await screen.findByRole("option", { name: "acme/repo" }));
+  await userEvent.click(dialog.getByRole("button", { name: "Continue" }));
+  await userEvent.type(dialog.getByLabelText("Message"), "Triage it");
+  await userEvent.click(dialog.getByRole("button", { name: "Create" }));
+  await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
+  expect(dialog.getByLabelText("Message")).toBeDisabled();
+  expect(dialog.getByRole("button", { name: "Close" })).toBeDisabled();
+  expect(dialog.getByRole("button", { name: "Back" })).toBeDisabled();
+  await userEvent.keyboard("{Escape}");
+  expect(onOpenChange).not.toHaveBeenCalled();
+  reject(new Error("Controlled portal refusal"));
+  await waitFor(() => expect(dialog.getByLabelText("Message")).toBeEnabled());
+  expect(dialog.getByLabelText("Message")).toHaveValue("Triage it");
+  expect(onOpenChange).not.toHaveBeenCalled();
 });

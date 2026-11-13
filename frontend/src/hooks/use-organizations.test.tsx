@@ -1,16 +1,23 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 
-import { preferredOrg, useOrganizationList, useOrganizations } from "./use-organizations";
+import {
+  preferredOrg,
+  serverFallbackOrg,
+  useOrganizationList,
+  useOrganizations,
+  useTenantId,
+} from "./use-organizations";
 import { apiClient } from "@/lib/api-client";
 import { useOrgStore } from "@/stores";
+import { useUnsavedChangesStore } from "@/stores/unsaved-changes-store";
 import type { Organization } from "@/types";
 
 vi.mock("@/lib/api-client", () => ({
-  apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
+  apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn(), upload: vi.fn() },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -28,6 +35,10 @@ function org(overrides: Partial<Organization> = {}): Organization {
     slug: "acme",
     is_personal: false,
     avatar_url: null,
+    speech_to_text_provider: null,
+    speech_to_text_model: null,
+    speech_to_text_language: null,
+    dictation_max_seconds: 300,
     created_at: "2026-07-01T00:00:00Z",
     ...overrides,
   } as Organization;
@@ -67,6 +78,12 @@ describe("preferredOrg", () => {
     expect(preferredOrg([org({ id: "a" }), org({ id: "b", is_personal: true })])?.id).toBe("b");
   });
 
+  it("prefers the deployment's default organization over a personal one (#2156)", () => {
+    expect(
+      preferredOrg([org({ id: "a", is_personal: true }), org({ id: "b", is_default: true })])?.id,
+    ).toBe("b");
+  });
+
   it("takes the first one when none is personal", () => {
     expect(preferredOrg([org({ id: "a" }), org({ id: "b" })])?.id).toBe("a");
   });
@@ -82,6 +99,51 @@ describe("preferredOrg", () => {
       "b",
     );
     expect(preferredOrg([org({ id: "a" })], ["a"])).toBeNull();
+  });
+});
+
+describe("serverFallbackOrg", () => {
+  // Where the backend acts for a request with no organization header - the same
+  // order as `OrganizationService.fallback_for` (#2156).
+  it("is the default organization, then the personal one", () => {
+    const personal = org({ id: "p", is_personal: true });
+    expect(serverFallbackOrg([personal, org({ id: "d", is_default: true })])?.id).toBe("d");
+    expect(serverFallbackOrg([org({ id: "a" }), personal])?.id).toBe("p");
+  });
+
+  it("is the only organization when there is one, and nothing when there is a choice", () => {
+    expect(serverFallbackOrg([org({ id: "a" })])?.id).toBe("a");
+    expect(serverFallbackOrg([org({ id: "a" }), org({ id: "b" })])).toBeNull();
+    expect(serverFallbackOrg([])).toBeNull();
+  });
+});
+
+describe("useTenantId", () => {
+  it("is the selection when there is one", () => {
+    useOrgStore.setState({ activeOrgId: "chosen" });
+    serve([org({ id: "d", is_default: true })]);
+
+    const { result } = renderHook(() => useTenantId(), { wrapper });
+
+    expect(result.current).toBe("chosen");
+  });
+
+  it("is where the server falls back to while nothing is selected", async () => {
+    useOrgStore.setState({ activeOrgId: null });
+    serve([org({ id: "p", is_personal: true }), org({ id: "d", is_default: true })]);
+
+    const { result } = renderHook(() => useTenantId(), { wrapper });
+
+    await waitFor(() => expect(result.current).toBe("d"));
+  });
+
+  it("cannot tell before the list arrives", () => {
+    useOrgStore.setState({ activeOrgId: null });
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useTenantId(), { wrapper });
+
+    expect(result.current).toBeNull();
   });
 });
 
@@ -208,6 +270,38 @@ describe("useOrganizations", () => {
     await waitFor(() => expect(result.current.orgs[0]?.name).toBe("Capped"));
   });
 
+  it("saves the proactivity settings as named and keeps the answer in the list (#2301)", async () => {
+    // Zero is a value - a limit of nothing - not an omitted field.
+    const result = await hook();
+    vi.mocked(apiClient.patch).mockResolvedValue(org({ name: "Quiet" }));
+
+    await result.current.setProactivity("org-1", {
+      proactive_enabled: true,
+      proactive_model_profile_id: "mp-1",
+      proactive_limit_usd: 0,
+    });
+
+    expect(apiClient.patch).toHaveBeenCalledWith("/orgs/org-1", {
+      proactive_enabled: true,
+      proactive_model_profile_id: "mp-1",
+      proactive_limit_usd: 0,
+    });
+    await waitFor(() => expect(result.current.orgs[0]?.name).toBe("Quiet"));
+  });
+
+  it("saves the welcome message, where null is the built-in greeting (#2301)", async () => {
+    const result = await hook();
+    vi.mocked(apiClient.patch).mockResolvedValue(org({ name: "Greeting" }));
+
+    await result.current.setWelcomeDm("org-1", { welcome_dm_enabled: true, welcome_dm_text: null });
+
+    expect(apiClient.patch).toHaveBeenCalledWith("/orgs/org-1", {
+      welcome_dm_enabled: true,
+      welcome_dm_text: null,
+    });
+    await waitFor(() => expect(result.current.orgs[0]?.name).toBe("Greeting"));
+  });
+
   it("sends the approval waiver as the boolean it is", async () => {
     // A boolean somebody deliberately set to false is not an omitted field, and
     // the ceiling on standing consent is exactly the setting where the two must
@@ -238,6 +332,55 @@ describe("useOrganizations", () => {
     await result.current.setChatApprovalWaiver("org-1", true);
 
     await waitFor(() => expect(result.current.orgs[0]?.chat_may_waive_approvals).toBe(true));
+  });
+
+  it("persists an explicit footer opt-out and updates the organization cache", async () => {
+    const result = await hook();
+    vi.mocked(apiClient.patch).mockResolvedValue(org({ public_agenticos_attribution: false }));
+    await result.current.setPublicAttribution("org-1", false);
+    expect(apiClient.patch).toHaveBeenCalledWith("/orgs/org-1", {
+      public_agenticos_attribution: false,
+    });
+    await waitFor(() => expect(result.current.orgs[0]?.public_agenticos_attribution).toBe(false));
+  });
+
+  it("propagates a refused footer change and preserves the cached setting", async () => {
+    const result = await hook([org({ public_agenticos_attribution: true })]);
+    vi.mocked(apiClient.patch).mockRejectedValue(new Error("Not allowed"));
+    await expect(result.current.setPublicAttribution("org-1", false)).rejects.toThrow(
+      "Not allowed",
+    );
+    expect(result.current.orgs[0]?.public_agenticos_attribution).toBe(true);
+  });
+
+  it("sends only the public live data field, and keeps the answer in the list", async () => {
+    const result = await hook();
+    vi.mocked(apiClient.patch).mockResolvedValue(org({ public_live_data: true }));
+
+    await result.current.setPublicLiveData("org-1", true);
+
+    expect(apiClient.patch).toHaveBeenCalledWith("/orgs/org-1", { public_live_data: true });
+    await waitFor(() => expect(result.current.orgs[0]?.public_live_data).toBe(true));
+  });
+
+  it("sends the voice settings in one PATCH and caches the answer", async () => {
+    // One request, because the server validates them together: a provider
+    // without its model is refused whole.
+    const settings = {
+      speech_to_text_provider: "openai",
+      speech_to_text_model: "gpt-4o-transcribe",
+      speech_to_text_language: null,
+      dictation_max_seconds: 120,
+    };
+    const result = await hook();
+    vi.mocked(apiClient.patch).mockResolvedValue(org(settings));
+
+    await act(() => result.current.setVoiceSettings("org-1", settings));
+
+    expect(apiClient.patch).toHaveBeenCalledWith("/orgs/org-1", settings);
+    await waitFor(() =>
+      expect(result.current.orgs[0]?.speech_to_text_model).toBe("gpt-4o-transcribe"),
+    );
   });
 
   it("drops a deleted organization and clears the selection if it was the one", async () => {
@@ -279,6 +422,19 @@ describe("useOrganizations", () => {
     expect(useOrgStore.getState().activeOrgId).toBe("org-2");
   });
 
+  it("asks before switching away from a change not yet saved", async () => {
+    const result = await hook([org(), org({ id: "org-2" })]);
+    useOrgStore.setState({ activeOrgId: "org-1" });
+    useUnsavedChangesStore.setState({ sources: { editor: { discard: vi.fn() } }, prompt: null });
+
+    result.current.switchOrg("org-2");
+    expect(useOrgStore.getState().activeOrgId).toBe("org-1");
+
+    await useUnsavedChangesStore.getState().answer("discard");
+    expect(useOrgStore.getState().activeOrgId).toBe("org-2");
+    useUnsavedChangesStore.setState({ sources: {}, prompt: null });
+  });
+
   it("refetches the list on demand, whatever the caller passes", async () => {
     // The `force` argument is kept for call-site compatibility; invalidation
     // always refetches.
@@ -288,4 +444,13 @@ describe("useOrganizations", () => {
 
     await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
   });
+});
+
+it("uploads an organization logo and refreshes the shared organization list", async () => {
+  const result = await hook();
+  const file = new File(["image"], "company.png", { type: "image/png" });
+  vi.mocked(apiClient.upload).mockResolvedValue({});
+  await result.current.uploadAvatar("org-1", file);
+  expect(apiClient.upload).toHaveBeenCalledWith("/orgs/org-1/avatar", file);
+  expect(apiClient.get).toHaveBeenCalledWith("/orgs");
 });

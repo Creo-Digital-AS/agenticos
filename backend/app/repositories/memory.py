@@ -10,18 +10,17 @@ what this module used to hold - an ordered read set, a `CASE` precedence, an
 owner-kind filter for an operator listing - went with it (#1470).
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.memory_keys import PERSON_PREFIX
+from app.db.models.agent import Agent
 from app.db.models.memory import AgentMemoryFile
 
 
@@ -196,6 +195,7 @@ async def list_for_person(
     owner_key: str,
     skip: int = 0,
     limit: int = 50,
+    q: str = "",
 ) -> tuple[list[AgentMemoryFile], int]:
     """One person's notes across every agent in the organization, and the total.
 
@@ -212,6 +212,16 @@ async def list_for_person(
     where = (
         AgentMemoryFile.organization_id == organization_id,
         AgentMemoryFile.owner_key == owner_key,
+        or_(
+            AgentMemoryFile.name.icontains(q, autoescape=True),
+            AgentMemoryFile.description.icontains(q, autoescape=True),
+            AgentMemoryFile.content.icontains(q, autoescape=True),
+            AgentMemoryFile.agent_id.in_(
+                select(Agent.id).where(Agent.name.icontains(q, autoescape=True))
+            ),
+        )
+        if q
+        else true(),
     )
     total = await db.scalar(select(func.count()).select_from(AgentMemoryFile).where(*where))
     result = await db.execute(

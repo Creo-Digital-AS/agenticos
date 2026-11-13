@@ -1,14 +1,12 @@
 # Deploy to a server
 
-One host, Docker Compose, a reverse proxy in front. That is the whole shipped
-path, and it is what runs the deployments this project is used in.
+One host, Docker Compose and a reverse proxy remain the shipped single-server
+path. For clusters, use the maintained [Kubernetes Helm chart](kubernetes.md),
+with external data services and a blocking migration Job. OpenShift has a candidate
+configuration but is not yet validated. There are no one-click PaaS quickstarts.
 
-There are no Kubernetes manifests, and no one-click quickstarts for the
-platform-as-a-service providers. That is not modesty about scale. The stack is
-six containers, two of which hold state, one of which can start containers of
-its own, and one of which is a Postgres that must have pgvector - which is
-already more than a `git push` deploy target models, and a guide that pretended
-otherwise would be describing a deployment nobody has run.
+Past one host - a managed Postgres, several API hosts, several deployments - is
+[Scale beyond one host](scaling.md).
 
 !!! tip "Read the [production checklist](configuration.md#production-checklist) first"
 
@@ -21,13 +19,13 @@ otherwise would be describing a deployment nobody has run.
 | | |
 |---|---|
 | **A host** | 4 vCPU and 8 GB of RAM runs it. See [sizing](#sizing-the-host) |
-| **Docker** | Engine 24+ with the Compose plugin (2.24 or later), and your user in the `docker` group. Nothing is built on the host: the images are pulled from GHCR |
+| **Container engine** | Engine 24+ with the Compose plugin (2.24 or later), and your user in the `docker` group. Nothing is built on the host: the images are pulled from GHCR. Alternatively, use the [manual Podman path](#podman-support). |
 | **Two hostnames** | one for the site, one for the API — see [why two](#why-two-hostnames) |
 | **A reverse proxy** | [Traefik](#option-a-traefik) or [Nginx](#option-b-nginx). It terminates TLS |
 | **No provider key** | chat models and embeddings are both keyed per organization, in the product's vault. The environment holds no credential for either — see [Data protection](data-protection.md#nothing-leaves-by-default) |
 
-The host also needs ports 80 and 443 open, and nothing else. Postgres, Redis and
-the Prefect API are published on no interface at all.
+The host also needs ports 80 and 443 open, and nothing else. Postgres and Redis
+are published on no interface at all, and the worker serves nothing.
 
 ### Why two hostnames
 
@@ -39,6 +37,93 @@ name a browser can resolve and a certificate of its own.
 what they must not be is one name with a path prefix, because the API's cookies
 and the site's are scoped to the host.
 
+### Podman support
+
+**Podman is supported through the manual deployment path with Docker Compose
+as its provider.** The runtime checks used Podman 6.1.4 and Docker Compose
+v2.40.3 on Fedora CoreOS 44 (a macOS Podman machine, ARM64, cgroups v2,
+SELinux enforcing). The shipped file needs Compose 2.24 or later.
+
+**Do not use `podman-compose` 1.6.0.** It started the stack and an agent
+answered, but a controlled failed migration still started the dependent app.
+Docker Compose correctly refused that start. The providers' version numbers
+are independent; `podman-compose` 1.6.0 is not Docker Compose 1.6.0.
+
+The quickstart remains Docker-only and directs detected Podman to this manual
+path, including with `--no-sandbox`. From the configured repository root, choose
+the actual Docker Compose executable (a standalone binary or CLI plugin):
+
+```bash
+export PODMAN_COMPOSE_PROVIDER=/absolute/path/to/docker-compose
+podman compose version
+podman compose -f docker-compose.yml up -d
+```
+
+Check that `podman compose version` identifies Docker Compose. Using `-f`
+explicitly keeps the clone's source-build override out of this published-image
+installation. Follow [Install](install.md) to bootstrap the organization and
+model after the services start.
+
+**Optional sandbox.** `pydantic-ai-backend` 0.2.39 worked against both rootful
+and rootless Podman sockets. It does not need a new backend or release. Use
+`docker-compose-podman.yml` to adapt the socket and workspace mounts; prepare
+their permissions before enabling the profile.
+
+On native Linux with rootless Podman:
+
+```bash
+systemctl --user enable --now podman.socket
+export SANDBOX_DOCKER_SOCKET="$XDG_RUNTIME_DIR/podman/podman.sock"
+export SANDBOX_WORKSPACE_ROOT="$HOME/.local/share/agenticos/sandbox-workspaces"
+mkdir -p "$SANDBOX_WORKSPACE_ROOT"
+podman unshare chown 10001:10001 "$SANDBOX_WORKSPACE_ROOT"
+export DOCKER_GID=0
+```
+
+For rootful Linux, enable the system `podman.socket` instead, set
+`SANDBOX_DOCKER_SOCKET=/run/podman/podman.sock`, and prepare the workspace with
+`sudo install -d -o 10001 -g 10001 "$SANDBOX_WORKSPACE_ROOT"`. Run Compose
+against that rootful engine. Its socket group is normally 0; a customized
+rootful socket needs its actual group in `DOCKER_GID`.
+
+On a rootless macOS Podman machine, both bind sources belong to the Linux VM,
+not to macOS. Provision them inside that VM:
+
+```bash
+export SANDBOX_DOCKER_SOCKET="$(podman machine ssh 'printf "%s/podman/podman.sock" "$XDG_RUNTIME_DIR"')"
+export SANDBOX_WORKSPACE_ROOT=/tmp/agenticos-sandbox-workspaces
+podman machine ssh 'mkdir -p /tmp/agenticos-sandbox-workspaces && podman unshare chown 10001:10001 /tmp/agenticos-sandbox-workspaces'
+export DOCKER_GID=0
+```
+
+Keep the deployment's existing keys. Set a nonempty `SANDBOXD_TOKEN` and
+`SANDBOX_URL=http://sandboxd:8080` in the env file the stack reads, as described
+under [sandbox configuration](sandbox.md). Then start with both files:
+
+```bash
+podman compose -f docker-compose.yml -f docker-compose-podman.yml \
+  --profile sandbox up -d
+```
+
+The override disables SELinux labeling only for `sandboxd`, which already
+holds the engine socket. It shares the workspace label with `:z` because sibling
+sandboxes also mount it. Sandbox containers retain their own labels and
+`no-new-privileges`; do not relabel the socket or disable SELinux globally.
+Rootless socket ownership maps to group 0 inside the user namespace.
+
+Use a persistent workspace path on a server: `/tmp` is only a local example.
+Persist the socket, workspace and group settings in the operator's environment
+for subsequent Compose commands. A host `DOCKER_HOST` does not change the socket
+mounted inside `sandboxd`.
+
+Verified paths include an HTTP agent run, persisted completion, workspace files,
+nonzero exits, timeouts, enforced memory/CPU/PID limits and runtime image builds.
+The shipped workbench image also read/wrote XLSX, rendered a plot and ran Node
+and LibreOffice. The model was a deterministic OpenAI-compatible test server;
+the desktop runtime and every Linux distribution were not tested. See the
+[recorded checks](https://github.com/vstorm-co/agenticos/blob/main/docs/audits/podman-2026-11-03.md)
+for versions, scope and the migration failure reproduction.
+
 ## Sizing the host
 
 Measured on an idle deployment, not estimated:
@@ -47,8 +132,7 @@ Measured on an idle deployment, not estimated:
 |---|---|---|
 | `app` (2 uvicorn workers) | ~1.0 GB | 2.5 GB at the default 4 workers |
 | `db` | ~1.3 GB with the tuning below | 2 GB |
-| `prefect-runner` | 241 MiB | 1.5 GB |
-| `prefect-server` | 245 MiB | 768 MB |
+| `worker` (one ingest child) | 387 MiB | 2.5 GB (`WORKER_MEMORY_LIMIT`) |
 | `frontend` | ~300 MB | 1 GB |
 | `redis` | 9 MiB | 512 MB |
 
@@ -62,6 +146,23 @@ Two workers suit a team of ten and still leave one serving while
 replaces a wedged sibling. One worker is the setting to avoid: a blocked event
 loop is then the whole deployment, until it kills itself.
 
+A host short of CPU shows a different symptom: `Child process [N] died` lines
+in the `app` log with no watchdog verdict above them, while every page is slow.
+Those are workers uvicorn's supervisor killed for answering its ping late, not
+workers that failed. It waits
+[`UVICORN_WORKER_HEALTHCHECK_TIMEOUT`](configuration.md#a-worker-whose-event-loop-has-stopped-turning)
+seconds, 60 by default. Look at the host's CPU steal before you raise it.
+
+Two settings keep a slow deployment diagnosable:
+
+- **Every log is capped.** Each service in the production compose files writes
+  at most five files of 20 MB. Docker's default keeps a container's log until
+  the container is removed, and nothing on the host rotates it.
+- **Postgres records what each statement costs.** The `db` service preloads
+  `pg_stat_statements` and a migration creates the extension. Where the
+  database role may not create it, the migration logs a notice and goes on.
+  `agenticos cmd doctor` prints a `query statistics` line either way.
+
 !!! note "The database is tuned against its own limit"
 
     `docker-compose-prod.yml` runs Postgres with `shared_buffers=512MB` against a
@@ -69,6 +170,12 @@ loop is then the whole deployment, until it kills itself.
     which a parallel scan over a collection's vectors exhausts, reporting
     `could not resize shared memory segment`. Move the limit and move the tuning
     with it; they are written next to each other for that reason.
+
+    It also sets `max_connections=200`, because the pools can open more than
+    Postgres' stock 100: two pools of 15 per uvicorn worker, so 120 at the
+    default four, and 30 more for the background worker. Raise it with
+    `UVICORN_WORKERS` or `DB_POOL_SIZE`, or Postgres refuses connections with
+    "too many clients" before a pool can queue them or shed the load.
 
 ## Point the names at the host
 
@@ -115,7 +222,7 @@ it. What runs is the two images the repository publishes.
 
 | | |
 |---|---|
-| `ghcr.io/vstorm-co/agenticos-backend` | The API, the Prefect runner and the migrations - one image, three commands |
+| `ghcr.io/vstorm-co/agenticos-backend` | The API, the worker and the migrations - one image, three commands |
 | `ghcr.io/vstorm-co/agenticos-frontend` | The console |
 
 Both are built for `linux/amd64` and `linux/arm64` by `.github/workflows/images.yml`.
@@ -142,6 +249,13 @@ Three rules the workflow keeps, each worth knowing before relying on a tag:
     day pulls what ran yesterday rather than whatever was released this morning.
     `scripts/deploy.sh` pins for you - to the `sha-` tag of the commit it deploys -
     for exactly as long as the deploy runs.
+
+    Pin it from that release's checkout: `git checkout v0.0.380` beside the
+    variable. The sandbox service's image is pinned in the compose file, at the
+    version the backend of the same commit speaks, so an older backend run from a
+    newer checkout meets a newer `sandboxd` - and `latest` from an old checkout is
+    the same mismatch the other way round. `scripts/deploy.sh` checks out the
+    commit it deploys, so a scripted deploy or rollback keeps the two together.
 
 Both packages pull anonymously. If a pull answers `unauthorized`, the package has
 been made private or a stale `docker login ghcr.io` is in the way; neither is
@@ -207,9 +321,66 @@ host was set up with rather than the one a script assumed.
 
     It is the one setting in `traefik/traefik.yml` worth reading before you run
     it. Only `app` and `frontend` carry `traefik.enable=true`, so Postgres, Redis,
-    the Prefect server and the sandbox daemon are reachable from nothing outside
+    the worker and the sandbox daemon are reachable from nothing outside
     the host — and that is a property of *not being labelled*, so it survives
     somebody adding a service without thinking about the proxy.
+
+!!! warning "Some request paths and query strings are credentials"
+
+    These path segments open something to whoever reads them:
+
+    - a public link's key, in `/a/<key>`, `/api/v1/public/artifacts/<key>` and
+      `/api/v1/artifact-embed/<key>`, until the link is rotated;
+    - a signed content address, `/api/v1/artifact-content/<token>`, for its
+      lifetime;
+    - a shared conversation's token, in `/shared/<token>` and
+      `/api/v1/conversations/shared/<token>`;
+    - a workflow form's token, in `/f/<token>` and
+      `/api/v1/public/workflow-forms/<token>`;
+    - a webhook test's token, in `/api/v1/workflow-webhook-tests/<token>` and
+      `/api/v1/workflows/<id>/webhook-test/<token>`;
+    - a channel link's token, in `/link/<token>` and
+      `/api/v1/me/channel-link/<token>`;
+    - an invitation's token, in `/invitations/<token>`,
+      `/api/v1/invitations/<token>` and `/api/v1/invitations/<token>/accept`;
+    - a workflow run's resume token, in
+      `/api/v1/workflow-resume/<run_id>/<token>`.
+
+    So do these query parameters:
+
+    - `visitor` and `token` on the agent widget's socket,
+      `/api/v1/embed/<key>/ws`: a hosted page's key, which resumes the
+      visitor's conversation, and the customer's signed visitor token;
+    - `code` and `state` on a sign-in provider's return,
+      `/api/v1/oauth/<provider>/callback`, and `code` on the console's
+      `/auth/callback`;
+    - `invitation_handle` on `/api/v1/oauth/<provider>/login` and
+      `/api/v1/auth/kerberos/login`, which redeems the invitation it stands
+      for;
+    - `token` on the console's `/reset-password`, `/auth/magic-link` and
+      `/auth/email-change`, the links that a password reset, a sign-in link and
+      an email change send.
+
+    A request made from one of those pages can carry its address in the
+    `Referer` header. The API replaces the API segments and the values of those
+    parameters with `[REDACTED]` in its own access log, in uvicorn's line for
+    each accepted WebSocket, in every log record and in Logfire spans, the
+    console output, the endpoint's arguments and the copy Logfire makes when a
+    span starts included. Other query parameters, such as `q`, `skip`, `limit`
+    and ids, are kept.
+
+    Traefik can keep, drop or redact a whole field but cannot rewrite part of
+    one, so `traefik/traefik.yml` drops `RequestPath`, which includes the query
+    string, from Traefik's access log. Nginx can rewrite part of a value, but
+    `nginx/nginx.conf` drops the path, the query string and the `Referer` the
+    same way, with the `agenticos_no_path` log format each
+    server block names, so the list of secret paths is kept in one place. Both
+    logs still have the client, the status, the size and the duration.
+    Nginx's error log writes the request line and the `Referer` of a failed
+    request, and no setting changes that, so keep the error log on the host. If
+    you need the paths in the access log, remove that field rule or log format
+    and handle the log as a secret: keep it on the host and do not ship it to a
+    log service.
 
 ### Option B: Nginx
 
@@ -226,7 +397,10 @@ make prod-frontend
 the `server_name` in each block is `${DOMAIN:-localhost}`, and Nginx does not
 expand that — put the two hostnames in by hand. Certificates are yours to obtain
 and renew, and so is the `Strict-Transport-Security` header, which the backend
-deliberately leaves to whatever terminates TLS.
+deliberately leaves to whatever terminates TLS. The template's access log leaves
+out the request path, the query string and the `Referer`; *Some request paths
+and query strings are credentials*, above, says why and what the error log
+still writes.
 
 !!! warning "`BIND_HOST` is a security setting, not a convenience"
 
@@ -243,7 +417,7 @@ deliberately leaves to whatever terminates TLS.
     `agenticos` — and bringing the frontend up then reported the five backend
     containers as **orphans**, with compose's own suggestion to run the command
     again with `--remove-orphans`. Taking that advice stops the API, the
-    database, Redis and both Prefect services. The `make` targets and
+    database, Redis and the worker. The `make` targets and
     `scripts/deploy.sh` pass `-p agenticos-frontend`, so the warning is gone.
     The compose files fix no container names either - each project names its
     own, so two stacks on one host cannot take each other's containers over,
@@ -291,7 +465,7 @@ organization, from the vault.
     cannot see.
 
 Then, once, by hand: sign in, invite somebody (which proves `SMTP_*`), and send
-Claude Code like a message (which proves the provider key and the WebSocket). Each
+AgenticOS a message (which proves the provider key and the WebSocket). Each
 exercises a path nothing else here checks.
 
 !!! info "The security headers come from the backend, so any proxy is covered"
@@ -305,6 +479,22 @@ exercises a path nothing else here checks.
 
     **HSTS is deliberately left to the proxy**, which is where TLS terminates. A
     proxy that sets its own CSP should be at least as strict as this one.
+
+### Services on your own network
+
+A request a member configures - a workflow HTTP step, a Git, website or S3 source,
+an A2A agent or an MCP connection - is refused when its host resolves to a
+private address, so a wiki, a Git server or an MCP server inside your network is
+out of reach by default. To open one, list it in `OUTBOUND_PRIVATE_ALLOWLIST` in
+`backend/.env`, as a host, a `.suffix`, an address or a CIDR range, and restart
+the API and the worker. See the setting's row in
+[the configuration reference](configuration.md#project-settings) for the forms,
+what is refused whatever you list and what every account can then reach. List
+only services that check their own credential.
+
+`agenticos cmd doctor` reports the list as its `private network` line. It fails
+when a listed range covers the database or Redis, and warns about a range wider
+than /16 (IPv4) or /48 (IPv6).
 
 ### Turning the sandbox on
 
@@ -320,9 +510,10 @@ sudo chown 10001:10001 /var/lib/agenticos/sandbox-workspaces
 
 Then a deploy brings it up: `scripts/deploy.sh` passes `--profile sandbox` when
 `SANDBOXD_TOKEN` in `backend/.env` has a value, so the host itself says whether
-it runs one. It also exports `DOCKER_GID` read off the socket — every compose
-file here interpolates it into the sandbox's `group_add`, and its `0` default is
-the socket's owner on almost no Linux distribution. Nothing else in `.env` is
+it runs one. Like `make` and quickstart, it exports `DOCKER_GID` into the
+sandbox's `group_add`: the socket's group on Linux (following symlinks), or `0`
+on Docker Desktop, where the mounted socket belongs to the VM. An explicit
+`DOCKER_GID` in the environment or on the `make` command line takes precedence. Nothing else in `.env` is
 needed: the backend reaches the daemon through a sandbox *connection* somebody
 creates in the console, and `http://sandboxd:8080` is recognised as this
 deployment's own.
@@ -336,6 +527,63 @@ deployment's own.
     token rather than taking a flag.
 
 ## Deploying a change
+
+### Native memory and routine continuity { #native-memory-upgrade }
+
+Before this upgrade, take the [database, media and vault-key backups](#backups)
+and coordinate the API and worker rollout. Use the deployment's normal migration
+step; do not copy rows or create replacement schedules manually.
+
+Before applying `0285_member_proactivity.py`, stop API/sweep producers and drain active proactive jobs, then stop workers. The migration refuses while a watch or nightly model job is running and backfills queued work with a shared per-member concurrency key. Update API and workers together so new jobs use the same key; a watch and a nightly look for one person must not independently spend the same remaining allowance.
+
+- `0248_drop_memory_mem0.py` refuses the upgrade while `memory_mem0` remains in
+  any stored draft or published spec. Before retrying, inventory every endpoint
+  and vault credential mapping from the backup, erase the external memories and
+  verify completion at each provider. Only then remove those bindings explicitly
+  from `agents.draft_spec` and `agent_versions.spec`. An export alone is not an
+  erasure. Keep the cleanup evidence, review unused vault keys and revoke retired
+  credentials. The migration makes no remote request and never assumes a purge
+  succeeded. If an earlier development build already stripped the bindings,
+  recover the inventory from its pre-upgrade backup and perform the same purge;
+  native person/agent erasure cannot reach that external data.
+- `0251_primary_conversations.py` and `0258_primary_channel_history.py` establish
+  primary private chats. An existing mapping wins. Only demonstrably private,
+  linked channel history is adopted once; project/group and ambiguous histories
+  remain separate. Do not rerun the backfill after somebody clears a primary chat.
+- Existing routine IDs, schedules and logs remain in place. The delivery migration
+  `0255_trigger_delivery.py` gives old routines `run_log`; new routines default to
+  a primary chat or their trusted source conversation. Review the destination,
+  acting person, end and budget under **Routines**, rather than creating copies.
+- `0259_trigger_version_pin.py` supports immutable version pins. A pin and a named
+  environment are exclusive. Clear a pin before deleting its version. A parked
+  run retains its admitted version; `0260_routine_run_origin.py` retains its
+  origin so deleting a routine does not release its authorization guard.
+- `0261_watch_attempt_status.py` starts explicit attempt tracking without guessing
+  older success/failure history. An unavailable or incomplete check does not
+  advance the success timestamp. Review existing watches and their account
+  access: historical rows do not prove how consent was originally given.
+
+Choose a model explicitly before enabling memory maintenance; the daily briefing
+keeps the existing organization model/budget settings. With `0262_watch_agent_sources.py`, watches use their selected agent and retain
+approved sources on runs. Existing watches require the owner to select an agent
+and approve its sources before running again; IDs and findings are preserved. Check
+[governance](governance.md#proactive-work) and the [channel setup](channels.md#sms),
+including `PUBLIC_BASE_URL` and expired SMS identity links. In a test organization,
+verify one private chat, one routine's Activity/delivery, pause/expiry and one
+unavailable-source watch before enabling a wider rollout.
+
+### The retry-history boundary in 1.25.0 { #retry-history-upgrade }
+
+Version 1.25.0 adopts Pydantic AI 2.61's `retried` tool outcomes and separate
+`retry-feedback` messages. Existing histories and run checkpoints load without a
+database migration or republishing agents. Histories containing these parts need
+the new reader: an older backend cannot replay these message shapes.
+
+Upgrade all API and worker processes together, draining or stopping the old
+processes before the new ones accept work. Do not mix older and newer backend
+replicas against the same database. After either new retry form has been written, a
+code-only rollback across this boundary is unsupported; retaining the new reader
+or restoring a pre-upgrade database snapshot is required.
 
 ### By hand
 
@@ -367,11 +615,55 @@ built, on a host that never needs the toolchain.
 It is not zero-downtime. Compose recreates the containers whose image changed, so
 the site is unavailable for the few seconds that takes.
 
+### Release image retention
+
+Before pulling, the script removes old, unused release images from only
+`ghcr.io/vstorm-co/agenticos-backend`, `agenticos-frontend` and `agenticos-browser`.
+It keeps two additional unused image IDs per repository, newest first; several
+SHA or version tags on one ID count as one image. Only `sha-<hex>` and numeric
+version tags are eligible. All aliases of a removable ID are removed together,
+without `--force`. `--no-prune` also prevents implicit deletion of untagged
+parent images.
+
+Every running or stopped container on the host protects its image, including
+other Compose projects. A target image, any mutable/manual tag, or a tag or
+digest in another repository also protects the entire ID. Sandbox/runtime
+images, dangling images and application volumes are outside this cleanup.
+These protections can keep more images than the unused-image allowance.
+
+The hash of the deployment directory separates pins for stacks sharing a host.
+Local `deploy-<stack-hash>-current` and `deploy-<stack-hash>-rollback` tags preserve each component's last
+healthy image and its predecessor after containers are replaced. On first use,
+`deploy-<stack-hash>-current` is seeded from this stack's healthy containers, not the checkout;
+inconsistent healthy image IDs refuse the deploy. Pins advance only after the
+new services pass health checks. Failed deploys retain the recorded pins, and
+redeploying the same image does not replace its rollback. Continue to roll back
+by an approved commit SHA; these local tags are retention markers, not registry
+releases.
+
+The script requires at least **5 GiB free** on Docker's storage filesystem before
+each pull and after optional runtime preparation. It checks `DockerRootDir` and
+the default `/var/lib/containerd` store when present. This is a capacity floor,
+not a reservation or an image-size estimate; monitor custom containerd stores
+separately. Both backend and frontend images are pulled before either service
+is restarted. An insufficient-capacity refusal reports the filesystem and
+available space: free space outside the protections or expand storage, then
+retry the approved deployment. Never use a blanket `docker image prune -a` to
+implement this policy.
+
+On Docker Desktop, the storage directory is inside its Linux VM. The script
+measures VM free space through a temporary, read-only, network-isolated container
+using an already-cached backend image, preferably the last healthy one. The
+probe cannot pull images and is removed automatically. It also checks the host
+filesystem containing the deployment directory; monitor a custom VM backing
+disk's host filesystem separately. This update procedure requires a cached
+backend image; complete the normal initial installation first.
+
 ### From GitHub, with an approval
 
-`.github/workflows/deploy.yml` offers every merge to `main` for deployment and
+`.github/workflows/deploy.yml` offers each published stable release for deployment and
 waits for somebody to approve it. That gate is **a repository setting, not a step
-in the file** — without it, the workflow deploys every merge unattended.
+in the file** — without it, the workflow deploys each published stable release unattended.
 
 Set it up once:
 
@@ -386,7 +678,7 @@ Set it up once:
     Every run shares the `deploy-production` concurrency group, and a run sitting
     at the approval gate holds it. It does not expire on its own — GitHub cancels
     an unactioned one after 30 days — so until somebody approves or cancels it,
-    later merges queue behind a decision nobody is going to make, and the server
+    later releases queue behind a decision nobody is going to make, and the server
     keeps running whatever was deployed last.
 
     So a deploy you have decided against is cancelled, not left. One left waiting
@@ -395,9 +687,9 @@ Set it up once:
 
     `deploy-queue.yml` is what happens when it is left anyway: every six hours it
     cancels a Deploy run that has waited more than twelve for an approval, and
-    opens an issue naming the run and how far `main` has drifted from the last
+    opens an issue naming the run and how far the latest stable release has advanced from the last
     successful deploy. It approves nothing and deploys nothing — it drains the
-    queue so the next merge reaches the gate, and says that it did. Run it by
+    queue so the next published release reaches the gate, and says that it did. Run it by
     hand with `gh workflow run deploy-queue.yml`.
 
 !!! danger "Approving from the environment's queue approves the **oldest** run"
@@ -406,7 +698,7 @@ Set it up once:
     whenever the queue jammed, not the commit that was just pushed — that is how
     a fortnight-old commit reached this server. Approve from the run page of the
     commit you mean, or start a fresh one with
-    `gh workflow run deploy.yml --ref main` and approve that.
+    `gh workflow run deploy.yml --ref main -f ref=v1.34.3` and approve that.
 
 | Secret | What |
 |---|---|
@@ -442,7 +734,6 @@ One volume matters, and it is not obvious which:
 |---|---|---|
 | `postgres_data` | everything — agents, conversations, sealed credentials | **yes** |
 | `media_data` | uploaded files, before ingestion | yes |
-| `prefect_data` | Prefect's database: deployments, run history, queued runs | no |
 
 The cache has no volume at all. Rate-limit buckets, channel dedupe claims and
 membership answers all carry a TTL and all rebuild themselves, so Valkey runs

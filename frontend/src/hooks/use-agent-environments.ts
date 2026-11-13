@@ -4,10 +4,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
-import { getErrorMessage } from "@/lib/api-error";
+import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { apiClient } from "@/lib/api-client";
+import { invalidateSpeechSettings } from "@/lib/dictation-api";
 import { qk } from "@/lib/query-keys";
-import type { AgentEnvironment, AgentEnvironmentList } from "@/types/agents";
+import type { AgentEnvironment, AgentEnvironmentList, EnvironmentConnection } from "@/types/agents";
 
 /**
  * An agent's named environments - which published version answers under which
@@ -21,14 +22,19 @@ export function useAgentEnvironments(agentId: string | null) {
   const queryClient = useQueryClient();
   const base = `/agents/${agentId}/environments`;
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: qk.environments.list(agentId ?? ""),
     queryFn: () => apiClient.get<AgentEnvironmentList>(base),
     enabled: agentId !== null,
   });
 
+  // Dictation readiness and channel voice notes read the version an
+  // environment pins, so moving a pin changes their answer too.
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") });
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") }),
+      invalidateSpeechSettings(queryClient),
+    ]);
 
   const create = useMutation({
     mutationFn: (input: { name: string; version_id?: string; tracks_latest?: boolean }) =>
@@ -37,14 +43,48 @@ export function useAgentEnvironments(agentId: string | null) {
     onError: (error) => toast.error(getErrorMessage(error, tErrors, t("failedCreateEnvironment"))),
   });
 
+  /**
+   * Promote a version onto an environment, past its eval suites when a reason
+   * is given. A refusal by the gate is left to the dialog showing it, which
+   * reads the gate off the error rather than a toast.
+   */
   const promote = useMutation({
-    mutationFn: ({ environmentId, versionId }: { environmentId: string; versionId: string }) =>
-      apiClient.patch<AgentEnvironment>(`${base}/${environmentId}`, { version_id: versionId }),
+    mutationFn: ({
+      environmentId,
+      versionId,
+      overrideReason,
+    }: {
+      environmentId: string;
+      versionId: string;
+      overrideReason?: string;
+    }) =>
+      apiClient.patch<AgentEnvironment>(`${base}/${environmentId}`, {
+        version_id: versionId,
+        ...(overrideReason ? { override_reason: overrideReason } : {}),
+      }),
     onSuccess: () => {
       invalidate();
+      void queryClient.invalidateQueries({ queryKey: qk.agents.detail(agentId ?? "") });
       toast.success(t("promoted"));
     },
-    onError: (error) => toast.error(getErrorMessage(error, tErrors, t("failedPromote"))),
+    onError: (error) => {
+      if (!isPromotionBlocked(error)) {
+        toast.error(getErrorMessage(error, tErrors, t("failedPromote")));
+      }
+    },
+  });
+
+  /** Replace the eval suites an environment requires to pass before it takes a version. */
+  const setGuards = useMutation({
+    mutationFn: ({ environmentId, suiteIds }: { environmentId: string; suiteIds: string[] }) =>
+      apiClient.patch<AgentEnvironment>(`${base}/${environmentId}`, {
+        guard_suite_ids: suiteIds,
+      }),
+    onSuccess: () => {
+      invalidate();
+      toast.success(t("guardsSaved"));
+    },
+    onError: (error) => toast.error(getErrorMessage(error, tErrors, t("failedGuards"))),
   });
 
   /**
@@ -83,6 +123,22 @@ export function useAgentEnvironments(agentId: string | null) {
     onError: (error) => toast.error(getErrorMessage(error, tErrors, t("failedRenameEnvironment"))),
   });
 
+  /** Replace an environment's whole set of test connections. */
+  const setConnections = useMutation({
+    mutationFn: ({
+      environmentId,
+      connections,
+    }: {
+      environmentId: string;
+      connections: EnvironmentConnection[];
+    }) => apiClient.patch<AgentEnvironment>(`${base}/${environmentId}`, { connections }),
+    onSuccess: () => {
+      invalidate();
+      toast.success(t("testConnectionsSaved"));
+    },
+    onError: (error) => toast.error(getErrorMessage(error, tErrors, t("failedTestConnections"))),
+  });
+
   const remove = useMutation({
     mutationFn: (environmentId: string) => apiClient.delete<void>(`${base}/${environmentId}`),
     onSuccess: invalidate,
@@ -92,10 +148,19 @@ export function useAgentEnvironments(agentId: string | null) {
   return {
     environments: data?.items ?? [],
     isLoading,
+    error,
+    refetch,
     create,
     promote,
     setReleaseMode,
     rename,
     remove,
+    setConnections,
+    setGuards,
   };
+}
+
+/** Whether a promotion was refused because the environment's eval suites have not passed. */
+export function isPromotionBlocked(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "PROMOTION_BLOCKED";
 }

@@ -77,6 +77,13 @@ class TestTheCatalog:
         assert entry is not None
         assert entry.kind is SecretKind.API_KEY
 
+    def test_a_remote_agents_key_can_be_stored_where_it_is_registered(self):
+        """The register-remote-agent dialog stores its key under this id; a
+        purpose missing here refused every key typed into it."""
+        entry = secret_purposes.get("a2a")
+        assert entry is not None
+        assert entry.kind is SecretKind.API_KEY
+
     def test_custom_is_last_and_is_not_a_model_provider(self):
         purposes = secret_purposes.all_purposes()
         assert purposes[-1].id == "custom"
@@ -98,6 +105,13 @@ class TestStoring:
         reads correctly and fails at the first run."""
         with pytest.raises(BadRequestError, match="api_key"):
             OrganizationSecretService._check_purpose("openai", SecretKind.AWS_CREDENTIALS)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("kind", list(SecretKind))
+    async def test_the_escape_hatch_takes_any_shape(self, kind):
+        """`custom` names no service, so it is how an HTTP API's credential - a
+        shape no catalogued service takes - is stored at all."""
+        OrganizationSecretService._check_purpose("custom", kind)
 
     @pytest.mark.anyio
     async def test_a_private_key_records_its_owner(self):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 
 import { AnimatedAmount, AnimatedTally, DeltaChip, Figure } from "@/components/ui";
 
@@ -30,10 +30,11 @@ import { UsageBody } from "./usage-body";
  */
 export function SummaryWidget({ title, hint, period, seeAll, options }: DashboardWidgetProps) {
   const t = useTranslations("dashboard.widgets.summary");
+  const locale = useLocale();
 
   return (
     <WidgetFrame title={title} hint={hint} seeAll={seeAll} options={options}>
-      <UsageBody period={period} emptyKey="summary" options={options}>
+      <UsageBody period={period} emptyKey="summary" loadingVariant="metrics" options={options}>
         {(usage) => {
           const runs = usage.total_runs ?? 0;
           const runsDelta = deltaPercent(runs, usage.previous_total_runs ?? 0);
@@ -53,7 +54,7 @@ export function SummaryWidget({ title, hint, period, seeAll, options }: Dashboar
             // is for. Centred, the numbers sat in the middle of the card with
             // their sparklines pinned under them and the height its owner gave
             // the card spent on nothing.
-            <div className="grid flex-1 grid-cols-2 gap-5 lg:grid-cols-4">
+            <div className="grid flex-1 grid-cols-2 gap-5 @min-[36rem]/widget:grid-cols-4">
               <Figure
                 tone="indigo"
                 label={t("runs")}
@@ -78,7 +79,7 @@ export function SummaryWidget({ title, hint, period, seeAll, options }: Dashboar
                 value={
                   <AnimatedAmount
                     value={usage.cost?.period_usd}
-                    label={t("spendLabel", { amount: formatUsd(usage.cost?.period_usd) })}
+                    label={t("spendLabel", { amount: formatUsd(usage.cost?.period_usd, locale) })}
                   />
                 }
                 delta={

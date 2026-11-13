@@ -9,11 +9,16 @@ import { hasResource, withResource, type AgentResourceRef } from "@/lib/agent-sp
 import { apiClient } from "@/lib/api-client";
 import { fieldProblems, getErrorMessage, problemList } from "@/lib/api-error";
 import type { FieldProblem } from "@/lib/api-error";
+import { invalidateSpeechSettings } from "@/lib/dictation-api";
+import { readThrough } from "@/lib/offline/device-cache";
 import { qk } from "@/lib/query-keys";
+import { specFixes, type SpecFix } from "@/lib/spec-fixes";
+import { useOnboardingStore } from "@/stores/onboarding-store";
 import { useCapabilityGuide } from "./use-capability-guide";
 import type { Visibility } from "@/types/sharing";
 import type {
   Agent,
+  AgentCeiling,
   AgentDetail,
   AgentList,
   AgentSpec,
@@ -23,6 +28,7 @@ import type {
   CapabilityCatalog,
   DelegationTree,
   SpecialistSpec,
+  SystemAgentKind,
   SystemPromptVariable,
 } from "@/types/agents";
 
@@ -35,12 +41,82 @@ export interface PromoteSpecialist {
 }
 
 /**
+ * The organization's judges - the default eval judge and each dataset's own - which
+ * every other agent list leaves out. Kept here for run attribution and historical scores.
+ */
+export function useJudges({ enabled = true } = {}) {
+  return useAgentsOfKind("judge", { enabled });
+}
+
+/** The organization's system agents of one kind, which every other agent list leaves out. */
+export function useAgentsOfKind(kind: SystemAgentKind, { enabled = true } = {}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: qk.agents.ofKind(kind),
+    queryFn: () => apiClient.get<AgentList>("/agents", { params: { kind, limit: "100" } }),
+    enabled,
+  });
+  return { agents: data?.items ?? [], total: data?.total ?? 0, isLoading, error };
+}
+
+/**
  * The agent registry.
  *
  * Mutations invalidate rather than patch the cache. An agent's status and
  * version pointer change as a side effect of publishing, and guessing what the
  * server did is how a Builder starts showing a draft as published.
  */
+/**
+ * Every agent the list names, not its first page.
+ *
+ * The route pages at 50 by default and 100 at most, and what reads this - the
+ * chat's agent picker, a project's default agent, the run filters - is a picker
+ * that silently lacked whoever came after the first page. The first request is
+ * the one it always was; the rest are asked for only when the total says so.
+ */
+async function everyAgent(params: ReturnType<typeof agentListParams>): Promise<AgentList> {
+  const first = await apiClient.get<AgentList>("/agents", params ? { params } : undefined);
+  const base: [string, string][] =
+    params === undefined ? [] : Array.isArray(params) ? params : Object.entries(params);
+  const items = [...first.items];
+  while (items.length < first.total) {
+    const page = await apiClient.get<AgentList>("/agents", {
+      params: [...base, ["skip", String(items.length)], ["limit", "100"]],
+    });
+    if (page.items.length === 0) break;
+    items.push(...page.items);
+  }
+  return { ...first, items };
+}
+
+/** The ceiling has its own route, so paging through the list never recounts it. */
+function fetchAgentCeiling(): Promise<AgentCeiling> {
+  return apiClient.get<AgentCeiling>("/agents/ceiling");
+}
+
+/**
+ * The organization's agent limit and whether it is reached, or null until read.
+ *
+ * `known` is false until the server has answered: an unknown ceiling is not
+ * "below the limit", so a create control waits for it. A failed read counts as
+ * known - the server still refuses past the limit - and so does a disabled one:
+ * the route needs `agents:edit`, so a caller without it is never asked and has
+ * no create to wait on. Kept fresher than the list, because another member's
+ * archive or an administrator's new limit reaches this caller through no event
+ * of theirs.
+ */
+export function useAgentCeiling({ enabled = true }: { enabled?: boolean } = {}) {
+  const { data, isSuccess, isError } = useQuery({
+    queryKey: qk.agents.ceiling(),
+    queryFn: fetchAgentCeiling,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    enabled,
+  });
+  // A failed refresh retains cached data, but an old refusal must not disable
+  // creation indefinitely. The server still enforces the actual ceiling.
+  return { ceiling: isError ? null : (data ?? null), known: !enabled || isSuccess || isError };
+}
+
 export function useAgents({
   includeArchived = false,
   enabled = true,
@@ -65,9 +141,13 @@ export function useAgents({
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: qk.agents.list(includeArchived, facetCategories, facetTags),
     queryFn: () => {
-      const params = agentListParams(includeArchived, facetCategories, facetTags);
-      return apiClient.get<AgentList>("/agents", params ? { params } : undefined);
+      const ask = () => everyAgent(agentListParams(includeArchived, facetCategories, facetTags));
+      // The unfiltered list - the chat's picker, an agent's name and face
+      // beside its answers - is kept on the device in the apps (#2097).
+      if (facetCategories.length > 0 || facetTags.length > 0) return ask();
+      return readThrough(includeArchived ? "agents:all" : "agents:active", ask);
     },
+    networkMode: "offlineFirst",
     // How a surface without agents:view stays out of the network log - the
     // run table's agent column and the filter bar both read this gated.
     enabled,
@@ -75,6 +155,11 @@ export function useAgents({
 
   const invalidate = useCallback(
     () => queryClient.invalidateQueries({ queryKey: qk.agents.all() }),
+    [queryClient],
+  );
+  // A refused create may be the limit the cached ceiling did not know about yet.
+  const recount = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: qk.agents.ceiling() }),
     [queryClient],
   );
 
@@ -85,6 +170,7 @@ export function useAgents({
   // here would put the same message somewhere it cannot be acted on, and then
   // take it away again.
   const create = useMutation({
+    mutationKey: qk.agents.create(),
     // Visibility is not part of the spec and never has been: a spec is what the
     // agent *is*, and who can find it is a fact about the row - the same reason
     // its avatar and its colour live beside the spec rather than in it.
@@ -95,6 +181,7 @@ export function useAgents({
       user_ids,
       categories,
       tags,
+      from_starter,
     }: {
       spec: AgentSpec;
       visibility?: Visibility;
@@ -102,11 +189,45 @@ export function useAgents({
       user_ids?: string[];
       categories?: string[];
       tags?: string[];
+      /** Fill what the spec leaves empty from the AgenticOS starter agent (#2301). */
+      from_starter?: boolean;
     }) =>
-      apiClient.post<Agent>("/agents", { spec, visibility, group_ids, user_ids, categories, tags }),
-    onSuccess: async (agent) => {
+      apiClient.post<Agent>("/agents", {
+        spec,
+        visibility,
+        group_ids,
+        user_ids,
+        categories,
+        tags,
+        from_starter,
+      }),
+    onMutate: () => {
+      const flow = useOnboardingStore.getState();
+      // Choices are reset for each flow. Their identity keeps a late create
+      // from attaching to a walk reopened while the request was in flight.
+      return flow.isOpen && flow.flowId === "create-agent" && flow.index === 0
+        ? flow.choices
+        : null;
+    },
+    onSuccess: async (agent, _variables, guidedFlow) => {
+      const flow = useOnboardingStore.getState();
+      if (
+        guidedFlow === flow.choices &&
+        flow.isOpen &&
+        flow.flowId === "create-agent" &&
+        flow.index === 0 &&
+        flow.flowAgentId === null
+      ) {
+        // Refreshing the ceiling may fill its last slot. Record our success
+        // first so the coach does not mistake it for another person's create.
+        flow.setFlowAgentId(agent.id);
+      }
       await invalidate();
       toast.success(t("created", { name: agent.name }));
+    },
+    // Not awaited: the dialog shows the refusal now, not after the recount.
+    onError: () => {
+      void recount();
     },
   });
 
@@ -123,7 +244,10 @@ export function useAgents({
       await invalidate();
       toast.success(t("createdDraft", { name: agent.name }));
     },
-    onError: (error) => toast.error(getErrorMessage(error, tErrors)),
+    onError: (error) => {
+      void recount();
+      toast.error(getErrorMessage(error, tErrors));
+    },
   });
 
   /**
@@ -143,6 +267,10 @@ export function useAgents({
       }),
     onSuccess: async () => {
       await invalidate();
+    },
+    // A promotion is a create, refused at the limit like any other.
+    onError: () => {
+      void recount();
     },
   });
 
@@ -165,7 +293,10 @@ export function useAgents({
           : t("backAsDraft", { name: agent.name }),
       );
     },
-    onError: (error) => toast.error(getErrorMessage(error, tErrors)),
+    onError: (error) => {
+      void recount();
+      toast.error(getErrorMessage(error, tErrors));
+    },
   });
 
   const remove = useMutation({
@@ -210,6 +341,8 @@ export function useAgents({
 export type SpecRefusal = {
   readonly problems: string[];
   readonly fields: FieldProblem[];
+  /** The one-click fixes the server offered that this console can apply. */
+  readonly fixes: SpecFix[];
 };
 
 /** One agent, with the spec currently being edited. */
@@ -219,7 +352,7 @@ export function useAgent(agentId: string | null) {
   const queryClient = useQueryClient();
   const t = useTranslations("agents");
 
-  const { data, isLoading, dataUpdatedAt } = useQuery({
+  const { data, isLoading, dataUpdatedAt, error, refetch } = useQuery({
     queryKey: qk.agents.detail(agentId ?? ""),
     queryFn: () => apiClient.get<AgentDetail>(`/agents/${agentId}`),
     enabled: !!agentId,
@@ -234,13 +367,20 @@ export function useAgent(agentId: string | null) {
   // environment server-side, and the environments cache is not under
   // `qk.agents` - without this the panel keeps naming the pin the publish
   // just moved, right after a dialog said it would move.
+  // Dictation readiness too: it reads the published version's speech-to-text
+  // override, which the publish may just have changed.
   const invalidateEnvironments = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") }),
+    () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.environments.list(agentId ?? "") }),
+        invalidateSpeechSettings(queryClient),
+      ]),
     [queryClient, agentId],
   );
 
   const saveDraft = useMutation({
-    mutationFn: (spec: AgentSpec) => apiClient.put<Agent>(`/agents/${agentId}/draft`, { spec }),
+    mutationFn: (spec: AgentSpec) =>
+      apiClient.put<AgentDetail>(`/agents/${agentId}/draft`, { spec }),
     onSuccess: invalidate,
     onError: (error) => toast.error(getErrorMessage(error, tErrors)),
   });
@@ -261,7 +401,7 @@ export function useAgent(agentId: string | null) {
   const validate = useCallback(async (): Promise<SpecRefusal> => {
     try {
       await apiClient.post<void>(`/agents/${agentId}/validate`, {});
-      return { problems: [], fields: [] };
+      return { problems: [], fields: [], fixes: [] };
     } catch (error) {
       // This read used to be `error.details`, a property `ApiError` has never
       // had, so the list the backend goes out of its way to report in full was
@@ -269,8 +409,9 @@ export function useAgent(agentId: string | null) {
       // envelope; the fallback is for the failures that are not a verdict on
       // the spec at all - a refused permission, a dropped connection.
       const problems = problemList(error);
-      if (problems === null) return { problems: [getErrorMessage(error, tErrors)], fields: [] };
-      return { problems, fields: fieldProblems(error) };
+      if (problems === null)
+        return { problems: [getErrorMessage(error, tErrors)], fields: [], fixes: [] };
+      return { problems, fields: fieldProblems(error), fixes: specFixes(error) };
     }
   }, [agentId, tErrors]);
 
@@ -280,6 +421,8 @@ export function useAgent(agentId: string | null) {
     onSuccess: async (version) => {
       await invalidate();
       await invalidateEnvironments();
+      // A publication ends the assistant's cycle: its suggestions were for the draft just frozen.
+      await queryClient.invalidateQueries({ queryKey: qk.authoring.all() });
       toast.success(t("publishedVersion", { version: version.version }));
     },
     onError: (error) => toast.error(getErrorMessage(error, tErrors)),
@@ -291,6 +434,7 @@ export function useAgent(agentId: string | null) {
     onSuccess: async (version) => {
       await invalidate();
       await invalidateEnvironments();
+      await queryClient.invalidateQueries({ queryKey: qk.authoring.all() });
       // Rolling back publishes a *new* version rather than moving a pointer
       // backwards, so run history keeps telling the truth about what was live.
       toast.success(t("rolledBack", { version: version.version }));
@@ -344,13 +488,24 @@ export function useAgent(agentId: string | null) {
     onError: (error) => toast.error(getErrorMessage(error, tErrors)),
   });
 
+  /** Serve this agent to other systems over A2A, or stop (#2092). */
+  const setA2a = useMutation({
+    mutationFn: (enabled: boolean) => apiClient.put<Agent>(`/agents/${agentId}/a2a`, { enabled }),
+    onSuccess: invalidate,
+    onError: (error) => toast.error(getErrorMessage(error, tErrors)),
+  });
+
   return {
     agent: data,
     isLoading,
+    /** The read's failure, so a detail page can tell a 404 from a slow first
+     *  load rather than waiting on a skeleton that never resolves. */
+    error,
     /** When the agent was last read successfully - what a page waiting on a
      *  refetch it did not start watches for. A failed refetch does not count:
      *  it has not shown what changed. */
     fetchedAt: dataUpdatedAt,
+    refetch,
     saveDraft,
     validate,
     publish,
@@ -358,6 +513,7 @@ export function useAgent(agentId: string | null) {
     setAvatar,
     setColor,
     setMetadata,
+    setA2a,
   };
 }
 
@@ -473,6 +629,26 @@ export function useAgentVersion(agentId: string | null, versionId: string | null
   return { version: data, isLoading, error };
 }
 
+/**
+ * The version the draft is based on - the latest published one, whatever
+ * production runs - with its spec, so the draft can be compared with it.
+ *
+ * `base` is undefined while it loads and for an agent never published.
+ */
+export function useDraftBase(agentId: string | null) {
+  // No placeholder from the agent before: its newest version is not this one's.
+  const { data } = useQuery({
+    queryKey: qk.agents.versions(agentId ?? "", 0, 1),
+    queryFn: () =>
+      apiClient.get<AgentVersionList>(`/agents/${agentId}/versions`, {
+        params: { skip: "0", limit: "1" },
+      }),
+    enabled: !!agentId,
+  });
+  const { version } = useAgentVersion(agentId, data?.items[0]?.id ?? null);
+  return { base: version };
+}
+
 /** The system variables any agent's instructions may write as `{{name}}` (#2065). */
 export function usePromptVariables() {
   const { data } = useQuery({
@@ -484,16 +660,17 @@ export function usePromptVariables() {
 }
 
 /**
- * Everything an agent can be given.
+ * Everything an agent can be given, and what a new one starts with.
  *
- * Cached indefinitely: the catalog changes when the backend is redeployed, not
- * while someone is building an agent.
+ * `recommended` depends on the organization - a container workspace only where
+ * one would publish - so it is kept for a minute, as the server keeps it, and
+ * dropped whenever a sandbox connection changes.
  */
 export function useCapabilityCatalog() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: qk.agents.capabilityCatalog(),
     queryFn: () => apiClient.get<CapabilityCatalog>("/agents/capabilities"),
-    staleTime: Infinity,
+    staleTime: 60_000,
   });
   const guide = useCapabilityGuide();
   // Named and described in the reader's language wherever the console has the
@@ -506,7 +683,7 @@ export function useCapabilityCatalog() {
       }),
     [data, guide],
   );
-  return { capabilities, isLoading };
+  return { capabilities, isLoading, isFetching, refetch };
 }
 
 /**
@@ -535,7 +712,12 @@ export function useAddToAgent() {
       });
       return { already: false };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.agents.all() }),
+    // A skill's card names the drafts it was added to, so its listing is read again too.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.agents.all() }),
+        queryClient.invalidateQueries({ queryKey: qk.skills.all() }),
+      ]),
     onError: (error) => toast.error(getErrorMessage(error, tErrors)),
   });
 }

@@ -62,7 +62,11 @@ describe("PublishedArtifactResult", () => {
         }}
       />,
     );
-    expect(screen.getByRole("link")).toHaveAttribute("href", "/apps/a1?version=v%203");
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("href", "/apps/a1?version=v%203");
+    // A new tab, so the conversation stays where it was.
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText("Version 3 · open the page")).toBeInTheDocument();
     // The preview is of that version too, not of whatever the link shows today.
     expect(screen.getByTestId("thumbnail")).toHaveTextContent("a1@v 3");
@@ -114,4 +118,21 @@ describe("the apps a turn published", () => {
       ["a", 2],
     ]);
   });
+});
+
+it("finds renamed published apps and ignores an external call using the built-in name", () => {
+  const common = {
+    id: "app",
+    args: {},
+    status: "completed" as const,
+    result: JSON.stringify(PUBLISHED),
+  };
+  expect(
+    publishedApps([{ ...common, name: "ship_report", tool_id: "publish_artifact" }]),
+  ).toHaveLength(1);
+  expect(
+    publishedApps([
+      { ...common, name: "publish_artifact", tool_id: null, presentation_kind: "generic" },
+    ]),
+  ).toEqual([]);
 });

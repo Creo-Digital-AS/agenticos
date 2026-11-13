@@ -1,13 +1,11 @@
 """Tests for the generated sharing routes.
 
 The five sharing endpoints exist once per resource type - agents, collections,
-skills, context files, vault secrets, artifacts - generated from one definition.
+skills, context files, vault secrets, artifacts, datasets - generated from one definition.
 What is worth testing is the generation itself: that each type really gets all
 five, that they are wired to the right resource type, and that a row from
 another organization is refused before the sharing service is ever reached.
 """
-
-from __future__ import annotations
 
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,22 +17,42 @@ from app.api.routes.v1._sharing_loaders import (
     load_artifact,
     load_collection,
     load_context,
+    load_dataset,
     load_mcp_connection,
+    load_project,
     load_secret,
     load_skill,
+    load_table,
+    load_workflow,
 )
 from app.api.routes.v1.sharing import (
     agent_sharing_router,
     artifact_sharing_router,
     collection_sharing_router,
     context_sharing_router,
+    dataset_sharing_router,
     mcp_connection_sharing_router,
+    project_sharing_router,
     secret_sharing_router,
     skill_sharing_router,
+    table_sharing_router,
+    workflow_sharing_router,
 )
 from app.core.exceptions import NotFoundError
-from app.services.access import AGENT, COLLECTION, SECRET, SKILL
+from app.core.permissions import AuthContext, OrgRoleName, Perm
+from app.db.models.resource_grant import Visibility
+from app.services.access import AGENT, COLLECTION, SECRET, SKILL, resolve_access
 from app.services.sharing import SharingState
+
+_RESOLVE = "app.api.routes.v1._sharing_loaders.resolve_access"
+
+
+@pytest.fixture(autouse=True)
+def _caller_can_view():
+    """Every caller may view the row unless a test says otherwise; refusals patch over it."""
+    with patch(_RESOLVE, new=AsyncMock(return_value=True)):
+        yield
+
 
 ROUTERS = (
     ("agents", agent_sharing_router),
@@ -42,8 +60,12 @@ ROUTERS = (
     ("skills", skill_sharing_router),
     ("context", context_sharing_router),
     ("secrets", secret_sharing_router),
+    ("tables", table_sharing_router),
+    ("workflows", workflow_sharing_router),
     ("artifacts", artifact_sharing_router),
+    ("datasets", dataset_sharing_router),
     ("mcp-connections", mcp_connection_sharing_router),
+    ("projects", project_sharing_router),
 )
 
 LOADERS = (
@@ -52,8 +74,11 @@ LOADERS = (
     ("skill", load_skill, "Skill not found", "skill_id"),
     ("context", load_context, "Context file not found", "context_id"),
     ("secret", load_secret, "Secret not found", "secret_id"),
-    ("artifact", load_artifact, "App not found", "artifact_id"),
+    ("dataset", load_dataset, "Dataset not found", "dataset_id"),
+    ("table", load_table, "Table not found", "table_id"),
+    ("workflow", load_workflow, "Workflow not found", "workflow_id"),
     ("mcp_connection", load_mcp_connection, "MCP connection not found", "connection_id"),
+    ("project", load_project, "Project not found", "project_id"),
 )
 
 
@@ -94,7 +119,7 @@ class TestResourceLoaders:
         resource_id = uuid.uuid4()
 
         with pytest.raises(NotFoundError) as refused:
-            await loader(db, resource_id, uuid.uuid4())
+            await loader(db, resource_id, MagicMock(organization_id=uuid.uuid4()))
 
         assert refused.value.message == message
         assert refused.value.details == {detail_key: str(resource_id)}
@@ -107,7 +132,7 @@ class TestResourceLoaders:
         resource_id = uuid.uuid4()
 
         with pytest.raises(NotFoundError) as refused:
-            await loader(db, resource_id, uuid.uuid4())
+            await loader(db, resource_id, MagicMock(organization_id=uuid.uuid4()))
 
         assert refused.value.message == message
         assert refused.value.details == {detail_key: str(resource_id)}
@@ -119,10 +144,108 @@ class TestResourceLoaders:
     ):
         organization_id = uuid.uuid4()
         # `scope` is read by the MCP server's loader alone; an organization's.
-        row = MagicMock(organization_id=organization_id, scope="org")
+        row = MagicMock(organization_id=organization_id, archived_at=None, scope="org")
         db = MagicMock(get=AsyncMock(return_value=row))
 
-        assert await loader(db, uuid.uuid4(), organization_id) is row
+        assert await loader(db, uuid.uuid4(), MagicMock(organization_id=organization_id)) is row
+
+    @pytest.mark.parametrize(("kind", "loader", "message", "detail_key"), LOADERS)
+    @pytest.mark.anyio
+    async def test_a_row_the_caller_cannot_view_is_reported_as_missing(
+        self, kind, loader, message, detail_key
+    ):
+        """The same message and details as an id that does not exist (#2619)."""
+        organization_id = uuid.uuid4()
+        row = MagicMock(organization_id=organization_id, scope="org")
+        db = MagicMock(get=AsyncMock(return_value=row))
+        ctx = MagicMock(organization_id=organization_id)
+        resource_id = uuid.uuid4()
+
+        with (
+            patch(_RESOLVE, new=AsyncMock(return_value=False)) as resolve,
+            pytest.raises(NotFoundError) as refused,
+        ):
+            await loader(db, resource_id, ctx)
+
+        assert refused.value.message == message
+        assert refused.value.details == {detail_key: str(resource_id)}
+        resource_type = resolve.await_args.kwargs["resource_type"]
+        asked = [call.args[3] for call in resolve.await_args_list]
+        assert asked == list(dict.fromkeys((resource_type.view, resource_type.edit)))
+
+    @pytest.mark.parametrize(("kind", "loader", "message", "detail_key"), LOADERS)
+    @pytest.mark.anyio
+    async def test_a_caller_who_may_edit_but_not_view_is_let_through(
+        self, kind, loader, message, detail_key
+    ):
+        """An API key issued for `edit` alone edits the row elsewhere, so it may share it."""
+        organization_id = uuid.uuid4()
+        row = MagicMock(organization_id=organization_id, archived_at=None, scope="org")
+        db = MagicMock(get=AsyncMock(return_value=row))
+
+        async def edit_only(db, ctx, resource, perm, *, resource_type):
+            return perm is resource_type.edit
+
+        with patch(_RESOLVE, new=AsyncMock(side_effect=edit_only)):
+            assert await loader(db, uuid.uuid4(), MagicMock(organization_id=organization_id)) is row
+
+    @pytest.mark.anyio
+    async def test_an_api_key_issued_for_edit_alone_still_reaches_its_own_skill(self):
+        """The real access rules, not a stub: the key edits the skill through
+        `PATCH /skills/{id}`, so its sharing must not read as missing."""
+        organization_id, owner = uuid.uuid4(), uuid.uuid4()
+        ctx = AuthContext(
+            user_id=owner,
+            organization_id=organization_id,
+            role=OrgRoleName.OWNER,
+            key_scopes=frozenset({Perm.SKILLS_EDIT}),
+        )
+        row = MagicMock(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            owner_user_id=owner,
+            visibility=Visibility.PRIVATE.value,
+        )
+        db = MagicMock(get=AsyncMock(return_value=row))
+
+        with patch(_RESOLVE, new=resolve_access):
+            assert await load_skill(db, row.id, ctx) is row
+
+    @pytest.mark.anyio
+    async def test_the_artifact_loader_is_the_service_s_rule_not_one_of_its_own(self):
+        """Who finds an archived page is decided in `ArtifactService.load`, beside `read`."""
+        organization_id = uuid.uuid4()
+        ctx, db = MagicMock(organization_id=organization_id), MagicMock()
+        row = MagicMock(organization_id=organization_id)
+        resource_id = uuid.uuid4()
+
+        with patch(
+            "app.api.routes.v1._sharing_loaders.ArtifactService.load",
+            new=AsyncMock(return_value=row),
+        ) as load:
+            assert await load_artifact(db, resource_id, ctx) is row
+
+        load.assert_awaited_once_with(ctx, resource_id)
+
+    @pytest.mark.anyio
+    async def test_a_page_the_caller_cannot_view_is_reported_as_missing(self):
+        """`ArtifactService.load` finds a live page for anyone; viewing it is asked here."""
+        organization_id = uuid.uuid4()
+        ctx, db = MagicMock(organization_id=organization_id), MagicMock()
+        resource_id = uuid.uuid4()
+
+        with (
+            patch(
+                "app.api.routes.v1._sharing_loaders.ArtifactService.load",
+                new=AsyncMock(return_value=MagicMock(organization_id=organization_id)),
+            ),
+            patch(_RESOLVE, new=AsyncMock(return_value=False)),
+            pytest.raises(NotFoundError) as refused,
+        ):
+            await load_artifact(db, resource_id, ctx)
+
+        assert refused.value.message == "App not found"
+        assert refused.value.details == {"artifact_id": str(resource_id)}
 
     @pytest.mark.anyio
     async def test_a_member_s_own_mcp_connection_is_nobody_else_s_to_share(self):
@@ -132,7 +255,7 @@ class TestResourceLoaders:
         db = MagicMock(get=AsyncMock(return_value=row))
 
         with pytest.raises(NotFoundError):
-            await load_mcp_connection(db, uuid.uuid4(), organization_id)
+            await load_mcp_connection(db, uuid.uuid4(), MagicMock(organization_id=organization_id))
 
 
 class TestHandlerBehaviour:

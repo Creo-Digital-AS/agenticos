@@ -16,32 +16,35 @@ The size is checked twice, deliberately. Once against what the platform *claims*
 before anything is fetched, because downloading a gigabyte to then reject it is
 the attack; and once against the bytes, because a claim is not a measurement.
 
-**Outbound is what the agent wrote this turn.** Not a diff of the whole workspace:
-`/uploads` is what the *user* sent - posting it back is quoting somebody their own
-file - and `/skills` is materialised know-how the platform put there, not the
-agent's work. What is left is what the turn produced, capped, with anything too
-large named in the reply rather than silently dropped: an agent told its file was
-delivered when it was not will confidently tell the user the same.
-"""
+**Outbound channel files are explicit actions.** Creating or editing a workspace
+file does not post it. A per-binding tool reads only the requested workspace
+file and submits it to the bound conversation, reporting provider failure.
+The snapshot collector remains available for other surfaces.
 
-from __future__ import annotations
+"""
 
 import logging
 import mimetypes
 import posixpath
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import UUID
 
 from pydantic_ai.workspaces import SupportsCommands, Workspace
+from pydantic_ai_backends.permissions import PermissionChecker
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.capabilities.channel_tools import ChannelDirectory
+from app.agents.capabilities.sandbox._permissions import workspace_ruleset
 from app.agents.capabilities.tool_output_limits import OVERFLOW_PREFIX
+from app.core.exceptions import BadRequestError
 from app.db.models.chat_file import ChatFile
 from app.services.channels.base import (
     ChannelAdapter,
     IncomingAttachment,
     OutgoingAttachment,
 )
+from app.services.device_hub import DeviceWorkspace
 from app.services.file_upload import FileUploadService
 from app.services.skill_workspace import RESERVED_SKILL_PREFIXES
 
@@ -78,6 +81,66 @@ through. The snapshot is taken before the attachment router
 writes, so an upload looks like a file the turn produced, and this is the only
 thing standing between that and a channel reply posting somebody's own PDF back
 at them as the agent's work."""
+
+
+UNTYPED = "application/octet-stream"
+"""What a platform sends for a file it did not type, and what an adapter
+falls back to when it sends nothing at all."""
+
+_AUDIO_EXTENSIONS: dict[str, str] = {
+    "m4a": "audio/mp4",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
+    "oga": "audio/ogg",
+    "opus": "audio/ogg",
+    "webm": "audio/webm",
+    "wav": "audio/wav",
+}
+"""Extensions that name a recording, read only when the platform did not type
+the file. `.mp4` is not here: an untyped `.mp4` is far more often a video, and
+transcribing one is a provider call billed for a soundtrack nobody asked about.
+A file the platform itself marks as a recording may say `.mp4` (see
+`routed_type`)."""
+
+
+def routed_type(
+    mime_type: str | None,
+    filename: str,
+    *,
+    extension: str | None = None,
+    recording: bool = False,
+) -> str:
+    """The MIME type a Slack or Mattermost file is routed on.
+
+    The router sends anything `audio/*` to transcription and everything else to
+    storage, so this type decides whether a voice note is heard or turned away as
+    a file the agent cannot open. The platform's own type wins when it gave one.
+    Only an untyped file - no type, or `application/octet-stream` - is typed here,
+    from the name's extension or, failing that, the platform's own `extension`
+    field (Slack's `filetype`, Mattermost's `extension`). Anything else stays
+    untyped and goes the way it always went.
+
+    `recording` is the platform saying outright that this is a recording - a
+    Slack audio clip. That signal outranks the type, because a clip recorded on a
+    phone can arrive as `video/mp4` with an `.mp4` name: a `video/*` claim
+    becomes the same container as `audio/*`, and an untyped one may take `.mp4`
+    as audio, which the plain extension table refuses.
+    """
+    claimed = (mime_type or "").split(";", 1)[0].strip().lower()
+    if recording:
+        if claimed.startswith("audio/"):
+            return str(mime_type)
+        if claimed.startswith("video/"):
+            return "audio/" + claimed.removeprefix("video/")
+    elif claimed and claimed != UNTYPED:
+        return str(mime_type)
+
+    known = {**_AUDIO_EXTENSIONS, "mp4": "audio/mp4"} if recording else _AUDIO_EXTENSIONS
+    suffix = posixpath.splitext(filename)[1].lower().lstrip(".")
+    for candidate in (suffix, (extension or "").lower().lstrip(".")):
+        if candidate in known:
+            return known[candidate]
+    return str(mime_type) if claimed else UNTYPED
 
 
 @dataclass(frozen=True)
@@ -182,14 +245,20 @@ class ChannelAttachmentService:
                 refusals.append(f"{attachment.filename}: {error}")
                 continue
 
-            stored.append(
-                await self.uploads.upload(
+            # An archive is read whole only here, at upload, so its refusal - a
+            # `../` member, a link, a bomb - arrives as an exception rather than
+            # from the checks above. It is one file refused, not a failed turn.
+            try:
+                chat_file = await self.uploads.upload(
                     user_id=user_id,
                     file_data=data,
                     filename=attachment.filename,
                     content_type=attachment.mime_type,
                 )
-            )
+            except BadRequestError as refused:
+                refusals.append(f"{attachment.filename}: {refused.message}")
+                continue
+            stored.append(chat_file)
 
         return stored, refusals
 
@@ -220,20 +289,109 @@ class ChannelAttachmentService:
 def _why(attachment: IncomingAttachment, error: str | None) -> str:
     """Why a file was turned away, in terms of what somebody actually sent.
 
-    Voice notes are the case this exists for. Somebody sends one, and "File type
-    'audio/ogg' is not supported" reads as a platform that cannot handle files -
-    when the truth is narrower and more useful: the file arrived, and nothing here
-    can listen to it yet.
+    "File type 'audio/ogg' is not supported" reads as a platform that cannot
+    handle files, when the truth is narrower and more useful - so a recording
+    is refused by what it is.
 
-    Delete this along with the branch once transcription lands (#54); until then a
-    generic message would send people looking for a bug that is not there.
+    A voice note on the message itself never reaches this: the router takes it
+    out and transcribes it. One that does arrive here was posted earlier in a
+    thread, read when the bot first joined it, and is not transcribed on
+    purpose - one mention must not bill a whole thread's audio. The sender is
+    told how to have it heard. A video is a plain refusal: nothing here watches
+    one.
     """
-    if attachment.mime_type.startswith(("audio/", "video/")):
+    if attachment.mime_type.startswith("audio/"):
         return (
-            "I cannot listen to recordings yet - transcription is not wired up. "
-            "Type it out, or send a file."
+            "Voice messages sent before I joined this thread are not transcribed - "
+            "send it again here."
         )
+    if attachment.mime_type.startswith("video/"):
+        return "I cannot watch videos - type it out, or send a file."
     return error or "not supported."
+
+
+@dataclass
+class ChannelFileBudget:
+    """Attempts consumed across every approval segment of one turn."""
+
+    attempts: int = 0
+
+
+def channel_file_sender(
+    workspace: Workspace | None,
+    directory: ChannelDirectory,
+    budget: ChannelFileBudget | None = None,
+) -> Callable[[str], Awaitable[str]]:
+    """A run-local send action; the destination and workspace are server-bound."""
+    budget = ChannelFileBudget() if budget is None else budget
+
+    async def send(path: str) -> str:
+        if workspace is None:
+            return "File delivery is unavailable: this run has no workspace."
+        if budget.attempts >= MAX_OUTBOUND_FILES:
+            return "File delivery refused: the per-turn attachment limit was reached."
+        # Reserve before awaiting: parallel calls cannot exceed the limit.
+        budget.attempts += 1
+        pending: list[OutgoingAttachment] = []
+        try:
+            result = await queue_channel_file(workspace, pending, path)
+            if not pending:
+                return result
+            attachment = pending[0]
+            return await directory.send_file(
+                filename=attachment.filename,
+                content=attachment.content,
+                mime_type=attachment.mime_type,
+            )
+        except Exception:
+            logger.exception("requested_channel_file_delivery_failed")
+            return "File delivery failed: the platform did not confirm the attachment. Do not claim it was sent."
+
+    return send
+
+
+async def queue_channel_file(
+    workspace: Workspace, outbound: list[OutgoingAttachment], path: str
+) -> str:
+    """Queue one explicitly requested workspace file, bounded like other attachments."""
+    root = (await workspace.working_dir()).rstrip("/")
+    relative = path.removeprefix(root + "/") if path.startswith(root + "/") else path
+    if relative.startswith("/") or ".." in relative.split("/"):
+        return "File delivery refused: choose a file inside the workspace."
+    normalized = posixpath.normpath(relative)
+    checker = PermissionChecker(workspace_ruleset())
+    if checker.check_sync("read", "/" + normalized) != "allow":
+        return "File delivery refused: workspace permissions protect this file."
+    if normalized in (".", "") or normalized.startswith(_NOT_THE_AGENTS):
+        return "File delivery refused: this path is reserved for internal or uploaded files."
+    if len(outbound) >= MAX_OUTBOUND_FILES:
+        return f"File delivery refused: at most {MAX_OUTBOUND_FILES} files per reply."
+    try:
+        # Inventory excludes symlinks on command workspaces and binds the lookup
+        # to the working directory, rather than a model-chosen filesystem root.
+        paths = await _workspace_paths(workspace)
+        candidates = {posixpath.normpath(item.removeprefix(root + "/")): item for item in paths}
+        actual = candidates.get(normalized)
+        if actual is None:
+            return "File delivery refused: that file is not in the workspace."
+        size = (await workspace.stat(actual)).size
+        if size is None or size > MAX_OUTBOUND_BYTES:
+            return "File delivery refused: the file is too large or its size could not be verified."
+        data = await workspace.read_bytes(actual)
+    except Exception:
+        logger.warning("requested_channel_file_unreadable", exc_info=True)
+        return "File delivery failed: the workspace file could not be read."
+    if len(data) > MAX_OUTBOUND_BYTES:
+        return "File delivery refused: the file exceeds the attachment size limit."
+    filename = posixpath.basename(normalized)
+    outbound.append(
+        OutgoingAttachment(
+            filename=filename,
+            content=data,
+            mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        )
+    )
+    return f"Queued {filename!r} for attachment with the final reply; delivery is pending."
 
 
 async def files_written(workspace: Workspace, before: set[str] | None) -> DeliveredFiles:
@@ -321,6 +479,10 @@ async def workspace_snapshot(workspace: Workspace) -> set[str] | None:
     nothing. A remote host reached over HTTP is exactly what supplies a transient
     one.
     """
+    if isinstance(workspace.backend, DeviceWorkspace) and workspace.backend.whole_computer:
+        # A home directory is not an output folder. Never crawl or upload its
+        # contents implicitly when the person grants access to their computer.
+        return None
     try:
         return await _workspace_paths(workspace)
     except Exception:
@@ -345,7 +507,11 @@ async def _workspace_paths(workspace: Workspace) -> set[str]:
     Raises:
         RuntimeError: The `find` failed - the callers turn that into "no snapshot".
     """
-    if isinstance(workspace.backend, SupportsCommands):
+    # The person's computer prompts for every full-access shell command. A
+    # platform-owned snapshot must use its file API, never ask to run `find`.
+    if isinstance(workspace.backend, SupportsCommands) and not isinstance(
+        workspace.backend, DeviceWorkspace
+    ):
         result = await workspace.run(["find", ".", "-type", "f"])
         if result.exit_code != 0:
             raise RuntimeError(f"listing the workspace exited {result.exit_code}")

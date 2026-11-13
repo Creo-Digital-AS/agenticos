@@ -12,8 +12,6 @@ back to recency - so a typo that reached it would be answered with a page that
 looks sorted and is not.
 """
 
-from __future__ import annotations
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
@@ -24,6 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import deps
 from app.core.config import settings
+from app.core.permissions import AuthContext
 from app.main import app
 
 pytestmark = pytest.mark.anyio
@@ -32,10 +31,14 @@ pytestmark = pytest.mark.anyio
 @asynccontextmanager
 async def _client(*, service: MagicMock, organization_id: UUID) -> AsyncIterator[AsyncClient]:
     """A signed-in caller in one organization, with the service stubbed out."""
+    user_id = uuid4()
     app.dependency_overrides[deps.get_current_user] = lambda: MagicMock(
-        id=uuid4(), is_app_admin=False
+        id=user_id, is_app_admin=False
     )
     app.dependency_overrides[deps.get_active_organization] = lambda: MagicMock(id=organization_id)
+    app.dependency_overrides[deps.get_auth_context] = lambda: AuthContext(
+        user_id=user_id, organization_id=organization_id, role="member"
+    )
     app.dependency_overrides[deps.get_conversation_service] = lambda: service
     app.dependency_overrides[deps.get_db_session] = lambda: MagicMock()
     try:
@@ -60,6 +63,20 @@ class TestNarrowing:
 
         assert response.status_code == 200
         assert service.list_conversations.await_args.kwargs["search"] == "quarterly"
+
+    async def test_threads_from_channels_are_left_out_unless_asked_for(self) -> None:
+        service = _service()
+
+        async with _client(service=service, organization_id=uuid4()) as client:
+            await client.get(f"{settings.API_V1_STR}/conversations")
+            await client.get(
+                f"{settings.API_V1_STR}/conversations", params={"hide_channels": "false"}
+            )
+
+        asked = [
+            call.kwargs["hide_channels"] for call in service.list_conversations.await_args_list
+        ]
+        assert asked == [True, False]
 
     async def test_an_agent_filter_reaches_the_service(self) -> None:
         service = _service()

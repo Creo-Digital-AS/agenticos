@@ -1,5 +1,5 @@
 ---
-source_sha: "22652979b979"
+source_sha: "8ca784f8a0b0"
 ---
 
 # El código de la consola { #the-consoles-code }
@@ -13,17 +13,32 @@ Playwright. Gestor de paquetes y runner: **bun**.
 
 ## Dónde vive cada cosa { #where-things-live }
 
-| Ruta | |
-|---|---|
-| `src/app/[locale]/(dashboard)/…` | El producto. Las rutas llevan **prefijo de locale** |
-| `src/app/api/…` | Route handlers que hacen de proxy hacia el backend |
-| `src/lib/` | Clientes de API tipados, `query-keys.ts` y los registries de más abajo |
-| `src/hooks/` | Uno por recurso — `use-agents`, `use-permissions`, … |
-| `src/stores/` | Zustand, uno por asunto |
-| `src/components/<domain>/` | La UI por dominio; los primitivos en `ui/`, los estados vacíos y de error en `states/` |
+| Ruta                             |                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------- |
+| `src/app/[locale]/(dashboard)/…` | El producto. Las rutas llevan **prefijo de locale**                                    |
+| `src/app/api/…`                  | Route handlers que hacen de proxy hacia el backend                                     |
+| `src/lib/`                       | Clientes de API tipados, `query-keys.ts` y los registries de más abajo                 |
+| `src/hooks/`                     | Uno por recurso — `use-agents`, `use-permissions`, …                                   |
+| `src/stores/`                    | Zustand, uno por asunto                                                                |
+| `src/components/<domain>/`       | La UI por dominio; los primitivos en `ui/`, los estados vacíos y de error en `states/` |
 
 Los Server Components son lo predeterminado. `"use client"` es para state,
 effects y handlers, no por costumbre.
+
+## Presentación de la consola { #console-presentation }
+
+Usa `PageHeader` para títulos y acciones compactos. Los catálogos de tarjetas
+usan `ListCard layout="grid"` sin un panel adicional; las tablas conservan el
+panel. Los botones usan tokens neutros `action`, independientes de `primary`
+para controles seleccionados e insignias. El foco y los bordes de los campos
+siguen siendo visibles.
+
+Las personas y organizaciones usan `EntityAvatar`: las fotos se recortan en
+círculos, con iniciales sobre un color estable como alternativa. Los agentes
+conservan sus caras generadas. Las descripciones del catálogo reservan dos
+líneas; al abrir un elemento se muestra la descripción completa.
+
+Las acciones asíncronas usan `Button loading` para conservar su etiqueta y tamaño y evitar envíos repetidos. El estado continúa hasta completar todos los pasos, incluidas las cargas de archivos. Los botones basados en enlaces conservan un único hijo y bloquean la activación mientras no están disponibles. Los controles comparten el foco de teclado y tamaños compactos en escritorio, con objetivos táctiles de 44px cuando hay espacio. Las capas se animan desde su anclaje; las ayudas ajustan el texto al ancho de la ventana. El calendario usa el idioma de la consola y el progreso expone su valor real y máximo a las tecnologías de asistencia. Las animaciones respetan la preferencia Motion de la persona.
 
 ## El navegador nunca llama al backend { #the-browser-never-calls-the-backend }
 
@@ -53,6 +68,26 @@ Los datos del servidor viven en la capa de queries; **los stores guardan solo
 state de UI y efímero**. Registra cada query key en `query-keys.ts` para que la
 invalidación tras una escritura se mantenga consistente.
 
+## Historial del chat y actualizaciones del stream { #chat-history-and-streamed-updates }
+
+La consola abre la página más reciente del transcript y carga mensajes anteriores
+bajo demanda. Los chips de proyecto consultan `/conversations/{id}/metadata`, con
+las mismas comprobaciones de lector y organización, sin cargar mensajes. Las
+lecturas del repositorio omiten el resumen almacenado del modelo, salvo que la
+reconstrucción de su historial lo solicite explícitamente.
+
+Los sockets del chat entregan ráfagas una vez por frame de animación, con una
+alternativa de 50 ms para pestañas ocultas y un límite de cola de 256 frames.
+Los deltas contiguos de texto o razonamiento se combinan; los límites de control,
+herramientas y partes conservan su orden. Cambiar de conversación, cuenta u
+organización descarta los frames pendientes.
+
+Se reutilizan el Markdown y los resultados de herramientas sin cambios. El
+desplazamiento sigue el crecimiento medido del contenido. Los dibujos terminados
+se montan cerca del viewport y se desmontan fuera, conservando su espacio medido;
+sus scripts se reinician al volver. Los dibujos en stream siguen activos y la
+pantalla completa suspende la copia del transcript.
+
 ## Los permisos son una decisión de renderizado { #permissions-are-a-rendering-decision }
 
 `use-permissions.ts` da el conjunto de permisos efectivo para la organización
@@ -66,8 +101,8 @@ Dos trampas, y las dos ya han llegado a producción aquí:
   un rol solo se ofrece cuando el de quien llama lo supera estrictamente. Un
   "todos los roles menos owner" cableado a mano es lo que le ofreció a un Admin
   la opción Admin y devolvió 403 una vez tecleado el correo.
-- **Una página que nombra una organización en su URL *es* esa organización.** El
-  cliente de API estampa `X-Organization-Id` desde la organización *activa*, así
+- **Una página que nombra una organización en su URL _es_ esa organización.** El
+  cliente de API estampa `X-Organization-Id` desde la organización _activa_, así
   que una página que actúa sobre la organización de su ruta mientras lee los
   permisos de la activa decide sobre los miembros de Acme según tu rol en
   Globex. La adopción vive en `ActiveOrgGuard`, una sola vez.
@@ -106,12 +141,12 @@ traducción que falta renderiza inglés en lugar de la clave.
 Cada uno de ellos es una tabla que leen varias partes de la UI. Añadir a la
 tabla es el cambio entero; añadir una segunda fuente es el bug.
 
-| | Guarda | Se añade con |
-|---|---|---|
-| `lib/tool-catalog.ts` | El icono, el rótulo mientras corre, el nombre al terminar y el renderizador de cada tool que registra el backend | Una fila indexada por el id de tool de la capability. Un test de backend compara las dos en ambas direcciones |
-| `lib/brand-glyphs.generated.ts` | Cada marca de servicio, de connector y de provider, como datos de path en bruto | Una fila en `scripts/gen-brand-icons.ts`, y después `bun run gen:brand-icons`. Nunca un import de un paquete de iconos |
-| `lib/dashboard/registry.ts` | Los widgets del dashboard y el permiso al que está sujeto cada uno | Cinco ediciones, enumeradas más abajo en la página |
-| `lib/dialog-sizes.ts` | Un token de anchura y un token de forma por diálogo | Eligiendo un token, nunca una altura a medida |
+|                                 | Guarda                                                                                                           | Se añade con                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `lib/tool-catalog.ts`           | El icono, el rótulo mientras corre, el nombre al terminar y el renderizador de cada tool que registra el backend | Una fila indexada por el id de tool de la capability. Un test de backend compara las dos en ambas direcciones          |
+| `lib/brand-glyphs.generated.ts` | Cada marca de servicio, de connector y de provider, como datos de path en bruto                                  | Una fila en `scripts/gen-brand-icons.ts`, y después `bun run gen:brand-icons`. Nunca un import de un paquete de iconos |
+| `lib/dashboard/registry.ts`     | Los widgets del dashboard y el permiso al que está sujeto cada uno                                               | Cinco ediciones, enumeradas más abajo en la página                                                                     |
+| `lib/dialog-sizes.ts`           | Un token de anchura y un token de forma por diálogo                                                              | Eligiendo un token, nunca una altura a medida                                                                          |
 
 ## Dos cosas que debe una superficie nueva { #two-things-a-new-surface-owes }
 
@@ -177,3 +212,13 @@ razón para conservar un spec que monta más de lo que leen sus assertions.
 
 [El backend →](architecture.md) · [Añadir una funcionalidad →](adding_features.md) ·
 [Pruebas →](testing.md)
+
+## Pruebas en la consola { #evals-in-the-console }
+
+Las pruebas reutilizan `PageHeader`, `ListCard`, tamaños de diálogo, pestañas y `WizardSteps`. Los cambios actualizan las consultas registradas mediante `/ws/events`; una evaluación humana también actualiza suites, sesiones de mejora y protecciones de entorno. Un error de lectura ofrece reintentar en lugar de una vista vacía de éxito. Las vistas estrechas conservan campos de 16 px y espacio para el Arquitecto.
+
+Los datasets conservan sus permisos y grants y pueden reutilizarse entre agents. El modelo e instrucciones de calificación pertenecen al dataset; generación y mejora tienen Settings. Los ayudantes definidos en código conservan identidades internas para atribución sin aparecer en el catálogo de agents de usuario. Casos y evals usan las tablas compartidas de la consola; los detalles de casos y review se abren en paneles laterales.
+
+El Arquitecto no recibe una nueva capability para escribir datasets en este hito. Crear preguntas es una acción expresamente estimada y autorizada del flujo de mejora; el asistente de la esquina no puede iniciar silenciosamente ese trabajo de pago. Su botón sigue accesible junto a las vistas de pruebas.
+
+`e2e/improvement.mobile.spec.ts` recorre la API y el worker reales. Comprueba casos, editor, evaluación, revisión, resultados, asistente de mejora y publicación confirmada con protección del entorno. Solo el modelo externo se sustituye por una implementación de prueba. GitHub Actions conserva capturas claras y oscuras a anchuras de teléfono y escritorio para la revisión visual.

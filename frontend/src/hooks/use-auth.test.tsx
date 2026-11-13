@@ -3,9 +3,10 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 
-import { useAdoptSession, useAuth, useReauthenticate } from "./use-auth";
+import { readSession, useAdoptSession, useAuth, useReauthenticate } from "./use-auth";
 import { apiClient, ApiError } from "@/lib/api-client";
 import { ROUTES } from "@/lib/constants";
+import { invokeShell } from "@/lib/desktop/shell";
 import { useAuthStore, useConversationStore, useOrgStore } from "@/stores";
 import type { User } from "@/types";
 import type { ReactNode } from "react";
@@ -14,7 +15,18 @@ vi.mock("@/lib/api-client", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api-client")>("@/lib/api-client");
   return { ...actual, apiClient: { get: vi.fn(), post: vi.fn() } };
 });
+vi.mock("@/lib/desktop/shell", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/desktop/shell")>()),
+  invokeShell: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// Whether this console keeps a copy on the device - the apps do, a tab does not.
+const device = vi.hoisted(() => ({ keepsCopy: false }));
+vi.mock("@/lib/offline/device-cache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/offline/device-cache")>()),
+  offlineAvailable: () => device.keepsCopy,
+}));
 
 const push = vi.hoisted(() => vi.fn());
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -72,6 +84,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  delete window.__AGENTICOS_SHELL__;
   vi.useRealTimers();
   // `clearAllMocks` in beforeEach clears calls but does not undo a `spyOn`;
   // without this, a test that spies on `window.location` freezes it for
@@ -116,6 +129,36 @@ describe("checking the session on load", () => {
     expect(apiClient.get).toHaveBeenCalledTimes(1);
   });
 
+  it("shares the read the auth guard already has on its way", async () => {
+    // On a cold load the guard and `useAuth` both start before the persisted
+    // store says anybody is signed in, and each used to send its own request.
+    const guards = readSession();
+    renderHook(() => useAuth(), { wrapper });
+
+    await expect(guards).resolves.toMatchObject({ id: "u-1" });
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again once the shared read has answered", async () => {
+    await readSession();
+    await readSession();
+
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not ask again for a session the auth guard has just adopted", async () => {
+    // The guard reads `/auth/me` before the dashboard mounts, and `useAuth`
+    // then read it again: two requests for one identity on every page load.
+    const { result: adopt } = renderHook(() => useAdoptSession(), { wrapper });
+    act(() => adopt.current(user(), "t-1"));
+
+    renderHook(() => useAuth(), { wrapper });
+
+    expect(apiClient.get).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().accessToken).toBe("t-1");
+  });
+
   it("clears a persisted session the server no longer honours", async () => {
     useAuthStore.setState({ user: user(), isAuthenticated: true, accessToken: "stale" });
     vi.mocked(apiClient.get).mockRejectedValue(new ApiError(401, "Token expired"));
@@ -124,6 +167,66 @@ describe("checking the session on load", () => {
 
     await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(false));
     expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+});
+
+describe("checking the session without a network (#2097)", () => {
+  afterEach(() => {
+    device.keepsCopy = false;
+  });
+
+  it("keeps the app signed in as it was, and checks again when the network returns", async () => {
+    device.keepsCopy = true;
+    useAuthStore.setState({ user: user(), isAuthenticated: true, isLoading: true });
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => expect(useAuthStore.getState().isLoading).toBe(false));
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().user?.id).toBe("u-1");
+
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(401, "Token expired"));
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(false));
+  });
+
+  it.each([429, 500, 502, 503])(
+    "keeps the desktop account after a %i and restores it on focus",
+    async (status) => {
+      device.keepsCopy = true;
+      useAuthStore.setState({ user: user(), isAuthenticated: true, isLoading: true });
+      vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(status, "Server unavailable"));
+      renderHook(() => useAuth(), { wrapper });
+      await waitFor(() => expect(useAuthStore.getState().isLoading).toBe(false));
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().user?.id).toBe("u-1");
+      vi.mocked(apiClient.get).mockResolvedValueOnce({ ...user(), access_token: "restored" });
+      act(() => window.dispatchEvent(new Event("focus")));
+      await waitFor(() => expect(useAuthStore.getState().accessToken).toBe("restored"));
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    },
+  );
+
+  it("signs a browser tab out as before, since it keeps nothing to read", async () => {
+    useAuthStore.setState({ user: user(), isAuthenticated: true });
+    vi.mocked(apiClient.get).mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(false));
+  });
+
+  it("does not sign in nobody: with no account kept, a failed check is a signed-out one", async () => {
+    device.keepsCopy = true;
+    vi.mocked(apiClient.get).mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => expect(useAuthStore.getState().isLoading).toBe(false));
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 });
 
@@ -298,13 +401,13 @@ describe("signing in", () => {
     await act(async () => {
       await result.current.login({ email: "a@example.com", password: "x" });
     });
-    expect(push).toHaveBeenLastCalledWith(ROUTES.DASHBOARD);
+    expect(push).toHaveBeenLastCalledWith(ROUTES.CHAT);
 
     vi.mocked(apiClient.post).mockResolvedValue({ user: user(), access_token: "t", message: "ok" });
     await act(async () => {
       await result.current.login({ email: "b@example.com", password: "x" });
     });
-    expect(push).toHaveBeenLastCalledWith(ROUTES.DASHBOARD);
+    expect(push).toHaveBeenLastCalledWith(ROUTES.CHAT);
   });
 
   it("resumes the deep link the visitor was headed to", async () => {
@@ -348,7 +451,7 @@ describe("signing in", () => {
       await result.current.login({ email: "a@example.com", password: "x" }, "//evil.example/a");
     });
 
-    expect(push).toHaveBeenLastCalledWith(ROUTES.DASHBOARD);
+    expect(push).toHaveBeenLastCalledWith(ROUTES.CHAT);
   });
 
   it("does not ask who is signed in after a login that just said so", async () => {
@@ -453,6 +556,46 @@ describe("signing in", () => {
 });
 
 describe("signing out", () => {
+  it("reports native cleanup failure without claiming success", async () => {
+    window.__AGENTICOS_SHELL__ = {
+      platform: "ios",
+      version: "1.31.0",
+      window: "main",
+      vibrancy: false,
+    };
+    const { result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+    vi.mocked(invokeShell).mockRejectedValueOnce(new Error("native unavailable"));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(toast.success).mockClear();
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Signed out, but the app could not clear local access.",
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(push).toHaveBeenCalledWith(ROUTES.LOGIN);
+    warning.mockRestore();
+  });
+
+  it.each([
+    ["ios", "clear_push_session"],
+    ["android", "clear_push_session"],
+    ["macos", "device_unlink"],
+  ])("clears native account state on %s", async (platform, command) => {
+    window.__AGENTICOS_SHELL__ = { platform, version: "1.31.0", window: "main", vibrancy: false };
+    const { result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(invokeShell).toHaveBeenCalledWith(command);
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(push).toHaveBeenCalledWith(ROUTES.LOGIN);
+  });
+
   it("clears the session, says so, and goes to the login page", async () => {
     const { result } = renderHook(() => useAuth(), { wrapper });
     await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
@@ -515,6 +658,21 @@ describe("signing out", () => {
     renderHook(() => useAuth(), { wrapper });
 
     await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not sign back in on a read that set out before the sign-out", async () => {
+    let answer: (value: User) => void = () => {};
+    vi.mocked(apiClient.get).mockReturnValue(new Promise<User>((resolve) => (answer = resolve)));
+    const { result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    await act(async () => answer(user()));
+
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 });
 
@@ -717,4 +875,98 @@ describe("keeping the in-memory token fresh", () => {
 
     expect(apiClient.get).not.toHaveBeenCalled();
   });
+});
+
+describe("a page that found nobody signed in", () => {
+  it("asks again when it is shown, once the console has signed in (2026-11-06)", async () => {
+    // Quick Ask is built beside the console and kept loaded; built before the
+    // sign-in, it said "sign in" until the app restarted.
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(401, "Not authenticated"));
+    renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(useAuthStore.getState().isLoading).toBe(false));
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ ...user(), access_token: "after" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    expect(useAuthStore.getState().accessToken).toBe("after");
+  });
+
+  it("asks again on focus too", async () => {
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(401, "Not authenticated"));
+    renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(useAuthStore.getState().isLoading).toBe(false));
+
+    vi.mocked(apiClient.get).mockResolvedValueOnce(user());
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    await waitFor(() => expect(useAuthStore.getState().user?.id).toBe("u-1"));
+  });
+
+  it("does not ask on every focus once somebody is signed in", async () => {
+    renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+    const asked = vi.mocked(apiClient.get).mock.calls.length;
+
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    expect(vi.mocked(apiClient.get).mock.calls.length).toBe(asked);
+  });
+});
+
+it("shows loading while a signed-out panel checks the session again", async () => {
+  vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(401, "Not authenticated"));
+  const { result } = renderHook(() => useAuth(), { wrapper });
+  await waitFor(() => expect(result.current.isLoading).toBe(false));
+  let finish!: (answer: User) => void;
+  vi.mocked(apiClient.get).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  act(() => window.dispatchEvent(new Event("focus")));
+  expect(result.current.isLoading).toBe(true);
+  await act(async () => {
+    finish(user());
+  });
+  expect(result.current.isAuthenticated).toBe(true);
+});
+
+it("refreshes a visible signed-out panel when another window establishes a session", async () => {
+  vi.mocked(apiClient.get).mockRejectedValueOnce(new ApiError(401, "Not authenticated"));
+  const { result } = renderHook(() => useAuth(), { wrapper });
+  await waitFor(() => expect(result.current.isLoading).toBe(false));
+  vi.mocked(apiClient.get).mockResolvedValueOnce(user());
+  act(() =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "auth-storage",
+        oldValue: "signed-out",
+        newValue: "signed-in",
+      }),
+    ),
+  );
+  await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+});
+
+it("ignores unrelated storage changes and shares one session read across hook consumers", async () => {
+  renderHook(() => useAuth(), { wrapper });
+  renderHook(() => useAuth(), { wrapper });
+  await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true));
+  vi.mocked(apiClient.get).mockClear();
+  act(() => {
+    window.dispatchEvent(new StorageEvent("storage", { key: "preferences", newValue: "changed" }));
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "auth-storage", oldValue: "same", newValue: "same" }),
+    );
+  });
+  expect(apiClient.get).not.toHaveBeenCalled();
+  await act(async () => {
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "auth-storage", oldValue: "old", newValue: "new" }),
+    );
+  });
+  expect(apiClient.get).toHaveBeenCalledTimes(1);
 });

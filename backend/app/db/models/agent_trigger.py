@@ -38,6 +38,7 @@ would this fire" always has exactly one answer.
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -47,20 +48,38 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
+    func,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, declared_attr, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.routine_device_wait import RoutineDeviceWait
 
 # The floor a trigger's interval cannot go below. The heartbeat ticks once a
 # minute, so a shorter interval could not be honoured anyway - and it bounds the
 # worst case a fat-fingered value reaches.
 MIN_INTERVAL_SECONDS = 60
+
+# The event sources read from a connected account rather than posted to: no
+# inbound door, so no per-trigger secret (`ck_trigger_shape`).
+_POLLED = (
+    "'gmail', 'google_calendar', 'google_drive', 'microsoft_files', 'outlook', 'outlook_calendar'"
+)
+
+
+class TriggerDeliveryStatus(enum.StrEnum):
+    DELIVERED = "delivered"
+    UNAVAILABLE = "unavailable"
+    RUN_LOG = "run_log"
+    NO_ANSWER = "no_answer"
+    NOT_COMPLETED = "not_completed"
 
 
 class TriggerType(enum.StrEnum):
@@ -81,10 +100,9 @@ class ScheduleKind(enum.StrEnum):
     """How a *schedule* trigger decides it is due.
 
     `INTERVAL` is "every N seconds since the last fire". `CRON` is a crontab
-    expression evaluated in UTC - "daily at 09:00" is `0 9 * * *` - which the
-    service computes the next fire for with croniter. UTC keeps a schedule
-    surviving a restart without a stored timezone to reason about; a caller who
-    means a local hour converts it when building the expression.
+    expression evaluated in the trigger's `time_zone` - "daily at 09:00" is
+    `0 9 * * *` at nine where the person is - which the service computes the next
+    fire for with croniter. A trigger with no zone is read in UTC.
 
     Only meaningful when `trigger_type = schedule`; an event trigger leaves it at
     its default and the shape CHECK ignores it.
@@ -92,6 +110,21 @@ class ScheduleKind(enum.StrEnum):
 
     INTERVAL = "interval"
     CRON = "cron"
+
+
+class TriggerOverlap(enum.StrEnum):
+    """What a due *schedule* does while its previous fire is still running (#2219).
+
+    `SKIP` lets the occurrence pass and waits for the next one, so a run slower
+    than its interval runs as often as it can finish. `QUEUE` holds the schedule
+    until the previous run ends and fires once then, however many occurrences
+    went by. `ALLOW` fires on time regardless, into the same run log, so two runs
+    of one agent overlap and both are paid for.
+    """
+
+    SKIP = "skip"
+    QUEUE = "queue"
+    ALLOW = "allow"
 
 
 class EventSource(enum.StrEnum):
@@ -117,11 +150,32 @@ class EventSource(enum.StrEnum):
     promise nothing here could keep: `app/services/email/` is send-only. `GMAIL`
     is delivered by *polling* a connected mailbox, so it has no inbound door and
     no per-trigger secret at all (#1068).
+
+    `OUTLOOK` is the same delivery for a Microsoft 365 mailbox: polled through
+    the organization's Microsoft grant, one folder at a time (#1984).
+
+    `HUBSPOT` and `ZENDESK` are signed webhooks like `GITHUB`, each verified by
+    its provider's own scheme against a secret the provider issues - HubSpot's
+    app client secret, Zendesk's per-webhook signing secret - pasted into the
+    trigger rather than minted by it.
+
+    The four file and calendar sources are polled like the mailboxes, each
+    through its own portal and grant so a consent asks only for what that one
+    reads: `GOOGLE_DRIVE` and `MICROSOFT_FILES` (OneDrive and SharePoint) fire
+    on new or changed files, `GOOGLE_CALENDAR` and `OUTLOOK_CALENDAR` a set time
+    before a meeting.
     """
 
     GITHUB = "github"
     GMAIL = "gmail"
+    GOOGLE_CALENDAR = "google_calendar"
+    GOOGLE_DRIVE = "google_drive"
+    HUBSPOT = "hubspot"
+    MICROSOFT_FILES = "microsoft_files"
+    OUTLOOK = "outlook"
+    OUTLOOK_CALENDAR = "outlook_calendar"
     WEBHOOK = "webhook"
+    ZENDESK = "zendesk"
 
 
 class AgentTrigger(Base, TimestampMixin):
@@ -150,6 +204,13 @@ class AgentTrigger(Base, TimestampMixin):
     # not licence to run as nobody - it is a trigger that can no longer be
     # attributed, so the claim query requires it non-null and the row is disabled
     # the next time it is inspected.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -160,6 +221,14 @@ class AgentTrigger(Base, TimestampMixin):
     # false when a creator loses access to the agent, so a schedule nobody can run
     # stops rather than retrying against a wall for ever.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_failures: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(), nullable=True, default=3, server_default=text("3")
+    )
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    health_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Whether a fire acts as its creator - their memory and their own MCP
     # connections - rather than as an authority nobody is behind (#2027). Only the
@@ -167,6 +236,17 @@ class AgentTrigger(Base, TimestampMixin):
     # trigger does turns it off (`AgentTriggerService`).
     runs_as_creator: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+    # A folder on the creator's own computer the fire works in, through their
+    # desktop app (#2305): `{"folder", "mode"}`, or null for the agent's own
+    # sandbox. Only with `runs_as_creator` - a fire nobody is behind reaches
+    # nobody's computer - and cleared with it.
+    local_target: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    approved_sources: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+
+    action_consents: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
     )
 
     # A human label for this trigger, shown where it is listed away from a form.
@@ -183,6 +263,13 @@ class AgentTrigger(Base, TimestampMixin):
         nullable=True,
     )
 
+    pinned_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    """An explicitly selected immutable version; null follows the chosen environment."""
+
     # Which of the two concepts this row is. `schedule` fires on the clock and
     # fills the cadence columns below; `event` fires on arrival and fills the
     # event columns instead. The CHECK keeps a row to exactly one shape.
@@ -195,6 +282,13 @@ class AgentTrigger(Base, TimestampMixin):
     )
     interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cron_expression: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The IANA zone a cron expression is read in - `0 9 * * *` at nine o'clock
+    # where the person is, through daylight saving. Null is UTC, which is what
+    # every schedule made before zones meant; an interval ignores it.
+    time_zone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    overlap: Mapped[str] = mapped_column(
+        String(8), nullable=False, default=TriggerOverlap.SKIP.value, server_default="skip"
+    )
 
     # An event trigger's source (`github`, `email`) and its per-source filter -
     # which repository, which sender - matched against the delivered payload
@@ -215,6 +309,14 @@ class AgentTrigger(Base, TimestampMixin):
     # The input each fire sends. A triggered run has no human turn, so the message
     # the agent answers is stored here; an event fire appends the payload's
     # rendered context to it so the agent knows which issue or email set it off.
+    one_shot: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    result_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="report", server_default="report"
+    )
+
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
     # When a *schedule* is next due. The heartbeat's claim query is
@@ -225,6 +327,7 @@ class AgentTrigger(Base, TimestampMixin):
     # nothing is due until an event arrives.
     next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_delivery_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # The run the last fire opened. The no-overlap guard reads its status: a fire
     # is skipped while this names a run that has not reached a terminal state. SET
@@ -259,6 +362,64 @@ class AgentTrigger(Base, TimestampMixin):
         nullable=True,
     )
 
+    # Where a fire's answer is also posted (#1985): a Teams conversation one of
+    # the organization's bots is in. Null posts nowhere - the run log is still
+    # the record. SET NULL, so removing the bot or the conversation stops the
+    # post and leaves the schedule running.
+    teams_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("teams_conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Where a fire's answer is delivered to its person (#2575), beside the run log that
+    # always records it: `primary` is the creator's own conversation with the agent -
+    # one place to read everything this agent tells them - and `conversation` is one
+    # of their other chats, so "watch this for two hours" answers where it was asked.
+    # SET NULL on the chat, and a `conversation` with none left delivers nowhere but
+    # the run log rather than failing the fire.
+    answer_to: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="run_log", server_default="run_log"
+    )
+    notification_channels: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
+    @declared_attr
+    def waiting_device_count(cls) -> Mapped[int]:
+        return column_property(
+            select(func.count(RoutineDeviceWait.id))
+            .where(RoutineDeviceWait.trigger_id == cls.id, RoutineDeviceWait.status == "waiting")
+            .correlate_except(RoutineDeviceWait)
+            .scalar_subquery()
+        )
+
+    @declared_attr
+    def waiting_device_since(cls) -> Mapped[datetime | None]:
+        return column_property(
+            select(func.min(RoutineDeviceWait.created_at))
+            .where(RoutineDeviceWait.trigger_id == cls.id, RoutineDeviceWait.status == "waiting")
+            .correlate_except(RoutineDeviceWait)
+            .scalar_subquery()
+        )
+
+    # Deleting the creator also deletes their conversations. Check after both
+    # SET NULL paths finish, regardless of PostgreSQL's cascade trigger order.
+    delivery_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED"),
+        nullable=True,
+    )
+    # What this routine may spend a month (#2575), counted from the runs it started. Once
+    # the month's runs have cost this much its fires are skipped - the routine is shown
+    # "Paused - budget" and starts again on the first of the next month, with nothing to
+    # resume by hand. Null is no limit of its own; the agent's and the organization's
+    # limits apply either way, and this only ever narrows.
+    monthly_budget_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    # When a schedule stops by itself - "keep an eye on this until Friday". Null runs
+    # until somebody stops it. The first fire due after this instant pauses it instead.
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The deadline already settled, so moving the end rearms cleanup.
+    end_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # How an event trigger was set up, when it came from a portal preset rather
     # than the raw source picker. All nullable: every schedule, and every
     # hand-wired event trigger, leaves them null and behaves exactly as before -
@@ -289,10 +450,39 @@ class AgentTrigger(Base, TimestampMixin):
     # schema from the models, so a constraint stated only in the migration would
     # be absent from exactly the tests written to prove it rejects a row.
     __table_args__ = (
+        CheckConstraint("result_mode IN ('report', 'inbox')", name="ck_trigger_result_mode"),
+        CheckConstraint(
+            "max_failures IS NULL OR max_failures BETWEEN 1 AND 20", name="ck_routine_max_failures"
+        ),
+        CheckConstraint("consecutive_failures BETWEEN 0 AND 20", name="ck_routine_failure_count"),
+        Index(
+            "ix_agent_triggers_pending_end",
+            "ends_at",
+            "id",
+            postgresql_where=text(
+                "ends_at IS NOT NULL AND (is_active OR end_settled_at IS DISTINCT FROM ends_at)"
+            ),
+        ),
+        CheckConstraint(
+            "last_delivery_status IN ('delivered', 'unavailable', 'run_log', 'no_answer', 'not_completed')",
+            name="ck_trigger_delivery_status",
+        ),
+        CheckConstraint(
+            "pinned_version_id IS NULL OR environment_id IS NULL", name="ck_trigger_version_target"
+        ),
         CheckConstraint("trigger_type IN ('schedule', 'event')", name="ck_trigger_type"),
         CheckConstraint("schedule_kind IN ('interval', 'cron')", name="ck_trigger_schedule_kind"),
+        CheckConstraint("overlap IN ('skip', 'queue', 'allow')", name="ck_trigger_overlap"),
         CheckConstraint(
-            "event_source IS NULL OR event_source IN ('github', 'gmail', 'webhook')",
+            "monthly_budget_usd IS NULL OR monthly_budget_usd > 0", name="ck_trigger_budget"
+        ),
+        CheckConstraint(
+            "answer_to IN ('run_log', 'primary', 'conversation')", name="ck_trigger_answer_to"
+        ),
+        CheckConstraint(
+            "event_source IS NULL OR event_source IN "
+            "('github', 'gmail', 'google_calendar', 'google_drive', 'hubspot', "
+            "'microsoft_files', 'outlook', 'outlook_calendar', 'webhook', 'zendesk')",
             name="ck_trigger_event_source",
         ),
         # The discriminator across both concepts, in one constraint so a row can
@@ -303,23 +493,23 @@ class AgentTrigger(Base, TimestampMixin):
         # and how is it authenticated" always has one answer.
         #
         # The secret is conditional because a polled source has nothing to
-        # authenticate: `gmail` is read from a connected mailbox, so a secret on
-        # such a row is a credential nobody can spend and a URL nobody should be
-        # given. Stated here rather than trusted to the service, because it was
-        # the service that got it wrong - every event trigger minted a secret and
-        # was born `manual`, so creating a Gmail trigger handed out a webhook URL
-        # for a door that refuses it (#1068).
+        # authenticate: `gmail`, `outlook` and the file and calendar sources are read
+        # from a connected account, so a secret on such a row is a credential nobody
+        # can spend and a URL nobody should be given. Stated here rather than trusted to the service, because
+        # it was the service that got it wrong - every event trigger minted a
+        # secret and was born `manual`, so creating a Gmail trigger handed out a
+        # webhook URL for a door that refuses it (#1068).
         CheckConstraint(
-            "(trigger_type = 'schedule' AND next_fire_at IS NOT NULL "
+            "(trigger_type = 'schedule' AND (next_fire_at IS NOT NULL OR one_shot) "
             "AND event_source IS NULL "
             "AND ((schedule_kind = 'interval' AND interval_seconds IS NOT NULL "
             "AND cron_expression IS NULL) "
             "OR (schedule_kind = 'cron' AND cron_expression IS NOT NULL "
             "AND interval_seconds IS NULL))) "
             "OR (trigger_type = 'event' AND event_source IS NOT NULL "
-            "AND ((event_source IN ('gmail') AND event_secret_encrypted IS NULL "
+            f"AND ((event_source IN ({_POLLED}) AND event_secret_encrypted IS NULL "
             "AND secret_key_version IS NULL) "
-            "OR (event_source NOT IN ('gmail') AND event_secret_encrypted IS NOT NULL "
+            f"OR (event_source NOT IN ({_POLLED}) AND event_secret_encrypted IS NOT NULL "
             "AND secret_key_version IS NOT NULL)) "
             "AND next_fire_at IS NULL AND interval_seconds IS NULL "
             "AND cron_expression IS NULL)",
@@ -347,3 +537,42 @@ class AgentTrigger(Base, TimestampMixin):
             f"<AgentTrigger(id={self.id}, agent_id={self.agent_id}, "
             f"type={self.trigger_type}, active={self.is_active})>"
         )
+
+
+class TriggerAttempt(Base):
+    """An activation that stopped before producing an agent run.
+
+    Only bounded reason codes are kept: no prompt, provider error, credential or
+    source metadata can leak through routine history.
+    """
+
+    __tablename__ = "trigger_attempts"
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_triggers.id", ondelete="CASCADE"), nullable=False
+    )
+    activation_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        Index("uq_trigger_attempt_activation", "trigger_id", "activation_id", unique=True),
+        Index("ix_trigger_attempt_history", "organization_id", "trigger_id", "occurred_at", "id"),
+        CheckConstraint("status IN ('blocked', 'failed')", name="ck_trigger_attempt_status"),
+        CheckConstraint(
+            "stage IN ('source_review', 'preparation')", name="ck_trigger_attempt_stage"
+        ),
+        CheckConstraint(
+            "reason IN ('platform_identity_required', 'source_review_required', "
+            "'agent_unavailable', 'preparation_failed')",
+            name="ck_trigger_attempt_reason",
+        ),
+    )

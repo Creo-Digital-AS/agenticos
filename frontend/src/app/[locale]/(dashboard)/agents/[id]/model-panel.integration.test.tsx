@@ -1,10 +1,12 @@
-import { act, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import AgentBuilderPage from "./page";
 import type { AgentSpec } from "@/types/agents";
 import type { ProfilesStatus } from "@/hooks/use-model-providers";
+import { ApiError } from "@/lib/api-error";
 import { Perm } from "@/types/permissions";
 import type { Permission } from "@/types/permissions";
 
@@ -33,8 +35,11 @@ const MODEL_PROFILE = {
 };
 
 const refetchProfiles = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const validate = vi.hoisted(() => vi.fn());
+const refetchAgent = vi.hoisted(() => vi.fn());
 
 const state = {
+  agentError: null as Error | null,
   permissions: [] as Permission[],
   profiles: [MODEL_PROFILE] as (typeof MODEL_PROFILE)[],
   // Both queries settle successfully by default; a case that wants the failed
@@ -51,27 +56,36 @@ vi.mock("@/hooks", async () => {
   return {
     useUrlState,
     useAgent: () => ({
-      agent: {
-        id: "a-1",
-        name: "Support",
-        status: "draft",
-        has_avatar: false,
-        draft_spec: {
-          name: "Support",
-          instructions: "Be helpful.",
-          model_profile_id: null,
-          model_settings: {},
-          capabilities: [],
-          collection_ids: [],
-          skill_ids: [],
-          context_ids: [],
-          mcp_servers: [],
-          subagents: [],
-        } satisfies AgentSpec,
-      },
+      agent: state.agentError
+        ? undefined
+        : {
+            id: "a-1",
+            name: "Support",
+            status: "draft",
+            has_avatar: false,
+            can_edit: true,
+            can_publish: true,
+            draft_spec: {
+              name: "Support",
+              instructions: "Be helpful.",
+              model_profile_id: null,
+              model_settings: {},
+              capabilities: [],
+              collection_ids: [],
+              skill_ids: [],
+              context_ids: [],
+              mcp_servers: [],
+              subagents: [],
+            } satisfies AgentSpec,
+          },
       isLoading: false,
-      saveDraft: { mutateAsync: vi.fn(), isPending: false },
-      validate: { mutateAsync: vi.fn() },
+      error: state.agentError,
+      refetch: refetchAgent,
+      saveDraft: {
+        mutateAsync: vi.fn(async (spec: AgentSpec) => ({ draft_spec: spec })),
+        isPending: false,
+      },
+      validate,
       publish: { mutateAsync: vi.fn(), isPending: false },
       rollback: { mutateAsync: vi.fn() },
       setAvatar: { mutateAsync: vi.fn(), isPending: false },
@@ -89,6 +103,7 @@ vi.mock("@/hooks", async () => {
     useAgentVersion: () => ({ version: undefined, isLoading: false }),
     useAgentVersions: () => ({ versions: [] }),
     useAllAgentVersions: () => ({ versions: [] }),
+    useDraftBase: () => ({ base: undefined }),
     useCapabilityCatalog: () => ({ capabilities: [] }),
     usePromptVariables: () => ({ variables: [] }),
     useDelegationTree: () => ({ tree: null, isLoading: false, error: null }),
@@ -111,7 +126,7 @@ vi.mock("@/hooks", async () => {
       can: (permission: Permission) => state.permissions.includes(permission),
       isLoaded: state.permissionsLoaded,
     }),
-    useProviderModels: () => ({ models: [], source: null, isLoading: false }),
+    useProviderModels: () => ({ models: [], refused: [], source: null, isLoading: false }),
     useRuns: () => ({ runs: [] }),
     useSecretPurposes: () => ({ purposes: [] }),
     useSecrets: () => ({ secrets: [] }),
@@ -119,6 +134,11 @@ vi.mock("@/hooks", async () => {
   };
 });
 
+vi.mock("@/hooks/use-eval-runs", () => ({
+  useDraftEvalRuns: () => ({ runs: [] }),
+  useEvalArmSpec: () => ({ spec: undefined }),
+  useRunsADataset: () => false,
+}));
 vi.mock("@/hooks/use-context", () => ({
   useContextFiles: () => ({ files: [], total: 0 }),
 }));
@@ -135,8 +155,12 @@ vi.mock("@/stores", () => ({
 // lives; mounted here they only make the page slower and this spec's failures
 // harder to read.
 vi.mock("@/components/agents/agent-avatar", () => ({ AgentAvatar: () => null }));
+vi.mock("@/components/authoring/assistant-strip", () => ({ AssistantStrip: () => null }));
 vi.mock("@/components/agents/model-settings-form", () => ({ ModelSettingsForm: () => null }));
 vi.mock("@/components/agents/thinking-setting", () => ({ ThinkingSetting: () => null }));
+vi.mock("@/components/agents/voice-card", () => ({ VoiceCard: () => null }));
+// The History tab is only somewhere other than Build to start from.
+vi.mock("@/components/agents/version-history", () => ({ VersionHistory: () => null }));
 vi.mock("@/components/ui/markdown-editor", () => ({
   MarkdownEditor: () => null,
   MarkdownModeToggle: () => null,
@@ -150,14 +174,19 @@ vi.mock("@/components/ui/markdown-editor", () => ({
 async function mount() {
   await act(async () => {
     render(
-      <Suspense fallback={null}>
-        <AgentBuilderPage params={Promise.resolve({ id: "a-1" })} />
-      </Suspense>,
+      <QueryClientProvider client={new QueryClient()}>
+        <Suspense fallback={null}>
+          <AgentBuilderPage params={Promise.resolve({ id: "a-1" })} />
+        </Suspense>
+      </QueryClientProvider>,
     );
   });
 }
 
 beforeEach(() => {
+  state.agentError = null;
+  refetchAgent.mockReset();
+  validate.mockResolvedValue({ problems: [], fields: [], fixes: [] });
   state.permissions = [Perm.agentsEdit];
   state.profiles = [MODEL_PROFILE];
   state.profilesStatus = "loaded";
@@ -261,5 +290,99 @@ describe("the Builder's model panel", () => {
 
     expect(await screen.findByText(/organization has no models/)).toBeInTheDocument();
     expect(screen.queryByText(/no model yet/)).toBeNull();
+  });
+});
+
+describe("publish refused for having no model", () => {
+  const NO_MODEL = "No model selected - pick one under Build > Model before publishing";
+
+  it("takes its reader from another tab to the Model card", async () => {
+    // Publish marks the missing model on `model_profile_id` (#2483); the card
+    // that sets it is on Build, and the reader may be anywhere else.
+    validate.mockResolvedValue({
+      problems: ["Unknown capability: typo", NO_MODEL],
+      fields: [{ field: "model_profile_id", message: NO_MODEL }],
+      fixes: [],
+    });
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    state.permissions = [Perm.agentsEdit, Perm.agentsPublish];
+    await mount();
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByRole("tab", { name: /History/ }));
+    });
+    expect(screen.getByRole("tab", { name: /History/ })).toHaveAttribute("aria-selected", "true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    });
+    const link = await screen.findByRole("button", { name: "Go to Model" });
+    // One link, beside the line about the model rather than the other one.
+    expect(screen.getAllByRole("button", { name: "Go to Model" })).toHaveLength(1);
+    expect(link.closest("li")).toHaveTextContent(NO_MODEL);
+
+    await act(async () => {
+      fireEvent.click(link);
+    });
+
+    expect(screen.getByRole("tab", { name: /Build/ })).toHaveAttribute("aria-selected", "true");
+    expect(scrolled).toHaveBeenCalled();
+    expect(scrolled.mock.contexts.at(-1)).toHaveAttribute("data-tour", "agent-model");
+    scrolled.mockRestore();
+  });
+
+  it("scrolls to the Model card when the reader is already on Build", async () => {
+    validate.mockResolvedValue({
+      problems: [NO_MODEL],
+      fields: [{ field: "model_profile_id", message: NO_MODEL }],
+      fixes: [],
+    });
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    state.permissions = [Perm.agentsEdit, Perm.agentsPublish];
+    await mount();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Go to Model" }));
+    });
+
+    expect(scrolled.mock.contexts.at(-1)).toHaveAttribute("data-tour", "agent-model");
+    scrolled.mockRestore();
+  });
+
+  it("offers no link for a problem that is not the missing model", async () => {
+    validate.mockResolvedValue({ problems: ["Unknown capability: typo"], fields: [], fixes: [] });
+    state.permissions = [Perm.agentsEdit, Perm.agentsPublish];
+    await mount();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    });
+
+    expect(await screen.findByText("Unknown capability: typo")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go to Model" })).toBeNull();
+  });
+});
+
+describe("agent read failures", () => {
+  it.each([403, 404])(
+    "shows an organization/access explanation for %s instead of a perpetual skeleton",
+    async (status) => {
+      state.agentError = new ApiError(status, "Agent not found");
+      await mount();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "This is not in your organization, or you do not have access.",
+      );
+      expect(screen.queryByRole("button", { name: "Publish" })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(refetchAgent).toHaveBeenCalledOnce();
+    },
+  );
+  it("shows an actionable server failure without describing it as missing access", async () => {
+    state.agentError = new ApiError(503, "Backend unavailable");
+    await mount();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load the agent");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
   });
 });

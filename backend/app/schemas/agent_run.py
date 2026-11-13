@@ -2,13 +2,73 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
 from app.schemas.base import BaseSchema
 from app.schemas.conversation import MessageRead
+from app.schemas.eval_run import EvalCaseLinkRead
+
+
+class ChatAskerRead(BaseSchema):
+    """The chat account that asked, for a run that ran as the binding's publisher.
+
+    Unverified: the name is what the account's owner typed on the platform.
+    """
+
+    platform: str
+    name: str = Field(
+        description="The display name, else the handle with an `@`, else the platform's user id"
+    )
+    bot_name: str | None = Field(
+        default=None,
+        description="The bot the chat reached the agent through; null once its binding is gone",
+    )
+
+
+class VoiceChainRead(BaseSchema):
+    """One call as Activity shows it: every connection of it, summed (#54)."""
+
+    connections: int = Field(
+        description="How many connections the call took: 1, plus one per reconnect"
+    )
+    seconds: int
+    cost_usd: Decimal
+
+
+class RunOriginRead(BaseSchema):
+    """Which platform agent a run was, and where its work is read."""
+
+    kind: Literal["grader", "improve", "knowledge_gaps", "test_questions"] = Field(
+        description=(
+            "The judge grading eval cases, the assistant proposing changes, the "
+            "knowledge-gap classifier or drafter, or the case generator"
+        )
+    )
+    agent_name: str = Field(description="The platform agent's own name")
+    agent_id: UUID | None = Field(
+        default=None, description="The agent an assistant request was about"
+    )
+    improvement_id: UUID | None = Field(default=None, description="The Improve session it was in")
+    topic_id: UUID | None = Field(default=None, description="The knowledge-gap topic it drafted")
+    knowledge_base_id: UUID | None = Field(
+        default=None, description="The knowledge base whose gaps it read or drafted"
+    )
+    dataset_id: UUID | None = Field(default=None, description="The dataset it wrote cases for")
+
+
+class RunSkillUseRead(BaseSchema):
+    """A skill a run opened or read, at the version it was served."""
+
+    skill_id: UUID
+    name: str
+    version: int | None = Field(
+        default=None, description="The version's number on its line; null where none is known"
+    )
+    fork: str | None = Field(default=None, description="The fork that version is on; null on main")
+    loaded: bool = Field(description="The run opened it, rather than only reading one of its files")
 
 
 class AgentRunRead(BaseSchema):
@@ -18,7 +78,23 @@ class AgentRunRead(BaseSchema):
     agent_id: UUID
     agent_version_id: UUID | None = None
     user_id: UUID | None = None
+    initiated_by_publisher_fallback: bool | None = Field(
+        default=None,
+        description="True when user_id is the publisher's authority, not the person who asked; null if unavailable",
+    )
+    asked_in_chat: ChatAskerRead | None = Field(
+        default=None,
+        description="The unverified channel account that asked when the run used publisher authority",
+    )
     surface: str
+    system_role: str | None = Field(
+        default=None,
+        description=(
+            "The platform role that did this run when no agent's instructions ran - "
+            "`daily_briefing` or `memory_maintenance` (#2575). The run is recorded under the "
+            "starter agent so it has a row, a cost and a trace; this says whose work it was"
+        ),
+    )
     is_test: bool = Field(
         default=False, description="Started from the Builder's test panel (#2074)"
     )
@@ -34,11 +110,39 @@ class AgentRunRead(BaseSchema):
             "change under the same label"
         ),
     )
-    input_tokens: int
+    input_tokens: int = Field(
+        description=(
+            "Prompt tokens, cache reads and writes included - Pydantic AI's convention. "
+            "The two cache fields say how many of them were priced at the cache rates"
+        )
+    )
     output_tokens: int
+    cache_read_tokens: int = Field(
+        default=0,
+        description=(
+            "Of `input_tokens`, those served from the provider's cache, priced at a "
+            "fraction of the input rate. With `cache_write_tokens`, what reconciles a "
+            "run with the provider's console. Like `cost_usd`, a parent's figure "
+            "includes its delegations' requests; their own rows divide the same tokens "
+            "by agent"
+        ),
+    )
+    cache_write_tokens: int = Field(
+        default=0,
+        description="Of `input_tokens`, those written to the provider's cache, priced above it",
+    )
     cost_usd: Decimal
     cost_is_partial: bool = Field(
         description="True when a model in this run had no price - the cost is a floor"
+    )
+    tool_args_repaired: int = Field(
+        default=0,
+        description=(
+            "Tool calls whose arguments arrived as malformed JSON - a trailing comma, "
+            "single quotes, an object cut short - and were repaired before validation "
+            "rather than retried. Each one is a model request saved; a model that "
+            "needs many is one to reconsider"
+        ),
     )
     logfire_trace_id: str | None = Field(
         default=None,
@@ -74,6 +178,45 @@ class AgentRunRead(BaseSchema):
         default=None,
         description="The run after this one in its own conversation. See `prev_run_id`",
     )
+    preview: str | None = Field(
+        default=None,
+        description=(
+            "What the run was asked, as one line: its first user turn, or the eval "
+            "case's question for a run that answered or graded one. Sent on the "
+            "listing; null for a run that kept no conversation"
+        ),
+    )
+    eval_case: EvalCaseLinkRead | None = Field(
+        default=None,
+        description=(
+            "The eval run and case this run answered - or graded, on the judge's "
+            "single-run read - when the caller may see the dataset; such a run keeps "
+            "no conversation, and its answer and grade are read on the eval run"
+        ),
+    )
+    skills_used: list[RunSkillUseRead] = Field(
+        default_factory=list,
+        description=(
+            "The skills the run opened or read, among those the caller may see. Sent on "
+            "the single-run read only"
+        ),
+    )
+    origin: RunOriginRead | None = Field(
+        default=None,
+        description=(
+            "For a platform agent's run - the judge, the assistant, the knowledge-gap "
+            "and case helpers - which one and what it worked on. Null for the "
+            "organization's own agents"
+        ),
+    )
+    continues_in_chat: bool = Field(
+        default=False,
+        description=(
+            "Whether the run is parked on a chat platform with its chat recorded and "
+            "the caller is a person, so that its continuation is posted to that chat "
+            "and a client should not resume it itself. Never true for an API key"
+        ),
+    )
     error: str | None = None
     conversation_id: UUID | None = Field(
         default=None,
@@ -93,6 +236,16 @@ class AgentRunRead(BaseSchema):
             "and a message names its run, so a run older than that stamping "
             "reads false. Set by the run reads; false on any other surface, "
             "which does not compute it."
+        ),
+    )
+    modality: Literal["text", "voice"] = Field(
+        default="text", description="`voice` for a call, `text` for everything typed (#54)"
+    )
+    voice_chain: VoiceChainRead | None = Field(
+        default=None,
+        description=(
+            "For a voice run on the run list: every connection of the call, summed. "
+            "Null for text runs and on other reads"
         ),
     )
     started_at: datetime | None = None
@@ -119,7 +272,7 @@ class AgentRunRead(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def _no_delegation_handle_without_a_delegation(self) -> "AgentRunRead":
+    def _no_delegation_handle_without_a_delegation(self) -> AgentRunRead:
         """Withhold the task id of a delegation that no longer has a parent.
 
         `agent_runs.parent_run_id` is `ON DELETE SET NULL`, which is the right
@@ -232,6 +385,24 @@ class ApprovalRead(BaseSchema):
     )
     tool_id: str
     tool_args: dict[str, Any]
+    capability_tool_id: str | None = Field(
+        default=None,
+        description=(
+            "The stable id the capability declares the tool under. `tool_id` is the "
+            "name the model called, which a binding may have renamed; a client that "
+            "words the call by tool looks it up by this. Null for a tool no "
+            "capability owns, such as an MCP server's"
+        ),
+    )
+    context: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The ids in `tool_args` as names the run's person may see, e.g. "
+            '`{"view": "Closed tickets", "table": "Support"}`, for a sentence above '
+            "the arguments. Null when the tool has no describer or describing it "
+            "failed; the arguments are what runs either way"
+        ),
+    )
     triggered_by_user_id: UUID | None = Field(
         default=None,
         description=(
@@ -243,6 +414,15 @@ class ApprovalRead(BaseSchema):
     )
     triggered_by_email: str | None = Field(
         default=None, description="That person, for a queue somebody has to read"
+    )
+    asked_in_chat: ChatAskerRead | None = Field(
+        default=None,
+        description=(
+            "The chat account that asked, when the run is a chat message from an "
+            "unlinked person and so ran as the binding's publisher. Then "
+            "`triggered_by_user_id` and `triggered_by_email` are null: the publisher "
+            "did not trigger it. The account is unverified"
+        ),
     )
     decided_by_email: str | None = Field(
         default=None,
@@ -290,6 +470,30 @@ class ApprovalRead(BaseSchema):
     )
     note: str | None = None
     created_at: datetime | None = None
+    continues_in_chat: bool = Field(
+        default=False,
+        description=(
+            "Whether the run is parked on a chat platform with its chat recorded and "
+            "the caller is a person, so that its continuation is posted to that chat "
+            "and a client should not resume it itself. Never true for an API key"
+        ),
+    )
+    content_hidden: bool = Field(
+        default=False,
+        description=(
+            "Whether what the call quotes from its run - the fact `share_memory` would "
+            "share, say - was left out of `tool_args` and `context`, because the caller "
+            "may not see that run. The audience and the tool still show"
+        ),
+    )
+    always_asks: bool = Field(
+        default=False,
+        description=(
+            "Whether only a person's answer to this call could let it run - `share_memory`, "
+            "or a correction of a shared fact. With `content_hidden`, the caller may "
+            "reject the call but not approve it"
+        ),
+    )
 
 
 class ApprovalList(BaseSchema):
@@ -298,6 +502,7 @@ class ApprovalList(BaseSchema):
 
 
 class ApprovalDecision(BaseSchema):
+    remember_scope: Literal["conversation", "agent"] | None = None
     approved: bool
     note: str | None = Field(default=None, max_length=500)
 
@@ -402,6 +607,29 @@ class CostByKey(BaseSchema):
     run_count: int
 
 
+class CacheByAgentModel(BaseSchema):
+    """Prompt-cache collapses for one agent on one model over the window (#2109).
+
+    A *bust* is a cached prefix that moved while the provider should still have
+    held it - tools reordered, a timestamp in the instructions; an *expiry* is one
+    whose retention had passed. `missed_tokens` is the cached prefix that was not
+    read back - a measure of the miss, not of tokens billed again, since a
+    compaction can also shrink the prompt the cache held. Only pairs with at
+    least one of either are listed.
+    """
+
+    agent_id: UUID
+    agent_slug: str
+    agent_name: str
+    model_label: str | None
+    busts: int
+    expiries: int
+    missed_tokens: int = Field(
+        description="Tokens earlier requests had cached that these requests did not read back"
+    )
+    run_count: int = Field(description="Runs with at least one bust or expiry")
+
+
 class CostByDay(BaseSchema):
     """One day's spend, for the bars over the window."""
 
@@ -450,3 +678,21 @@ class CostSummary(BaseSchema):
         default_factory=list,
         description="Spend per UTC day over the window; a day with no runs has no entry",
     )
+    cache_by_agent_model: list[CacheByAgentModel] = Field(
+        default_factory=list,
+        description=(
+            "Prompt-cache busts and expiries per agent and model over the window, most "
+            "busts first; empty when every cache held"
+        ),
+    )
+
+
+class ToolConsentRead(BaseSchema):
+    """A person's revocable remembered approval, without the call's arguments."""
+
+    agent_name: str
+    id: UUID
+    agent_id: UUID
+    tool_id: str
+    account: str | None
+    remember_scope: Literal["conversation", "agent"]

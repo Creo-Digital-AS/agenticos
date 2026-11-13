@@ -1,5 +1,5 @@
 ---
-source_sha: "35cbb3d979ce"
+source_sha: "68bc85353023"
 ---
 
 # Konfiguracja źródeł synchronizacji { #configure-sync-sources }
@@ -134,6 +134,11 @@ liście `rag-sources`.
 7. Przyciskiem **"Sync Now"** wyzwolisz synchronizację natychmiast albo
    poczekasz, aż harmonogram zadziała sam.
 
+Żeby później zmienić source, kliknij ołówek w jego wierszu. Otworzy się ten sam
+kreator z wypełnionymi wartościami source'a. Connectora nie da się zmienić, a
+**"Save Changes"** wysyła tylko pola, które zmieniłeś. Source zostaje w bazie
+wiedzy, w której jest.
+
 Interfejs wywołuje to samo REST API, które opisano poniżej: cokolwiek zrobisz
 w interfejsie, zrobisz też przez `curl` lub dowolnego klienta HTTP.
 
@@ -215,13 +220,14 @@ samoczynnie:
 | `120` | Co 2 godziny |
 | `1440` | Raz dziennie |
 
-!!! warning "Harmonogram wymaga runnera Prefect"
+!!! warning "Harmonogram wymaga workera"
 
-    `check_scheduled_syncs_flow` to deployment Prefect, który budzi się co 60
-    sekund i uruchamia to, czego termin nadszedł. Bez kontenerów
-    `prefect-server` i `prefect-runner`, które startuje `make dev`,
-    `schedule_minutes` nie robi nic. Gdy nie działa żaden z nich, cokolwiek
-    synchronizuje wyłącznie ręczne wyzwolenie (CLI, API lub interfejs).
+    Harmonogram `dispatch-due-syncs` budzi się co 60 sekund i kolejkuje
+    synchronizację każdego źródła, którego termin nadszedł, więc bez kontenera
+    `worker`, który startuje `make dev`, `schedule_minutes` nie robi nic. Bez
+    niego ręczne wyzwolenie (CLI, API lub interfejs) też kolejkuje swoją
+    synchronizację, która również czeka na workera. Jedno źródło nigdy nie ma
+    dwóch synchronizacji naraz.
 
 ## Konfiguracja Google Drive { #google-drive-setup }
 
@@ -302,6 +308,13 @@ S3_RAG_REGION=us-east-1                    # required for AWS, optional for MinI
 W MinIO endpoint ma zwykle postać `http://minio:9000` (Docker) albo
 `http://localhost:9000` (lokalnie).
 
+`endpoint_url` źródła jest sprawdzany tak jak początkowy adres URL źródła
+strony internetowej, przy zapisie źródła i ponownie, gdy startuje synchronizacja:
+adres loopback, link-local albo metadanych chmury jest zawsze odrzucany, a
+endpoint w sieci prywatnej, na przykład kontener MinIO, wymaga wpisania jego hosta
+do [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings).
+`S3_RAG_ENDPOINT` ustawiony przez operatora nie jest sprawdzany.
+
 ### 2. Pola konfiguracji connectora S3 { #2-s3-connector-config-fields }
 
 | Pole | Typ | Wymagane | Domyślnie | Opis |
@@ -346,8 +359,9 @@ uv run agenticos cmd rag-source-add \
 - **Sieć deploymentu jest poza zasięgiem.** Każde żądanie - robots.txt, sitemapa,
   każda strona i każde przekierowanie - jest sprawdzane według tej samej polityki
   SSRF co webhooki i serwery MCP. Wysyłane jest na adres, który przeszedł
-  sprawdzenie. Początkowy adres URL, który rozwiązuje się na adres prywatny,
-  loopback, link-local albo metadanych chmury, jest odrzucany przy zapisie źródła.
+  sprawdzenie. Początkowy adres URL, który rozwiązuje się na adres
+  loopback, link-local albo metadanych chmury, jest zawsze odrzucany przy zapisie źródła.
+  Taki, który rozwiązuje się na adres prywatny, też jest odrzucany, chyba że operator wpisał jego host do [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings).
 - **robots.txt jest przestrzegany** dla sitemap i stron, łącznie z `Crawl-delay`
   do dziesięciu sekund. Crawler przedstawia się jako `AgenticOS-Crawler`. Między
   żądaniami czeka co najmniej pół sekundy, a strona oznaczona `noindex` lub
@@ -455,7 +469,8 @@ Adres URL musi zaczynać się od `https://`. Jego host jest rozwiązywany raz
 i sprawdzany tak jak każdy inny adres wybrany przez tenanta: host, który
 rozwiązuje się na adres prywatny, loopback albo link-local, jest odrzucany przy
 zapisie źródła i ponownie przy synchronizacji, a git łączy się wyłącznie
-z adresami, które ta kontrola zatwierdziła. Przekierowania nie są śledzone.
+z adresami, które ta kontrola zatwierdziła. Operator może dopuścić host z sieci
+deploymentu przez [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). Przekierowania nie są śledzone.
 Deployment za proxy wyjściowym (`HTTPS_PROXY`) nadal z niego korzysta; proxy
 rozwiązuje wtedy host samo.
 
@@ -595,15 +610,38 @@ obsługiwane.
 
 Wszystkie endpointy źródeł synchronizacji leżą pod `/api/v1/rag/sync/`.
 Wypisanie listy wymaga `collections:view`, a wszystko, co zmienia źródło, wymaga
-`collections:edit` — w obu przypadkach wobec kolekcji, do której źródło należy;
-rola administratora w tym nie występuje. Zobacz
+`collections:edit`. Rola administratora w tym nie występuje. Poniższe akapity
+mówią, do których źródeł sięga każda z tych operacji. Zobacz
 [kto może sięgnąć do kolekcji](../file-processing.md#who-may-reach-a-collection).
+
+`GET /api/v1/rag/sync/sources` wypisuje wszystkie źródła Twojej organizacji, także
+nieprzypisane, tylko z `connections:manage`, tak jak `/org/integrations`. Bez
+niego lista ma tylko źródła, które zasilają bazę, którą możesz czytać, a
+`collection_name` musi wskazywać kolekcję, którą możesz czytać, inaczej odpowiedź
+to 404. Jeśli bez tego uprawnienia tworzysz lub odłączasz nieprzypisane źródło,
+zachowaj jego identyfikator z odpowiedzi, bo żadna lista Ci go nie pokaże. Lista
+istniejących integracji, którą kreator bazy wiedzy proponuje do ponownego użycia,
+też wymaga `connections:manage`. Zobacz [Uprawnienia](../permissions.md).
+
+Aby zaktualizować, usunąć lub uruchomić źródło przez
+`/api/v1/rag/sync/sources/{id}`, musisz też mieć prawo zapisu do bazy, którą to
+źródło zasila. Dotyczy to też `PATCH`, który ustawia `collection_name` na `null`.
+Nieprzypisane źródło wymaga tylko Twojej organizacji. `/org/integrations`
+zarządza źródłami na poziomie organizacji i zamiast tego wymaga
+`connections:manage`.
+
+Historia synchronizacji i log uruchomień źródła pokazują uruchomienia źródeł
+Twojej organizacji, także przez bazę o zasięgu aplikacji, którą czyta każda
+organizacja. Administrator platformy widzi też źródła innych organizacji w
+bazach, które czyta. Uruchomienie bez źródła, na przykład synchronizacja lokalna
+albo uruchomienie, którego źródło usunięto, jest wypisywane po nazwie kolekcji
+każdemu, kto tę kolekcję czyta.
 
 ### CRUD źródeł synchronizacji { #sync-sources-crud }
 
 | Metoda | Endpoint | Opis |
 |--------|----------|-------------|
-| `GET` | `/api/v1/rag/sync/sources` | Wypisuje wszystkie skonfigurowane źródła synchronizacji |
+| `GET` | `/api/v1/rag/sync/sources` | Wypisuje źródła synchronizacji (wszystkie z `connections:manage`) |
 | `POST` | `/api/v1/rag/sync/sources` | Tworzy nowe źródło synchronizacji |
 | `PATCH` | `/api/v1/rag/sync/sources/{id}` | Zmienia istniejące źródło synchronizacji |
 | `DELETE` | `/api/v1/rag/sync/sources/{id}` | Usuwa źródło synchronizacji |
@@ -679,6 +717,18 @@ Pola, które można zmienić: `name`, `config`, `sync_mode`, `schedule_minutes`,
 `is_active`, `collection_name`.
 
 Ustaw `is_active` na `false`, aby wstrzymać źródło bez usuwania go.
+Wstrzymane źródło nie uruchamia się według harmonogramu ani na żądanie przez
+API lub CLI. Konsola wyłącza przycisk synchronizacji. Zadanie w kolejce sprawdza
+stan ponownie przed pobraniem plików i kończy się błędem, jeśli źródło
+wstrzymano podczas oczekiwania. Wstrzymanie nie przerywa już rozpoczętej
+synchronizacji. Ustaw `is_active` na `true`, aby zezwolić na nowe synchronizacje.
+
+Przy rozwiązywaniu nazwy kolekcji wybierana jest najstarsza baza w organizacji
+źródła, a jeśli jej nie ma — baza o zakresie aplikacji. Przy jednakowych
+czasach utworzenia kolejność określa identyfikator bazy. API odmawia przypisania
+źródła przez nazwę kolekcji, jeśli kilka pasujących baz ma ten sam najstarszy
+czas utworzenia. Użyj bazy wiedzy z unikalną nazwą kolekcji, aby usunąć tę
+niejednoznaczność.
 
 ## Monitorowanie operacji synchronizacji { #monitoring-sync-operations }
 
@@ -776,8 +826,8 @@ poprawnie ustawione w `.env`. W MinIO upewnij się, że endpoint zawiera port
 
 Początkowy adres URL albo sitemapa wskazuje do wnętrza sieci deploymentu albo
 jego nazwa się tam rozwiązuje. Źródło strony internetowej czyta wyłącznie adresy
-publiczne. Aby zaindeksować wewnętrzną witrynę, opublikuj jej strony gdzieś
-publicznie albo prześlij pliki bezpośrednio.
+publiczne, chyba że operator wpisał host witryny do
+[`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings). W przeciwnym razie opublikuj jej strony gdzieś publicznie albo prześlij pliki bezpośrednio.
 
 ### Website: "The site's robots.txt could not be read, so it was not crawled" { #website-the-sites-robotstxt-could-not-be-read-so-it-was-not-crawled }
 
@@ -865,7 +915,7 @@ ponownie po nim, jeśli źródło w międzyczasie się zmieniło.
 
 Host repozytorium rozwiązuje się na adres wewnątrz sieci deploymentu, więc
 źródło jest odrzucane. Źródło synchronizacji nie może dotrzeć do
-samodzielnie hostowanego serwera Git pod adresem wewnętrznym.
+samodzielnie hostowanego serwera Git pod adresem wewnętrznym, chyba że operator wpisał jego host do [`OUTBOUND_PRIVATE_ALLOWLIST`](../configuration.md#project-settings).
 
 ### Git: "git is not installed on this worker" { #git-git-is-not-installed-on-this-worker }
 

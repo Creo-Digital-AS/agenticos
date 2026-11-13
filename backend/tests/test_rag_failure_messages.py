@@ -15,8 +15,6 @@ enforces, which is the reason to pin the behaviour by name rather than to trust
 a percentage.
 """
 
-from __future__ import annotations
-
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -25,14 +23,18 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import openai
 import pytest
 
 from app.agents.capabilities.budget import BudgetExceeded, BudgetScope
 from app.core.exceptions import ConfigurationError
 from app.db.models.rag_document import DocumentStatus
+from app.services.rag.embeddings import OpenAIEmbeddingProvider
 from app.services.rag.failures import IngestionStage, failure_summary
 from app.services.rag.ingestion import IngestionService
 from app.services.rag.models import IngestionStatus
+from app.worker.attempt import Attempt, running
 from app.worker.tasks.rag_tasks import _fail_document, _run_ingestion
 
 pytestmark = pytest.mark.anyio
@@ -278,6 +280,34 @@ class TestWhatTheWorkerWritesToTheRow:
 
         documents.return_value.fail_ingestion.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        ("status", "attempt", "written"),
+        [
+            (DocumentStatus.DONE, None, False),
+            (DocumentStatus.PROCESSING, Attempt(1, 2), False),
+            (DocumentStatus.PROCESSING, Attempt(2, 2), True),
+        ],
+        ids=["already-done", "retry-to-come", "last-attempt"],
+    )
+    async def test_a_failure_is_written_only_when_it_is_the_jobs_last_word(
+        self, status: DocumentStatus, attempt: Attempt | None, written: bool
+    ):
+        """Codex on #2248: the first attempt's failure was written and notified, and
+        the retry that indexed the document had nothing to say about it. A settler
+        that runs once the queue gave up finds a finished row and leaves it."""
+        documents = MagicMock()
+        documents.return_value.get_document = AsyncMock(return_value=MagicMock(status=status))
+        documents.return_value.fail_ingestion = AsyncMock()
+
+        with (
+            patch("app.worker.tasks.rag_tasks.get_worker_db_context", self._db),
+            patch("app.services.rag_document.RAGDocumentService", documents),
+            running(attempt),
+        ):
+            await _fail_document(str(uuid.uuid4()), error_message="boom", attempt=1)
+
+        assert documents.return_value.fail_ingestion.await_count == int(written)
+
     async def test_a_row_that_has_not_failed_yet_takes_the_failure(self):
         """The other half of the guard above: the first handler does write."""
         documents = MagicMock()
@@ -296,3 +326,31 @@ class TestWhatTheWorkerWritesToTheRow:
             documents.return_value.fail_ingestion.await_args.kwargs["error_message"]
             == "the specific one"
         )
+
+
+class TestAModelTheEndpointDoesNotServe:
+    """OpenRouter's EU endpoint answers 404 for every model it has no regional
+    host for. Reduced to "(NotFoundError) - check the collection's embedding
+    credential", the stored line sent people to a key that was fine."""
+
+    @staticmethod
+    def _provider() -> OpenAIEmbeddingProvider:
+        request = httpx.Request("POST", "https://eu.openrouter.ai/api/v1/embeddings")
+        refusal = openai.NotFoundError(
+            "Error code: 404 - No endpoints found supporting your data region.",
+            response=httpx.Response(404, request=request),
+            body=None,
+        )
+        provider = OpenAIEmbeddingProvider(model="text-embedding-3-small", api_key="key")
+        provider._client = MagicMock(embeddings=MagicMock(create=MagicMock(side_effect=refusal)))
+        return provider
+
+    def test_the_refusal_names_the_model_rather_than_the_key(self):
+        with pytest.raises(ConfigurationError) as refusal:
+            self._provider().embed_queries(["a chunk"])
+
+        summary = failure_summary(refusal.value, stage=IngestionStage.INDEX)
+        assert "does not serve 'text-embedding-3-small'" in summary
+        assert "credential" not in summary
+        assert "eu.openrouter.ai" not in summary
+        assert isinstance(refusal.value.__cause__, openai.NotFoundError)

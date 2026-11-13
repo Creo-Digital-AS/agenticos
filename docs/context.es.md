@@ -1,5 +1,5 @@
 ---
-source_sha: "e32baf02f7e8"
+source_sha: "6ed5be54f7ae"
 ---
 
 # Archivos de contexto { #context-files }
@@ -20,16 +20,18 @@ Es la respuesta a un problema con el que toda empresa se topa en su tercer agent
 — los mismos tres párrafos pegados en tres juegos de instrucciones, y luego
 editados en uno solo de ellos.
 
+En Agent Builder, **Context → New context file** crea un archivo directamente en el panel de capacidades, lo vincula al borrador actual y activa Context. Después puedes elegir cómo lo usa ese agente. La publicación sigue siendo un paso separado. La creación requiere permisos para editar el agente y los archivos de contexto.
+
 ## Dónde queda, entre los skills y el conocimiento { #where-it-sits-between-skills-and-knowledge }
 
 Tres cosas ponen texto delante de un modelo, y elegir mal es la causa habitual de
 un agent que o ignora lo que se le dijo o no lee nada en absoluto.
 
-| | Contiene | El modelo lo ve |
-|---|---|---|
-| **Archivo de contexto** | Hechos permanentes, pequeños y estables — un glosario, una guía de tono, un organigrama | Siempre, o bajo demanda — tú eliges |
-| **[Skill](skills.md)** | Un procedimiento para un tipo de tarea — cómo tratar una petición de reembolso | Cuando el modelo decide que esa tarea es lo que está ocurriendo |
-| **[Colección de conocimiento](file-processing.md)** | Un corpus demasiado grande para leerlo — cada documento de política, cada ticket | Solo los fragmentos que devuelve una búsqueda |
+|                                                     | Contiene                                                                                | El modelo lo ve                                                 |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Archivo de contexto**                             | Hechos permanentes, pequeños y estables — un glosario, una guía de tono, un organigrama | Siempre, o bajo demanda — tú eliges                             |
+| **[Skill](skills.md)**                              | Un procedimiento para un tipo de tarea — cómo tratar una petición de reembolso          | Cuando el modelo decide que esa tarea es lo que está ocurriendo |
+| **[Colección de conocimiento](file-processing.md)** | Un corpus demasiado grande para leerlo — cada documento de política, cada ticket        | Solo los fragmentos que devuelve una búsqueda                   |
 
 La regla práctica: **si es corto y siempre relevante, es un archivo de contexto.
 Si es largo, es conocimiento. Si es un procedimiento, es un skill.**
@@ -40,8 +42,7 @@ el cuerpo entero.
 
 ## Dos modos, y la diferencia es el coste { #two-modes-and-the-difference-is-cost }
 
-Todo archivo de contexto lleva un modo, y ese modo decide cómo llega el archivo
-al modelo.
+Cada archivo adjunto tiene un modo en los ajustes de **Context** del agent. El mismo archivo compartido puede inyectarse en un agent, enlazarse en otro y desactivarse en un tercero.
 
 === "`inject` — siempre presente"
 
@@ -86,7 +87,9 @@ Esa es toda la idea, y también aquello con lo que hay que tener cuidado: un
 cambio en un archivo inyectado es un cambio en cada agent que lo lleva. Trátalo
 como el texto compartido y portante que es.
 
-La capability tiene un ajuste que vale la pena conocer. **Desactivar** la herramienta de
+En el Builder, cada archivo seleccionado tiene un interruptor **Usar en este agent** y un selector de modo. Estos ajustes pertenecen al borrador del agent y se aplican al publicarlo. El editor de la biblioteca cambia solo el contenido compartido y la descripción; el formato se deduce del nombre del archivo. Las versiones existentes sin ajustes individuales conservan su modo y disponibilidad anteriores.
+
+La capability también controla la herramienta de lectura. **Desactivar** la herramienta de
 lectura significa que solo los archivos inyectados llegan al modelo y que no se
 lee nada bajo demanda — una elección razonable cuando quieres que las entradas de
 un agent sean del todo predecibles.
@@ -95,6 +98,34 @@ También se puede empezar por el archivo: **Add to an agent** en su tarjeta lo
 añade al borrador del agent con la capability Context activada, y la tarjeta dice
 qué agents lo llevan ya. Una base de conocimiento tiene la misma acción en su
 propia página.
+
+## Cambios que propone el asistente { #changes-the-assistant-proposes }
+
+**Mejorar con el asistente**, en el editor de un archivo, pide al
+[asistente de autoría](authoring.md#context-files) un cuerpo mejor, escrito a
+partir de los runs de los agents que leen el archivo. Lo que propone no se
+aplica: espera encima de la lista en la página Context, con su justificación, los
+runs en los que se apoya y los agents vinculados al archivo.
+
+Aplicarlo es lo mismo que editar el archivo a mano - con efecto inmediato para
+cada agent cuya versión publicada lee el archivo -, así que primero va
+**Comprobar con evals**, en uno de esos agents. Junto a **Aplicar** el cambio
+dice qué hace aplicarlo: cada agent y entorno para el que entra en vigor, las
+suites de evals que pone en cola y las guardianas que lo comprueban solo en la
+siguiente promoción del agent. Un archivo que alguien editó después de
+proponerse el cambio lo rechaza; esa edición nunca se sobrescribe.
+
+Volver a pedírselo al asistente reescribe el cambio que espera en lugar de
+añadir un segundo. Una decisión nombra la versión del cambio que leíste, así que
+de dos tomadas a la vez solo cuenta una, y una página abierta antes de la
+reescritura se rechaza con «The proposal changed since you opened it» hasta que
+revises la versión nueva. Un cambio que dice lo que el archivo ya dice no se
+propone en absoluto.
+
+Cualquier edición de un archivo - aplicada o hecha a mano - y su borrado ponen
+en cola las suites de evals que se ejecutan cuando cambia una dependencia, para
+cada agent que lo lee, y aplicar un cambio avisa a los propietarios de esos
+agents.
 
 ## Acceso { #access }
 

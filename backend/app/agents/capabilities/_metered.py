@@ -20,8 +20,6 @@ of every request the wrapped model sends, streamed or not. Compaction books its
 own way and does not pass through this wrapper.
 """
 
-from __future__ import annotations
-
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -33,6 +31,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
 from app.agents.capabilities.budget import assert_ambient_budget, record_ambient_usage
+from app.agents.model_context import check_model_context
 
 
 class MeteredModel(WrapperModel):
@@ -54,9 +53,14 @@ class MeteredModel(WrapperModel):
         Raises:
             BudgetExceeded: A ceiling this run is under has been reached.
         """
+        await check_model_context()
         await assert_ambient_budget()
         response = await self.wrapped.request(messages, model_settings, model_request_parameters)
-        record_ambient_usage(self.model_name or "unknown", response.usage)
+        record_ambient_usage(
+            response.model_name or self.model_name or "unknown",
+            response.usage,
+            response.provider_name,
+        )
         return response
 
     @asynccontextmanager
@@ -66,7 +70,7 @@ class MeteredModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[Any] | None = None,
-    ) -> AsyncGenerator[StreamedResponse, None]:
+    ) -> AsyncGenerator[StreamedResponse]:
         """Stream the wrapped request if the run can afford it, then book its usage.
 
         Booked once the consumer has finished with the stream, from the usage it
@@ -75,9 +79,12 @@ class MeteredModel(WrapperModel):
         Raises:
             BudgetExceeded: A ceiling this run is under has been reached.
         """
+        await check_model_context()
         await assert_ambient_budget()
         async with self.wrapped.request_stream(
             messages, model_settings, model_request_parameters, run_context
         ) as stream:
             yield stream
-        record_ambient_usage(self.model_name or "unknown", stream.usage)
+        record_ambient_usage(
+            stream.model_name or self.model_name or "unknown", stream.usage, stream.provider_name
+        )

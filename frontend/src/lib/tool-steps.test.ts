@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   basename,
   contentArg,
+  delegationStep,
   mcpCall,
   mcpToolPrefix,
   pathArg,
@@ -97,10 +98,11 @@ describe("the line for one tool call", () => {
 
   it("says what happened rather than naming the tool, where the two differ", () => {
     // Which skill it was is the whole content of the step.
-    expect(toolStep("load_capability", { id: "refund_policy" }, true, t).label).toBe(
-      "Refund Policy",
+    expect(toolStep("load_capability", { id: "returns-and-exchanges" }, true, t).label).toBe(
+      "returns-and-exchanges",
     );
-    expect(toolStep("load_capability", {}, true, t).label).toBe("Load Skill");
+    expect(toolStep("load_capability", {}, true, t).label).toBe("Read Skill");
+    expect(toolStep("read_skill", { id: "refund_policy" }, true, t).label).toBe("refund_policy");
   });
 
   it("carries the query or the URL as the detail beside a finished call", () => {
@@ -125,6 +127,25 @@ describe("the line for one tool call", () => {
  * rule here mirrors `app/agents/mcp.py::_tool_prefix`, and drift costs a step reading
  * "Github Work Create Issue" - which is what a miss already looks like.
  */
+describe("a step inside a delegation", () => {
+  it("reads as the verb and the file or command a coding harness named", () => {
+    const running = delegationStep(
+      { id: "s1", name: "edit", ok: null, title: "/workspace/src/app.py" },
+      t,
+    );
+    expect(running).toEqual({ label: "Editing", detail: "src/app.py", kind: "edit" });
+    const done = delegationStep({ id: "s2", name: "command", ok: true, title: "pytest" }, t);
+    expect(done).toEqual({ label: "Ran", detail: "pytest", kind: "shell" });
+    const odd = delegationStep({ id: "s3", name: "telepathy", ok: false, title: "x" }, t);
+    expect(odd.kind).toBe("tool");
+  });
+
+  it("is captioned as any tool call where the step names nothing more", () => {
+    const step = { id: "s1", name: "search_documents", ok: true, title: null };
+    expect(delegationStep(step, t)).toEqual(toolStep("search_documents", undefined, true, t));
+  });
+});
+
 describe("a call from an MCP server", () => {
   it.each(prefixCases)("mirrors the backend's prefix rule for $name", ({ name, prefix }) => {
     expect(mcpToolPrefix(name)).toBe(prefix);
@@ -231,7 +252,7 @@ describe("reading a call's arguments", () => {
   });
 
   it("names a skill only when the call said which", () => {
-    expect(toolStep("load_capability", { id: "  " }, true, t).label).toBe("Load Skill");
+    expect(toolStep("load_capability", { id: "  " }, true, t).label).toBe("Read Skill");
   });
 
   it("reads a path under any name a tool gives it, and a query when there is none", () => {
@@ -250,5 +271,38 @@ describe("reading a call's arguments", () => {
     expect(contentArg({ new_str: "b" })).toBe("b");
     expect(contentArg(undefined)).toBeNull();
     expect(pathArg(undefined)).toBeNull();
+  });
+});
+
+it("names the built-in AgenticOS MCP without a configured server connection", () => {
+  expect(mcpCall("agenticos_list_projects", [])).toEqual({
+    server: "AgenticOS",
+    action: "list_projects",
+    domain: null,
+  });
+});
+
+it("leads platform steps with the operation and the nested object title", () => {
+  const step = toolStep(
+    "agenticos_create_task",
+    { task: { title: "Review supplier draft" } },
+    false,
+    (key) => key,
+  );
+  expect(step.label).toBe("Create task");
+  expect(step.detail).toBe("Review supplier draft");
+});
+
+it("keeps external server captions without letting a renamed registry tool become an MCP step", () => {
+  const servers = [{ name: "Linear", url: "https://mcp.linear.app/mcp" }];
+  const external = { name: "linear_create_issue", presentation_kind: "generic" as const };
+  expect(toolStep(external.name, {}, true, t, servers, external)).toMatchObject({
+    kind: "mcp",
+    label: "Linear · Create issue",
+  });
+  const renamed = { name: "linear_create_issue", tool_id: "create_chart" };
+  expect(toolStep(renamed.name, {}, true, t, servers, renamed)).toMatchObject({
+    kind: "chart",
+    label: "Linear Create Issue",
   });
 });

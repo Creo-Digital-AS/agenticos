@@ -9,14 +9,61 @@ export type RunStatus =
   /** Parked on an agent's question its person left unanswered (#2064). */
   | "awaiting_answer"
   | "budget_exceeded"
-  | "guardrail_blocked";
+  | "guardrail_blocked"
+  /** Stopped for looping on its tool calls after it was warned (#2086). */
+  | "loop_stopped";
+
+/** Which eval run and case one agent run answered. */
+export interface EvalCaseLink {
+  eval_run_id: string;
+  agent_id: string;
+  case_id: string;
+  dataset_name: string;
+  case_input: string;
+  /** The run is the judge grading the case, not the agent answering it. */
+  graded: boolean;
+}
+
+/** One call as Activity shows it: every connection of it, summed (#54). */
+export interface VoiceChain {
+  /** 1, plus one per reconnect. */
+  connections: number;
+  seconds: number;
+  /** A decimal string, like `cost_usd`. */
+  cost_usd: string;
+}
+
+/** Whose work a run was, as Activity's Source filter asks. */
+export type RunSource = "conversation" | "evaluation" | "system";
+
+/** Which platform agent a run was, and where its work is read. */
+export interface RunOrigin {
+  kind: "grader" | "improve" | "knowledge_gaps" | "test_questions";
+  agent_name: string;
+  /** The agent an assistant request was about. */
+  agent_id?: string | null;
+  improvement_id?: string | null;
+  topic_id?: string | null;
+  knowledge_base_id?: string | null;
+  dataset_id?: string | null;
+}
 
 export interface AgentRun {
   id: string;
   agent_id: string;
+  /**
+   * The server posts this run's continuation to the chat it was asked in, so the
+   * console must not resume it too.
+   */
+  continues_in_chat?: boolean;
   agent_version_id: string | null;
   user_id: string | null;
+  /** Publisher authority is distinct from the actual channel sender. */
+  initiated_by_publisher_fallback?: boolean | null;
+  asked_in_chat?: { platform: string; name: string; bot_name: string | null } | null;
   surface: string;
+  /** The platform role that did this run when no agent's instructions ran (#2575). */
+  system_role?: string | null;
   status: RunStatus;
   model_label: string | null;
   /**
@@ -28,10 +75,16 @@ export interface AgentRun {
   provider: string | null;
   input_tokens: number;
   output_tokens: number;
+  /** Of `input_tokens`, those read from the provider's cache (#2170). */
+  cache_read_tokens?: number;
+  /** Of `input_tokens`, those written to the provider's cache (#2170). */
+  cache_write_tokens?: number;
   /** Serialised Decimal - never parse into a float for arithmetic. */
   cost_usd: string;
   /** True when a model in this run had no price; the cost is a floor. */
   cost_is_partial: boolean;
+  /** Tool calls whose malformed JSON arguments were repaired rather than retried. */
+  tool_args_repaired?: number;
   logfire_trace_id: string | null;
   /**
    * Where this run's trace can be read, resolved server-side. Sent on the
@@ -48,6 +101,20 @@ export interface AgentRun {
    */
   prev_run_id?: string | null;
   next_run_id?: string | null;
+  /**
+   * The eval run and case this run answered, or graded for a judge's run -
+   * only when the caller may see the dataset. Such a run keeps no conversation.
+   */
+  eval_case?: EvalCaseLink | null;
+  /** The skills the run opened or read, at their versions; only the single-run read sends it. */
+  skills_used?: RunSkillUse[];
+  /** For a platform agent's run - the judge, the assistant, the knowledge-gap and case helpers. */
+  origin?: RunOrigin | null;
+  /**
+   * One line of what the run was asked: its first user turn, or the eval
+   * case's question. Sent on the listing; null for a run with no conversation.
+   */
+  preview?: string | null;
   error: string | null;
   /**
    * Whether an assistant answer this run produced was rated down by anybody -
@@ -66,6 +133,14 @@ export interface AgentRun {
    * run table reads it to offer the chat behind a run (#765).
    */
   conversation_id: string | null;
+  /** `voice` for a call, `text` for everything typed (#54). */
+  modality: "text" | "voice";
+  /**
+   * For a voice run on the run list: every connection of the call, summed - a
+   * reconnect's run continues the call and is not listed on its own. Null for
+   * text runs and on every other read.
+   */
+  voice_chain: VoiceChain | null;
   started_at: string | null;
   ended_at: string | null;
   /**
@@ -228,6 +303,10 @@ export interface ManifestRequest {
   finish_reason: string | null;
   /** The exception class, where the request raised - never its message. */
   failed: string | null;
+  /** `bust` when its cached prompt prefix collapsed early, `expired` when past retention (#2109). */
+  cache?: "bust" | "expired" | null;
+  /** Of the prefix earlier requests cached, the tokens it did not read back. */
+  cache_missed_tokens: number;
 }
 
 /**
@@ -251,13 +330,52 @@ export interface RunManifest {
   requests: ManifestRequest[];
   /** The last request's messages, dumped - what the model saw at the end. */
   messages: Record<string, unknown>[];
+  /** Recorded standalone exchanges, including the final model response. */
+  transcript?: Record<string, unknown>[];
+  /** Each correction a run reviewer sent, and who sent it (#2106). */
+  reviews?: ManifestReview[];
+  /** Each `run_code` script code mode ran, and the calls it made (#2107). */
+  code_runs?: ManifestCodeRun[];
   /** Whether the record was trimmed to fit its size ceiling. */
   truncated: boolean;
+}
+
+/** One correction a run reviewer sent while the run went. */
+export interface ManifestReview {
+  reviewer: string;
+  /** The model request the review read up to. */
+  after_request: number;
+  steer: string;
+}
+
+/** One script code mode ran. */
+export interface ManifestCodeRun {
+  tool_call_id: string;
+  code: string;
+  calls: {
+    tool_call_id?: string;
+    tool: string;
+    args: string;
+    status: "returned" | "failed" | "awaiting_approval";
+  }[];
+  /** Calls past the ones listed - a script that loops can make thousands. */
+  omitted_calls?: number;
 }
 
 export interface ToolApproval {
   id: string;
   run_id: string;
+  /**
+   * The server posts this run's continuation to the chat it was asked in, so the
+   * console must not resume it too.
+   */
+  continues_in_chat?: boolean;
+  /**
+   * The chat account that asked, for a run an unlinked person started in a chat. It
+   * ran as the binding's publisher, so `triggered_by_*` are null. Unverified: the
+   * name is what the account's owner typed.
+   */
+  asked_in_chat?: { platform: string; name: string; bot_name: string | null } | null;
   /** Whose *run* this is - the agent the queue is scoped by, never who is acting. */
   agent_id: string;
   /**
@@ -270,6 +388,30 @@ export interface ToolApproval {
   tool_id: string;
   /** Shown in full: approving a tool name without its arguments is a rubber stamp. */
   tool_args: Record<string, unknown>;
+  /**
+   * The stable id the capability declares the tool under. `tool_id` is the name the
+   * model called, which a binding may have renamed, so the row's sentence is looked
+   * up by this. Null for a tool no capability owns, and on rows parked before it
+   * was stored.
+   */
+  capability_tool_id?: string | null;
+  /**
+   * The ids in `tool_args` as names, resolved as the run's person when the call was
+   * parked - what the row's sentence is written from. Null for a tool nobody
+   * describes, or a call whose description failed.
+   */
+  context?: Record<string, string> | null;
+  /**
+   * The call quotes its run - the fact `share_memory` would share, or the two
+   * versions of one `correct_memory` would change - and the reader may not see
+   * that run, so the quoted keys were left out of `context` and `tool_args`.
+   */
+  content_hidden?: boolean;
+  /**
+   * Only a person's answer to this call could let it run. With `content_hidden`
+   * the server refuses an approval from this reader, so only Reject is offered.
+   */
+  always_asks?: boolean;
   /**
    * Which of a service's accounts the call acts as - a labelled connection, or one of
    * several accounts on one service. Null where there is nothing to tell apart.
@@ -405,6 +547,27 @@ export interface CostSummary {
   by_key: CostByKey[];
   /** Spend per UTC day over the window - days with no runs are absent. */
   by_day: CostByDay[];
+  /** Prompt-cache busts and expiries per agent and model, most busts first (#2109). */
+  cache_by_agent_model: CacheByAgentModel[];
+}
+
+/**
+ * One agent on one model, over the Spend tab's window: how often its cached
+ * prompt prefix collapsed. A *bust* moved while the provider should still have
+ * held it, and was billed at the full input rate; an *expiry* had outlived the
+ * provider's retention.
+ */
+export interface CacheByAgentModel {
+  agent_id: string;
+  agent_slug: string;
+  agent_name: string;
+  model_label: string | null;
+  busts: number;
+  expiries: number;
+  /** Tokens earlier requests had cached that these did not read back. */
+  missed_tokens: number;
+  /** Runs with at least one bust or expiry. */
+  run_count: number;
 }
 
 /**
@@ -418,15 +581,27 @@ export interface CostSummary {
  */
 /** A tool call a resumed run is now waiting on. */
 export interface ParkedCall {
+  can_remember?: boolean;
+  subagent_name?: string | null;
   id: string;
   tool_call_id: string | null;
   tool_name: string;
   tool_args: Record<string, unknown>;
+  /** The tool's stable id, as `ToolApproval.capability_tool_id` carries it. */
+  capability_tool_id?: string | null;
+  /** The arguments' ids as names, as `ToolApproval.context` carries them. */
+  context?: Record<string, string> | null;
   account?: string | null;
+  /** As `ToolApproval.content_hidden`. */
+  content_hidden?: boolean;
+  /** As `ToolApproval.always_asks`. */
+  always_asks?: boolean;
 }
 
 /** One tool call an execution of a run made, and what came back from it. */
 export interface RunStep {
+  tool_id?: string | null;
+  presentation_kind?: "draft" | "generic" | "platform" | null;
   tool_call_id: string;
   tool_name: string;
   args: Record<string, unknown>;
@@ -440,8 +615,17 @@ export interface SettledCall {
   result: string;
 }
 
+export interface SettledDelegation {
+  task_id: string;
+  status: RunStatus;
+}
+
 export interface ResumedRun {
+  /** Published delegates settled independently of the parent continuation. */
+  delegations?: SettledDelegation[];
   run_id: string;
+  /** The run goes on in the chat it was asked in, which also gets its answer. */
+  continues_in_chat?: boolean;
   output: string;
   status: RunStatus;
   /**
@@ -487,6 +671,10 @@ export interface ResumedRun {
   cost_is_partial: boolean;
   input_tokens: number;
   output_tokens: number;
+  /** Of `input_tokens`, those read from the provider's cache. */
+  cache_read_tokens?: number;
+  /** Of `input_tokens`, those written to the provider's cache. */
+  cache_write_tokens?: number;
 }
 
 /** One question as the server carries it, before the card's own shape (#2064). */
@@ -503,3 +691,28 @@ export interface ParkedQuestion {
   tool_call_id: string;
   questions: WireQuestion[];
 }
+
+/** A skill a run opened or read, at the version it was served. */
+export interface RunSkillUse {
+  skill_id: string;
+  name: string;
+  /** The version's number on its line; null where none is known. */
+  version: number | null;
+  /** The fork that version is on; null on main. */
+  fork: string | null;
+  /** It opened the skill, rather than only reading one of its files. */
+  loaded: boolean;
+}
+
+/** A live chat's correlated acknowledgement for a parked question answer. */
+export type RunAnswerResult =
+  | { request_id: string; result: ResumedRun }
+  | {
+      request_id: string;
+      error: {
+        status: number;
+        message: string;
+        code: string;
+        details: Record<string, unknown> | null;
+      };
+    };

@@ -6,6 +6,7 @@ import { Label } from "./label";
 interface InjectableProps {
   id?: string;
   "aria-invalid"?: boolean;
+  "aria-required"?: boolean;
   "aria-describedby"?: string;
 }
 
@@ -20,6 +21,8 @@ export interface FormFieldProps {
   error?: string | null;
   required?: boolean;
   className?: string;
+  /** Switches put the control beside their label and explanatory text. */
+  layout?: "stacked" | "switch";
   /** The control (Input, Textarea, Select trigger, …). A single element. */
   children: React.ReactNode;
 }
@@ -37,24 +40,40 @@ export function FormField({
   error,
   required,
   className,
+  layout = "stacked",
   children,
 }: FormFieldProps) {
   const descId = `${htmlFor}-desc`;
   const errId = `${htmlFor}-err`;
-  const describedBy = [error ? errId : null, description ? descId : null].filter(Boolean).join(" ");
+  const describedBy = [error ? errId : description ? descId : null].filter(Boolean).join(" ");
 
+  const controlId = React.isValidElement<InjectableProps>(children)
+    ? (children.props.id ?? htmlFor)
+    : htmlFor;
   const control = React.isValidElement<InjectableProps>(children)
     ? React.cloneElement(children, {
-        id: children.props.id ?? htmlFor,
+        id: controlId,
+        "aria-required": required || children.props["aria-required"],
         "aria-invalid": error ? true : children.props["aria-invalid"],
-        "aria-describedby": describedBy || children.props["aria-describedby"] || undefined,
+        "aria-describedby":
+          [children.props["aria-describedby"], describedBy].filter(Boolean).join(" ") || undefined,
       })
     : children;
 
   return (
-    <div className={cn("space-y-1.5", className)}>
+    <div
+      className={cn(
+        layout === "switch"
+          ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-5 gap-y-1"
+          : "space-y-2",
+        className,
+      )}
+    >
       {label && (
-        <Label htmlFor={htmlFor}>
+        <Label
+          htmlFor={controlId}
+          className={layout === "switch" ? "col-start-1 row-start-1" : "block"}
+        >
           {label}
           {required && (
             <span className="text-destructive ml-0.5" aria-hidden="true">
@@ -63,14 +82,31 @@ export function FormField({
           )}
         </Label>
       )}
-      {control}
+      {layout === "switch" ? (
+        <div className="col-start-2 row-span-2 row-start-1 self-center">{control}</div>
+      ) : (
+        control
+      )}
       {description && !error && (
-        <p id={descId} className="text-muted-foreground text-xs leading-relaxed">
+        <p
+          id={descId}
+          className={cn(
+            "text-muted-foreground text-xs leading-5",
+            layout === "switch" && "col-start-1 row-start-2",
+          )}
+        >
           {description}
         </p>
       )}
       {error && (
-        <p id={errId} className="text-destructive text-xs leading-relaxed">
+        <p
+          id={errId}
+          role="alert"
+          className={cn(
+            "text-destructive-ink text-[13px] leading-5",
+            layout === "switch" && "col-start-1 row-start-2",
+          )}
+        >
           {error}
         </p>
       )}

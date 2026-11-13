@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NextIntlClientProvider } from "next-intl";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,9 @@ const useRunsMock = vi.fn();
 // filter controls, so the holder is given everything - except the no-access
 // case, which flips this off.
 const holdsEverything = vi.hoisted(() => ({ value: true }));
+vi.mock("@/hooks/use-agents", () => ({
+  useJudges: () => ({ agents: [{ id: "judge-1", slug: "eval-judge", name: "Eval judge" }] }),
+}));
 vi.mock("@/hooks", () => ({
   useRuns: (agentId?: string, options?: unknown) => useRunsMock(agentId, options),
   usePermissions: () => ({ can: () => holdsEverything.value }),
@@ -89,6 +92,8 @@ function aRun(): AgentRun {
     ended_at: "2026-08-04T09:00:30Z",
     parent_run_id: null,
     subagent_task_id: null,
+    modality: "text",
+    voice_chain: null,
     down_rated: false,
     conversation_id: null,
     provider: null,
@@ -118,11 +123,14 @@ function ControlledTab(props: Partial<Parameters<typeof RunHistoryTab>[0]>) {
 }
 
 function renderTab(props: Partial<Parameters<typeof RunHistoryTab>[0]> = {}) {
-  return render(
+  const result = render(
     <NextIntlClientProvider locale="en" messages={messages}>
       <ControlledTab {...props} />
     </NextIntlClientProvider>,
   );
+  const filters = within(result.container).queryByRole("button", { name: /^Filters/ });
+  if (filters) fireEvent.click(filters);
+  return result;
 }
 
 /** The options the most recent `useRuns` call asked with. */
@@ -158,6 +166,8 @@ describe("run history controls", () => {
       rated: undefined,
       statuses: undefined,
       surface: undefined,
+      // Every run, so a link to a platform agent's run lands on a listed row.
+      source: undefined,
       userId: undefined,
       agentVersionId: undefined,
       skip: 0,
@@ -240,13 +250,41 @@ describe("run history controls", () => {
     expect(lastOptions()).toMatchObject({ statuses: ["failed"] });
   });
 
-  it("problems is failed and stopped-by-budget together, the way they are stored apart", async () => {
+  it("problems is failed, stopped-by-budget and stopped-for-looping together", async () => {
     renderTab();
 
     await userEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
     await userEvent.click(screen.getByRole("option", { name: "Problems" }));
 
-    expect(lastOptions()).toMatchObject({ statuses: ["failed", "budget_exceeded"] });
+    expect(lastOptions()).toMatchObject({
+      statuses: ["failed", "budget_exceeded", "loop_stopped"],
+    });
+  });
+
+  it("names the judge on its grading runs, which other agent lists leave out", () => {
+    useRunsMock.mockReturnValue({
+      runs: [{ ...aRun(), agent_id: "judge-1", surface: "eval" }],
+      total: 1,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderTab();
+    expect(screen.getAllByText("Eval judge").length).toBeGreaterThan(0);
+  });
+
+  it("narrows to conversations, to Improve and evals, or to system agents", async () => {
+    renderTab();
+
+    for (const [option, source] of [
+      ["Conversations", "conversation"],
+      ["Improve and evals", "evaluation"],
+      ["System agents", "system"],
+    ]) {
+      await userEvent.click(screen.getByRole("combobox", { name: "Filter by source" }));
+      await userEvent.click(screen.getByRole("option", { name: option }));
+      expect(lastOptions()).toMatchObject({ source });
+    }
   });
 
   it("narrows to one surface", async () => {
@@ -256,6 +294,15 @@ describe("run history controls", () => {
     await userEvent.click(screen.getByRole("option", { name: "Slack" }));
 
     expect(lastOptions()).toMatchObject({ surface: "slack" });
+  });
+
+  it("narrows to voice calls", async () => {
+    renderTab();
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Filter by kind" }));
+    await userEvent.click(screen.getByRole("option", { name: "Voice calls" }));
+
+    expect(lastOptions()).toMatchObject({ modality: "voice" });
   });
 
   it("asks for the runs people liked, not only the ones they did not", async () => {

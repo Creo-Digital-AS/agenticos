@@ -4,7 +4,7 @@ Every event this feature covers - budget, approvals, run completion, ingestion,
 security, configuration changes, reports, an app admin's own announcement -
 resolves to one row here per person it is addressed to. The row existing *is*
 the in-app delivery; nothing further has to succeed for it to show up in an
-inbox. A side channel (email today) is a separate, retried
+inbox. An external channel has a separate, independently settled
 :class:`app.db.models.notification_delivery.NotificationDelivery` row, because
 only that part can fail independently of the write that created this one - see
 `docs/design/notification-center-plan.md`, Decisions 2 and 3.
@@ -50,19 +50,62 @@ class NotificationEventType(enum.StrEnum):
     BUDGET_WARNING = "budget_warning"
     MCP_SERVER_DOWN = "mcp_server_down"
     MCP_SERVER_RECOVERED = "mcp_server_recovered"
+    BACKGROUND_TASK_PAUSED = "background_task_paused"
+    EVAL_SUITE_FAILED = "eval_suite_failed"
+    PROMOTION_OVERRIDDEN = "promotion_overridden"
+    SHARED_CHANGE_APPLIED = "shared_change_applied"
+    # Written by a workflow's `notification.send` step. Its audience is the step's
+    # own recipient list, already checked against the workflow's reach, rather
+    # than a setting on an agent (#1789).
+    WORKFLOW_NOTIFICATION = "workflow_notification"
+    # A page changed hands: told to its old and its new owner (#1974).
+    ARTIFACT_OWNER_CHANGED = "artifact_owner_changed"
+    # Somebody asked a page's owner to share it, or to confirm a version (#1974).
+    ARTIFACT_SHARE_REQUESTED = "artifact_share_requested"
+    CAPABILITY_REQUESTED = "capability_requested"
+    SUGGESTION = "suggestion"
+    FINDING = "finding"
+    IMPROVEMENT_FINISHED = "improvement_finished"
+    EVAL_SUITE_REEVALUATED = "eval_suite_reevaluated"
+    EVAL_RUN_FINISHED = "eval_run_finished"
+    CASE_GENERATION_FINISHED = "case_generation_finished"
+    # A workflow's log crossed an alert rule's threshold in its window.
+    WORKFLOW_LOG_ALERT = "workflow_log_alert"
 
 
 class NotificationChannel(enum.StrEnum):
     """A channel a notification reaches a recipient through.
 
-    `notification_preferences.channel` (Decision 4) holds both values, since a
+    `notification_preferences.channel` (Decision 4) holds every value, since a
     person can turn each off independently. `notification_deliveries.channel`
-    (Decision 3) only ever holds `EMAIL` - in-app has no delivery row, because
-    the :class:`Notification` row itself is the in-app delivery.
+    (Decision 3) holds external channels - in-app has no delivery row, because
+    the :class:`Notification` row itself is the in-app delivery. `PUSH` is Web
+    Push to every browser the person subscribed (#2097).
     """
 
     IN_APP = "in_app"
     EMAIL = "email"
+    PUSH = "push"
+    SLACK = "slack"
+    TELEGRAM = "telegram"
+    MATTERMOST = "mattermost"
+    TEAMS = "teams"
+    SMS = "sms"
+    IMESSAGE = "imessage"
+    DISCORD = "discord"
+
+
+CHAT_NOTIFICATION_CHANNELS = frozenset(
+    {
+        NotificationChannel.SLACK,
+        NotificationChannel.TELEGRAM,
+        NotificationChannel.MATTERMOST,
+        NotificationChannel.TEAMS,
+        NotificationChannel.SMS,
+        NotificationChannel.IMESSAGE,
+        NotificationChannel.DISCORD,
+    }
+)
 
 
 class Notification(Base, TimestampMixin):
@@ -125,6 +168,14 @@ class Notification(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    outcome_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("outcomes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The shared state this delivery belongs to (#2575): settling the outcome clears this
+    # row from the inbox and cancels what is still waiting to be sent for it.
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # When the recipient cleared this row out of their own inbox - not a
     # delete, and the distinction is the reason the column exists. This row is
@@ -142,7 +193,13 @@ class Notification(Base, TimestampMixin):
             "'ingestion_completed', 'ingestion_failed', 'usage_report', "
             "'agent_usage_report', 'security_event', 'configuration_changed', "
             "'announcement', 'artifact_version_published', 'resource_shared', "
-            "'budget_warning', 'mcp_server_down', 'mcp_server_recovered')",
+            "'budget_warning', 'mcp_server_down', 'mcp_server_recovered', "
+            "'background_task_paused', 'eval_suite_failed', 'promotion_overridden', "
+            "'shared_change_applied', 'workflow_notification', "
+            "'artifact_owner_changed', 'artifact_share_requested', "
+            "'capability_requested', 'suggestion', 'finding', 'improvement_finished', "
+            "'eval_suite_reevaluated', 'eval_run_finished', 'case_generation_finished', "
+            "'workflow_log_alert')",
             name="ck_notifications_event_type",
         ),
         # The dedup guarantee (Decision 2): a retried trigger for the same fact,

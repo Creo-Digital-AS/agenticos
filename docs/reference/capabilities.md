@@ -29,10 +29,26 @@ In a capability's settings, limits, cache lifetimes, prompts and other tuning si
 folded under **Advanced settings**, which opens by itself wherever one of them was
 set.
 
-The capabilities the starter agent binds - the **Claude Code like** template, which
-a fresh organization gets on its first run - carry a **Recommended** badge, and an
+The capabilities the starter agent binds - the **AgenticOS** template, which a
+fresh organization gets on its first run - carry a **Recommended** badge, and an
 agent made with **New agent** starts with exactly those switched on, configured as
-the template configures them. Its author switches off what it should not do.
+the template configures them, along with the template's instructions, skills,
+platform tools and budget. Its author switches off what it should not do.
+
+Whichever capabilities an agent ends up with, every run is told which it has and
+which it has not, under **Your setup** in its instructions - so it describes only
+what it can do, and says what would have to be switched on for the rest. An agent
+with skills is told last, under **Your skills**, to open the one a question falls
+within with `read_skill`; asking for a skill with the card instead is
+answered with that.
+
+When a request needs one it lacks, the agent shows a card for it in the chat,
+with its reason. Someone who may edit the agent switches it on from the card,
+bound as the starter binds it and checked as a publish checks it. It is published
+at once only when the draft held nothing unpublished and they may publish;
+otherwise it waits in the draft for the Builder. Anyone else asks the agent's
+owner from the card, and the owner gets a notification that opens the agent's
+Toolbox.
 
 Two of them depend on what the deployment runs. The workspace is a container on
 the deployment's own sandbox service, which bootstrap and the first publish
@@ -40,36 +56,105 @@ register as the organization's default; without one it keeps files only. The web
 browser is pointed at the deployment's browser service
 (`BROWSER_SIGN_IN_CDP_URL`), and left out where there is none.
 
+## Tool errors and recovery
+
+In text runs, validation, unavailable-tool and unexpected execution failures return
+an `error` object with an `id`, `code`, `tool`, `execution`, `message`, `issues` and
+`recovery`. Validation issues name the
+`field`, validation `code` and `expected_type`, with a correction message or example.
+For example, a workflow ID must be a UUID returned by workflow discovery; an array
+of field names must be sent as `["name", "primary_ip"]`, not a comma-separated string.
+Missing required fields are named individually. Value constraints give their allowed
+choices, numeric bounds, item counts or required length.
+
+MCP argument validation uses the advertised schema without fetching external
+references. Schema checks run in isolated processes with bounded concurrency and
+a deadline. Invalid, unresolved or recursive schemas, and checks that exceed the
+deadline, return `tool_unavailable` before dispatch.
+
+`execution` is `not_started` when validation or registration rejects the call before
+invocation, `started` when a start is established, and `unknown` when a failure
+leaves the outcome uncertain. A timeout after invocation does not establish that
+the action failed. Check its execution status before retrying.
+
+| Error code | Recovery |
+|---|---|
+| `invalid_arguments` | `correct_arguments`: fix the named field before trying again. |
+| `tool_unavailable` | `rediscover_tools`: find the tools and invocation routes available in this context. |
+| `permission_denied` | `stop`: explain the refusal. |
+| `transient_failure` | `retry` when the outcome is known and another attempt is safe; otherwise `inspect_execution_status`. |
+| `execution_unknown` | `inspect_execution_status`: establish the existing action's outcome first. |
+
+Discovery does not make every returned tool name directly callable. A registration
+failure says the tool is unavailable in the current invocation context; it does
+not establish missing user permission. The runtime supplies a supported route only
+when it can establish one. Recovery instructions tell the agent to follow that
+route, correct specific arguments, and stay with the task: a failed workflow lookup
+does not justify searching the filesystem.
+
+The same structured error reaches the model and saved transcript when an approved
+call resumes. Unexpected exceptions expose a concise explanation and exception type
+where safe; untrusted upstream messages and internal tracebacks stay in server logs.
+Use the error `id` to find the corresponding detailed log entry.
+
+When `run_code` reports a nested tool failure, `cause_tool` and `cause_execution`
+identify that call and whether it started. The error ID and field issues survive
+the sandbox boundary. An unknown outer outcome still requires checking earlier
+actions before replaying the script.
+
+Compiler errors retain a safe diagnostic and source location when available,
+including the offending identifier for unresolved names. The diagnostic omits raw
+source, internal tracebacks and arbitrary exception messages.
+
+Clearing tool results retains controlled error envelopes, even when the configured
+number of retained results is zero. Summaries and sliding windows can still reduce
+older exchanges.
+
+Budget exhaustion, guardrail blocks, loop stops and model usage limits still end
+the run and retain their existing accounting. Code mode preserves those stops
+across the sandbox boundary.
+
 ## What ships
 
-| id | Name | Category | Tools | Scope | Key |
-|---|---|---|---|---|---|
-| `knowledge` | Knowledge search | knowledge | `search_documents` | `knowledge:read` | — |
-| `skills` | Skills | knowledge | `read_skill_resource` | `knowledge:read` | — |
-| `context` | Context | knowledge | `list_context`, `read_context` | — | — |
-| `memory_files` | Memory | knowledge | `list_memory`, `read_memory`, `write_memory`, `edit_memory`, `delete_memory` | — | — |
-| `memory_mem0` | Memory (mem0) | knowledge | `remember`, `recall` | — | required |
-| `conversation_search` | Past conversations | knowledge | `search_conversations`, `read_conversation` | `conversations:read` | — |
-| `web_research` | Web search | research | `web_search` | `web:read` | for paid services |
-| `web_fetch` | Read web pages | research | `web_fetch` | `web:fetch` | — |
-| `browser_use` | Web browser | research | `browse_web`, `browser_open`, `browser_read`, `browser_click`, `browser_type`, `browser_select`, `browser_scroll`, `browser_back` | `web:browse` | via the `browser` extra |
-| `code_execution` | Calculations | analysis | `run_python` | `code:execute` | — |
-| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute` | `sandbox:execute` | for Daytona |
-| `charts` | Charts | analysis | `create_chart` | — | — |
-| `image_generation` | Image generation | analysis | `generate_image` | — | required |
-| `subagents` | Subagents | reasoning | `task`, `check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`, `send_message_to_subagent`, `soft_cancel_task`, `hard_cancel_task`, `create_agent`, `delegate` | `agents:delegate` | — |
-| `planning` | Planning | reasoning | `write_plan`, `read_plan`, `add_task`, `update_task_status`, `update_task_statuses`, `remove_task`, `add_subtask`, `set_dependency`, `get_available_tasks` | — | — |
-| `thinking` | Thinking | reasoning | none, by design | — | — |
-| `system_reminders` | Instruction reminders | reasoning | none, by design | — | — |
-| `tool_search` | Tool search | utility | none, by design | — | — |
-| `clock` | Date and time | utility | none, by design | — | — |
-| `guardrails` | Guardrails | utility | none, by design | — | — |
-| `compaction` | Long conversations | utility | none, by design | — | — |
-| `media` | Media offload | utility | none, by design | — | — |
-| `tool_output_limits` | Tool output limits | utility | `read_tool_result` | — | — |
-| `artifacts` | Apps | utility | `publish_artifact`, `read_artifact` | — | — |
-| `channel_tools` | Chat channel lookup | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history` | — | — |
-| `ask_user` | Ask the user | utility | `ask_user_question` | — | — |
+| id | Name | Category | Tools | Scope | Key | Voice |
+|---|---|---|---|---|---|---|
+| `knowledge` | Knowledge search | knowledge | `search_documents` | `knowledge:read` | — | as-is |
+| `skills` | Skills | knowledge | `read_skill_resource` | `knowledge:read` | — | adapted |
+| `context` | Context | knowledge | `list_context`, `read_context` | — | — | as-is |
+| `memory_files` | Memory | knowledge | `list_memory`, `read_memory`, `write_memory`, `edit_memory`, `delete_memory`, `remember`, `recall`, `correct_memory`, `share_memory` | — | — | as-is |
+| `conversation_search` | Past conversations | knowledge | `search_conversations`, `read_conversation` | `conversations:read` | — | as-is |
+| `workflows` | Workflows | automation | `list_workflows`, `run_workflow`, `get_workflow_run` | `workflows:run` | — | as-is |
+| `web_research` | Web search | research | `web_search` | `web:read` | for paid services | as-is |
+| `web_fetch` | Read web pages | research | `web_fetch` | `web:fetch` | — | as-is |
+| `browser_use` | Web browser | research | `browse_web`, `browser_open`, `browser_new_tab`, `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_read`, `browser_click`, `browser_type`, `browser_select`, `browser_scroll`, `browser_back` | `web:browse` | via the `browser` extra | handed off |
+| `computer_use` | Computer use | research | `computer_screenshot`, `computer_act`, `computer_apps`, `computer_save_screenshot` | `computer:use` | for a daemon | handed off |
+| `code_execution` | Calculations | analysis | `run_python` | `code:execute` | — | as-is |
+| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute` | `sandbox:execute` | for Daytona | handed off |
+| `mirage` | Virtual terminal | analysis | `mirage_ls`, `mirage_read_file`, `mirage_glob`, `mirage_grep`, `mirage_write_file`, `mirage_edit_file`, `mirage_execute` | — | per folder, via the `mirage` extra | handed off |
+| `charts` | Charts | analysis | `create_chart` | — | — | as-is |
+| `visuals` | Visuals | analysis | `draw`, `revise_visual`, `read_visual` | — | — | as-is |
+| `image_generation` | Image generation | analysis | `generate_image` | — | required | as-is |
+| `text_to_speech` | Text to speech | analysis | `generate_speech` | — | required | as-is |
+| `video_generation` | Video generation | analysis | `generate_video` | — | required | handed off |
+| `coding_agent` | Coding agent | analysis | `run_coding_agent` | `sandbox:execute` | required | handed off |
+| `monitor` | Watch a command | analysis | `start_monitor`, `list_monitors`, `stop_monitor` | `sandbox:execute` | — | handed off |
+| `subagents` | Subagents | reasoning | `task`, `check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`, `send_message_to_subagent`, `soft_cancel_task`, `hard_cancel_task`, `create_agent`, `delegate` | `agents:delegate` | — | handed off |
+| `background_tasks` | Background topics | reasoning | `start_background_task`, `list_background_tasks`, `stop_background_task` | — | — | handed off |
+| `planning` | Planning | reasoning | `write_plan`, `read_plan`, `add_task`, `update_task_status`, `update_task_statuses`, `remove_task`, `add_subtask`, `set_dependency`, `get_available_tasks` | — | — | as-is |
+| `thinking` | Thinking | reasoning | none, by design | — | — | mapped |
+| `system_reminders` | Instruction reminders | reasoning | none, by design | — | — | no effect |
+| `tool_search` | Tool search | utility | none, by design | — | — | dropped |
+| `clock` | Date and time | utility | none, by design | — | — | as-is |
+| `guardrails` | Guardrails | utility | none, by design | — | — | on transcripts |
+| `compaction` | Long conversations | utility | none, by design | — | — | no effect |
+| `media` | Media offload | utility | none, by design | — | — | no effect |
+| `tool_output_limits` | Tool output limits | utility | `read_tool_result` | — | — | as-is |
+| `artifacts` | Apps | utility | `publish_artifact`, `read_artifact`, `list_artifacts`, `preview_artifact`, `share_artifact` | — | — | as-is |
+| `channel_tools` | Chat channel lookup | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history`, `send_channel_file` | — | — | not available |
+| `phone_calls` | [Telephone calls](../voice.md#telephone-calls) | channels | `get_phone_contact_policy`, `call_me`, `list_phone_transfer_contacts`, `transfer_phone_call`, `end_phone_call` | `endpoint_id` | — | — |
+| `ask_user` | Ask the user | utility | `ask_user_question` | — | — | on screen |
+| `drafts` | Drafts | utility | `write_draft` | — | — | not available |
+| `follow_ups` | Follow-ups | utility | `suggest_next_steps`, `propose_setup` | — | — | not available |
 
 Seven of those have no tools on purpose. `thinking` changes how the model runs
 rather than what it can reach, `clock` puts the date in the instructions,
@@ -89,9 +174,65 @@ offered.** Delegation is the one place the two differ: `create_agent` and `deleg
 appear only under `allow_dynamic`, and `answer_subagent` appears to nobody at all —
 both explained under [Delegation](#delegation) below.
 
+**The Voice column is what a capability does in a [voice call](../voice.md#what-a-call-can-use).**
+*As-is* runs unchanged. *Adapted* skills load as instructions on demand,
+without their reading tool. *Dropped* tool search gives the call its MCP tools
+directly, because a call's tools are fixed when it connects. *Mapped* thinking
+becomes the realtime model's own reasoning setting. *Handed off* runs in the
+agent's own text model, which the call hands a task to
+([Handing work off](../voice.md#handing-work-off)); the Builder's Voice card
+lists those for an agent that has them, and so does Work while tools run, which
+only sends a handed-off tool to the background. *On screen* asks its questions on
+the call view's card in `/chat`. Chat channel lookup is *not available*, because
+a call is never made on a channel, and neither is Follow-ups, whose buttons a call
+has nowhere to show. *No effect* marks three that work on a text
+run's model requests and their stored history, which a call does not send.
+
+Guardrails screen the call's transcripts. A tool's result is screened, and
+blocked, before the agent reads it; the check before a tool runs is the
+approval, for tools that need one. Guardrails do not screen a tool's arguments.
+The catalog API carries how each capability takes part as its `voice` field:
+`live` on the call's own model, `hand_off`, or `never`.
+
 **One of them is not in the Toolbox at all.** `channel_tools` is chosen per bound
 bot under *Where this agent is available*, and publishing refuses a spec that
 tries to carry it — see [Chat channel lookup](#chat-channel-lookup).
+
+## What an eval runs
+
+An eval runs the agent for real, so it executes a tool only when the tool
+changes nothing outside the run, or reaches a test connection of the
+[environment](../environments.md#in-an-eval). Each capability declares which of
+its tools only read — `read_only`, beside `side_effecting` — and a tool that
+declares nothing writes. These are the tools that write, and that an eval holds
+and records:
+
+| id | Tools that write |
+|---|---|
+| `artifacts` | `publish_artifact` |
+| `ask_user` | `ask_user_question` |
+| `browser_use` | `browse_web`, `browser_open`, `browser_read`, `browser_click`, `browser_type`, `browser_select`, `browser_scroll`, `browser_back` |
+| `coding_agent` | `run_coding_agent` |
+| `image_generation` | `generate_image` |
+| `memory_files` | `write_memory`, `edit_memory`, `delete_memory` |
+| `memory_mem0` | `remember` |
+| `sandbox` | `write_file`, `edit_file`, `execute` |
+| `visuals` | `draw`, `revise_visual`, `read_visual` |
+
+Every other tool above only reads. Delegation counts as reading: a delegate's
+own tools are held to their own declarations. `side_effecting` and `read_only`
+answer different questions: the first is what approval asks about by default,
+the second what an eval may run, and an undeclared tool is ungated by the first
+and blocked by the second.
+
+An environment can swap a capability's vault key for a test one, but a swapped
+key does not make a write safe on its own: `browser_use`'s key is for the
+hosted browser or its proxy, while its `cdp_url` still names the browser that
+clicks. A
+capability declares `test_key_isolates` only when the key alone picks where its
+writes go, and never with a URL, host or endpoint in its config. No shipped
+capability declares it, so in an eval every write above is recorded, not run,
+whatever key it holds.
 
 ## Knowledge search
 
@@ -102,6 +243,16 @@ Searches the collections the agent's spec binds and cites what it used. The mode
 asks *what* to search, never *where*: collections are resolved from the spec
 before the run and handed to the capability, so an agent cannot reach a collection
 nobody connected to it.
+
+Each result names its document and where in it the match is. A PDF, a presentation
+or a word-processing file such as `.doc`, `.odt` or `.rtf` gives the page. A
+Markdown file, a spreadsheet, a web page or an image has no page a reader can open.
+It gives only the document name, as do plain-text and `.docx` files. Chunks do not
+retain reliable section boundaries, so a leading hash line is not inferred to be
+a heading: it may be a code comment from a block that began in a previous chunk.
+
+This is decided from the document's type when the result is shown, so a collection
+ingested earlier needs no re-ingestion.
 
 | Config | Default | Range |
 |---|---|---|
@@ -202,16 +353,13 @@ a time — the alternative being an instructions field that grows until every ru
 pays for every procedure. See [Skills](../skills.md) for what a skill is and how
 one gets into an organization.
 
-**Each bound skill is a capability of its own.** Its name and description sit in
-the catalog the model reads every turn, and the model pulls the body in with
-`load_capability` — the agent framework's own tool, which is why it is not in the
-list above and why a spec cannot grant, gate or rename it. `read_skill_resource`
-is the one tool this capability contributes, and it appears only when at least one
-bound skill ships a file beside its instructions.
-
-The tool comes from `pydantic-ai-skills`, so its name and wording are somebody
-else's to change. A drift test compares what the registry declares against the
-tools the model is actually offered, which is what reports the day that happens.
+**Each bound skill remains a native deferred capability.** The model sees an
+“available skills” catalog and opens a body with `read_skill`. The platform's
+adapter keeps native loading state, approvals and conversation replay, including
+older histories. Approval policies keep the stable `load_capability` key;
+ordinary tool overrides do not rename this framework-owned loader.
+`read_skill_resource` reads supporting files and appears only when a bound skill
+ships one. A drift test checks the library's file tool against the registry.
 
 `run_skill_script` is switched off rather than exposed: a skill's files reach a
 run under `/workspace/skills/`, where the [sandbox](../sandbox.md)'s own `execute`
@@ -281,6 +429,13 @@ there is nothing for the agent to get wrong.
   there is no store, and the tools say so rather than saving somewhere. A run
   started with an [API key](../api.md#organization-api-keys) has none either:
   the key acts for its issuer, but whoever holds it is not that person.
+- In a chat other people read - a project's, or one shared with somebody to
+  edit - there is no personal store. The agent neither shows, recalls nor saves
+  what it knows about the person there; it still reads the project's and the
+  organization's claims. Sharing a chat to edit, or moving it into a project,
+  shows its history, answers written while it was private included; from that
+  moment, later answers use no personal memory. A chat shared only to view
+  shows every answer, later ones written with personal memory included.
 - On a schedule or an event trigger there is no store either, even though the
   run executes as the trigger's creator. The creator lends the run their
   authority, not their identity, so nobody is listening and the tools refuse.
@@ -297,6 +452,60 @@ in context.
 
 One switch, **Allow personal memory**, drops the per-person store entirely for
 compliance or privacy; the notes kept in group chats stay.
+
+### Facts, preferences and decisions { #memory-claims }
+
+Beside notes an agent can record **claims**: one durable fact, preference or
+decision in one plain sentence, with where it came from (#2090). Notes are
+unchanged; a claim is what makes a sentence inspectable - its source, since when
+it holds and what it replaced. Four tools: `remember`, `recall`, `correct_memory`
+and `share_memory`.
+
+Where a claim lives is an access rule, never a label the model picks:
+
+| Scope | Whose | Who reads it |
+|---|---|---|
+| Person profile | One person in this organization; every agent acting for them may use it | That person, alone with any agent |
+| Person and agent | One agent's relationship with one person - case detail, the default | That person, with that agent |
+| Group chat | One chat | That chat only |
+| Project | One project | Conversations in that project |
+| Organization | Everyone here | Private conversations in this organization |
+
+An automatic write stays in the scope of the conversation it came from, and a
+group chat never writes a profile. Only `share_memory` widens a claim, and only on
+a person who may: `projects:edit` on the project, or `context:edit` for the whole
+organization. It always waits for a person to approve the exact claim and audience, whatever the agent's approval settings say, so text the agent read cannot talk it into sharing.
+
+**Approve everything** and a remembered **Always allow** do not answer it either, and its card offers neither. The card shows the fact and its audience; in the approvals queue the fact is shown only to somebody who may see the run it came from.
+
+The copy names the claim it came from and the original keeps its
+audience. An embed, an API-key run and a scheduled run read nothing; a group chat
+reads only its own claims. Correcting a claim that the whole project or organization reads needs the same permission as sharing into it: reading it is not authority to rewrite it.
+
+Such a correction through `correct_memory` also waits for a person every time, whatever the approval mode, and its card shows the fact before and after; correcting a person's own claim does not wait. A correction the tool records is the agent's claim, naming the run and conversation it came from, and the audit log gets a `memory.claim.corrected` entry. A correction made at **Settings → Memory** is the person's own.
+
+- **A correction keeps what it corrects.** "From Monday, Piotr takes over
+  invoices" closes the earlier claim at that date and adds the new one; Anna
+  handling them before Monday stays true and visible.
+- **A person's word outranks an inference.** An agent claim that contradicts what
+  a person said is kept aside as *disputed* and is never offered as established.
+  Two agents disagreeing is a dispute too, until somebody settles it.
+- **Consolidation folds agreement only.** Every fifteen minutes the claims of each
+  scope that *changed* are merged: identical statements become one derived claim
+  that names its sources, disagreement is marked disputed. It is deterministic -
+  no model call - so an unchanged scope costs nothing, and a second pass changes
+  nothing. Retracting a derived claim returns its sources and it is not drawn
+  again.
+- **Ancestry is access-filtered.** A claim shared to the project does not reveal
+  the private claim it was copied from to anybody who may not read it.
+
+A private conversation is given the person's profile (at most about twenty
+claims, 1,800 characters) in its instructions, on the same rule as the index: only
+where the reader is alone. Everything else is fetched with `recall`, which matches
+words and calls no model. Recalled claims are evidence, never an instruction and
+never a grant of authority.
+
+At **Settings → Memory**, **Memories** lists facts, preferences and decisions; **Notes** opens longer files in the shared file viewer. Search covers the whole store before pagination. Filter memories by type and scope, include history, and open an entry for its source and decision evidence. Corrections preserve the previous version. Stopping use preserves history; permanently deleting a note requires confirmation. Erasing a person also removes their claims and copies shared out of them.
 
 ### What is injected, and what is only fetched
 
@@ -353,39 +562,12 @@ looked at would be a second copy of the thing being protected.
 
 **Erasure**, unchanged. A person clears everything an agent remembers about them
 from their own profile, and an administrator holding `members:manage` can do it
-for somebody else; both delete the rows here **and** the matching memories in
-mem0 for every agent that binds it. Clearing one agent's memory entirely is in
+for somebody else; both delete the notes here and the recorded claims, with the copies shared out of them. Clearing one agent's memory entirely is in
 its toolbox, beside the capability.
 
-**What the self-service view does not reach.** An agent bound to mem0 keeps its
-memories in somebody else's service, and this page does not list them - mem0's
-API answers what a *question* matches, not what a store holds. Those agents are
-**named** on the page rather than left out, because a list of native notes
-presented as a complete inventory would be worse than one that says what it
-misses. Erasure does reach mem0; reading does not.
+## Background topics { #background-tasks }
 
-## Memory (mem0)
-
-`remember`, `recall`
-
-Semantic memory kept in a [mem0](https://mem0.ai) service — cloud, or self-hosted
-via `base_url` — rather than in this deployment. `remember` keeps a short
-self-contained sentence; `recall` finds the ones a question is about by meaning
-rather than by name. It needs an API key from the organisation's vault.
-
-Which memories a run can reach obeys exactly the rule above, because mem0 is
-handed the whole scope as its `user_id`: `{org}:{agent}:{owner}`. One mem0 account
-therefore cannot mix two organisations', two agents', or two people's memories.
-
-Two differences worth knowing before choosing it. **Nothing is stored here**, so
-erasing a person's memory reaches mem0 through its own API rather than through a
-row we delete. And **mem0 bills its own embedding out of band**, so the
-deployment's spend ledger does not see it and a budget cap does not bound it.
-
-A self-hosted `base_url` must be https and on `MEM0_ALLOWED_HOSTS`. An empty
-allowlist refuses self-hosted mem0 outright, which is deliberate: the key travels
-in an `Authorization` header, so a builder who may bind but not read a shared key
-must not be able to point it at a server of their own.
+Explicit work in a fresh topic that outlives its source reply. The source agent summarizes completion using current history, without tools. See [Background topics](../console.md#background-topics) for limits, approvals, stopping and interrupted work. This is separate from a run’s temporary `background_tools` or async subagents.
 
 ## Past conversations { #conversation-search }
 
@@ -450,7 +632,7 @@ is no setting that widens the corpus.
 
 | Config | Default | Values |
 |---|---|---|
-| `method` | `duckduckgo` | `duckduckgo`, `native`, `tavily`, `brave`, `exa` |
+| `method` | `duckduckgo` | `duckduckgo`, `native`, `tavily`, `brave`, `exa`, `keenable` |
 | `max_results` | 5 | 1–10, ignored by `native` |
 
 The console names each method rather than printing the value it stores, and draws
@@ -465,6 +647,7 @@ to recognise rather than a product to choose.
 - **`tavily`** — results summarised for a model to read.
 - **`brave`** — an index of its own.
 - **`exa`** — search by meaning rather than by keyword.
+- **`keenable`** — no account needed; an optional API key from the organization's secrets switches it to the keyed endpoint.
 
 The three paid methods need an API key from the organization's
 [secrets](../secrets.md), named by the binding's `secret_id`. The requirement is
@@ -606,12 +789,28 @@ page you only need to read, [web fetch](#web-fetch) is faster and has no side ef
 in the agent's own hands: one action a call, chosen by the run's model in its own turn,
 each answered with the page after it - its address, the numbered elements and its
 text. No second request per step, and the agent says what it is doing in the chat
-between actions. The steps draw in one live window under the agent's message, the one the
-first `browser_open` opened, and a person can take the tab over between any two of
-them. Measured on Claude through OpenRouter, a step of `browse_web` is 3.5-5 s, almost
+between actions. The browser opens automatically in a full-height side panel beside the chat. A person
+can take it over between actions. Measured on Claude through OpenRouter, a step of `browse_web` is 3.5-5 s, almost
 all of it the step's own model request; a two-click task the agent drove itself took
 13 s where `browse_web` took about 20. Prefer the tools for a short task or one a
 person wants to watch, `browse_web` for a long task handed off whole.
+
+Before each model request, older direct-tool results lose only their obsolete
+numbered element tables. The latest table, article text and action outcomes remain;
+the saved conversation keeps the full results. DOM browsing uses the independent
+preview stream and captures one final image after stopping it. Vision still waits
+for its model input. Readiness follows visible page content rather than unrelated
+background mutations; an empty document gets one bounded retry.
+
+**Several tabs and resuming.** `browser_new_tab(url)` opens a separate page,
+`browser_tabs` lists ids, `browser_switch_tab(tab_id)` selects and reads a page,
+and `browser_close_tab(tab_id)` closes one. At most eight tabs are open per run.
+`browser_open` navigates the selected tab. In private conversations, `browser_read`
+restores an encrypted checkpoint for up to one hour: URLs, cookies and local storage.
+Remote pages close after the run. Restoring reloads pages and obtains fresh element
+numbers; unsaved forms, JavaScript memory and navigation history are not retained.
+Hosted browsers do not receive these checkpoints. Connection cards with icons are
+the first browser setting; desktop users can override the connection for a chat.
 
 **An action names a row, never a selector.** Every element the model can act on is a
 row of a table built on the server from the live DOM, so a page cannot offer an
@@ -667,33 +866,57 @@ minutes for somebody to take over and ends blocked if nobody does, and a person 
 the browser for at most fifteen. The live view is kept in Redis, so it needs one, and
 it lasts an hour after the browse last did anything.
 
+While you hold the browser, edit its address or use Back, Forward and Reload.
+Navigation obeys the agent's allowed domains; a refused address is shown in the
+viewer. Computer-use screens do not offer browser navigation.
+
+Direct browser tools keep the preview streaming between calls until the run ends.
+Images stop when the last viewer disconnects and resume when somebody returns;
+lightweight location checks keep the address and title current between actions.
+Typing does not wait for a screenshot after each character. Page actions wait for
+bounded DOM stability, and explicit navigation tracks the new document even when
+the URL stays the same.
+
+Remote Chromium tabs still close when the run ends. Native local tabs remain
+open for their conversation; see [Local browser](../desktop.md#local-browser-models-and-mcp).
+Image viewers receive only the newest pending frame; a stalled writer is
+disconnected after two seconds. Images use the live-view socket once, without a
+duplicate copy in the chat stream.
+
 | Config | Default | Values |
 |---|---|---|
 | `cdp_url` | empty | a Chromium DevTools endpoint; required, and its host must be on `BROWSER_CDP_ALLOWED_HOSTS` |
 | `allowed_domains` | null | hosts the browser may be on; globs like `*.example.com` allowed; null is unrestricted on the web. Every request is also refused when it points inside the deployment's network (a private, loopback, link-local or metadata address, a redirect included) unless its host is listed here - list an internal tool to browse it (and, behind `BROWSER_EGRESS_PROXY`, add it to the proxy's exceptions) |
 | `max_steps` | 50 | 1–200; steps per call, each one model request |
 | `vision` | `false` | also send each step's screenshot to the model, which has to read images |
+| `prefer_native_browser` | `true` | use a native embedded tab for local DOM browsing; disable for Chromium compatibility. Vision and language/time-zone overrides use Chromium; remote connections are unaffected |
 | `candidate_cap` | 60 | 2–200; how many elements may be offered in one step |
 | `preview` | `true` | send the viewport to the chat while the browse runs |
 | `preview_width` | 1024 | 320–1920; the viewport width, and so the width of the frames |
 | `step_model_profile_id` | empty | a model profile `browse_web` asks for each step instead of the agent's - a cheaper model makes a long browse cheaper, and quicker only where its provider answers quickly (Claude Haiku through OpenRouter took as long per step as Sonnet); empty uses the agent's model, and the agent's own browser tools always do |
-| `connection` | `built_in` | `built_in`, `proxy` or `hosted`: how the browser reaches the web |
+| `connection` | `built_in` | `built_in`, `proxy`, `hosted` or `local`: how the browser reaches the web |
 | `proxy_url` | empty | under `proxy`: `http://`, `https://` or `socks5://` with host and port; the binding's secret, when there is one, is its `username:password` |
 | `hosted_url` | empty | under `hosted`: the service's `wss://` CDP address; the binding's secret is its key and is required |
 | `hosted_key_param` | `apiKey` | what the hosted browser calls its key in the address's query |
 | `timezone` | empty | an IANA time zone the browser reports - set it to the proxy's region |
 | `locale` | empty | a language tag such as `pl-PL`, sent as `Accept-Language` and `navigator.language` |
 
+For `local`, select local browsing under **Work on** in the paired [desktop app](../desktop.md#local-browser-models-and-mcp). No server CDP endpoint is required. It uses a temporary visible Chromium profile and the computer's network, including LAN services after native consent; the page-domain allowlist still applies. Proxy and hosted bindings are refused instead of silently ignored. Time zone and locale overrides are supported. The deployment-browser setup below applies to the other connection modes.
+
 **The browser is one you run, and the operator says which.** There is no Chromium in
 the API image: `cdp_url` points at a browser service an operator runs and isolates.
 The compose files carry one behind the `browser` profile — `docker compose --profile
 browser up -d browser`, reached as `http://browser:9222`. The host must be on
 [`BROWSER_CDP_ALLOWED_HOSTS`](../configuration.md), and an empty allowlist — the
-default — refuses browser automation outright, at publish.
+default — refuses browser automation outright. The host of
+[`ARTIFACT_RENDER_CDP_URL`](../configuration.md#published-artifacts) is refused
+even when the allowlist names it: that browser draws people's pages for
+`preview_artifact` and is never an author's. Checked **at publish**, when the
+spec is saved, rather than on every run.
 
 The compose browser sits on a Docker network of its own, which only the API and the
-runner join to reach it: a page it opens, or is redirected to, cannot reach the
-database, Redis, Prefect or MinIO. It still reaches whatever the host's network
+worker join to reach it: a page it opens, or is redirected to, cannot reach the
+database, Redis or MinIO. It still reaches whatever the host's network
 allows, such as a cloud's metadata address, so block that on the host where it
 matters.
 
@@ -769,6 +992,146 @@ whose deployment lacks it fails the one tool loudly, with the install line.
 Specs written before version 13 that bound the step-by-step browser
 (`browser_choice`) load as this one, its `browse_page` approval and rename moved to
 `browse_web`; the decision-model settings and the TypeSafe key are dropped.
+
+## Computer use { #computer-use }
+
+`computer_screenshot` — *Take a screenshot of the desktop.*
+
+`computer_act` — *Act on the desktop: click, type, press keys, scroll, drag, open an app or wait.*
+
+`computer_apps` — *List the applications installed on the desktop, to open one with `launch`.*
+
+`computer_save_screenshot` — *Save a screenshot of the desktop for the user: shown in the chat and kept.*
+
+The agent operates a whole desktop, so it can use any application, not only a
+web page. It looks at a screenshot and sends a few mouse and keyboard actions in
+that screenshot's pixels. Each `computer_act` answer includes a fresh
+screenshot. Larger screens are scaled down to `screen_width`x`screen_height`
+before the model sees them, and every point is mapped back to the desktop's own
+coordinates, including a Retina Mac's points.
+
+**Approval is for acting, and it is opt-in.** Like every tool, neither waits for
+approval until the agent's owner asks for it. `computer_screenshot` changes
+nothing. Set `tool_approval: {computer_act: required}` and every batch of
+actions waits for approval against a screenshot both the model and the approver
+have seen. A point outside that screenshot is refused before anything runs. An
+approved batch runs in a run of its own, which measures the screen first and
+acts only if it is still the shape it was on the screenshot the batch was chosen
+on. A changed resolution or aspect ratio does nothing and shows the model the
+new screen. `max_actions` is the run's, however many times it waits for
+approval. Approval holds the actions, not the pixels under them: a window can
+change between the screenshot and the click while the screen keeps its size, so
+deny a batch aimed at a window you do not trust to stay put.
+
+| `desktop` | The desktop | Needs |
+|---|---|---|
+| `sandbox` | A Linux desktop (XFCE and Firefox) inside the agent's own [sandbox](#files-shell), the same machine its shell and file tools work on | The [Sandbox](#files-shell) capability on a sandbox connection, running the `desktop` runtime |
+| `daemon` | A `computerd` the operator runs: their own Linux desktop (X11), a Mac's own screen (`uv run deploy/computer/computerd.py`) or a desktop in a container (`deploy/computer/Dockerfile`) | `daemon_url` on `COMPUTER_DAEMON_ALLOWED_HOSTS`, and the daemon's token as the binding's secret |
+| `e2b` | An E2B desktop of the run's own, from E2B's `desktop` template, killed when the run lets go of it | The organization's E2B key as the binding's secret |
+| `local` | The person's own screen, in a chat working on their computer through the [desktop app](../desktop.md#the-screen) | Nothing: the app asks the person before the first screenshot |
+| `auto` | The person's screen when the chat works on their computer, else an E2B desktop when the binding names a key, else the sandbox | What the desktop it lands on needs |
+
+A sandbox desktop needs nothing of its own: no address, no token and no
+provider. It lives and is shared exactly as the sandbox is, per conversation or
+per agent by the Sandbox capability's `session_scope`, and a file the agent
+writes with its file tools is a file it can open on the screen.
+
+Publish refuses a `sandbox` desktop on an agent without a sandbox connection,
+and on an inline specialist without one of its own or one its parent shares. It
+also refuses one whose sandbox is not on the `desktop` runtime, read the way a
+run reads it: the Sandbox capability's `runtime`, else the connection's default.
+A sandbox that names neither is refused too, because the shipped default is
+`workbench`, which has no display. A Daytona connection is refused because it
+runs its own image.
+
+**Opening an application.** `computer_apps` lists the applications the
+desktop's menu shows, each by its name in the desktop's language and its id,
+the menu entry's file name. A `launch` action opens one of them by either,
+rather than by finding its icon. The match is exact, ignoring case: a name two
+entries share, such as a system and a Flatpak Firefox, is refused with their
+ids, and an unknown name is refused with a pointer to `computer_apps`. A launch
+takes a name only, never a path or arguments: no slash, no control character,
+and it starts with a letter or a digit.
+
+Every directory on the menu's search path is read (`$XDG_DATA_HOME` and
+`$XDG_DATA_DIRS`, so `/usr/local/share` and Flatpak's exports too) with its
+subdirectories: `kde/konsole.desktop` has the id `kde-konsole`. An entry the
+menu would not show is left out: hidden, not an application, meant for another
+desktop than XFCE, or naming a `TryExec` program that is not installed. The
+entry is opened with `exo-open`, and the action returns once a new window
+appears or the focus moves. If neither happens within ten seconds the launch
+fails and the rest of its batch does not run, so nothing is typed into the
+window that had the focus before.
+
+Launching works on Linux desktops only: a sandbox's, an E2B desktop and the
+computerd container, where the application runs as `desk`, not as the account
+that holds the token. A computerd on a Mac or on an operator's own Linux
+desktop, and the person's own computer reached through the desktop app, refuse
+`launch` and `computer_apps`. Through the desktop app the model is told to use
+that computer's own launcher instead; through a daemon, which may be either
+kind, it is told to call `computer_apps` first and use the computer's own
+launcher if that is refused.
+
+The `execute` tool is not needed, and leaving it off keeps the desktop's actions
+behind `computer_act` and its approval: with `execute`, the agent can run
+`xdotool` from the shell.
+
+One daemon is one desktop: every run pointed at it shares the machine and
+whatever is signed in on it. Give it a dedicated machine or account, not
+somebody's working session. The agent can read anything the account running
+the daemon can, its token included; the container in `deploy/computer/` runs
+the daemon as an account of its own for that reason.
+
+**A daemon's token is the organization's.** The `COMPUTERD_TOKEN` the daemon
+was started with is stored in the organization's [vault](../secrets.md) as an
+API key and named by the binding's `secret_id`, and publish refuses a daemon
+without one. `COMPUTER_DAEMON_ALLOWED_HOSTS` is the deployment's list of where a
+run may send that token. It is checked at publish and again each time a run
+opens the daemon, so taking a host off it stops agents already published. Every
+organization can name an allowed host, so the token, not the list, keeps one
+organization off another's desktop: give each desktop its own token.
+`daemon_url` is the daemon's address alone, and one with a query, a fragment or
+credentials is refused.
+
+| Config | Default | Range |
+|---|---|---|
+| `desktop` | `auto` | `auto`, `sandbox`, `daemon`, `e2b`, `local` |
+| `daemon_url` | empty, refused at publish for `daemon` | an allowed host, no query, fragment or credentials |
+| `screen_width` × `screen_height` | 1280 × 800 | 640–1920 × 480–1200 |
+| `max_actions_per_call` | 20 | 1–50, not above `max_actions` |
+| `max_actions` | 200 | 1–2000 per run |
+| `preview` | on | |
+
+The chat draws the desktop in a window under the message while the agent
+works: one window per run, opened by its first screenshot, with a frame after
+every call and a line per action. Text the model types is shown there as typed.
+
+**Watching and taking over.** Every desktop is also published to the run's live
+view, the one a browse uses, so a run from a channel or a routine can be watched
+from the console. **Take over** hands the desktop to the person between the
+agent's calls: their clicks, keys and scrolls are carried out on it, the agent
+waits, and **Give back** returns it with the model told to look again. Who may
+watch and take over is the browse's rule; the person's own screen is theirs
+alone.
+
+**A screenshot the user keeps.** `computer_screenshot` is for the model, and
+nothing keeps it: a run waiting on approval, its manifest and a compacted
+conversation store a sentence in its place. When the user asks to see the screen, or a step's result
+should be kept as evidence, the agent calls `computer_save_screenshot`. It
+stores the screen at full resolution for the organization and shows it in the
+chat, linked to the full-size file. When the agent has a workspace, it also
+writes the file to `output/`, so a channel reply carries it and a later step can
+put it in a report. Without one, a channel reply carries no file, as with image
+generation. It changes nothing on the desktop, and approval does not
+hold it unless the owner asks.
+
+!!! warning "Screen text is untrusted"
+
+    The instructions tell the model that what is on the screen is data, never
+    instructions, and to stop for passwords, payments and decisions that belong
+    to the user. Approval is what enforces it, and it is off until the agent's
+    owner sets it: without it, `computer_act` lets the agent act on whatever a
+    window tells it.
 
 ## Calculations { #run-python }
 
@@ -847,11 +1210,14 @@ the field, the file panel labels whose workspace it is rather than calling it "t
 conversation's files", and setting it is recorded in the audit log — because a user
 who sees a file they did not create should be able to find out why.
 
-**Changing the backend or the connection starts a fresh workspace rather than
-reattaching to the old one.** A stored document, a container's volume and a
-Daytona sandbox are three different things, and two `sandboxd` installations are
-two different things — so each gets its own workspace, and the previous one stays
-where it is, still listed and still readable. Moving a live agent is therefore not
+**Changing the backend, the connection or the runtime starts a fresh workspace
+rather than reattaching to the old one.** A stored document, a container's volume
+and a Daytona sandbox are three different things, and two `sandboxd` installations
+are two different things — so each gets its own workspace, and the previous one
+stays where it is, still listed and still readable. A container's runtime is
+chosen when it is created, so a workspace moved to another runtime would otherwise
+keep running on the old image. Naming no runtime and naming `workbench`, the
+shipped default, are the same workspace. Moving a live agent is therefore not
 a way to carry its files across; the agent finds an empty workspace on the new
 host. Since `connection_id: null` means "the organization's default", marking a
 different connection as default has the same effect without any spec changing.
@@ -928,6 +1294,85 @@ Those files are writable, and what the agent writes does **not** become a skill.
 skill is instructions every agent bound to it follows on every run, so a change is
 recorded as a proposal and somebody holding `skills:edit` accepts or discards it —
 see [Skills](../skills.md).
+
+## Mirage (virtual terminal) { #mirage }
+
+The seven `sandbox` tools, prefixed `mirage_`, over the services an author mounts:
+a Google Drive, a GitHub repository, Notion, a Postgres database, an SSH server, a
+mailbox. [Mirage](https://github.com/strukto-ai/mirage) (Apache-2.0) mounts each
+service as a folder and runs the shell over it through the service's own API, so
+the agent answers "which contracts mention Acme?" with a `grep` across a Drive
+folder. No container starts. An agent can have both this and a sandbox: the
+terminal's tools always reach the terminal, and `execute` still reaches the
+sandbox.
+
+| Config | Default | Values |
+|---|---|---|
+| `mounts` | required | One to ten folders, each described below |
+| `allowed_commands` | all virtual commands except `curl`/`wget` | Command names the shell may run, such as `ls`, `cat`, `grep` |
+| `hidden_paths` | none | Absolute paths the agent cannot see at all, such as `/drive/HR/` |
+
+**A folder is a path, a service and how it signs in.** The path is one lowercase
+name between slashes (`/drive/`). The service is one of the backends the
+deployment can mount, with that service's own options: a repository, a folder id,
+a host. A folder is read only unless the author makes it writable. A writable
+folder asks a person to approve each write unless the author turns that off. The
+Builder lists every service Mirage ships, and gives the reason for each one this
+deployment cannot mount.
+
+**How a folder signs in depends on the service:**
+
+| Credential | Services | What the spec holds |
+|---|---|---|
+| Vault keys | GitHub, Notion, Linear, Slack, Postgres, SSH, IMAP mail and the rest | An `api_key` secret per credential field (`token`, `dsn`, `password`) |
+| An Entra app | OneDrive, SharePoint | An `entra_app` secret, which the run signs in as for a Microsoft Graph token |
+| A Google account | Drive, Docs, Sheets, Slides, Gmail, Calendar | One of the organization's [connected accounts](../secrets.md#connected-accounts), or each person's own |
+| None | Scratch space (`ram`) | Nothing |
+
+**Each person's own accounts are found when that person talks to the agent.**
+Somebody with two Google accounts gets two folders under the mount, one named
+after each address. Somebody with none, such as an API key or a schedule, gets no
+folder, and the agent is told so. An organization's account answers for everybody
+who talks to the agent.
+
+**A spec never holds a credential, an endpoint override or a path on the API
+host.** Publishing refuses a secret the publisher may not lend, a secret of the
+wrong kind and an account the organization does not have. A host the author types
+must be on [`MIRAGE_ALLOWED_HOSTS`](../configuration.md), such as an SSH server or
+the host in a DSN. Publishing checks the typed host, and the run checks the hosts
+stored inside secrets.
+
+**Approval is per folder, not per tool.** `mirage_execute ls` and
+`mirage_execute rm /drive/q3.pdf` are the same tool, so gating the tool would ask
+about both. Instead, a call that would write into a folder marked "approve each
+write" goes to the [approval gate](../governance.md) before it runs. For
+`mirage_write_file` and `mirage_edit_file` the call's `path` decides. For
+`mirage_execute`, Mirage dry-runs the command line first, so a redirect, `cp`,
+`tee` and `rm` are all caught. A write that no dry run predicted, such as
+`echo x > $TARGET`, is refused unless the call was approved.
+
+**Limits and approval resumes.** Mirage 0.0.8 runs with a 16 MiB file cache and a
+16 MiB workspace memory budget. Each command returns at most 64 KiB per output
+stream; exceeding that limit stops collection and reports an incomplete result.
+RAM folders are retained in the parked run's message metadata and restored on
+approval resume, including inside delegates. Remote credentials and service
+caches are not included. A folder for each personal account includes its stable
+account id, so similar email addresses cannot overwrite one another.
+
+**It is an optional install.** Install the `mirage` extra (`EXTRAS="--extra mirage"`). Mirage 0.0.8 no longer needs the previous shell parser's compiler step. Without the extra, the Builder says the terminal is not installed and publishing refuses a spec that binds it. The S3 family remains unavailable because its async SDK conflicts with the current AWS dependencies; the Builder explains why. All effective configurable hosts, including backend defaults, must be permitted by `MIRAGE_ALLOWED_HOSTS`.
+
+**Box and LanceDB.** Box uses a service account through Client Credentials: supply `client_id`, `enterprise_id` and a vault API-key secret (`custom` purpose) for `client_secret`. Developer tokens and rotating OAuth refresh tokens are not accepted. LanceDB is Cloud/Enterprise only: provide `uri: db://database-name`, a required `host_override` HTTPS endpoint permitted by `MIRAGE_ALLOWED_HOSTS`, and a vault API-key secret (`custom`) for `api_key`. Local paths, object-store URIs and `storage_options` are refused. The extra includes LanceDB and PyArrow, so an image built with it is larger.
+
+Qdrant and Langfuse are available with the extra. Qdrant supports file listing,
+reading and text grep; model-backed semantic search is not enabled. Connected-account
+consent must finish in the same browser and signed-in account that started it.
+
+
+Vault secrets must match the backend’s purpose; `custom` is the explicit escape hatch. OneDrive and SharePoint accept the `sharepoint` Entra-app purpose, and Hugging Face services accept `huggingface`. Publish and runtime enforce the same rule. Every host in a PostgreSQL seed list must be on the deployment allowlist. MongoDB and GridFS require one `mongodb://` host: the platform forces `directConnection=true` and refuses SRV discovery. Unlinked channel senders require approval for every Mirage tool, including reads; linking an account restores the author’s ordinary folder policy.
+
+PostgreSQL mounts require a nonempty password in the vault DSN; empty passwords and passwordless authentication are not supported. They do not fall back to `PGPASSWORD` or `.pgpass`. DSN parameters naming host credential or TLS files (`passfile`, `servicefile`, `sslkey`, `sslcert`, `sslrootcert`, `sslcrl`) are refused.
+
+SSH uses an explicit username and a password referenced from the vault. Supply the server’s trusted public `host_key`; the adapter pins that key and disables local SSH configuration, local private keys and the SSH agent. Passwordless ambient authentication is not available.
 
 ## Charts
 
@@ -1023,11 +1468,379 @@ rather than hiding the spend.
 **Where the image goes.** Every generated image is stored **per organization** and
 served back by [`GET /api/v1/generated/{filename}`](../architecture.md), scoped to
 the caller's own organization — a wider boundary than a chat upload, which is owned
-by one user, because there is no record of who produced an image. When the agent
+by one user. It is recorded against the conversation it was made in and deleted with
+it, counted against the organization's generated-media quota, and deleted after the
+retention period ([configuration](../configuration.md#generated-media)). Past the
+quota, the tool answers so before spending anything. When the agent
 also has a workspace (the `sandbox` capability), the same image is written into it
 under `/output`, so a later `execute` step can build with it — assemble a PDF, a
 slide, a page. An agent without a workspace still generates and shows images; it
 simply has nowhere to build with them.
+
+## Text to speech
+
+`generate_speech` — *Speak a text aloud as an audio clip.*
+
+Reads a text aloud through a speech provider the author picks, and behaves as
+image generation does: the clip is stored, shown in the conversation as a player,
+and written under `output/` when a workspace is open (#2259).
+
+| Config | Default | Values |
+|---|---|---|
+| `provider` | `openai` | `openai`, `elevenlabs`, `google` |
+| `model` | `gpt-4o-mini-tts` | That provider's models, from `app/core/catalog/text_to_speech_models.json` |
+| `voice` | the model's first | The default the agent speaks in; it may switch per clip within `voices`. A catalog voice for OpenAI and Gemini; an id from your own voice library for ElevenLabs |
+| `voices` | none: any voice the model has | Up to 20 voices the agent may switch to per clip, each an `id` and, for an account voice, a `note` of up to 120 characters saying who it is. Empty allows every voice the model has - for ElevenLabs, any voice id in the account |
+| `output_format` | the provider's first | `mp3`, `wav` (Gemini returns `wav` only) |
+| `max_characters` | `5000` | 1–10 000; the most text one call may speak |
+
+**Providers, models, voices and prices are data**, in the catalog file. A provider
+is a [secret purpose](../secrets.md) taking a plain API key - ElevenLabs runs no
+chat model, so it is a service in the vault rather than a model provider - and an
+entry whose purpose is missing, or whose API shape has no client, is dropped.
+OpenAI's older `tts-1` and `tts-1-hd` speak in nine of its thirteen voices, so
+voices are listed per model.
+
+**ElevenLabs voices belong to the account.** Its shared default voices expire on
+2026-12-31, so the catalog lists none and a binding names one of the account's own
+voices by id; publishing without one is refused.
+
+**The voice is a default; the allowed voices are the limit.** `voice` is the one
+the agent speaks in unless it asks for another, and `voices` lists the only
+others it may switch to - for a dialogue or a narrator and a character. Left
+empty, every voice the model has is allowed; on ElevenLabs, any voice id in the
+account, cloned voices included, and the Builder says so as a warning. The
+voices reach the model as an `enum` on the tool's `voice` parameter, with the
+usual one as the default and the catalog's description of each or, for an
+account voice, the author's note. An open account voice is a free string whose
+shape is checked. A listed voice the model lacks is refused at publish, and one
+outside the list is steered back to the model at call time.
+
+**The key picker shows the chosen provider's keys.** The secret is required for
+every provider, and declared as required *when* `provider` is one of them, which
+is what tells the Builder that the provider is the key's purpose.
+
+**A long text is one clip.** A text over the model's per-request limit is cut at a
+paragraph, a sentence or a word and spoken in order. MP3 pieces are joined end to
+end; WAV is requested as 24 kHz PCM from every provider and wrapped in one header.
+`instructions` - tone, pace, accent - reach the models that read them (OpenAI's
+`gpt-4o-mini-tts`, Gemini) and are dropped for the rest.
+
+**The budget is asked with the clip's price.** Speech is sold per character, so the
+catalog holds a dated price per million characters and the cost is known before
+the call. A run is refused a clip that would carry it past a cap, then the cost is
+booked; on a failure partway through, the pieces already spoken are booked too.
+Token-billed models are checked at a price per character of typical speech. Gemini,
+which reports its audio as raw PCM, is then booked from the audio each piece
+returned - text tokens in and 25 audio tokens a second out - so a slow delivery
+costs what the provider bills for it. A dated price
+takes effect on its day, which is how Gemini's doubling on 2027-01-01 is recorded.
+
+**Booked as it is spoken, one clip at a time.** Each piece of a long text is
+booked as its audio arrives, so a failure or a cancelled run partway through
+still books the pieces that came back. The budget check reserves nothing, so the
+tool runs one call at a time. `instructions` is capped at 1,000 characters,
+goes to the provider with every piece, and is not priced.
+
+**It is side-effecting**, for the reasons image generation is: it spends money and
+produces a recording a person may publish.
+
+**Failures go to whoever can fix them.** Empty text, text over `max_characters` or
+text the provider refuses is steered back to the model, as is a provider that is
+rate limiting or down, and so is a voice the model chose that the provider does
+not know. A refused key, an unknown usual voice and a spent budget are answered
+as the result, because only the author or the operator can fix them. Only the
+provider's error code is logged; its error text never reaches the logs or the
+model.
+
+## Video generation
+
+`generate_video` — *Make a short video from a written description.*
+
+Makes a short clip through a video provider the author picks, and behaves as
+image generation does: the clip is stored, shown in the conversation as a player,
+and written under `output/` when a workspace is open (#2260). It can start from an
+image - the `filename` `generate_image` returned in the same run, or a workspace
+path, where a generated image is also kept under `output/` - typed by its bytes,
+not its name. A file name alone never reaches the organization's generated files:
+the run must have made the image itself.
+
+| Config | Default | Values |
+|---|---|---|
+| `provider` | `google` | `google`, `byteplus`, `xai`, `alibaba` |
+| `model` | `gemini-omni-1.1-flash` | That provider's models, from `app/core/catalog/video_models.json` |
+| `resolution` | the model's first | The default; the agent may ask for another per clip, up to `max_resolution` |
+| `max_resolution` | none: any the model renders | The highest the agent may ask for; at least `resolution` |
+| `aspect_ratio` | the model's first | The default; the agent may ask for any shape the model renders |
+| `seconds` | 5, or the nearest the model makes | Within the model's range; refused for Gemini Omni, which decides its own |
+| `max_seconds` | the model's longest | The longest clip the agent may ask for; refused for Gemini Omni |
+| `audio` | provider default | The default, on or off; the agent may ask for either per clip. Refused where the model's sound is fixed |
+| `alibaba_workspace` | none: the shared DashScope endpoint | Alibaba only: the Model Studio workspace id, one host label; Wan is then called at `https://{workspace}.{region}.maas.aliyuncs.com/api/v1` |
+| `alibaba_region` | `ap-southeast-1` | Alibaba only: `ap-southeast-1`, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `cn-beijing`, `cn-hongkong` |
+| `timeout_seconds` | `600` | 60–1800 |
+
+**What each model can make is data.** The catalog states each model's length
+range, aspect ratios, resolutions, whether its clips carry sound and whether it
+starts from an image, and the Builder offers only those. BytePlus is a
+[secret purpose](../secrets.md) in the vault; Google, xAI and Alibaba Cloud are
+model providers already. OpenAI is absent: its video API was shut down on
+2026-09-24.
+
+**The settings are defaults; the highest resolution is the limit.** The
+resolution, shape, length and sound a binding sets are what a clip gets unless
+the agent asks for another, per call. Length stops at `max_seconds`, shape at
+what the model renders, and resolution at `max_resolution`: left empty, the
+agent may ask for any resolution the model renders, which the Builder says as a
+warning, since resolution is what a second costs. The budget is asked with the
+chosen resolution's price. Shape and resolution reach the model as an `enum`
+with the usual one as the default, and sound is offered only where the model
+makes it optional.
+
+**A clip is a job, waited for like a picture.** Gemini answers in the request;
+BytePlus, xAI and Alibaba take a job that is polled. Either way the call waits,
+for a minute or several, up to `timeout_seconds`. A job past it is cancelled
+where the provider allows it - BytePlus, while still queued - and the call is
+answered rather than retried, because xAI and Alibaba document no cancel and may
+still finish and bill the job. The clip is downloaded before the provider's
+address expires, and the key is never sent to a storage host.
+
+**The budget is asked with the clip's price.** Every provider bills by the second
+at a rate set by the resolution, so the catalog holds a dated price per second
+per resolution. A run is refused a clip that would carry it past a cap, then the
+length the provider reports is booked. Gemini Omni decides its own length and
+reports none, so a clip there is priced and booked at the model's longest.
+
+**It is side-effecting**, for the reasons image generation is, and more so: a
+clip is the most expensive single call an agent makes.
+
+**Failures go to whoever can fix them.** An empty prompt, a length or shape the
+model does not make and an image that cannot be read are steered back to the
+model, as is a provider that is rate limiting or down. A refused key, a spent
+budget, a prompt the provider's content policy refused and a job past the time
+limit are answered as the result: a retry prompt on a refusal would invite a way
+around it. A job past the time limit, or cancelled with the run, is booked at its
+estimate once its request may have reached the provider, since the provider may
+still finish and bill it.
+A clip that was made but could not be fetched is booked too, and answered rather
+than steered: a second attempt would be billed again.
+
+## Coding agent { #coding-agent }
+
+**Personal cloud accounts.** In **Settings → Profile → Coding accounts**, connect an Anthropic API key/Claude setup token, OpenAI API key or a fresh ChatGPT sign-in, then explicitly enable it for this organization. Choose **Private cloud task with my account** in Coding agent. Only authenticated tasks you initiate in web/API chat can use it; schedules, channels, API keys and impersonation cannot. Another member cannot borrow your account.
+
+A separate run-scoped container receives a bounded source copy (500 files, 1 MiB per file, 16 MiB total; no symlinks or platform/cache folders). The final report identifies the account and snapshot, with a diff and ZIP in chat. Source files are not automatically changed. Account revocation cancels work; disconnect also requires revoking the external ChatGPT grant in ChatGPT Settings if desired. Existing tool-level organization credentials and approved desktop/local CLI sign-ins remain separate. Upgrade API/workers together after `0290_personal_coding_accounts.py`.
+
+Personal cloud mode accepts only private source workspaces. It refuses projects, agent/channel workspaces, group chats and conversations shared for editing before loading a personal credential or copying files. A private destination container does not make collaborator-controlled source code trusted. Use the organization-configured coding mode for shared project work. Output redaction is not a credential boundary for executable source code.
+
+`run_coding_agent` — *Hand a software task to the coding agent, which works on it in the sandbox until done.*
+
+Hands software work to **Claude Code** or **Codex**, running in the agent's own
+[sandbox](../sandbox.md). A general agent with a shell can edit code; a coding
+harness is better at it, and this is how an agent reaches one. The harness is a
+separate agent: the agent hands it a whole task, it works until done, and the
+chat shows it working. Another agent reaches a coding agent through ordinary
+[delegation](#delegation), the way it reaches any specialist.
+
+| Config | Default | Values |
+|---|---|---|
+| `harness` | `claude_code` | `claude_code` (an Anthropic API key or a Claude subscription token), `codex` (an OpenAI API key or a ChatGPT sign-in) |
+| `access` | `edit` | `edit` changes files and runs commands; `read_only` reads the code and answers (Claude Code, or Codex on this computer) |
+| `model` | the harness's default | Claude Opus, Sonnet or Haiku 5.5 for Claude Code; GPT-5.6 Sol, Terra, Luna or GPT-5.3 Codex for Codex |
+| `base_url` | Anthropic directly | Claude Code only: a gateway that speaks Anthropic's API, such as `https://openrouter.ai/api`, whose key the vault then holds. Dropped when Codex is chosen |
+| `timeout_minutes` | 15 | 1–60, for one task |
+| `runs_on` | `sandbox` | `sandbox` runs the task in the agent's sandbox on a key; `this_computer` runs it in the folder a person chose on their own computer in the desktop app, on the sign-in the agent already has, with no key |
+
+**One tool, and the binding decides what it may do.** At `edit` the harness edits
+any file and runs any command in the sandbox, with its own prompts off
+(`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`):
+nobody sits at its terminal, and the container is the boundary both flags are
+documented for. At `read_only`, Claude Code runs in plan mode without any tool
+that writes - its editing tools and the shell - and reads with Read, Grep and Glob;
+it is told that nothing else can be approved. Not even reading commands: no list of
+command prefixes keeps a shell read-only, since `git log --output=<file>` matches
+`git log` as well as any read does. Codex in a container has no `read_only`: its read-only mode is a
+sandbox of its own, which cannot start inside the agent's container, and publish
+refuses the combination. Whether a person says yes before each task is the
+capability's **Human approval**, set to **Always ask**. The Builder starts newly added bindings in this mode;
+existing bindings retain their policy. There is no Tools tab: the one tool is the capability.
+
+**Named sessions.** Each task names a `session` - `main` when it names none. The same name continues that session's earlier work in the conversation; a new name opens another, and independent local sessions run side by side when the agent calls the tool several times at once; sandbox calls in the same toolset queue to keep their workspace snapshots separate. `fresh_session` starts one session over. On this computer a session may also choose its `harness` - Claude Code or Codex, on the sign-in that computer has - and a `folder` inside the chat's folder, so two projects, or both harnesses, work at once. In a sandbox or a private cloud task the binding's harness is the only one, since its key or account belongs to it.
+
+**On this computer.** Set `runs_on` to `this_computer` to use the person's installed harness over the [Agent Client Protocol](https://agentclientprotocol.com). The desktop app launches a pinned adapter through `npx`; the server speaks ACP. Choose a full-access folder in **Work on** and confirm each start natively. The folder is a working directory, not an operating-system sandbox. The harness uses its own sign-in, so a vault key is optional. Permission requests follow `access`; approval applies once per task. Claude read-only disables bypass and writing tools; local Codex selects its native read-only mode.
+
+Later tasks load the same conversation session; `fresh_session` starts over explicitly. Corrections interrupt the current ACP turn and continue the same session after its stop response. Resume identifiers stay outside the repository and are cleared on unlink. Unpriced subscription tasks, including failed tasks that started, make the run's cost a floor. See [the desktop app](../desktop.md#coding-agents-on-this-computer).
+
+**The person watches it work.** The harness is started detached in the sandbox,
+`claude -p --output-format stream-json` or `codex exec --json`, and its events file
+is read every second and a half. Each step reaches the chat as it happens, in a
+panel of its own under the Claude Code or Codex mark, the way a delegation's do:
+the file it reads, the edit, the command it runs, what it says between them. When
+it finishes, the call's result holds the answer, every step and the files it
+changed. A task past `timeout_minutes`, and one the person stops, has its whole
+process group stopped. Detached also means a task is not cut at the sandbox
+service's ceiling for one command.
+
+**What it changed, as a diff.** At `edit` in a conversation, the workspace is
+snapshotted before the task and again after it, into a git store of the task's own
+under `/tmp` - never the repository a person cloned, whose index and history stay
+untouched. The panel then lists the files the task added, changed, removed or
+renamed, then each file's hunks, with **Copy patch**; a task that changed nothing
+says so. A failed or timed-out task keeps its diff too. Left out: the platform's own
+`.agenticos/`, `skills/` and `tool_output/`, toolchain folders such as `.git`,
+`.venv` and `node_modules`, and files over 1 MiB, unless they were smaller when the task
+started.
+The patch is kept up to 256 KiB and 500 files, and marked where it was cut.
+
+**Who reads the diff.** It is stored with the conversation and read with the
+transcript's own access, so whoever can read the chat sees it; deleting the chat
+deletes it. In a sandbox several chats share, a task running at the same time as
+another sees that one's edits in its diff too. Reverting a task is not offered
+yet, and a task on this computer records no diff.
+
+**A conversation's tasks continue one session.** The harness's session id is kept
+in the sandbox beside the work, under `.agenticos/coding-agent/`, one per
+conversation, so the second task in a chat knows what the first one read - and a
+chat never continues another's in a sandbox several share, a project's or one scoped
+to a person or an agent. The model passes `fresh_session` to start
+over, and a session the sandbox no longer holds starts over by itself, once.
+
+**What it needs.** The `sandbox` capability on the `service` backend with shell
+commands on — publishing refuses anything else — and a runtime with the harness
+installed: the `workbench` runtime pins Claude Code 2.1.288 and Codex 0.160.0. The
+credential comes from the vault through the binding's `secret_id` and reaches the
+command through its environment, never on its command line. In a [project](../projects.md)
+that keeps its files without a container there is no shell, so the coding agent is
+left out of runs there and the agent is told why.
+
+**A key or a subscription.** Claude Code takes an Anthropic API key, or the token
+`claude setup-token` prints for a Claude Pro or Max subscription, stored as a key —
+it is told apart by its `sk-ant-oat` prefix, and it signs in to Anthropic only, not
+to a gateway. Codex takes an OpenAI API key, or a ChatGPT sign-in made with **Sign
+in with ChatGPT**, the same one a [model profile](../models.md) uses. For a task the
+sign-in is written to an `auth.json` in a Codex home of that task's own
+(`CODEX_HOME`), outside the workspace, and removed afterwards - two tasks running at
+once never share one, and the sessions Codex resumes are kept per conversation
+beside it. Any tokens Codex
+refreshed are sealed back over the same secret. Whatever Codex runs can read that
+file, so the sign-in is handed over only for a person who may see it in the vault
+themselves - running the agent is never a way to somebody else's subscription -
+and only in a sandbox nobody else's tasks share: in a project's container, an
+agent-scoped one, or a chat shared with somebody to edit, another person's task runs
+as the same user and could read it.
+An API key is different: it is the agent's, as a bot's token is in Slack, so
+every run uses it, whoever asked - and anything a task runs can read it. Bind a
+key that everyone who may run the agent may share.
+Running on a personal subscription is subject to Anthropic's and OpenAI's terms for
+those plans, which may not allow it on a shared deployment.
+
+**The key fits the harness.** The picker offers Claude Code only keys stored for
+Anthropic, and Codex only OpenAI keys and ChatGPT sign-ins. A key stored for
+`custom` fits either, and so does the key already bound. Publish refuses a key
+stored for another provider and names the ones the harness takes: an OpenAI key
+bound to Claude Code would publish and then fail at every task. With `base_url`
+set, the key is the gateway's - OpenRouter, LiteLLM or any other - so Claude Code
+takes any key there.
+
+**Delegating to a coding agent.** A delegate that binds `sandbox` itself runs in a
+fresh in-memory workspace with no shell, so a coding agent reached by delegation has
+nowhere to run its harness. Give the delegating agent the `sandbox` capability on a
+sandbox connection and list `sandbox` under Delegation's *Capabilities delegates inherit*: the
+coding agent then works in the parent's container, where the files it writes are
+the ones the parent sees.
+
+**Its spend is metered.** Both harnesses report their tokens per model, which are
+booked to the run's ledger like any model request, and the budget is checked before
+each task. Codex names no model in its events, so with no `model` set its usage is
+booked unpriced and the run's cost is marked partial. A task that ends before its
+harness reports what it spent - failed, timed out or stopped - is booked the same
+way.
+
+## Watch a command { #monitor }
+
+`start_monitor`, `list_monitors`, `stop_monitor` — *Watch a long-running command and be told about its output as it appears.*
+
+Lets an agent start a command that runs for a long time - a test watcher, a log tail, a build, a CI or deploy poll - and hear about its output without polling for it. The command runs detached in the run's workspace, its output going to a file there. Before each model request the new lines are read, filtered by the optional `match` words (separated by `|`, any case; plain text, not a regular expression), and put at the tail of the request as an ephemeral note, the way a steering reminder is, so nothing is written into the conversation's history. A watch that exits is reported with its exit code.
+
+| Tool | What it does |
+|---|---|
+| `start_monitor` | Starts `command` with an optional `label` and `match`; at most four run at once |
+| `list_monitors` | Lists the watches with their state, exit code, how many lines matched and the last ten |
+| `stop_monitor` | Stops one watch and the processes it started |
+
+**A watch lives as long as the run.** Every watch is stopped when the turn ends, so a command never outlives the turn that asked for it. It needs a persistent sandbox shell. The desktop's per-command shell cannot keep a watch alive, so the tool refuses it before starting a process. What a watched command prints is data, not instructions, and the agent is told so. Add **Human approval** to ask before a command starts.
+
+## Visuals
+
+`draw` — *Draw a picture in the conversation: a diagram, a map, a flow, an
+explainer, a 3D scene.*
+`revise_visual` — *Change a visual by exact replacements, without drawing it again.*
+`read_visual` — *Read a visual in this conversation as it now is, revisions applied.*
+
+Draws in the chat itself. `kind` is `svg` for diagrams and illustrations,
+`mermaid` for flowcharts, sequences and ER diagrams, or `html` for anything
+interactive - sliders, `<canvas>`, three.js, a map. No configuration; the bundled
+`visual-design` skill carries the house style and five templates, and the
+Builder binds it, with Charts, when Visuals is switched on.
+
+**It chooses the form first.** Not every answer is a drawing. The tool's text
+and the skill tell the model to answer a fact in text, exact values in a
+Markdown table, numbers to see with `create_chart` - so "now chart it" turns a
+table into a native chart - and to draw when the person should understand how
+something works, use a tool made for the moment, or follow places on a map. The
+skill also says how a drawing should look so it reads as made for the answer
+rather than generated: one large subject, space instead of boxes, theme colours
+only, no pills, shadows or gradients.
+
+**A drawing can continue the conversation.** `agenticos.followUp(text)` in a
+drawing asks to send the person's choice as their next message - *Plan this
+stop*, *Use these numbers*. The console shows the text under the drawing and
+sends it only when the person clicks *Send*; a request with no click behind it
+is dropped. See [Follow-ups](../artifacts.md#visuals).
+
+**Maps.** `lib/agenticos-map-2.js` draws an itinerary - numbered pins in order, the
+line between them, all shown at once and dropped one by one on request, on a map
+16:9 of the page's width, and a card per stop - on the
+tile server `VISUAL_MAP_TILES` names, or as an outline of the stops on a
+deployment that names none. The capability's instructions tell the model which,
+so it does not promise streets it cannot show.
+
+**It appears while it is written.** The drawing is the call's `content` argument.
+The console reads it from the streamed tool-call arguments and posts it into a
+frame under the message, so SVG and HTML grow on screen as the model writes them
+and Mermaid redraws at each complete line. Scripts run once, when the call is
+complete: until then the markup is shown with every script and `on*` handler
+removed, so a half-written scene never starts.
+
+**It lives in the conversation.** Nothing is stored but the tool call, which the
+transcript already keeps, so a reload and a shared thread draw it again. An
+earlier turn reaches the model as its text alone, so the capability names the
+conversation's earlier visuals in its instructions, by id and title, and
+`read_visual` brings one back before a revision.
+
+**The model hears how it rendered.** While somebody watches in the web chat, the
+console reports each drawing's script errors, failed loads and refused requests,
+and `draw` waits up to ten seconds for that report before it answers - so the
+model fixes a broken drawing with `revise_visual` in the same turn. With nobody
+watching it answers at once and says the drawing was not checked.
+
+**Revisions** are exact replacements, the rule `publish_artifact` edits follow,
+and each is a visual of its own under the message that made it. A drawing too
+large for an app (`ARTIFACT_MAX_BYTES`), an SVG that is not one `<svg>` element,
+or one that loads anything from another site is a retry naming what to change.
+
+**Pictures.** `images` brings up to six pictures into a drawing, each by a name
+the drawing uses as `{{image:NAME}}`: an image attached to the conversation, a
+file in the workspace, or an `https://` address. An address works only for an
+agent that already reads the web - `web_fetch` or `browser_use` switched on - and
+only on a host one of them would read: their `allowed_domains` and
+`blocked_domains` bound the pictures too, and the download may not be redirected
+to another host. Each picture is at most 2 MiB, and a visual carries only the
+pictures its drawing still uses, six at most across its revisions.
+
+**It has an app's isolation.** The frame is the app sandbox - an opaque origin,
+`connect-src 'none'`, nothing remote but the deployment's library set, which now
+includes three.js, Mermaid and Leaflet, and the deployment's own map tile path.
+See [Visuals](../artifacts.md#visuals).
 
 ## Apps { #artifacts }
 
@@ -1035,10 +1848,18 @@ simply has nowhere to build with them.
 summary - under a stable link.*
 `read_artifact` — *Read the current version of a page this agent published, as it
 was written.*
+`list_artifacts` — *List the pages this agent published that this run may open,
+newest first.*
+`preview_artifact` — *See a page you published as somebody opening it would: a
+picture, and what went wrong.*
+`share_artifact` — *Ask for a page you published to be shared with more people; this
+shares nothing itself.*
 
 Publishes one self-contained HTML or Markdown document as an
 [app](../artifacts.md): a shared resource with an owner, a visibility and
-grants, opened in a browser under a link that stays put. No configuration.
+grants, opened in a browser under a link that stays put. One setting:
+`preview_screenshot` (default on) hands the model the picture a preview draws;
+turn it off for a model that cannot read images.
 
 **The name is the identity.** `(organization, agent, environment, name)` picks the
 app, so the next run of the same agent that publishes `weekly-report` - from
@@ -1062,6 +1883,26 @@ only what the run's person may open in the console, and nothing on a public
 widget, an embed, a schedule or an event trigger, where no identified person is
 listening.
 
+**Listing.** `list_artifacts` returns JSON: this agent's pages in the run's
+environment, newest first and at most 50, with `total`, each with its name, title,
+version, format, bindings, visibility, public link, publication time, console
+`url` and `may_edit` (whether a publish under that name from this run updates
+it). It is read as the person listening, by the console's listing rule; in a
+group chat only organization-wide pages are listed, never one that person reaches
+alone. Nothing is listed where no identified person is listening.
+
+**Preview.** `preview_artifact` draws the current version 1280 pixels wide, at
+most 2400 tall, in a browser the operator runs
+([`ARTIFACT_RENDER_CDP_URL`](../configuration.md#published-artifacts)), with its data
+read as the person listening. In a group chat it opens only an
+organization-wide page, and draws it without data; so it does for a run nobody
+answers for, such as one a webhook or a form started. It returns a text report
+(data per binding, uncaught errors, console errors, policy refusals, refused
+requests, dialogs, the publish warnings) and the picture as an image part. Every
+request of the render is answered by the API or refused. Without a renderer or
+the `browser` extra, or past a 15-second deadline, the report comes alone and
+says why. [Seeing the page](../artifacts.md#seeing-the-page-preview) has the rest.
+
 **Not side-effecting.** A first publication is private to the person the run was
 for, and only a person widens who reads it, so the approval gate would only
 park the scheduled report this exists for. An author who wants each republish of
@@ -1071,6 +1912,75 @@ a shared page approved sets `tool_approval` on `publish_artifact`.
 policy with `connect-src 'none'`, and the tool text tells the model to inline its
 own data and load charts from the deployment's [library set](../artifacts.md#the-library-set)
 rather than a CDN. See [how the page is isolated](../artifacts.md#how-the-page-is-isolated).
+
+**What a page looks like.** The capability adds a short, static page contract to
+the agent's instructions: the skeleton, the kit's most-used classes, Lucide icons
+rather than emoji, and `AO.records` for bound data. When the run offers the
+`artifact-pages` skill unloaded, the first whole HTML page of the run is a retry
+asking the model to load it and rebuild; once a run, and on the last attempt the
+page publishes with that advice instead. Every published HTML page is checked,
+and the result's `warning` lists what looks wrong, one problem a line - see
+[the page contract and the publish warnings](../artifacts.md#the-page-contract-and-the-publish-warnings).
+A warning never stops a publish.
+
+**Live data.** `bindings` on `publish_artifact` bind an HTML page to table data as
+`{name: query}`. A query names a `table` (id or exact name, from `list_tables`) or a saved
+`view` (id or exact name, from `list_views`), never both, and `fields`, which maps each name
+the page reads to a column by id or label. Optional: `filters` (`[{column, op, value}]`, all of
+which must hold, added to a view's; a choice by its label), `sort` (`{by, direction}`) and
+`limit` (at most and by default 1,000), which replace the view's. A view's filters and sort are
+**copied** when the page is published, and later edits to the view change nothing; its
+`visible_columns` and `group_by` are ignored, and a view that has a free-text search, or a
+filter on a column that is gone, is refused. Omit `bindings` to keep the page's current ones;
+`{}` removes them.
+
+The agent's spec must grant read on the table, and the person behind the run must read every
+table the query reaches, linked ones included. The page calls `agenticos.onData(render)`,
+which runs with the first data and on every refresh; `agenticos.data` is a Promise of the first
+data. **Everyone who opens the page reads the same records, read with its owner's access**, once
+the owner has confirmed sharing them; bind only what all of them may see. A binding that
+cannot be served arrives `unavailable`. Names are `^[a-z_][a-z0-9_]{0,63}$`, at most 5 bindings
+and 50 fields each. [Live data](../artifacts.md#live-data) has the limits.
+
+**The publish result.** It echoes each query in words - `table`, `filters`, `sort`, `limit`
+and each field with what it reads (`Status (single_select)`, `Pay band: formula over Salary,
+Level`) - or `kept` for a binding carried forward; that echo is what the owner consents to, so the
+agent checks it. `consent` says where the version's data stands (`not_needed`, `pending`,
+`consented`, `declined`, `withdrawn`), and `audience` says what everyone else sees while it
+waits: "the audience still sees v2 until Alex confirms". A `pending` version is for the person to
+confirm in the console; the agent tells them. A new page is private to the person the run is
+for.
+
+**Actions.** `actions` on `publish_artifact` declares up to five workflows the page's
+buttons may ask to start, as `[{workflow, label}]` - a workflow by id or exact name, and what the
+page calls it. Each must be bound in the agent's [Workflows](#workflows) capability, live and
+started from **Manual** or **API request**, and one the person behind the run may view and run;
+one the person cannot reach is refused as if unbound, and an archived or not
+hand-started one they can reach is refused by name. Omit `actions` to keep the
+current ones, `[]` removes them, and a run with no person behind it cannot change them.
+The result's `actions` lists each by name and label, or `kept`. The agent starts nothing: the
+viewer confirms every run in the console, and it runs as them. The page calls `AO.run`. See
+[Actions](../artifacts.md#actions).
+
+**`share_artifact(name, visibility?, people?)`.** Asks for a page to be shared. It never
+shares anything and is **not** gated by a tool approval: it files an `audience`
+[request](../artifacts.md#share-requests) as the run's person - the owner's own run
+included - and answers "Waiting for Alex to approve in the page's Share dialog". The owner
+answers in the console, signed in as themselves. `visibility` is `team` or `org`, there is no
+`public`, and `people` are members by full name or email and groups by name, each asked at view
+level; a name that matches nobody or several is reported, never guessed. A run with no person
+behind it, and a group chat's page that is not organization-wide, cannot ask. It is
+`side_effecting=False`: the call applies nothing.
+
+**A run with no person.** A page with bindings is published only by a run acting
+for a member: the signed-in member (web chat, HTTP API), a linked channel sender
+or a schedule's creator. A widget, embed or hosted-page visitor, an unlinked
+channel sender, an agent event trigger's delivery (GitHub, email, webhook relay)
+and a workflow run admitted by a public door, or anywhere in such a run's chain,
+publish no bound page. An author who wants each republish of a bound page
+approved sets `tool_approval` on `publish_artifact`. A run with no person may republish a
+bound page only unchanged, and an editor's publish is refused when the page's owner cannot
+read a table it reaches.
 
 ## Delegation
 
@@ -1099,7 +2009,10 @@ the YAML export and the permission model can all see it.
 | `max_depth` | 1 | 1–3 |
 | `max_fanout` | 3 | 1–10 |
 | `max_result_chars` | 2000 | 200–20000 |
+| `allow_any_agent` | false | Use other accessible agents |
 | `share_with_delegates` | none | capability ids this agent is itself bound to, except `subagents` |
+
+`allow_any_agent` optionally resolves other runnable published agents in this organization at interactive-run start, using `agent-<slug>` handles. It preserves explicit pins, excludes ancestors, honors use grants and API-key ceilings, and does not widen anonymous or unattended runs. It is off by default; large catalogs increase setup work and context.
 
 **The mode is the author's decision, not the model's.**
 
@@ -1290,7 +2203,16 @@ platform instead.
     platform refuses it earlier still, in `DelegatingToolset._refuse_dynamic`.
 
 The model may name only a model the organization has a profile for, and the refusal
-names the list. It may not attach capabilities: letting a model grant its own child
+names the list.
+
+A profile on somebody's
+[ChatGPT sign-in](../models.md#running-on-a-chatgpt-subscription), or one whose
+first three fallbacks reach one, is on the list only when the agent's spec names that exact
+profile - its own model, a reviewer's, an inline specialist's or an enabled
+capability's - because a sign-in is one person's subscription. A profile the person
+running the agent may not use is left off rather than failing the run.
+
+The model may not attach capabilities: letting a model grant its own child
 a capability is the ungranted-scope failure wearing a new hat. It gets no knowledge,
 no delegates of its own, and nothing is persisted across runs — keeping a specialist
 means publishing an agent, which is a person's action. `MAX_DYNAMIC_SPECIALISTS`
@@ -1341,6 +2263,49 @@ use, and the fan-out ceiling it would otherwise discover by being refused. Two
 lists of the same delegates in one system prompt is context paid for twice, and
 only one of them can say what the deployment enforces.
 
+### Remote agents over A2A { #remote-agents }
+
+An agent may also delegate to **another vendor's agent** that speaks the
+[Agent2Agent protocol](https://a2a-protocol.org). It is registered once under
+**Connections → Remote agents** by the address of its agent card, which is read and
+validated then, with an optional API key from the vault sent as its bearer token.
+An agent's spec names registrations in `external_agents`, and Delegation's settings
+list them beside the organization's own agents. A registration's key is lent to
+every run, as a capability's is, so publishing refuses one whose key the publisher
+cannot see in the vault.
+
+Every agent delegating to a registration depends on it, so refreshing or removing
+one is for whoever registered it, or for somebody who edits every agent - and a
+refresh, which decides where the key goes next, also for somebody who may still use
+that key. A refresh
+whose card moves the agent to another host is audited, since that host now gets the
+requests and the key. The list shows a card's address and its endpoint without
+their query or userinfo, where a signed address keeps its credential.
+
+Deleting the key a registration sends deletes the registration, rather than leave it
+calling without one. A key is sent only to an HTTPS endpoint, so a card that
+advertises plain HTTP is refused for a registration that has one. An address that
+carries a user name or password is refused outright: a credential goes in the vault.
+
+To the delegating model a remote agent is one more delegate, called by its handle
+with the same `task` tool. Each call is one A2A `message/send` carrying the latest
+request, and the remote agent's `contextId` is carried from one call to the next
+of the same delegation: a follow-up to a task continues its remote conversation,
+and two tasks sent at once each have their own.
+
+An answer that is
+`input-required` or `auth-required` comes back as text saying so, because a
+delegate waiting on its own user is an answer the model has to read. A data or
+file part of an answer is not read, and appears as a line saying one was sent. A
+remote agent that cannot be reached answers with that, and the run goes on.
+
+The budget is checked before every call. What a call costs is the remote vendor's
+to price and nothing publishes it, so each call is booked unpriced and the run's
+cost says it is partial. Every request goes through the deployment's address
+checks, so a card or an endpoint cannot point the platform at its own network.
+Publishing refuses a reference to a registration that does not exist, and a run
+whose registration was removed since fails naming it.
+
 For what a delegation costs and which run row records it, see
 [Governance](../governance.md#delegation-spends-the-parents-budget). For who may
 delegate to what, see [Permissions](../permissions.md#delegation-is-not-a-privilege-boundary).
@@ -1354,12 +2319,13 @@ step, or a batch, without replacing the plan.*
 `add_subtask`, `set_dependency`, `get_available_tasks` — *dependency-aware planning,
 offered only under `enable_subtasks`.*
 
-A checklist the model keeps for itself while it works: what is done, what is in
-progress, what is left. For multi-step work a model does better when it writes the
-steps down first and keeps them in front of itself, so the current plan is surfaced
-back every turn as a **cache-safe tail reminder** — appended after a cache breakpoint,
-so the stable prompt prefix stays byte-identical and only the mutable plan is re-read
-each turn. The plan never lands in the system prompt.
+The model keeps a checklist of completed, active and remaining steps. Plan-changing
+tools return it in a `<plan_reminder>` frame. When the visible plan differs from
+the store, such as after compaction or at the start of a run, the harness records
+it as user-channel content in the run history. The plan never becomes a system prompt.
+Model settings control caching. If an existing agent used `planning.cache_ttl`,
+move its cache retention to the `cache` model setting, for example `cache: "1h"`;
+the legacy capability field is still accepted but ignored.
 
 It overlaps with [Delegation](#delegation) the way a plan overlaps with a team:
 planning decides *what* the steps are, delegation decides *who* does them. They are
@@ -1369,7 +2335,7 @@ wrapper — so an agent may bind both, one, or neither.
 | Config | Default | Values |
 |---|---|---|
 | `enable_subtasks` | `false` | adds the three subtask/dependency tools and the `blocked` status |
-| `cache_ttl` | `5m` | `5m`, `1h` — how long the prefix before the reminder may cache |
+| `cache_ttl` | `5m` | Legacy: accepted but ignored; configure `cache` in model settings |
 
 **None of the nine tools acts on the world.** Each mutates a checklist the model
 keeps for itself, so there is nothing here for a person to approve and the capability
@@ -1456,7 +2422,7 @@ work that needs several steps held in mind at once.
 
 | Config | Default | Values |
 |---|---|---|
-| `effort` | unset | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `effort` | unset | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
 Unset means the provider's own default effort. A level a provider does not have
 maps to its closest one, so a spec stays portable across a model swap.
@@ -1475,7 +2441,7 @@ There are three reminder kinds, each with its own cadence:
 | Kind | Cost | Text it injects |
 |---|---|---|
 | `reminders[]` | none | A fixed line you write |
-| `goal_reanchor` | none | The run's first user request, re-stated as the anchor |
+| `goal_reanchor` | none | A pointer to the run's first user request, without repeating user text |
 | `llm_reminder` | one model call per fire | A short nudge a model writes from the recent transcript |
 
 Each kind takes `interval` (fire every N model requests), `first_after` (the
@@ -1512,6 +2478,42 @@ than a name from config, the same decision
 
 On any error, or when the reserved budget is already spent, it falls back to the
 goal-reanchor line. A failed generation never blocks the run.
+
+## Tables { #tables }
+
+Table operations are tools of **AgenticOS MCP**, not a separate capability. Connect the platform MCP in the agent’s services and discover its table tools with tool search. Reads use the current member’s access; writes follow the MCP approval policy.
+
+Spec version 14 removes stored `virtual_tables` bindings when they load. Existing grants used by published apps move to `table_bindings`; this field exposes no tools. Disabled grants stay disabled. MCP connections, allowed tools and approval settings are not widened automatically. An old agent without platform MCP needs it connected explicitly before it can operate on tables.
+
+## Workflows { #workflows }
+
+`list_workflows` discovery is limited to 32 KiB of encoded JSON, including
+input contracts. Larger responses return a refusal instead of a partial list.
+Choose fewer workflows or smaller contracts for the binding, or inspect the
+HTTP input-schema endpoint outside the agent context.
+
+Lets the agent start the published [workflows](../workflows.md) its binding names,
+and read how they went. The Builder's panel lists the organization's workflows, one
+row each, and a ticked row is one the agent may start. A workflow that is a draft,
+or that starts from a webhook, a schedule, a chat message or a table, is shown but
+cannot be ticked: an agent starts only what starts by hand, by the API or by
+another workflow's call. **Wait for a run** caps how long a call waits, 60 seconds
+unless set, between 5 and 300.
+
+`list_workflows` names the ones the agent may start with the input fields each
+declares. `run_workflow` starts one with those fields and waits for its answer,
+and `get_workflow_run` reads a run still going when the wait ended. Each start is
+the API's own request, made as the member the run acts for, rebuilt from their
+membership on each call: their access, the declared input, budgets and admission
+quotas all hold, and the run says it was started by **An agent**.
+
+A workflow outside the binding is refused before anything starts. `run_workflow` is
+side-effecting, so an approval policy can gate it while the reads run freely. An
+agent running as a workflow's own step starts nothing this way: a **Run a
+workflow** step calls another workflow, keeping the chain's loop and depth limits.
+That is also why the step's own agent dialog does not offer this capability.
+A run with no member behind it (a widget, embed or hosted-page visitor, an
+unlinked channel sender, an agent event trigger's delivery) starts none.
 
 ## Date and time
 
@@ -1734,8 +2736,15 @@ it ever calls it.
 
 | Config | Default | Values |
 |---|---|---|
-| `strategy` | `auto` | `auto`, `keywords`, `bm25`, `regex` |
+| `strategy` | `auto` | `auto`, `keywords`, `local_bm25`, `bm25`, `regex` |
 | `max_results` | 10 | 1–50, ignored by native search |
+| `defer_capabilities` | `false` | defer eligible function tools from enabled capabilities |
+| `defer_mcp_servers` | `true` | defer tools from bound MCP servers |
+| `exclude_capabilities` | `[]` | capability IDs whose tools stay visible |
+| `exclude_mcp_servers` | `[]` | normalized MCP tool prefixes whose tools stay visible |
+| `exclude_tools` | `[]` | exposed tool names that stay visible, after prefixing and renaming |
+
+**`local_bm25`** ranks tool identifiers, descriptions and argument schemas locally, on every provider. It uses term rarity and length normalization, favors identifier matches, returns only matching authorized tools, and makes no embedding or model call. The result limit still applies.
 
 - **`auto`** — native tool search where the provider offers it (Anthropic BM25 or
   regex, OpenAI server-side), the local keyword algorithm everywhere else.
@@ -1745,26 +2754,40 @@ it ever calls it.
   model is resolved separately from the spec, so this is a run-time cost the author
   accepts by naming one — `auto` never fails this way.
 
-**Enabling it is what defers the MCP toolsets.** The capability and the deferral
-are two halves of one decision: the library's `ToolSearch` is inert with nothing
-deferred, and a deferred tool with no search to find it is a tool the model can
-never call. So binding `tool_search` is what marks the connected servers'
-toolsets for deferred loading — the registry's own tools stay visible, being few
-and chosen per agent. An agent that does not bind it pays nothing and sees every
-tool as before.
+**Choose which tool groups to defer.** The defaults preserve existing specs:
+MCP tools are deferred and capability tools stay visible. Enable
+`defer_capabilities` to defer eligible function tools from enabled capabilities
+too. Disable `defer_mcp_servers` to defer only capability tools, or enable both
+groups together. An agent without Tool search sees its tools as before.
+
+**Exclusions keep tools visible from the first request.** Name capability IDs in
+`exclude_capabilities`, whole MCP tool namespaces in `exclude_mcp_servers`, or
+final exposed tool names in `exclude_tools`. A connection named `github-work`
+uses the namespace `github_work`; a personal binding uses its actual account
+namespace, commonly the catalog key such as `notion`. Multiple personal accounts
+can have different namespaces. For an individual MCP tool, include its prefix,
+such as `github_work_search`, and use any name applied by a binding's rename.
+Exclusions affect visibility; connection and binding allowlists still control
+access.
+
+Provider-native built-ins and capability hooks stay active. Skills retain their
+own discovery through `read_skill`. Realtime voice does not use Tool search
+deferral. If every tool stays visible, search has no deferred catalog to discover.
 
 **The Builder says when it is worth it.** Once an agent's MCP bindings add up to
 more than 30 tools - each binding's own allowlist, or else what its server listed
 at its last check - the MCP tab shows a notice with a rough token estimate and a
-button that binds Tool search. It never binds it by itself: deferral changes what
-the model sees, so it stays the editor's decision.
+button that enables MCP tool search. It adds Tool search or enables MCP deferral
+in its existing configuration, preserving exclusions and capability settings.
+It never enables deferral by itself: this changes what the model sees, so it
+stays the editor's decision.
 
 **Deferral changes what the model sees, never a tool's identity.** A discovered
 MCP tool arrives under its real prefixed name, so the [approval gate](#what-a-binding-may-change)
 still pairs on it and a binding's rename still reaches it; `ToolSearch` sits
 outermost, reading the names a rename already applied.
 
-**It needs no metering.** The two local strategies run in Python and spend no
+**It needs no metering.** The local strategies run in Python and spend no
 tokens; native search runs inside the provider's own request, whose usage the
 [budget guard](../governance.md) already meters; and the discovery round-trips are
 ordinary model requests the same guard wraps. The one shape that would escape it —
@@ -1782,7 +2805,7 @@ Python guard.
 | Edge | Reads | Redact | Block |
 |---|---|---|---|
 | input | the user's prompt | `redact_secrets_in`, `redact_pii_in` | `blocked_keywords_in` |
-| output | the agent's answer | `redact_secrets_out`, `redact_pii_out` | `blocked_keywords_out` |
+| output | the agent's answer, and the text its drafts, drawings, charts, pages and questions show | `redact_secrets_out`, `redact_pii_out` | `blocked_keywords_out` |
 | tool result | what a tool returned, before the model reads it | `redact_secrets_tool`, `redact_pii_tool` | `blocked_keywords_tool` |
 | tool arguments | what the agent passes a tool, before the tool runs | `redact_secrets_args`, `redact_pii_args` | `blocked_keywords_args` |
 
@@ -1821,6 +2844,34 @@ beside `budget_exceeded`, because a refusal is the platform working and an opera
 filtering for problems should be able to find it rather than have it read like any
 completed answer. See [Governance](../governance.md).
 
+**A blocked turn's message is not read back.** A check reads only what is new in
+its own turn, so a later turn's history does not replay the message of a
+`guardrail_blocked` run, whichever check stopped it. In its place the model reads a
+short note that a guardrail stopped that turn, without the message's text or what
+the files sent with it added. The conversation still shows the person what they
+typed. Workflow agent-step refusals also mark the exact source chat turn. Search
+over past conversations (`conversation_search`) omits refused messages from
+matching, snippets and transcript reads. Conversation titles are withheld from
+these tools when the conversation contains a refused turn, including existing
+stored titles.
+
+Workflow retries and called workflows preserve this refusal provenance. They do
+not inherit a reply destination or access to the source chat’s workspace. If a newly
+refused turn was already compacted, the stored summary covering it is discarded
+so later history rebuilds with the refusal note. Conversation mentions use the
+same filtered listing, so their labels cannot repeat a refused turn to a model.
+
+A compaction already in flight cannot restore a later refused turn to the cache.
+Upgrading rebuilds existing cached summaries once; the original messages remain.
+
+Every run revalidates its history snapshot before each model request, including after tool calls. Workflow agent, model and decision steps also check their shared chat source before starting; queued sibling steps cannot reuse a refused or deleted source. Voice summaries and new realtime sessions use the same revision check.
+
+Coding harnesses check the same context before launch and before each ACP prompt, including prompts after a task correction.
+
+If an earlier turn is refused while a run waits for approval or an answer, that
+run stops before replaying tools or calling a model. Start a new turn to continue
+with the current, filtered history.
+
 **An output check screens the answer before anyone sees it.** Every surface
 streams: the web chat and the embedded widget send the answer as it is written, and
 a channel bot edits its reply as the text arrives. When any output check is
@@ -1841,7 +2892,14 @@ is what the tool receives, what the transcript stores and what the stream shows,
 and a blocked keyword ends the run before any tool is called. It is separate from
 the output check because redacting an argument changes what the tool does: an
 e-mail goes out with a placeholder where the key was. While it is on, a call's
-arguments are held back until the call is complete, as the answer is.
+arguments are held back until the call is complete, as the answer is. The one
+exception is what a call shows the person - a [draft](#drafts), a drawing, a chart, a page or a
+question: the output edge checks its text as it checks the answer, whether or not this
+edge is on. In a drawing or page that is the text, the readable attributes (`alt`, `title`,
+`aria-label`, `aria-description`, `label`,
+`placeholder`, `value`, `href`, `src`, except an inline image or a base64 `data:` URI) and the strings in a script; tags, comments,
+styles and code are not changed. A drawing or page appears when the call is complete, not
+as it is written.
 
 **A delegate streams under its delegating run's output check.** The text and
 reasoning a delegate writes in the delegation panel pass the same check as the
@@ -1858,12 +2916,29 @@ prompt reaches the model scrubbed, but the conversation stores the message as th
 person typed it, personal data included. Anyone who can read the conversation can
 read that message.
 
+**The input edge screens an attachment before it is written.** An attached file
+reaches the prompt as its name, its path and its first 20 lines (at most 2,000
+characters), and the input edge reads them with the person's message. An agent with
+a workspace has that text screened before the file is copied to `uploads/`, so a
+turn the edge blocks writes nothing, and a later turn in a `conversation`-, `user`-
+or `agent`-scoped workspace has no refused file to open. The edge reads only those
+opening lines, so a blocked term further down the file is not caught here; screen
+tool results for that. A picture sent inline is not text, so the edge does not read
+it: on a prompt with a picture the edge screens the words alone, never the picture's
+bytes, and a redaction rewrites those words and keeps the picture. A prompt built in
+code may also carry a text file inline, which is
+screened as the UTF-8 text a model is sent; a file that declares another
+character set or is not valid in the one it declares blocks the turn. Such a prompt
+may also carry a link, which is screened too: a redaction cannot be written
+into a link without breaking it, so a match there blocks. Because the bytes
+no longer decide, the check before the write predicts a turn with a picture as it
+does any other.
+
 **Tool-result screening is the reason this edge matters most.** It is the only guard
 on untrusted content entering the loop — a fetched page, a file, an MCP server's
 response — where a prompt-injection payload would otherwise reach the model unread.
 
-Two things are deliberately out of scope. **Tool arguments** are a structured
-mapping with no text detector, so they are not an edge. And the harness's tool
+One thing is deliberately out of scope: the harness's tool
 `approve` verdict is not ported: [approvals](../governance.md) already park a run per
 tool for a human decision, and a second, rule-driven path to the same mechanism is
 what a single door avoids.
@@ -1874,6 +2949,9 @@ what a single door avoids.
 `list_channel_members` — *List the people in this channel.*
 `search_channels` — *Find other channels by name or purpose, without reading them.*
 `read_channel_history` — *Read the most recent messages in this channel, newest last.*
+`send_channel_file` — *Send a requested workspace file.*
+
+Use a direct message containing plain `link` (without a slash) to connect an account. Open the private connection link while signed in to AgenticOS, then return to the channel. When earlier thread files require linking, the bot explains this without downloading them and retries after connection. Channel pictures use twice the CSS resolution; very wide horizontal Mermaid flowcharts receive a vertical layout for the PNG only.
 
 The one capability an agent's spec may not bind. It is granted **per binding**,
 in the Builder under *Where this agent is available*, because an organization can
@@ -1918,17 +2996,142 @@ picks keyed by header, or is told the person declined and carries on.
 
 The tool and its schema come from `AskUser` in pydantic-ai-harness. It is on by
 default in every new agent and every template, and an author can switch it off.
-Where nobody can answer yet - a schedule, a webhook, the API - the agent is told
-the person declined.
+A standalone agent run without a question channel - from a schedule, a webhook
+or the API - is told the person declined.
 
-A question nobody answers does not stop the agent's work for good. If the person
-leaves with the card open, the run parks on it - **Waiting for an answer** in run
-history - and the card comes back when they reopen the conversation, on any
-device. Answering it continues the run from where it stopped. Only the person
-asked can answer, through `POST /runs/{run_id}/answers`; `GET
-/runs/{run_id}/questions` reads the card back. After a day
+In console chat, the run saves its questions and pauses before showing the card
+- **Waiting for an answer** in run history. Switching chats, reloading or opening
+the conversation on another device restores the unanswered card. The console
+answers through its live chat connection, so a delegate can ask follow-up
+questions during the continuation. A disconnected card waits for reconnection.
+
+Only the person asked can answer. API clients can use
+`POST /runs/{run_id}/answers`; `GET /runs/{run_id}/questions` reads the card back.
+After a day
 (`QUESTION_EXPIRY_HOURS`, 24) the run ends as cancelled and the step records that
 the person did not answer in time.
+
+Inside a workflow agent step, the same tool saves the conversation and pauses the workflow with **Waiting for user**. Answer in the workflow run view or the originating chat. The answer is saved and the workflow worker resumes the same agent run, with its budget and earlier tool results intact. Workflow clients read `GET /workflow-runs/{run_id}/questions` and submit `POST /workflow-runs/{run_id}/nodes/{node_run_id}/answers` with the usual `responses` object. Each entry names the owning `workflow_run_id`; use that id when answering a question from a synchronously called workflow.
+
+Question cards appear only while you retain permission to run the owning workflow. A per-workflow **use** grant also allows you to answer; another viewer cannot answer on your behalf.
+
+## Drafts
+
+`write_draft` — *Show a draft the person will send or paste somewhere else, as a card
+they copy from.*
+
+When someone asks for an e-mail, a reply on Slack, a post or an issue
+description, the agent puts the text in a card of its own instead of mixing it
+into the answer, so nothing has to be selected by hand or cleaned up where it
+lands.
+
+The card has a title and a kind (Email, Slack message, Post). A draft
+with parts that are pasted in different places - an e-mail's subject and body -
+has one segment per part, and each segment has its own copy icon in the corner.
+A segment shows its name only where that tells the parts apart, and a small
+type hint in its bottom corner: `text` by default, `markdown` when the person
+asked for it, or a language for a snippet the draft carries.
+
+Copy puts **plain text** on the clipboard: exactly the segment's text, without
+its name, trimmed of blank lines at either end. Never HTML or rich text, so it
+pastes in the destination's own font and colours. A field is shown as typed, and `<b>` is
+never interpreted. A `markdown` part has a Preview button that shows it rendered, with
+links that work and images shown as links, not loaded; Source returns to the text.
+Copy always gives the source.
+
+Where the person has to supply a detail the agent does not know, it writes a short
+placeholder in square brackets such as `[Your Name]` or `[date]` instead of inventing
+one. The card shows in red any text in square brackets that has a letter in it, except
+links, footnotes, quoted lines and code, so nothing is sent unfilled, except in a
+markdown part's preview. Copy keeps the brackets.
+
+Two to five takes on the same draft ("give me two versions") go in one call as
+**versions**, shown as tabs named by a word or two ("Short", "With details").
+The limits: a title of up to 120 characters, up to 10 fields per version, up to
+20,000 characters in a field, and no empty field, title or kind. A call that breaks one is
+refused with a message naming what to fix, so the model retries and no empty
+card is ever drawn.
+
+An agent's [output guardrails](#guardrails) check a draft as they check its answer:
+a secret or personal data it redacts is redacted in the card, and a blocked keyword
+stops the run. Drafts stored before the agent had the guardrail are not rewritten.
+
+The card is rebuilt from the stored call's arguments, so reopening a
+conversation shows the same card. A conversation shared by link carries its
+drafts too (up to the newest 50, and 500,000 characters of text between them,
+since anyone with the link can load it). A call that was refused, or whose
+arguments no longer parse, shows no card.
+
+It is offered **only in the web chat**, because that is the one surface that
+draws the card. The desktop and phone apps load the same console, so they get
+it too, quick ask included. On every other surface - hosted pages and the
+embed widget, chat channels, the API, schedules, workflows, background topics, voice - and for a subagent,
+whose output goes to the parent model and not to the person, the agent does not
+see the tool and writes the draft into its answer as before.
+
+It is on by default in every new agent, every template and the agents the
+Architect creates, and an author can switch it off. Existing agents are
+unchanged until their author turns it on and publishes a new version.
+
+!!! note "Limit: a renamed tool"
+    The console finds the card by the tool's name, as it does for `draw` and
+    `create_chart`. A binding that renames `write_draft` loses the card: the
+    call shows as an ordinary step. Tracked in
+    [#2740](https://github.com/vstorm-co/agenticos/issues/2740).
+
+## Follow-ups { #follow-ups }
+
+Buttons are supported in console chat and the messaging channels above.
+Public widgets, hosted pages and raw embed sockets do not consume suggestion
+cards, so they do not start a paid follow-up run. Channel writers recheck the
+recorded sender identity, bot binding, current access policy and room membership
+before generation and delivery; an admitted unlinked room sender remains distinct
+from the publisher used for accounting.
+
+Next-step buttons are written only by a separate model selected in **Model for
+next steps** (`model_profile_id`). An empty selection disables suggestions.
+After upgrading, select a profile in the Follow-ups capability to keep using
+buttons. The main model never receives `suggest_next_steps` and does not wait
+for suggestions before finishing its answer or accepting the next prompt.
+
+After the assistant message commits, the optional background task reads that
+run's question and saved answer. It returns up to three short steps in the
+person's language, or none. The console receives a late event naming the exact
+conversation and assistant message; a newer turn is left intact. Stored buttons
+survive reopening the conversation. Slack, Teams, Telegram and Mattermost start
+this work after posting the main reply, and send the buttons separately.
+
+The helper has no tools or main-agent instructions. Its own run checks the
+agent, department and organization budgets, inherits tracing privacy, and books
+its cost independently, including failures. The main answer's cost is unchanged.
+Each process allows four helpers at once; excess work is skipped. Model work
+is limited to 15 seconds, two requests at most and 512 output tokens. There is
+no automatic retry. Suggestions may be lost on shutdown or connection loss;
+they never replace the answer with an error.
+
+Activity labels the auxiliary run **Follow-ups**. It keeps the source
+conversation’s read permissions and contributes to that conversation’s total
+cost, without marking it as busy or replacing its latest foreground run.
+
+`suggest_next_steps` remains the recorded identity of generated buttons, for
+history and existing spec overrides; it is not a callable tool of the main model.
+
+`propose_setup` proposes up to three things to set up, drawn as cards under the
+answer: an agent of the person's own, a routine, or a service to connect. A card
+acts in one click - a routine opens the routine dialog filled in, on the agent
+that proposed it; an agent is a question to the Architect.
+
+A connection that names its server by catalog key is that service's card - its logo and its
+Connect, which goes straight to the provider's sign-in and back to the
+conversation - and one that does not opens the MCP servers page at its add
+button. The AgenticOS agent ends its welcome interview with them, and offers a
+connection card whenever a request needs a service the person has not
+connected. The cards are the console's; a chat app does not draw them.
+
+It is on in the starter agent and in the Architect, and an author can switch it
+off. A voice call leaves it out.
+
+A `watch` setup proposal opens the personal watch form with its title and task filled in. The person selects an actual connected account and reviews the cadence and approved agent sources before creating it. Proposing a watch neither creates nor activates one.
 
 ## What a binding may change
 
@@ -1962,7 +3165,7 @@ asks nobody; `side_effecting` only tells the Builder which tools act on the worl
     That is what keeps an approval gate attached to a renamed tool. Keying it on
     the visible name would mean a rename silently removes the gate, and a
     side-effecting call then goes unattended with nothing reporting it. An id no such capability exposes
-is refused at publish, and so is a name no model could call.
+is refused at publish, and so is a name no model could call, or one another of the agent's tools already has - another capability's, or one the platform adds itself, such as `request_capability`.
 
 ## Scopes
 
@@ -1979,8 +3182,12 @@ the agent is assembled:
 | `code:execute` | `code_execution` |
 | `sandbox:execute` | `sandbox` |
 | `agents:delegate` | `subagents` |
+| `tables:read` | every [table workflow node](workflow-nodes.md#virtual-tables) |
+| `tables:write` | the table workflow nodes that write |
+| `workflows:run` | `workflows` |
+| `computer:use` | `computer_use` |
 
-!!! note "All eight are granted by default today"
+!!! note "All twelve are granted by default today"
 
     `DEFAULT_GRANTED_SCOPES` in `app/services/agent_registry.py`.
     Per-organization scope management is [roadmap](https://github.com/vstorm-co/agenticos/blob/main/docs/ROADMAP.md) work; the check
@@ -2073,3 +3280,18 @@ which is what makes the set of things an agent can do reviewable. See
 when the capability already exists.
 
 For tools nobody here has to write, see [MCP](../mcp.md).
+
+
+### Decision episodes and Improve { #decision-episodes-and-improve }
+
+A decision claim can carry structured evidence: the situation, choice, alternatives, expected outcome, observed outcome and correction. The agent uses `remember` with `kind: decision` and an `episode`; memory maintenance can capture the same evidence from an admitted conversation. Unknown outcomes stay empty. An episode stays in the case's person-agent or room scope. Sharing still requires the existing explicit audience approval.
+
+In **Settings → Memory**, read the evidence and record an observed outcome with **Correct**. A correction appends a new claim; the previous episode and its provenance remain in history. Deterministic consolidation does not fold episodes into general rules. Erasure removes their payload along with the claims; personal data export includes it.
+
+**Prepare Improve case** opens an editable input and expected answer. Review the text, remove anything that must stay private, and explicitly approve downloading one JSONL record. Its flat `input`, `reference_answer`, `tags` and `note` fields match the dataset importer in [Improve PR #2172](https://github.com/vstorm-co/agenticos/pull/2172). Import that file into an Improve dataset when that feature is installed, evaluate it and accept/publish changes there. This handoff does not create a dataset, run an optimizer or publish instructions automatically.
+
+Local access choices belong to the selected agent, not to a global default inherited by other agents. Revoking a folder also removes its remembered choices and coding consents for folders inside it. Older desktop apps keep whole-computer consent within one conversation; upgrade the app to remember it across an agent’s conversations.
+
+While local coding sessions run, `[session:api] Use the EU numbers` redirects the session named `api`. With one active session, an unaddressed correction reaches it; with several, it stays with the parent agent to avoid changing an unrelated task. The parent records the correction once when it continues.
+
+ Sandbox coding tasks in the same toolset queue so their workspace snapshots do not overlap; independent local sessions still run in parallel.

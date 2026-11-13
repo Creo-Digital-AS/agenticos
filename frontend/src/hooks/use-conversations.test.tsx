@@ -1,3 +1,4 @@
+import { useWorkOnStore } from "@/stores/work-on-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -6,12 +7,15 @@ import { toast } from "sonner";
 
 import { useConversations, type ConversationQuery } from "./use-conversations";
 import { apiClient } from "@/lib/api-client";
+import * as invalidation from "@/lib/coalesced-invalidation";
+import { qk } from "@/lib/query-keys";
 import {
   useAgentSelectionStore,
   useAuthStore,
   useChatStore,
   useConversationStore,
   useOrgStore,
+  useLiveFeedStore,
   useWorkingStore,
 } from "@/stores";
 
@@ -22,6 +26,8 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryDefaults(qk.organizations.list(), { staleTime: Infinity });
+  client.setQueryData(qk.organizations.list(), [{ id: "fallback", is_personal: true }]);
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
@@ -116,6 +122,24 @@ describe("the conversation list", () => {
     vi.useRealTimers();
   });
 
+  it("asks only now and then while the live-update socket carries the run's end", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    useLiveFeedStore.setState({ connected: true });
+    serve({ items: [conversation("c-1", { running_since: "2026-10-13T12:00:00Z" })] });
+    await hook();
+    const lists = () =>
+      vi.mocked(apiClient.get).mock.calls.filter(([path]) => !String(path).includes("/messages"))
+        .length;
+    const first = lists();
+
+    await act(async () => vi.advanceTimersByTimeAsync(8_000));
+    expect(lists()).toBe(first);
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(lists()).toBe(first + 1));
+    useLiveFeedStore.setState({ connected: false });
+    vi.useRealTimers();
+  });
+
   it("reads the list again while a thread this tab left mid-answer is not on it yet", async () => {
     // The listing has not seen the run the tab let go; polling is how it does.
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -134,7 +158,7 @@ describe("the conversation list", () => {
     vi.useRealTimers();
   });
 
-  it("marks a thread read at once, and puts the mark back if the server refuses", async () => {
+  it("marks a thread read and does not invent an unread badge after a later failure", async () => {
     serve({ items: [conversation("c-1", { unread: true })] });
     const result = await hook();
 
@@ -144,7 +168,7 @@ describe("the conversation list", () => {
 
     vi.mocked(apiClient.post).mockRejectedValueOnce(new Error("offline"));
     await act(async () => result.current.markRead("c-1"));
-    await waitFor(() => expect(result.current.conversations[0]?.unread).toBe(true));
+    await waitFor(() => expect(result.current.conversations[0]?.unread).toBe(false));
   });
 
   it("counts what matches rather than what was fetched", async () => {
@@ -191,6 +215,8 @@ describe("the conversation list", () => {
     // One key for two lists is the search box answering with the previous
     // search's rows, which is what putting the parameters in the key prevents.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryDefaults(qk.organizations.list(), { staleTime: Infinity });
+    client.setQueryData(qk.organizations.list(), [{ id: "fallback", is_personal: true }]);
     const shared = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     );
@@ -362,6 +388,147 @@ describe("the conversation list", () => {
 });
 
 describe("the conversation named in the address bar", () => {
+  it("opens the transcript without waiting for sidebar invalidation", async () => {
+    window.history.replaceState({}, "", "/chat?id=c-9");
+    const result = await hook();
+    let finish = () => {};
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockReturnValue(pending);
+    try {
+      const opening = result.current.fetchConversations();
+      await waitFor(() =>
+        expect(useConversationStore.getState().currentConversationId).toBe("c-9"),
+      );
+      expect(useConversationStore.getState().currentMessages[0]?.content).toBe("hi");
+      await act(async () => {
+        finish();
+        await opening;
+      });
+    } finally {
+      finish();
+      invalidate.mockRestore();
+    }
+  });
+
+  it("does nothing for a refresh already cancelled", async () => {
+    const result = await hook();
+    const controller = new AbortController();
+    controller.abort();
+    vi.mocked(apiClient.get).mockClear();
+    await result.current.fetchConversations(controller.signal);
+    expect(apiClient.get).not.toHaveBeenCalled();
+  });
+
+  it.each(["account", "organization"])(
+    "does not open a link after the %s changes during invalidation",
+    async (changed) => {
+      window.history.replaceState({}, "", "/chat?id=c-9");
+      const result = await hook();
+      let finish = () => {};
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockReturnValue(pending);
+      try {
+        const fetching = result.current.fetchConversations();
+        if (changed === "account")
+          useAuthStore.setState({
+            user: {
+              id: "next-account",
+              email: "next@example.com",
+              is_active: true,
+              created_at: "2026-10-24T00:00:00Z",
+            },
+          });
+        else await act(async () => useOrgStore.getState().setActiveOrgId("next-org"));
+        await act(async () => {
+          finish();
+          await fetching;
+        });
+        expect(useConversationStore.getState().currentConversationId).toBeNull();
+      } finally {
+        invalidate.mockRestore();
+      }
+    },
+  );
+
+  it.each(["answer", "refusal"])("ignores a message %s after cancellation", async (outcome) => {
+    window.history.replaceState({}, "", "/chat?id=c-9");
+    const result = await hook();
+    let answer: (value: unknown) => void = () => {};
+    let refuse: (reason: unknown) => void = () => {};
+    vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+      if (path.includes("/messages"))
+        return new Promise((resolve, reject) => {
+          answer = resolve;
+          refuse = reject;
+        });
+      return { items: [], total: 0 };
+    });
+    const controller = new AbortController();
+    const fetching = result.current.fetchConversations(controller.signal);
+    await waitFor(() =>
+      expect(apiClient.get).toHaveBeenCalledWith(
+        "/conversations/c-9/messages?latest=true&limit=101",
+        {
+          signal: controller.signal,
+        },
+      ),
+    );
+    controller.abort();
+    useConversationStore.getState().setCurrentConversationId("c-current");
+    await act(async () => {
+      if (outcome === "answer") answer({ items: [{ id: "m-late" }], cost: null });
+      else refuse(new DOMException("cancelled", "AbortError"));
+      await fetching;
+    });
+    expect(useConversationStore.getState().currentConversationId).toBe("c-current");
+    expect(useConversationStore.getState().currentMessages).toEqual([]);
+  });
+
+  it.each(["new chat", "A to C to A"])(
+    "does not reopen a delayed deep link after choosing %s",
+    async (choice) => {
+      window.history.replaceState({}, "", "/chat?id=c-9");
+      if (choice !== "new chat") useConversationStore.getState().setCurrentConversationId("c-1");
+      const result = await hook();
+      let finish!: (value: unknown) => void;
+      const pending = new Promise((resolve) => {
+        finish = resolve;
+      });
+      vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+        if (path === "/conversations/c-9/messages?latest=true&limit=101") return pending;
+        return { items: [], total: 0, cost: null };
+      });
+      const fetching = result.current.fetchConversations();
+      await waitFor(() =>
+        expect(apiClient.get).toHaveBeenCalledWith(
+          "/conversations/c-9/messages?latest=true&limit=101",
+          {
+            signal: undefined,
+          },
+        ),
+      );
+      await act(async () => {
+        if (choice === "new chat") await result.current.startNewChat();
+        else {
+          await result.current.selectConversation("c-2");
+          await result.current.selectConversation("c-1");
+        }
+      });
+      await act(async () => {
+        finish({ items: [{ id: "late" }], cost: null });
+        await fetching;
+      });
+      expect(useConversationStore.getState().currentConversationId).toBe(
+        choice === "new chat" ? null : "c-1",
+      );
+      expect(useConversationStore.getState().currentMessages).toEqual([]);
+    },
+  );
+
   it("opens the one the link points at, and its messages", async () => {
     // A shared link has to win over whatever the store remembered.
     window.history.replaceState({}, "", "/chat?id=c-9");
@@ -371,7 +538,12 @@ describe("the conversation named in the address bar", () => {
       await result.current.fetchConversations();
     });
 
-    expect(apiClient.get).toHaveBeenCalledWith("/conversations/c-9/messages");
+    expect(apiClient.get).toHaveBeenCalledWith(
+      "/conversations/c-9/messages?latest=true&limit=101",
+      {
+        signal: undefined,
+      },
+    );
     expect(useConversationStore.getState().currentConversationId).toBe("c-9");
     expect(useConversationStore.getState().currentMessages).toHaveLength(1);
   });
@@ -380,6 +552,11 @@ describe("the conversation named in the address bar", () => {
     // A deleted conversation, or one belonging to somebody else.
     window.history.replaceState({}, "", "/chat?id=c-gone");
     const result = await hook();
+    await act(async () => result.current.selectConversation("c-old"));
+    window.history.replaceState({}, "", "/chat?id=c-gone");
+    useConversationStore.setState({
+      currentCost: { input_tokens: 1, output_tokens: 2, cost_usd: "4.00", cost_is_partial: false },
+    });
     vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
       if (path.includes("/messages")) throw new Error("404");
       return { items: [], total: 0 };
@@ -390,6 +567,8 @@ describe("the conversation named in the address bar", () => {
     });
 
     expect(useConversationStore.getState().currentConversationId).toBeNull();
+    expect(useConversationStore.getState().currentMessages).toEqual([]);
+    expect(useConversationStore.getState().currentCost).toBeNull();
   });
 
   it("drops a linked thread that arrives after somebody else has signed in", async () => {
@@ -408,7 +587,12 @@ describe("the conversation named in the address bar", () => {
     await act(async () => {
       fetching = result.current.fetchConversations();
       await waitFor(() =>
-        expect(apiClient.get).toHaveBeenCalledWith("/conversations/c-9/messages"),
+        expect(apiClient.get).toHaveBeenCalledWith(
+          "/conversations/c-9/messages?latest=true&limit=101",
+          {
+            signal: undefined,
+          },
+        ),
       );
     });
 
@@ -437,7 +621,12 @@ describe("the conversation named in the address bar", () => {
     await act(async () => {
       fetching = result.current.fetchConversations();
       await waitFor(() =>
-        expect(apiClient.get).toHaveBeenCalledWith("/conversations/c-9/messages"),
+        expect(apiClient.get).toHaveBeenCalledWith(
+          "/conversations/c-9/messages?latest=true&limit=101",
+          {
+            signal: undefined,
+          },
+        ),
       );
     });
 
@@ -460,7 +649,9 @@ describe("the conversation named in the address bar", () => {
       await result.current.fetchConversations();
     });
 
-    expect(apiClient.get).not.toHaveBeenCalledWith("/conversations/c-1/messages");
+    expect(apiClient.get).not.toHaveBeenCalledWith(
+      "/conversations/c-1/messages?latest=true&limit=101",
+    );
   });
 });
 
@@ -473,9 +664,12 @@ describe("opening a conversation", () => {
       await result.current.selectConversation("c-1");
     });
 
-    expect(apiClient.get).toHaveBeenCalledWith("/conversations/c-1/messages", {
-      signal: expect.any(AbortSignal),
-    });
+    expect(apiClient.get).toHaveBeenCalledWith(
+      "/conversations/c-1/messages?latest=true&limit=101",
+      {
+        signal: expect.any(AbortSignal),
+      },
+    );
     expect(window.location.search).toBe("?id=c-1");
     expect(useConversationStore.getState().currentMessages).toHaveLength(1);
   });
@@ -520,8 +714,14 @@ describe("opening a conversation", () => {
 
     await act(async () => {
       // The superseded request answers last, with the wrong thread's messages.
-      pending.get("/conversations/c-2/messages")!({ items: [{ id: "m-2" }], total: 1 });
-      pending.get("/conversations/c-1/messages")!({ items: [{ id: "m-1" }], total: 1 });
+      pending.get("/conversations/c-2/messages?latest=true&limit=101")!({
+        items: [{ id: "m-2" }],
+        total: 1,
+      });
+      pending.get("/conversations/c-1/messages?latest=true&limit=101")!({
+        items: [{ id: "m-1" }],
+        total: 1,
+      });
       await Promise.all([first!, second!]);
     });
 
@@ -692,6 +892,35 @@ describe("creating, renaming and removing a conversation", () => {
       await result.current.unarchiveConversation("c-1");
     });
     expect(toast.error).toHaveBeenCalledWith("Failed to restore conversation");
+  });
+
+  it("forks a conversation at an answer and opens the fork", async () => {
+    serve();
+    const result = await hook();
+    vi.mocked(apiClient.post).mockResolvedValueOnce(conversation("c-fork"));
+
+    await act(async () => {
+      await result.current.forkConversation("c-1", "m-7");
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith("/conversations/c-1/fork", { message_id: "m-7" });
+    expect(result.current.currentConversationId).toBe("c-fork");
+    expect(toast.success).toHaveBeenCalledWith("Conversation forked");
+  });
+
+  it("reports a refused fork and stays where it was", async () => {
+    serve();
+    const result = await hook();
+    vi.mocked(apiClient.post).mockRejectedValueOnce("boom");
+
+    let fork: unknown;
+    await act(async () => {
+      fork = await result.current.forkConversation("c-1", "m-7");
+    });
+
+    expect(fork).toBeNull();
+    expect(result.current.currentConversationId).not.toBe("c-fork");
+    expect(toast.error).toHaveBeenCalledWith("Failed to fork conversation");
   });
 
   it("renames, then reads back the list - a new title can leave a search", async () => {
@@ -1255,8 +1484,21 @@ describe("a request that outlives the account that made it", () => {
 });
 
 describe("starting a new chat", () => {
-  it("reuses the conversation already open when it is empty", async () => {
-    // Otherwise every stray click leaves an untitled empty row in the sidebar.
+  it("requests composer focus again even if the previous draft was already empty", async () => {
+    const result = await hook();
+    const before = useConversationStore.getState().composerFocusRequest;
+    await act(async () => {
+      await result.current.startNewChat();
+    });
+    expect(useConversationStore.getState().composerFocusRequest).toBe(before + 1);
+    await act(async () => {
+      await result.current.startNewChat();
+    });
+    expect(useConversationStore.getState().composerFocusRequest).toBe(before + 2);
+  });
+
+  it("leaves even an empty stored conversation so its project cannot leak into a new draft", async () => {
+    // A stored conversation has a fixed project identity, even before any messages.
     const result = await hook();
     useConversationStore.getState().setCurrentConversationId("c-1");
     useConversationStore.getState().setCurrentMessages([]);
@@ -1266,8 +1508,19 @@ describe("starting a new chat", () => {
       await result.current.startNewChat();
     });
 
-    expect(useConversationStore.getState().currentConversationId).toBe("c-1");
-    expect(window.location.search).toBe("?id=c-1");
+    expect(useConversationStore.getState().currentConversationId).toBeNull();
+    expect(window.location.search).toBe("");
+  });
+
+  it("starts outside the last chat's project", async () => {
+    const result = await hook();
+    useConversationStore.getState().setPendingProjectId("p-1");
+
+    await act(async () => {
+      await result.current.startNewChat();
+    });
+
+    expect(useConversationStore.getState().pendingProjectId).toBeNull();
   });
 
   it("leaves a conversation that has messages, and strips the stale id at once", async () => {
@@ -1346,4 +1599,506 @@ describe("starting a new chat", () => {
 
     expect(useAgentSelectionStore.getState().selectedAgentId).toBe("a-other");
   });
+});
+
+describe("reading an open conversation again (#54)", () => {
+  it("replaces its messages in place, with nothing cleared and no loading flag", async () => {
+    const result = await hook();
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    useChatStore.getState().addMessage({
+      id: "m-live",
+      role: "user",
+      content: "still on screen",
+      timestamp: new Date("2026-07-31T12:00:00Z"),
+    });
+    serve({
+      messages: [
+        { id: "m-1", role: "user", content: "hi" },
+        { id: "m-2", role: "assistant", content: "hello" },
+      ],
+    });
+    const loading = vi.fn();
+    const stop = useConversationStore.subscribe((state) => loading(state.isLoading));
+
+    await act(async () => {
+      await result.current.rereadConversation("c-1");
+    });
+    stop();
+
+    expect(useConversationStore.getState().currentMessages).toHaveLength(2);
+    expect(loading).not.toHaveBeenCalledWith(true);
+    // The chat's own copy is the container's to replace; nothing here emptied it.
+    expect(useChatStore.getState().messages).toHaveLength(1);
+  });
+
+  it("drops an answer for a conversation no longer open, or an older re-read", async () => {
+    const result = await hook();
+    useConversationStore.getState().setCurrentConversationId("c-2");
+    await act(async () => {
+      await result.current.rereadConversation("c-1");
+    });
+    expect(useConversationStore.getState().currentMessages).toEqual([]);
+
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    const pending: ((value: unknown) => void)[] = [];
+    vi.mocked(apiClient.get).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = result.current.rereadConversation("c-1");
+      second = result.current.rereadConversation("c-1");
+    });
+    await act(async () => {
+      pending[1]?.({ items: [{ id: "new" }, { id: "newer" }], total: 2 });
+      await second;
+      pending[0]?.({ items: [{ id: "old" }], total: 1 });
+      await first;
+    });
+    expect(useConversationStore.getState().currentMessages).toHaveLength(2);
+  });
+
+  it("keeps what is shown when the read fails", async () => {
+    const result = await hook();
+    useConversationStore.getState().setCurrentConversationId("c-1");
+    vi.mocked(apiClient.get).mockRejectedValue(new Error("offline"));
+    await act(async () => {
+      await result.current.rereadConversation("c-1");
+    });
+    expect(useConversationStore.getState().error).toBeNull();
+  });
+});
+
+it("starts a project draft without reusing an unrelated empty conversation or folder", async () => {
+  const result = await hook();
+  useConversationStore.getState().setCurrentConversationId("empty-other-project");
+  useConversationStore.getState().setCurrentMessages([]);
+  useChatStore.setState({ messages: [] });
+  useWorkOnStore.getState().applyProject("old-project", { folder: "/old", mode: "read_only" });
+  await act(async () => {
+    await result.current.startNewChat("new-project");
+  });
+  expect(useConversationStore.getState().currentConversationId).toBeNull();
+  expect(useConversationStore.getState().pendingProjectId).toBe("new-project");
+  expect(useWorkOnStore.getState().targetFor(null)).toBeNull();
+});
+
+describe("transcript request ownership", () => {
+  it.each(["organization", "selection"])(
+    "drops a late select after the %s changes",
+    async (changed) => {
+      const result = await hook();
+      let finish!: (value: unknown) => void;
+      vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+        if (path.includes("/messages"))
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        return { items: [], total: 0 };
+      });
+      let reading!: Promise<void>;
+      act(() => {
+        reading = result.current.selectConversation("old");
+      });
+      act(() => {
+        if (changed === "organization") useOrgStore.setState({ activeOrgId: "new-org" });
+        useConversationStore.getState().reset();
+        if (changed === "selection")
+          useConversationStore.setState({ currentConversationId: "new" });
+      });
+      await act(async () => {
+        finish({ items: [{ id: "old-message" }], total: 1 });
+        await reading;
+      });
+      expect(useConversationStore.getState().currentMessages).toEqual([]);
+      expect(useConversationStore.getState().error).toBeNull();
+    },
+  );
+});
+
+it("opens the newest transcript page and prepends older messages without losing the last turn", async () => {
+  const all = Array.from({ length: 102 }, (_, index) => ({
+    id: `m-${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `message ${index}`,
+  }));
+  vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+    if (!path.includes("/messages")) return { items: [conversation("long")], total: 1 };
+    const params = new URL(path, "http://localhost").searchParams;
+    const before = params.get("before");
+    const available = before
+      ? all.slice(
+          0,
+          all.findIndex((message) => message.id === before),
+        )
+      : all;
+    return {
+      items:
+        params.get("latest") === "true"
+          ? available.slice(-Number(params.get("limit")))
+          : available.slice(0, 100),
+      total: all.length,
+      cost: null,
+    };
+  });
+  const result = await hook();
+  await act(async () => result.current.selectConversation("long"));
+  expect(result.current.currentMessages.map((message) => message.id)).toEqual(
+    all.slice(2).map((message) => message.id),
+  );
+  expect(result.current.hasEarlierMessages).toBe(true);
+  await act(async () => result.current.loadEarlierMessages());
+  expect(result.current.currentMessages.map((message) => message.id)).toEqual(
+    all.map((message) => message.id),
+  );
+  expect(result.current.hasEarlierMessages).toBe(false);
+});
+
+it("leaves the loaded transcript intact when loading earlier messages fails, and permits retry", async () => {
+  const result = await hook();
+  const rows = Array.from({ length: 101 }, (_, index) => ({
+    id: `m-${index}`,
+    role: "user",
+    content: `${index}`,
+  }));
+  vi.mocked(apiClient.get).mockResolvedValue({ items: rows, total: 201, cost: null });
+  await act(async () => result.current.selectConversation("paged"));
+  vi.mocked(apiClient.get).mockRejectedValue(new Error("earlier unavailable"));
+  await act(async () => result.current.loadEarlierMessages());
+  expect(result.current.currentMessages).toHaveLength(100);
+  expect(result.current.error).toBeTruthy();
+  expect(result.current.isLoadingEarlier).toBe(false);
+  vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 201, cost: null });
+  await act(async () => result.current.loadEarlierMessages());
+  expect(result.current.hasEarlierMessages).toBe(false);
+  const called = vi.mocked(apiClient.get).mock.calls.length;
+  await act(async () => result.current.loadEarlierMessages());
+  expect(apiClient.get).toHaveBeenCalledTimes(called);
+});
+
+it("drops an earlier page that arrives after another conversation was selected", async () => {
+  const result = await hook();
+  const rows = Array.from({ length: 101 }, (_, index) => ({
+    id: `m-${index}`,
+    role: "user",
+    content: `${index}`,
+  }));
+  vi.mocked(apiClient.get).mockResolvedValue({ items: rows, total: 201, cost: null });
+  await act(async () => result.current.selectConversation("paged"));
+  let finish!: (value: unknown) => void;
+  vi.mocked(apiClient.get).mockImplementation(
+    async () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let request!: Promise<void>;
+  act(() => {
+    request = result.current.loadEarlierMessages();
+  });
+  await act(async () => result.current.loadEarlierMessages());
+  act(() => useConversationStore.getState().reset());
+  await act(async () => {
+    finish({ items: rows, total: 201 });
+    await request;
+  });
+  expect(result.current.currentMessages).toEqual([]);
+});
+
+it("does not revive a read badge from a refresh started during the read write", async () => {
+  serve({ items: [conversation("c-1", { unread: true })] });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(qk.organizations.list(), [{ id: "fallback", is_personal: true }]);
+  function localWrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result } = renderHook(() => useConversations({}), { wrapper: localWrapper });
+  await waitFor(() => expect(result.current.conversations).toHaveLength(1));
+  let saved: (() => void) | undefined;
+  vi.mocked(apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        saved = resolve;
+      }),
+  );
+  let marking: Promise<void> | undefined;
+  act(() => {
+    marking = result.current.markRead("c-1");
+  });
+  await waitFor(() => expect(saved).toBeDefined());
+  let oldList: ((value: unknown) => void) | undefined;
+  vi.mocked(apiClient.get).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        oldList = resolve;
+      }),
+  );
+  let refreshing: Promise<void> | undefined;
+  act(() => {
+    refreshing = client.refetchQueries({ queryKey: qk.conversations.list() });
+  });
+  await waitFor(() => expect(oldList).toBeDefined());
+  await act(async () => {
+    saved?.();
+    await marking;
+  });
+  await act(async () => {
+    oldList?.({ items: [conversation("c-1", { unread: true })], total: 1 });
+    await refreshing;
+  });
+  expect(result.current.conversations[0]?.unread).toBe(false);
+});
+
+it("does not roll back a newer read when an older read fails late", async () => {
+  serve({ items: [conversation("c-1", { unread: true })] });
+  const result = await hook();
+  let fail: ((error: Error) => void) | undefined;
+  vi.mocked(apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  let first: Promise<void> | undefined;
+  act(() => {
+    first = result.current.markRead("c-1");
+  });
+  await waitFor(() => expect(fail).toBeDefined());
+  await act(async () => {
+    await result.current.markRead("c-1");
+  });
+  await act(async () => {
+    fail?.(new Error("old request failed"));
+    await first;
+  });
+  expect(result.current.conversations[0]?.unread).toBe(false);
+});
+
+it("ignores an older successful read after a newer read has completed", async () => {
+  serve({ items: [conversation("c-1", { unread: true })] });
+  const result = await hook();
+  let finish: (() => void) | undefined;
+  vi.mocked(apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let first: Promise<void> | undefined;
+  act(() => {
+    first = result.current.markRead("c-1");
+  });
+  await waitFor(() => expect(finish).toBeDefined());
+  await act(async () => {
+    await result.current.markRead("c-1");
+  });
+  await act(async () => {
+    finish?.();
+    await first;
+  });
+  expect(result.current.conversations[0]?.unread).toBe(false);
+});
+
+it("keeps the first list alive when a chat is marked read before it arrives", async () => {
+  let arrive: (value: unknown) => void = () => {
+    throw new Error("List not requested");
+  };
+  vi.mocked(apiClient.get).mockImplementation((path) =>
+    path.startsWith("/conversations?")
+      ? new Promise((resolve) => {
+          arrive = resolve;
+        })
+      : Promise.resolve({ items: [], total: 0 }),
+  );
+  vi.mocked(apiClient.post).mockResolvedValue(undefined);
+  const { result } = renderHook(() => useConversations(), { wrapper });
+  let marked: Promise<void> | undefined;
+  act(() => {
+    marked = result.current.markRead("c-1");
+  });
+  await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith("/conversations/c-1/read", {}));
+  await act(async () => {
+    arrive({
+      items: [
+        conversation("c-1", {
+          unread: true,
+          agents: [{ id: "writer", name: "Writer" }],
+          running_since: "2026-10-27T12:00:00Z",
+        }),
+      ],
+      total: 1,
+    });
+    await marked;
+  });
+  expect(result.current.conversations[0]).toMatchObject({
+    unread: false,
+    agents: [{ id: "writer", name: "Writer" }],
+    running_since: "2026-10-27T12:00:00Z",
+  });
+});
+
+it("does not send a read marker after the organization changes during query cancellation", async () => {
+  serve({ items: [conversation("c-1", { unread: true })] });
+  const result = await hook();
+  let finishCancellation: (() => void) | undefined;
+  const cancel = vi.spyOn(QueryClient.prototype, "cancelQueries").mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCancellation = resolve;
+      }),
+  );
+  let marked: Promise<void> | undefined;
+  try {
+    act(() => {
+      marked = result.current.markRead("c-1");
+    });
+    await waitFor(() => expect(finishCancellation).toBeDefined());
+    act(() => {
+      useOrgStore.setState({ activeOrgId: "another-organization" });
+    });
+    await act(async () => {
+      finishCancellation?.();
+      await marked;
+    });
+    expect(apiClient.post).not.toHaveBeenCalled();
+  } finally {
+    cancel.mockRestore();
+  }
+});
+
+it("does not reopen the previous address when a refresh starts navigation", async () => {
+  const result = await hook();
+  window.history.replaceState({}, "", "/chat?id=c-9");
+  vi.mocked(apiClient.get).mockClear();
+  const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockImplementation(() => {
+    window.history.replaceState({}, "", "/chat");
+    return Promise.resolve();
+  });
+  try {
+    await result.current.fetchConversations();
+    expect(apiClient.get).not.toHaveBeenCalledWith(
+      expect.stringContaining("c-9/messages"),
+      expect.anything(),
+    );
+  } finally {
+    invalidate.mockRestore();
+  }
+});
+
+it.each(["organization", "account", "selection"])(
+  "does not replace the open chat when %s changes during a fork",
+  async (changed) => {
+    const previousUser = useAuthStore.getState().user;
+    useAuthStore.setState({
+      user: {
+        id: "fork-owner",
+        email: "fork@example.com",
+        is_active: true,
+        created_at: "2026-11-09T00:00:00Z",
+      },
+    });
+    useOrgStore.setState({ activeOrgId: "org-a" });
+    const result = await hook();
+    let finish: (value: unknown) => void = () => {};
+    vi.mocked(apiClient.post).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const forking = result.current.forkConversation("c-1", "m-7");
+    try {
+      act(() => {
+        if (changed === "organization") useOrgStore.setState({ activeOrgId: "org-b" });
+        if (changed === "account") useAuthStore.setState({ user: null });
+        if (changed === "selection")
+          useConversationStore.getState().setCurrentConversationId("c-elsewhere");
+      });
+      const selected = useConversationStore.getState().currentConversationId;
+      await act(async () => {
+        finish(conversation("c-fork"));
+        await forking;
+      });
+      expect(useConversationStore.getState().currentConversationId).toBe(selected);
+    } finally {
+      useAuthStore.setState({ user: previousUser });
+    }
+  },
+);
+
+it("drops a fork after the organization changes while its lists are refreshed", async () => {
+  const result = await hook();
+  vi.mocked(apiClient.post).mockResolvedValueOnce(conversation("c-fork"));
+  const invalidate = vi.spyOn(invalidation, "invalidateSoon").mockImplementationOnce(async () => {
+    useOrgStore.setState({ activeOrgId: "changed-after-copy" });
+  });
+  try {
+    let copied: unknown;
+    await act(async () => {
+      copied = await result.current.forkConversation("c-1", "m-7");
+    });
+    expect(copied).toBeNull();
+    expect(useConversationStore.getState().currentConversationId).not.toBe("c-fork");
+    expect(toast.success).not.toHaveBeenCalled();
+  } finally {
+    invalidate.mockRestore();
+  }
+});
+
+it("does not toast or return a fork after the organization changes while opening it", async () => {
+  const result = await hook();
+  vi.mocked(apiClient.post).mockResolvedValueOnce(conversation("c-fork"));
+  const base = vi.mocked(apiClient.get).getMockImplementation()!;
+  vi.mocked(apiClient.get).mockImplementation(async (path) => {
+    if (path.includes("c-fork/messages"))
+      useOrgStore.setState({ activeOrgId: "changed-while-opening" });
+    return base(path);
+  });
+  let copied: unknown;
+  await act(async () => {
+    copied = await result.current.forkConversation("c-1", "m-7");
+  });
+  expect(copied).toBeNull();
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
+it("marks and restores shared unread state without touching access or grant caches", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(qk.organizations.list(), [{ id: "fallback", is_personal: true }]);
+  const sharedKey = qk.conversationShares.sharedWithMe(0, 50, null, false);
+  const row = conversation("shared", { unread: true });
+  client.setQueryData(sharedKey, { items: [row], total: 1 });
+  const grants = [{ id: "grant", permission: "view" }];
+  client.setQueryData(qk.conversationShares.list("shared"), grants);
+  function localWrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result } = renderHook(() => useConversations(), { wrapper: localWrapper });
+  await waitFor(() => expect(result.current.isLoading).toBe(false));
+  let refuse: (reason: Error) => void = () => {};
+  vi.mocked(apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        refuse = reject;
+      }),
+  );
+  let write: Promise<void>;
+  await act(async () => {
+    write = result.current.markRead("shared");
+  });
+  expect(client.getQueryData(sharedKey)).toMatchObject({ items: [{ unread: false }] });
+  await act(async () => {
+    refuse(new Error("offline"));
+    await write;
+  });
+  expect(client.getQueryData(sharedKey)).toMatchObject({ items: [{ unread: true }] });
+  expect(client.getQueryData(qk.conversationShares.list("shared"))).toBe(grants);
+  vi.mocked(apiClient.post).mockResolvedValueOnce(undefined);
+  await act(async () => {
+    await result.current.markRead("shared");
+  });
+  expect(client.getQueryData(sharedKey)).toMatchObject({ items: [{ unread: false }] });
 });

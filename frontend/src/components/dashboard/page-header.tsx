@@ -1,9 +1,11 @@
-import Link from "next/link";
-import { ChevronRight } from "lucide-react";
-import type { ReactNode } from "react";
+"use client";
 
-import { PageIcon } from "@/components/dashboard/page-icon";
-import { RestartTourButton } from "@/components/onboarding/restart-tour-button";
+import Link from "next/link";
+import { ChevronRight, MoreHorizontal, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+
+import { PageHelp } from "@/components/onboarding/page-help";
 import { cn } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 
@@ -14,11 +16,17 @@ export interface Crumb {
 
 interface PageHeaderProps {
   title: ReactNode;
+  /** A resource mark or picker beside the heading, outside its accessible name. */
+  icon?: ReactNode;
   description?: ReactNode;
+  /** Live summaries remain visible; explanatory introductions live in contextual help. */
+  descriptionMode?: "help" | "summary";
   /** Breadcrumb trail (last item is the current page; omit href on it). */
   breadcrumbs?: Crumb[];
   /** Right-aligned actions (buttons, etc.). */
   actions?: ReactNode;
+  /** Secondary commands stay inline on desktop and fold behind one control on phones. */
+  secondaryActions?: ReactNode;
   /** State of the thing on the page (status pills), set above the actions. */
   badges?: ReactNode;
   className?: string;
@@ -26,28 +34,57 @@ interface PageHeaderProps {
 
 /**
  * The single page-header used across the whole dashboard. Keeps title/description/
- * actions/breadcrumbs consistent and theme-aware. Replaces ad-hoc per-page heroes.
+ * actions/breadcrumbs consistent and theme-aware. The parent owns outer spacing.
  */
 export function PageHeader({
   title,
+  icon,
   description,
+  descriptionMode = "help",
   breadcrumbs,
   actions,
+  secondaryActions,
   badges,
   className,
 }: PageHeaderProps) {
   const t = useTranslations("dashboard");
+  const [secondaryOpen, setSecondaryOpen] = useState(false);
+  const secondaryId = useId();
+  const header = useRef<HTMLDivElement>(null);
+  const secondaryButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!secondaryOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !header.current?.contains(event.target))
+        setSecondaryOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        setSecondaryOpen(false);
+        secondaryButton.current?.focus();
+      }
+    };
+    window.addEventListener("pointerdown", outside);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("pointerdown", outside);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [secondaryOpen]);
   return (
-    <div className={cn("mb-6 md:mb-8", className)}>
+    <div ref={header} className={cn("shrink-0", className)}>
       {breadcrumbs && breadcrumbs.length > 0 && (
-        <nav aria-label={t("breadcrumb")} className="mb-3">
+        <nav aria-label={t("breadcrumb")} className="mb-1 sm:mb-3">
           <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-xs">
             {breadcrumbs.map((c, i) => {
               const last = i === breadcrumbs.length - 1;
               return (
                 <li key={`${c.label}-${i}`} className="flex items-center gap-1.5">
                   {c.href && !last ? (
-                    <Link href={c.href} className="hover:text-foreground transition-colors">
+                    <Link
+                      href={c.href}
+                      className="hover:text-foreground touch:min-h-8 focus-visible:outline-ring inline-flex items-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2"
+                    >
                       {c.label}
                     </Link>
                   ) : (
@@ -58,7 +95,7 @@ export function PageHeader({
                       {c.label}
                     </span>
                   )}
-                  {!last && <ChevronRight className="h-3 w-3 opacity-50" />}
+                  {!last && <ChevronRight className="h-3 w-3 shrink-0 opacity-50" aria-hidden />}
                 </li>
               );
             })}
@@ -66,27 +103,15 @@ export function PageHeader({
         </nav>
       )}
 
-      {/* Wrapping rather than squeezing. With the actions fixed and the text
-          column shrinking to fit beside them, a page with five buttons broke
-          its own title over two lines and every pill in it over two more. The
-          text column claims 20rem before anything else, and when that and the
-          actions do not fit on one line the actions move under the title - the
-          description's length plays no part, since the basis, not the text,
-          decides the line. The actions sit level with the title rather than
-          with the description's last line: a four-line description used to
-          leave the page's primary button floating halfway down the header. */}
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-        <div className="min-w-0 flex-1 basis-80">
-          <div className="flex items-center gap-3">
-            <PageIcon />
-            <h1 className="text-foreground min-w-0 flex-1 text-xl leading-tight font-semibold tracking-tight text-balance md:text-2xl">
+      {/* Keep the primary actions beside the title; wrap naturally on a narrow screen. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 sm:gap-x-6 sm:gap-y-3">
+        <div className="min-w-0 flex-1 basis-auto">
+          <div className="flex min-h-9 items-center gap-2 sm:gap-3">
+            {icon}
+            <h1 className="text-foreground min-w-0 text-lg leading-tight font-semibold tracking-tight text-balance sm:text-xl md:text-2xl">
               {title}
             </h1>
-            {/* On a phone the help sits with the title it explains, rather than
-                alone on a row under the wrapped actions. */}
-            <span className="md:hidden">
-              <RestartTourButton />
-            </span>
+            <PageHelp description={descriptionMode === "help" ? description : undefined} />
           </div>
           {/* Status belongs to the thing named, so it sits under the name - it
               used to float above the action buttons, reading as a caption for
@@ -95,26 +120,55 @@ export function PageHeader({
             <div
               role="group"
               aria-label={t("pageStatus")}
-              className="mt-2 flex flex-wrap items-center gap-2 whitespace-nowrap"
+              className="mt-1 flex flex-wrap items-center gap-2 whitespace-nowrap sm:mt-2"
             >
               {badges}
             </div>
           )}
-          {description && (
-            // Two lines on a phone: a paragraph above the content pushed the
-            // page's first card below the fold before anything could be read.
-            <p className="text-muted-foreground mt-1.5 line-clamp-2 max-w-2xl text-sm leading-relaxed text-pretty md:line-clamp-none">
-              {description}
-            </p>
-          )}
         </div>
+        {description && descriptionMode === "summary" && (
+          <p className="text-muted-foreground order-1 basis-full text-sm leading-relaxed md:order-2">
+            {description}
+          </p>
+        )}
         {/* Wrapped on a phone: scrolled sideways, the Builder's last actions
             sat past the screen's edge with nothing saying they were there. */}
-        <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2 md:justify-end">
+        <div
+          className={cn(
+            "page-actions order-2 flex w-auto max-w-full min-w-0 flex-wrap items-center gap-2 md:order-1 md:justify-end",
+            secondaryOpen && "max-md:w-full",
+          )}
+        >
+          {secondaryActions && (
+            <>
+              <Button
+                ref={secondaryButton}
+                type="button"
+                variant="outline"
+                size="icon"
+                className="md:hidden"
+                aria-label={t("morePageActions")}
+                aria-expanded={secondaryOpen}
+                data-state={secondaryOpen ? "active" : "inactive"}
+                aria-controls={secondaryId}
+                data-tour="page-secondary-actions"
+                onClick={() => setSecondaryOpen(!secondaryOpen)}
+              >
+                {secondaryOpen ? <X aria-hidden /> : <MoreHorizontal aria-hidden />}
+              </Button>
+              <div
+                id={secondaryId}
+                data-secondary-actions
+                className={cn(
+                  "order-2 grid basis-full grid-cols-2 gap-2 md:contents max-md:[&>div]:col-span-2",
+                  !secondaryOpen && "max-md:hidden",
+                )}
+              >
+                {secondaryActions}
+              </div>
+            </>
+          )}
           {actions}
-          <span className="hidden md:inline-flex">
-            <RestartTourButton />
-          </span>
         </div>
       </div>
     </div>

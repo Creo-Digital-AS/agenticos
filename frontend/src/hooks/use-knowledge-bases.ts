@@ -17,9 +17,11 @@ import type {
   SyncSourceCreate,
   SyncSourceList,
   SyncSourceRead,
+  SyncSourceUpdate,
 } from "@/lib/rag-api";
 import { overrideSize } from "@/lib/ingestion-config";
 import { useTenantGuard, useTenantId } from "@/hooks/use-organizations";
+import { usePermissions } from "./use-permissions";
 import type {
   CreateKnowledgeBaseInput,
   EmbeddingProviderInput,
@@ -27,9 +29,12 @@ import type {
   IngestionOverride,
   KBDocument,
   KBDocumentList,
+  KBIngestion,
   KnowledgeBase,
+  KnowledgeBaseDetail,
   KnowledgeBaseList,
 } from "@/types";
+import { Perm } from "@/types/permissions";
 import { useCreatedToast } from "./use-created-toast";
 
 const listKnowledgeBases = async (): Promise<KnowledgeBase[]> =>
@@ -127,7 +132,7 @@ export function useKnowledgeBases() {
   const patchKB = useCallback(
     async (id: string, patch: Partial<Pick<KnowledgeBase, "name" | "description">>) => {
       const startedIn = listOrgId;
-      const updated = await apiClient.patch<KnowledgeBase>(`/kb/${id}`, patch);
+      const updated = await apiClient.patch<KnowledgeBaseDetail>(`/kb/${id}`, patch);
       writeCache((prev) => prev.map((k) => (k.id === id ? updated : k)), startedIn);
       toast.success(t("updated"));
       return updated;
@@ -217,7 +222,7 @@ export function useKBDetail(id: string | null) {
   // page's error rather than something to hammer.
   const kbQuery = useQuery({
     queryKey: qk.kb.detail(id ?? "none"),
-    queryFn: () => apiClient.get<KnowledgeBase>(`/kb/${id}`),
+    queryFn: () => apiClient.get<KnowledgeBaseDetail>(`/kb/${id}`),
     enabled,
     retry: false,
   });
@@ -243,10 +248,17 @@ export function useKBDetail(id: string | null) {
     enabled,
     retry: false,
   });
+  // The organization's integrations, every base's, behind `connections:manage`
+  // (#2745). Not asked without it: the answer would be a 403, which the wizard
+  // reports as a list that failed to load rather than one that is not theirs.
+  // Masked below as well: a disabled query keeps its last answer, so a member
+  // losing the permission would go on being offered what it already fetched.
+  const { can } = usePermissions();
+  const managesIntegrations = can(Perm.connectionsManage);
   const orgIntegrationsQuery = useQuery({
     queryKey: qk.kb.orgIntegrations(id ?? "none"),
     queryFn: () => apiClient.get<SyncSourceList>(`/kb/${id}/sync-sources/org-integrations`),
-    enabled,
+    enabled: enabled && managesIntegrations,
     retry: false,
   });
   const connectorsQuery = useQuery({
@@ -257,6 +269,23 @@ export function useKBDetail(id: string | null) {
   });
 
   const kb = kbQuery.data ?? null;
+
+  // Whether the KB is still indexing, counted over every document rather than
+  // the page of them loaded below - a batch of two hundred uploads reads as
+  // settled from its first twenty while the rest are still queued (#2486). Not
+  // load-bearing: a failure leaves the strip without the state, not the page
+  // without the collection.
+  const ingestionQuery = useQuery({
+    queryKey: qk.kb.ingestion(id ?? "none"),
+    queryFn: () => apiClient.get<KBIngestion>(`/kb/${id}/ingestion`),
+    enabled,
+    retry: false,
+  });
+  // React Query keeps the last answer when a refetch fails; a stale `indexing`
+  // would keep the strip spinning, so a failure shows no state. It still keeps
+  // the poll going: with `retry: false`, the poll is what reads it again.
+  const ingestion = ingestionQuery.isError ? null : (ingestionQuery.data ?? null);
+  const ingestionPending = ingestionQuery.isError || ingestion?.indexing_status === "indexing";
 
   // Flattened and de-duplicated across pages: a poll can re-read a page the
   // append had already fetched, and two copies of one document would list it
@@ -279,11 +308,11 @@ export function useKBDetail(id: string | null) {
   const documentsTotal = documentsQuery.data?.pages.at(-1)?.total ?? 0;
 
   const syncSources = sourcesQuery.data?.items ?? [];
-  const orgIntegrations = orgIntegrationsQuery.data?.items ?? [];
+  const orgIntegrations = managesIntegrations ? (orgIntegrationsQuery.data?.items ?? []) : [];
   const connectors = connectorsQuery.data?.items ?? [];
   const sectionFailures: KBSectionFailures = {
     syncSources: sourcesQuery.isError,
-    orgIntegrations: orgIntegrationsQuery.isError,
+    orgIntegrations: managesIntegrations && orgIntegrationsQuery.isError,
     connectors: connectorsQuery.isError,
   };
 
@@ -319,12 +348,28 @@ export function useKBDetail(id: string | null) {
    * One invalidation of the `["kb", id]` prefix, which every query above is
    * keyed beneath - so a single call refetches the whole page. Stable in
    * identity (it closes over nothing that changes per render), which the page's
-   * `useEffect([refresh])` and the ingest poll both depend on.
+   * `useEffect([refresh])` depends on.
    */
   const { fetchNextPage } = documentsQuery;
   const refresh = useCallback(async () => {
     if (!id) return;
     await queryClient.invalidateQueries({ queryKey: qk.kb.detail(id) });
+  }, [id, queryClient]);
+
+  /**
+   * Reload only what ingestion changes - the documents, the indexing state and
+   * the sync sources, whose last run a sync's ingest settles.
+   *
+   * The ingest poll's refresh: a batch can keep it running for minutes, and the
+   * collection, its integrations and its connectors do not move meanwhile.
+   */
+  const refreshIngestion = useCallback(async () => {
+    if (!id) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.kb.documents(id) }),
+      queryClient.invalidateQueries({ queryKey: qk.kb.ingestion(id) }),
+      queryClient.invalidateQueries({ queryKey: qk.kb.syncSources(id) }),
+    ]);
   }, [id, queryClient]);
 
   /** Append the next page of documents (server-side skip/limit pagination). */
@@ -344,12 +389,30 @@ export function useKBDetail(id: string | null) {
    * fields, so the dialog decides which input a rejected chunk size belongs
    * under. Nothing already indexed is re-parsed, which the dialog says out loud.
    */
+  const updateGapHelpers = useCallback(
+    async (helpers: {
+      gap_drafter_agent_id: string | null;
+      gap_classifier_agent_id: string | null;
+    }): Promise<KnowledgeBase> => {
+      // i18n-exempt: invariant of the detail hook, not user-facing copy.
+      if (!id) throw new Error("No knowledge base is open");
+      const startedIn = activeOrgId;
+      const updated = await apiClient.patch<KnowledgeBase>(`/kb/${id}`, helpers);
+      if (stillSameTenant(startedIn)) {
+        queryClient.setQueryData(qk.kb.detail(id), updated);
+        void queryClient.invalidateQueries({ queryKey: qk.kb.list() });
+      }
+      return updated;
+    },
+    [id, activeOrgId, stillSameTenant, queryClient],
+  );
+
   const updateIngestion = useCallback(
     async (config: IngestionConfig): Promise<KnowledgeBase> => {
       // i18n-exempt: a narrowing guard on a hook only mounted with an id, not copy.
       if (!id) throw new Error("No knowledge base is open");
       const startedIn = activeOrgId;
-      const updated = await apiClient.patch<KnowledgeBase>(`/kb/${id}`, {
+      const updated = await apiClient.patch<KnowledgeBaseDetail>(`/kb/${id}`, {
         ingestion_config: config,
       });
       // The caller is handed the row either way - it asked for the save and the
@@ -380,7 +443,7 @@ export function useKBDetail(id: string | null) {
       // i18n-exempt: a narrowing guard on a hook only mounted with an id, not copy.
       if (!id) throw new Error("No knowledge base is open");
       const startedIn = activeOrgId;
-      const updated = await apiClient.patch<KnowledgeBase>(`/kb/${id}`, input);
+      const updated = await apiClient.patch<KnowledgeBaseDetail>(`/kb/${id}`, input);
       if (stillSameTenant(startedIn)) {
         queryClient.setQueryData(qk.kb.detail(id), updated);
         toast.success(t("embeddingsSaved"));
@@ -488,8 +551,9 @@ export function useKBDetail(id: string | null) {
         await apiClient.delete(`/kb/${id}/documents/${docId}`);
         if (!stillSameTenant(startedIn)) return;
         // Drop the row from every loaded page, and the count with it, rather
-        // than refetching: the page polls anyway, and an optimistic removal is
-        // what keeps the table from flashing the document back for a beat.
+        // than refetching: an optimistic removal is what keeps the table from
+        // flashing the document back for a beat. The indexing state is re-read,
+        // since a settled page has no poll to correct its counts.
         queryClient.setQueryData<InfiniteData<KBDocumentList>>(qk.kb.documents(id), (prev) =>
           prev
             ? {
@@ -501,6 +565,7 @@ export function useKBDetail(id: string | null) {
               }
             : prev,
         );
+        void queryClient.invalidateQueries({ queryKey: qk.kb.ingestion(id) });
         toast.success(t("documentRemoved"));
       } catch (e) {
         toast.error(getErrorMessage(e, tErrors, t("failedDeleteDocument")));
@@ -537,8 +602,8 @@ export function useKBDetail(id: string | null) {
   /**
    * Wire up a sync source, and leave its refusal to the wizard.
    *
-   * Alone among the writes here, this one does not toast what went wrong. The
-   * things that stop a source being created - a folder id that is not one, a
+   * This and `updateSyncSource` are the writes here that do not toast what went
+   * wrong. The things that stop a source being saved - a folder id that is not one, a
    * credential left empty - are fields on a step the reader can go back to, and
    * the connector now names them (#897). A toast would say the same sentence
    * where it cannot be acted on and then take it away.
@@ -560,6 +625,28 @@ export function useKBDetail(id: string | null) {
       }
       toast.success(t("syncSourceConnected"));
       return created;
+    },
+    [id, activeOrgId, stillSameTenant, queryClient, t],
+  );
+
+  /** Save an edit to one of this base's sources; a refusal goes back to the wizard. */
+  const updateSyncSource = useCallback(
+    async (sourceId: string, data: SyncSourceUpdate) => {
+      if (!id) return;
+      const startedIn = activeOrgId;
+      const updated = await apiClient.patch<SyncSourceRead>(
+        `/kb/${id}/sync-sources/${sourceId}`,
+        data,
+      );
+      if (stillSameTenant(startedIn)) {
+        queryClient.setQueryData<SyncSourceList>(qk.kb.syncSources(id), (prev) =>
+          prev
+            ? { ...prev, items: prev.items.map((s) => (s.id === sourceId ? updated : s)) }
+            : prev,
+        );
+      }
+      toast.success(t("syncSourceUpdated"));
+      return updated;
     },
     [id, activeOrgId, stillSameTenant, queryClient, t],
   );
@@ -643,6 +730,8 @@ export function useKBDetail(id: string | null) {
     documents,
     documentsTotal,
     hasMoreDocuments: documentsQuery.hasNextPage,
+    ingestion,
+    ingestionPending,
     loadFailed,
     syncSources,
     orgIntegrations,
@@ -654,13 +743,16 @@ export function useKBDetail(id: string | null) {
     uploadProgress,
     error,
     refresh,
+    refreshIngestion,
     loadMoreDocuments,
     updateIngestion,
+    updateGapHelpers,
     updateEmbeddings,
     uploadDocument,
     deleteDocument,
     deleteCollection,
     createSyncSource,
+    updateSyncSource,
     cloneSyncSource,
     triggerSyncSource,
     deleteSyncSource,

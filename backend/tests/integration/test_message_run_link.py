@@ -13,8 +13,6 @@ that keeps `link_message_to_run` from pulling another thread's turn into this
 run's transcript.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -377,9 +375,24 @@ class TestHowEachRunEnded:
 
         outcomes = await conversation_repo.run_outcomes(db, {finished.id, still_running.id})
 
-        assert outcomes[finished.id] == conversation_repo.RunOutcome("completed", 12_400)
+        assert outcomes[finished.id] == conversation_repo.RunOutcome("completed", 12_400, _START)
         # Nothing to measure yet, which is not the same claim as "took no time".
         assert outcomes[still_running.id].duration_ms is None
+
+    async def test_a_failed_run_keeps_its_error_for_safe_transcript_projection(self, db) -> None:
+        organization = await _org(db)
+        owner = await _user(db)
+        conversation = await _conversation(db, organization, owner)
+        agent = await _agent(db, organization, owner)
+        failed = await _run(
+            db, conversation, agent, started_at=_START, ended_at=_START + timedelta(seconds=10)
+        )
+        failed.status = "failed"
+        failed.error = "The run did not finish (ContentFilterError) - retry it"
+        await db.flush()
+        outcome = (await conversation_repo.run_outcomes(db, {failed.id}))[failed.id]
+        assert outcome.status == "failed"
+        assert outcome.error == failed.error
 
     async def test_no_runs_asks_nothing(self, db) -> None:
         assert await conversation_repo.run_outcomes(db, set()) == {}
@@ -433,6 +446,26 @@ class TestWhichConversationsAreAtWork:
         )
 
         assert since == {busy.id: started}
+
+    async def test_overlapping_runs_keep_their_distinct_identities(self, db) -> None:
+        organization = await _org(db)
+        owner = await _user(db)
+        agent = await _agent(db, organization, owner)
+        conversation = await _conversation(db, organization, owner)
+        now = datetime.now(UTC)
+        first = await self._run_in(
+            db, conversation, agent, status="running", started_at=now - timedelta(seconds=12)
+        )
+        second = await self._run_in(db, conversation, agent, status="running", started_at=now)
+        activity = await conversation_repo.running_activity(db, [conversation.id])
+        assert set(activity[conversation.id].run_ids) == {first.id, second.id}
+        first.status = "completed"
+        first.ended_at = now
+        await db.flush()
+        remaining = await conversation_repo.running_activity(db, [conversation.id])
+        assert remaining[conversation.id].run_ids == [second.id]
+        assert remaining[conversation.id].since == now
+        assert await conversation_repo.running_activity(db, []) == {}
 
     async def test_no_conversations_asks_nothing(self, db) -> None:
         assert await conversation_repo.running_since(db, []) == {}

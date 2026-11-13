@@ -1,5 +1,5 @@
 ---
-source_sha: "0c5e08e96b12"
+source_sha: "76c60cd662bd"
 ---
 
 # Testowanie { #testing }
@@ -77,12 +77,9 @@ make docs-build         # mkdocs --strict — a dead link is a failure
 make audit              # the locked dependency set against the advisory database
 ```
 
-Jakieś pięć minut szeregowo, wobec dwunastu w CI równolegle — gdzie zadanie backendu
-`test` jest najdłuższym odcinkiem, tym, który skraca #520. Ta równoważność jest
-utrzymywana, a nie deklarowana: workflow woła te cele, zamiast powtarzać ich
-polecenia, a `tests/test_ci_parity.py` wywala się, jeśli bramkujące zadanie
-dorobi krok, którego `make check` nie uruchamia. Rozjechało się już cztery razy —
-zobacz [Polecenia](commands.md#before-a-pull-request), co `check` pomija i dlaczego.
+CI uruchamia niezależne kontrole równolegle. Workflow korzysta z tych samych
+celów Makefile co lokalne kontrole; `tests/test_ci_parity.py` pilnuje ich zgodności.
+Celowe wyjątki opisują [Polecenia](commands.md#before-a-pull-request).
 
 !!! info "CI może uruchomić mniej zadań niż `check` i to nie jest rozjazd"
 
@@ -506,13 +503,42 @@ fikstura stawia schemat.
 
 Fikstura `schema_url` uruchamia `create_all` jeden raz. Fikstura `engine` o zasięgu
 funkcji wręcza potem każdemu testowi pustą bazę danych, robiąc `TRUNCATE` na każdej
-tabeli modelu — i usuwając każdą tabelę, którą test utworzył poza modelami, runtime'owe
-`rag_<collection>` albo sondę porządku — zamiast przebudowywać schemat.
+tabeli modelu, w której jest wiersz — i usuwając każdą tabelę, którą test utworzył poza
+modelami, runtime'owe `rag_<collection>` albo sondę porządku — zamiast przebudowywać
+schemat. Jedno `EXISTS` na tabelę znajduje te z danymi, a każda sekwencja jest
+resetowana do wartości początkowej w miejscu, więc pusta tabela, której licznik identity
+przesunął się, i tak zaczyna od 1.
 
 Kiedyś robiło to `drop_all` + `create_all` przed *każdym* testem: ~0,4 s DDL, czyli
 prawie cały czas działania suity, której asercje to mikrosekundy pracy Postgresa.
 Zbudowanie go raz skróciło `tests/integration` z ~125 s do ~50 s
 ([#215](https://github.com/vstorm-co/agenticos/issues/215)).
+
+**`make test`, `make test-fast`, `make test-integration` i `make test-cov` działają na
+jednorazowej bazie Postgres, a nie na Twojej deweloperskiej.**
+
+`make docker-test-db` uruchamia ją z `docker-compose.test.yml` (własny projekt,
+`agenticos-test`, na `localhost:5433`), a wymienione cele same ją startują i kierują
+na nią pytest. Działa z `fsync=off`, `synchronous_commit=off` i
+`full_page_writes=off`, a jej katalog danych to `tmpfs`, więc awaria kasuje klaster —
+co nie szkodzi, bo zestaw sam tworzy w nim swoją bazę i sam ją usuwa.
+
+Powód to fsync. Każdy `TRUNCATE` daje każdej dotykanej tabeli nowe pliki relacji, które
+Postgres musi zsynchronizować, a na WSL2 albo woluminie Dockera jedna synchronizacja
+kosztuje ~7 ms: pełny przebieg trwał około trzech godzin, tam gdzie CI potrzebuje dziesięciu
+minut. Bez synchronizacji ten sam przebieg jest szybki jak w CI, a baza deweloperska
+zostaje nietknięta i trwała.
+
+```bash
+make docker-test-db        # uruchom (idempotentnie); czeka, aż baza będzie zdrowa
+make docker-test-db-down   # zatrzymaj i wyrzuć jej dane
+make test TEST_DB_PORT=5434          # inny port, gdy 5433 jest zajęty
+make test TEST_DB=external           # bez kontenera: baza z POSTGRES_* / .env
+```
+
+Zawężone uruchomienie `pytest` nie przechodzi przez `make`, więc skieruj je tam sam:
+`POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres uv run pytest tests/integration/test_x.py`.
+CI ustawia `CI`, co wybiera `TEST_DB=external` — bazą jest jego kontener usługi.
 
 `TRUNCATE`, a nie rollback transakcji, bo testy przepływów API commitują przez
 prawdziwe `get_db_session` i ich wiersze przeżywają rollback.
@@ -581,55 +607,40 @@ porażka — kontener, który nie wstał, to nie jest środowisko, które nie mo
 odpowiedzieć, a te dwie rzeczy są w wyjściu pytesta nie do odróżnienia.
 
 `make test-migrations` nadal istnieje i nadal jest tym, co uruchomić ręcznie po
-dotknięciu `alembic/versions/`, ale wskazuje na to, co mówi `backend/.env`, czyli na
-laptopie na bazę danych z twoją własną pracą. Wybierz raczej
-`uv run pytest tests/test_migrations.py`, które sięgnąć jej nie może.
+dotknięciu `alembic/versions/`, a na laptopie działa na
+własnej bazie w jednorazowym testowym Postgresie (:5433), więc nie sięgnie do bazy z twoją
+własną pracą. W CI (`TEST_DB=external`) używa bazy, którą wskazuje `POSTGRES_*`.
+`uv run pytest tests/test_migrations.py` to szybsza kontrola.
 
-## Prefect i dlaczego żaden test nie sięga serwera { #prefect-and-why-no-test-reaches-a-server }
+## Testy workera { #the-workers-tests }
 
-**Wywołanie `@flow` jest wywołaniem sieciowym, a suita kieruje je donikąd.** Prefect
-rozwiązuje własne ustawienia z `backend/.env` — jego model ustawień niesie
-`env_file=".env"` — więc `PREFECT_API_URL=http://localhost:4200/api`, linia, której
-potrzebuje `make dev`, była też adresem, do którego próbowało sięgnąć wywołanie
-`@flow` w teście. Bez stojącego serwera daje to `RuntimeError: Failed to reach API at
-http://localhost:4200/api/` z testu, który zamockował każdego współpracownika,
-jakiego ma, a CI nigdy tego nie widziało: bez `.env` nie ma URL-a, więc to, co
-uruchamiał laptop, nigdy nie było tym, co uruchamiało CI
-([#536](https://github.com/vstorm-co/agenticos/issues/536)).
+**Gwarancje kolejki są testowane tam, gdzie obowiązują: w PostgreSQL i w
+prawdziwych procesach.** `FOR UPDATE SKIP LOCKED`, częściowe indeksy unikalne
+za `dedupe_key` i `concurrency_key` oraz `NOTIFY`, który wycofanie transakcji
+odwołuje, to rzeczy, z którymi zmockowana sesja po prostu by się zgodziła.
+Dlatego `tests/integration/test_background_job_queue.py` sprawdza je na
+prawdziwej tabeli, a `tests/integration/test_worker_runtime.py` uruchamia całego
+workera: parsowanie, które zjada pamięć, aż zatrzyma je watchdog, proces
+potomny, który wysyła sobie `SIGKILL`, bazę odrzucającą dwadzieścia połączeń,
+wyłączenie w trakcie zadania.
 
-`tests/conftest.py` przypisuje więc `PREFECT_API_URL` **pusty**, zanim Prefect
-zostanie zaimportowany, obok nazwy bazy danych i hasła powyżej i z tego samego
-powodu.
+Procesy potomne uruchamiane przez te testy ładują
+`tests.worker_handlers:handlers`, zestaw rodzajów zadań, które celowo źle się
+zachowują - pożeracz pamięci, samobójca, zadanie kończące proces w połowie.
+Nowy sposób, w jaki zadanie może się skończyć, należy właśnie tam, z testem,
+który naprawdę do niego doprowadza.
 
-Skasowanie zmiennej by nie wystarczyło: nieustawiona zmienna zostawia odpowiedź
-źródłu dotenv, a to źródło dotenv trzyma ten URL.
+**Rzadkie gałęzie są dodatkowo przypięte atrapami.** Linia osiągana tylko przez
+prawdziwy proces potomny albo prawdziwy błąd bazy, po `await`, nie zawsze jest
+rejestrowana przez tracer pokrycia, więc bramka by na niej migotała.
+`tests/test_worker_runtime_edges.py` i `tests/test_worker_child_run.py`
+przechodzą przez te same gałęzie na zmockowanych repozytoriach i zastępczym
+procesie, przy każdym uruchomieniu.
 
-Puste przypisanie je przebija, bo model ustawień Prefecta niesie
-`env_ignore_empty=False` — co jest regułą Prefecta, a nie naszą. `app/core/config.py`
-ustawia to odwrotnie, więc ta sama linia wobec *naszych* ustawień zostałaby odrzucona
-i `.env` i tak by odpowiedział.
-
-Prefect czyta pusty URL jako brak URL-a i startuje na potrzeby wywołania własny
-tymczasowy serwer, co CI robiło zawsze. Przebieg nie zależy więc już od tego, czy
-serwer Prefecta akurat stoi, w żadną ze stron.
-
-**Stan tamtego serwera to baza SQLite pod `PREFECT_HOME`, a suita daje mu własne.**
-Zostawione samo sobie jest to `~/.prefect`, więc przebieg jednostkowy pisałby swoje
-flow runy do danych Prefecta developera, a tam, gdzie Prefect działa na hoście, a nie
-w Dockerze, do pliku, który trzyma otwarty działający `prefect server`.
-`tests/conftest.py` kieruje to na `agenticos-prefect-test` w systemowym katalogu
-tymczasowym, z tego samego powodu, dla którego nazwa Postgresa powyżej jest bazą
-testową. Jeden katalog, a nie jeden na proces: kosztuje jego tworzenie.
-
-Tworzenie go jest migracją, a suita podnosi 20-sekundowy przydział Prefecta na
-wystartowanie tego serwera do 90 — **jako zapas, a nie dlatego, że widziano, jak 20
-zawodzi.** Wobec `PREFECT_HOME`, do którego nic jeszcze nie pisało, cały start zajmuje
-jakieś sześć sekund na laptopie i jakieś dziewięć na kontenerze CI, który jest zimny
-przy każdym przebiegu i na wartości domyślnej nigdy nie był czerwony. Podniesiony
-przydział kupuje to, że jedyny krok, którego kosztu nic tutaj nie ogranicza —
-migracja na obciążonej maszynie albo katalog tymczasowy, który został zamieciony —
-czeka, zamiast wywalać suitę, którą drugi przebieg by przepuścił.
-`tests/test_prefect_test_environment.py` przypina wszystkie cztery właściwości.
+Nic tu nie potrzebuje serwera ani zmiennej środowiskowej. Test jednostkowy
+serwisu, który kolejkuje zadanie, podmienia `enqueue` tam, gdzie serwis je
+zaimportował, i sprawdza payload, tak jak fixture `queued_fires` w
+`tests/test_agent_triggers.py`.
 
 ## Podsumowanie { #recap }
 
@@ -641,3 +652,20 @@ czeka, zamiast wywalać suitę, którą drugi przebieg by przepuścił.
   list w `backend/pyproject.toml`.
 - Kolejność jest tasowana przy każdym przebiegu; odtwórz awarię z jej wypisanym
   seedem, zanim wyciągniesz jakikolwiek wniosek o zmianie.
+
+## Podział CI { #ci-distribution }
+
+Zestaw backendowy mierzy cały kod aplikacji raz. Raport platformy nadal wymaga
+100% pokrycia; `make coverage-all REUSE_COVERAGE=1` raportuje kod odziedziczony
+z tych samych danych, bez ponownego uruchamiania testów.
+
+Lint frontendu, build produkcyjny i cztery shardy testów działają niezależnie.
+Shardy zachowują izolację plików, a niezmienione progi pokrycia sprawdza jeden
+scalony raport. Wymagany status `test-frontend` odrzuca brakujące, nieoczekiwanie
+pominięte lub nieudane zadanie i shard. E2E wykorzystuje build produkcyjny w
+czterech shardach; każdy ma własną bazę, Redis, backend, seed i serwer stub.
+Pliki w shardzie nadal wykonują się szeregowo, bez ponowień.
+
+PostgreSQL w CI korzysta z jednorazowego katalogu danych w RAM i wyłącza fsync,
+synchroniczne commity oraz pełne zapisy stron tylko w swoim kontenerze usługowym.
+Bazy produkcyjne i deweloperskie zachowują normalne ustawienia trwałości.

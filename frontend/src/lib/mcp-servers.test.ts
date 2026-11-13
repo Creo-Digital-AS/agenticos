@@ -7,10 +7,10 @@ import {
   CUSTOM_CATEGORY,
   connectionState,
   freePrefix,
-  matchingCustomRows,
   mcpToolCount,
   mergeServers,
   narrowedSelection,
+  rowsForEntries,
   slugForPrefix,
 } from "./mcp-servers";
 import type { McpServerRef } from "@/types/agents";
@@ -59,6 +59,7 @@ function personal(overrides: Partial<McpConnectionRecord> = {}): McpConnectionRe
     visibility: "org",
     catalog_key: null,
     is_default: false,
+    trust_read_only_hints: false,
     label: null,
     last_tools: null,
     created_at: "2026-07-01T00:00:00Z",
@@ -128,6 +129,34 @@ describe("mergeServers", () => {
     expect(rows.filter((row) => row.category === CUSTOM_CATEGORY)).toEqual([]);
   });
 
+  it.each([
+    ["/Finance/mcp", "/finance/mcp"],
+    ["/mcp?tenant=Finance", "/mcp?tenant=finance"],
+    ["/mcp?token=value/", "/mcp?token=value"],
+  ])("keeps distinct URL components %s and %s on separate servers", (first, second) => {
+    const server = { ...GITHUB, url: `https://gateway.example${first}` };
+    const account = personal({ name: "workspace", url: `https://gateway.example${second}` });
+
+    const rows = mergeServers([server], [], [account]);
+
+    expect(rows.map((row) => row.key)).toEqual(["github", "p1"]);
+    expect(rows[0]?.personals).toEqual([]);
+    expect(rows[1]?.url).toBe(account.url);
+  });
+
+  it("matches host case and trailing path slashes without changing the query", () => {
+    const server = { ...GITHUB, url: "https://gateway.example/Finance/mcp?tenant=Finance/" };
+    const account = personal({
+      name: "workspace",
+      url: " HTTPS://GATEWAY.EXAMPLE/Finance/mcp///?tenant=Finance/ ",
+    });
+
+    const rows = mergeServers([server], [], [account]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.personals).toEqual([account]);
+  });
+
   it("keeps catalog order and puts custom servers last", () => {
     // The list is a catalog, and a catalog that reorders itself as people
     // connect things is a list of what is in the database instead.
@@ -168,6 +197,45 @@ describe("mergeServers", () => {
     );
 
     expect(rows.map((row) => row.auth)).toEqual(["none", "token", "oauth"]);
+  });
+});
+
+describe("listing account groups", () => {
+  it("uses the API's account ids instead of guessing from a shared URL or name", () => {
+    const rows = rowsForEntries(
+      [{ ...GITHUB, connection_ids: ["o2", "p2"] }],
+      [organization(), organization({ id: "o2", name: "proxy", url: "https://proxy/mcp" })],
+      [personal(), personal({ id: "p2", name: "work", url: "https://work/mcp" })],
+    );
+
+    expect(rows[0]?.organizations.map((account) => account.id)).toEqual(["o2"]);
+    expect(rows[0]?.personals.map((account) => account.id)).toEqual(["p2"]);
+  });
+
+  it("keeps an explicitly unconnected listing entry unconnected", () => {
+    const rows = rowsForEntries(
+      [{ ...GITHUB, connection_ids: [] }],
+      [organization()],
+      [personal()],
+    );
+
+    expect(rows[0]?.organizations).toEqual([]);
+    expect(rows[0]?.personals).toEqual([]);
+  });
+
+  it("projects grouped custom servers with their owner description and no catalog binding", () => {
+    const custom = { ...GITHUB, key: "o1", custom: true, connection_ids: ["o1", "p1"] };
+    const [shared] = rowsForEntries([custom], [organization()], [personal()]);
+    const [mine] = rowsForEntries([custom], [], [personal()]);
+
+    expect(shared).toMatchObject({
+      entry: null,
+      description: null,
+      descriptionKey: "customAddedByOrg",
+      organizations: [{ id: "o1" }],
+      personals: [{ id: "p1" }],
+    });
+    expect(mine).toMatchObject({ entry: null, descriptionKey: "customAddedByYou" });
   });
 });
 
@@ -263,51 +331,6 @@ describe("several accounts on one server", () => {
   });
 });
 
-describe("matchingCustomRows", () => {
-  const row = (name: string, url: string) => ({
-    key: name,
-    name,
-    description: null,
-    descriptionKey: "customAddedByYou",
-    category: CUSTOM_CATEGORY,
-    auth: "none" as const,
-    url,
-    docsUrl: null,
-    tokenHint: null,
-    entry: null,
-    organizations: [],
-    personals: [],
-  });
-  const rows = [
-    row("Ours", "https://ours.example/mcp"),
-    row("Theirs", "https://theirs.example/mcp"),
-  ];
-
-  it("keeps everything when nothing is being filtered", () => {
-    expect(matchingCustomRows(rows, "", "")).toHaveLength(2);
-  });
-
-  it("drops a custom row a search does not name", () => {
-    expect(matchingCustomRows(rows, "ours", "").map((r) => r.name)).toEqual(["Ours"]);
-  });
-
-  it("matches on the URL as well as the name, because a custom row has no description", () => {
-    expect(matchingCustomRows(rows, "theirs.example", "").map((r) => r.name)).toEqual(["Theirs"]);
-  });
-
-  it("ignores case and surrounding space in the query", () => {
-    expect(matchingCustomRows(rows, "  OURS  ", "")).toHaveLength(1);
-  });
-
-  it("hides every custom row while a curated category is selected", () => {
-    expect(matchingCustomRows(rows, "", "productivity")).toEqual([]);
-  });
-
-  it("shows them when the selected category is the custom one", () => {
-    expect(matchingCustomRows(rows, "", CUSTOM_CATEGORY)).toHaveLength(2);
-  });
-});
-
 describe("narrowedSelection", () => {
   const tools = [{ name: "read" }, { name: "write" }];
 
@@ -354,6 +377,7 @@ describe("ownAccountStatus", () => {
       visibility: "org",
       catalog_key: "notion",
       is_default: false,
+      trust_read_only_hints: false,
       label: null,
       last_tools: null,
       created_at: "2026-07-01T00:00:00Z",
@@ -424,6 +448,7 @@ describe("ownAccountStatus and a failed health check", () => {
       visibility: "org",
       catalog_key: "github",
       is_default: false,
+      trust_read_only_hints: false,
       label: null,
       last_tools: null,
       created_at: "2026-07-01T00:00:00Z",
@@ -481,16 +506,29 @@ describe("mcpToolCount", () => {
 
   it("counts a binding's allowlist over everything its server listed", () => {
     const refs: McpServerRef[] = [
-      { account: "organization", connection_id: "o1", allowed_tools: ["a", "b"] },
+      { account: "organization", connection_id: "o1", allowed_tools: ["a", "b"], approval: "none" },
     ];
 
     expect(mcpToolCount(refs, [organization({ last_tools: tools(40) })], [])).toBe(2);
   });
 
+  it("counts the platform's own server at what it serves, or at the tools narrowed to", () => {
+    expect(
+      mcpToolCount([{ account: "platform", allowed_tools: null, approval: "writes" }], [], [], 18),
+    ).toBe(18);
+    expect(
+      mcpToolCount([{ account: "platform", approval: "writes", allowed_tools: ["a"] }], [], [], 18),
+    ).toBe(1);
+    // Nothing told about the platform: nothing counted for it.
+    expect(
+      mcpToolCount([{ account: "platform", allowed_tools: null, approval: "writes" }], [], []),
+    ).toBe(0);
+  });
+
   it("counts what each binding's own connection listed at its last check", () => {
     const refs: McpServerRef[] = [
-      { account: "organization", connection_id: "o1", allowed_tools: null },
-      { account: "personal", catalog_key: "notion", allowed_tools: null },
+      { account: "organization", connection_id: "o1", allowed_tools: null, approval: "none" },
+      { account: "personal", catalog_key: "notion", allowed_tools: null, approval: "none" },
     ];
     const notion = personal({ catalog_key: "notion", last_tools: tools(12) });
 
@@ -500,11 +538,30 @@ describe("mcpToolCount", () => {
   it("counts nothing it cannot know", () => {
     // The platform's own server, a connection nobody checked, a reader with no account.
     const refs: McpServerRef[] = [
-      { account: "platform" },
-      { account: "organization", connection_id: "o1", allowed_tools: null },
-      { account: "personal", catalog_key: "notion", allowed_tools: null },
+      { account: "platform", allowed_tools: null, approval: "writes" },
+      { account: "organization", connection_id: "o1", allowed_tools: null, approval: "none" },
+      { account: "personal", catalog_key: "notion", allowed_tools: null, approval: "none" },
     ];
 
     expect(mcpToolCount(refs, [organization()], [])).toBe(0);
+  });
+});
+
+describe("connectionLabel and offeredTools", () => {
+  it("reads a connection by its label, else its name", async () => {
+    const { connectionLabel } = await import("./mcp-servers");
+    expect(connectionLabel({ name: "gmail-dev", label: null })).toBe("gmail-dev");
+    expect(connectionLabel({ name: "gmail-dev", label: "Support" })).toBe("Support");
+  });
+
+  it("offers the recorded tools its allow list lets through, and null before any test", async () => {
+    const { offeredTools } = await import("./mcp-servers");
+    const last_tools = [
+      { name: "a", description: "" },
+      { name: "b", description: "" },
+    ];
+    expect(offeredTools({ last_tools, allowed_tools: null })).toEqual(last_tools);
+    expect(offeredTools({ last_tools, allowed_tools: ["b"] })).toEqual([last_tools[1]]);
+    expect(offeredTools({ last_tools: null, allowed_tools: null })).toBeNull();
   });
 });

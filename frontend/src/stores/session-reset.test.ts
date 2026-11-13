@@ -1,8 +1,13 @@
+import { useWorkOnStore } from "./work-on-store";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { resetSessionState, resetTenantState } from "./session-reset";
 import { useOnboardingStore } from "./onboarding-store";
 import { useOrgStore } from "./org-store";
+import { useTableViewStore } from "./table-view-store";
+import { addVisualImages, useVisualImagesStore } from "./visual-stream-store";
+import { useUnsavedChangesStore } from "./unsaved-changes-store";
+import { copyKey, readCopies, writeCopy } from "@/lib/unsaved-copies";
 
 describe("resetTenantState", () => {
   beforeEach(() => {
@@ -13,6 +18,18 @@ describe("resetTenantState", () => {
       flowAgentId: null,
       choices: {},
     });
+  });
+
+  it("forgets the unsaved edits kept in this browser, and stops asking about them", () => {
+    writeCopy(copyKey("org-1", "ds-1", "grading"), 1, {});
+    localStorage.setItem("theme", "dark");
+    useUnsavedChangesStore.setState({ sources: { editor: { discard: () => {} } } });
+
+    resetTenantState();
+
+    expect(readCopies("org-1", "ds-1")).toEqual([]);
+    expect(localStorage.getItem("theme")).toBe("dark");
+    expect(useUnsavedChangesStore.getState().sources).toEqual({});
   });
 
   it("closes a running onboarding flow and clears a pending offer on an org switch", () => {
@@ -31,6 +48,29 @@ describe("resetTenantState", () => {
     expect(useOnboardingStore.getState().isOpen).toBe(false);
     expect(useOnboardingStore.getState().offer).toBeNull();
   });
+
+  it("drops a conflict banner naming a record from the previous organization", () => {
+    useTableViewStore.getState().setConflict({
+      recordId: "rec-1",
+      pendingValues: { "col-1": "x" },
+      fieldId: "col-1",
+    });
+    expect(useTableViewStore.getState().conflicts["rec-1"]).toBeDefined();
+
+    resetTenantState();
+
+    expect(useTableViewStore.getState().conflicts).toEqual({});
+  });
+});
+
+describe("resetTenantState and visuals", () => {
+  it("forgets the previous tenant's pictures, keyed by a call id the next may reuse", () => {
+    addVisualImages("call_0", { logo: "data:previous-tenant" });
+
+    resetTenantState();
+
+    expect(useVisualImagesStore.getState().images).toEqual({});
+  });
 });
 
 describe("resetSessionState", () => {
@@ -42,4 +82,15 @@ describe("resetSessionState", () => {
     expect(useOrgStore.getState().activeOrgId).toBeNull();
     expect(useOrgStore.getState().refusedOrgIds).toEqual([]);
   });
+});
+
+it("drops a project's unsent local choice when switching account or organization", () => {
+  const work = useWorkOnStore.getState();
+  work.applyProject("alice:org:project", { folder: "/alice/private", mode: "read_only" });
+  resetTenantState();
+  expect(work.targetFor(null)).toBeNull();
+  expect(useWorkOnStore.getState().draftProjectKey).toBeNull();
+  work.applyProject("alice:org:project", { folder: "/alice/private", mode: "read_only" });
+  resetSessionState();
+  expect(work.targetFor(null)).toBeNull();
 });

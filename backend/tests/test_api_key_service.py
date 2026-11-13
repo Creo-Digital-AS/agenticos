@@ -1,7 +1,5 @@
 """ApiKeyService paths the end-to-end tests do not reach: presets, listing, revocation."""
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -52,7 +50,9 @@ class TestPresets:
         presets = {preset.id: set(preset.scopes) for preset in catalog.presets}
         assert "runs:view" not in presets["read_only"]
         assert presets["knowledge_ingest"] == {"collections:view", "collections:edit"}
-        assert presets["full_access"] == set(catalog.scopes)
+        assert presets["full_access"] == set(catalog.scopes) - {"personal:consent"}
+        assert "personal:consent" in catalog.scopes
+        assert all("personal:consent" not in scopes for scopes in presets.values())
         # Keys never manage keys.
         assert "api_keys:create" not in catalog.scopes
 

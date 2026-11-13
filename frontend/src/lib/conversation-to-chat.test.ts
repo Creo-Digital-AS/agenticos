@@ -6,6 +6,7 @@ import {
   conversationMessagesToChatMessages,
   type RawMessage,
 } from "./conversation-to-chat";
+import { draftOf } from "./drafts";
 import type { ToolCall } from "@/types";
 
 function raw(overrides: Partial<RawMessage> = {}): RawMessage {
@@ -82,6 +83,22 @@ describe("conversationMessageToChatMessage", () => {
     expect(message.timestamp).toEqual(new Date("2026-07-31T12:00:00Z"));
   });
 
+  it("carries who typed a user turn, and nothing where nobody is named", () => {
+    const anna = { user_id: "u-2", name: "Anna", has_avatar: false, avatar_color: null };
+
+    expect(conversationMessageToChatMessage(raw({ role: "user", sender: anna })).sender).toEqual(
+      anna,
+    );
+    expect(conversationMessageToChatMessage(raw({ sender: null })).sender).toBeUndefined();
+    expect(conversationMessageToChatMessage(raw({ sender_gone: true })).senderGone).toBe(true);
+    expect(
+      conversationMessageToChatMessage(
+        raw({ reply_to: { message_id: "m-0", role: "user", excerpt: "x", sender: null } }),
+      ).replyTo,
+    ).toEqual({ messageId: "m-0", role: "user", excerpt: "x", sender: undefined });
+    expect(conversationMessageToChatMessage(raw({})).senderGone).toBeUndefined();
+  });
+
   it("draws a person's mentions as the chips they picked, never as timeline blocks", () => {
     const user = conversationMessageToChatMessage(
       raw({
@@ -134,6 +151,29 @@ describe("conversationMessageToChatMessage", () => {
     );
 
     expect(message.toolCalls?.[0]).toMatchObject({ status: "completed", result: "42" });
+  });
+
+  it("keeps a draft's arguments and result, so a reopened chat redraws its card", () => {
+    const message = conversationMessageToChatMessage(
+      raw({
+        tool_calls: [
+          {
+            tool_call_id: "tc-1",
+            tool_name: "write_draft",
+            presentation_kind: "draft",
+            args: {
+              title: "Reply",
+              kind: "email",
+              versions: [{ fields: [{ name: "Body", text: "Hi Marta," }] }],
+            },
+            result: "Drafted Reply.",
+            status: "completed",
+          },
+        ],
+      }),
+    );
+
+    expect(draftOf(message.toolCalls![0]!)?.versions[0]?.fields[0]?.text).toBe("Hi Marta,");
   });
 
   it("builds a timeline for an assistant turn and none for a person's", () => {
@@ -317,7 +357,7 @@ describe("a replayed turn whose run was stopped", () => {
 
   it("marks only a cancelled run", () => {
     // A completed run needs no marker; a run still going has no answer on screen
-    // to mark; a failed one already says so through the error frame.
+    // to mark; a failed one has its own persisted failure marker.
     for (const status of ["completed", "running", "failed", "budget_exceeded", null]) {
       expect(conversationMessageToChatMessage(raw({ run_status: status })).wasStopped).toBe(false);
     }
@@ -386,3 +426,147 @@ describe("a stored tool call that never finished", () => {
     expect(message.toolCalls?.map((call) => call.status)).toEqual(["awaiting_approval"]);
   });
 });
+
+describe("a replayed turn spoken in a call (#54)", () => {
+  it("keeps its turn id and whether the caller talked over it", () => {
+    const spoken = conversationMessageToChatMessage(
+      raw({ turn_id: "c1:3:assistant", interrupted: true }),
+    );
+    expect(spoken.turnId).toBe("c1:3:assistant");
+    expect(spoken.interrupted).toBe(true);
+  });
+
+  it("marks nothing on a typed turn", () => {
+    const typed = conversationMessageToChatMessage(raw({ turn_id: null, interrupted: false }));
+    expect(typed.turnId).toBeUndefined();
+    expect(typed.interrupted).toBeUndefined();
+  });
+});
+
+it("keeps the persisted submission correlation for reconnect reconciliation", () => {
+  expect(
+    conversationMessageToChatMessage(raw({ role: "user", client_message_id: "nonce" }))
+      .clientMessageId,
+  ).toBe("nonce");
+});
+
+it("restores a phone receipt card without copying a private report into the timeline", () => {
+  const message = conversationMessageToChatMessage(
+    raw({
+      parts: [{ type: "phone_call", phone_call_id: "phone-intent" }],
+      content: "Telephone call requested.",
+    }),
+  );
+  expect(message.parts).toEqual([
+    { id: expect.any(String), type: "phone_call", phoneCallId: "phone-intent" },
+  ]);
+});
+
+it("restores the recorded turn workspace independently of current Work on", () => {
+  const message = conversationMessageToChatMessage(
+    raw({
+      parts: [
+        { type: "text", text: "Done", file_source: { kind: "local", id: "original-source" } },
+      ],
+    }),
+  );
+  expect(message.fileSource).toEqual({ kind: "local", id: "original-source" });
+});
+
+describe("a pause inside a delegated task", () => {
+  it.each([
+    ["awaiting_approval", "approval"],
+    ["awaiting_answer", "answer"],
+    ["running", undefined],
+    ["completed", undefined],
+  ])("retains %s at the run level", (status, expected) => {
+    expect(conversationMessageToChatMessage(raw({ run_status: status })).runWaitingFor).toBe(
+      expected,
+    );
+  });
+});
+
+it("preserves the parent run start instead of using the segment save time", () => {
+  const converted = conversationMessageToChatMessage({
+    id: "segment",
+    role: "assistant",
+    content: "",
+    conversation_id: "chat",
+    created_at: "2026-11-05T18:11:53Z",
+    run_started_at: "2026-11-05T18:11:13Z",
+  });
+  expect(converted.runStartedAt?.toISOString()).toBe("2026-11-05T18:11:13.000Z");
+});
+
+it("replays a persisted setup reply with its original agent and configuration card", () => {
+  const message = conversationMessageToChatMessage(
+    raw({
+      agent_id: "starter",
+      content: "Connect a model.",
+      parts: [
+        { type: "text", text: "Connect a model." },
+        { type: "model_setup", setup_agent_id: "starter" },
+      ],
+    }),
+  );
+  expect(message.agentId).toBe("starter");
+  expect(message.runId).toBeUndefined();
+  expect(message.parts?.map((part) => part.type)).toEqual(["text", "model_setup"]);
+  expect(message.parts?.[1]?.setupAgentId).toBe("starter");
+});
+
+it("keeps renderer identity when rebuilding a saved or run-timeline turn", () => {
+  const message = conversationMessageToChatMessage(
+    raw({
+      tool_calls: [
+        {
+          tool_call_id: "call",
+          tool_name: "compose",
+          tool_id: "write_draft",
+          presentation_kind: "draft",
+          args: {},
+          result: "Drafted Reply.",
+          status: "completed",
+        },
+      ],
+    }),
+  );
+  expect(message.toolCalls?.[0]).toMatchObject({
+    name: "compose",
+    tool_id: "write_draft",
+    presentation_kind: "draft",
+  });
+});
+
+it("restores a failed turn's state and safe cause after reloading", () => {
+  const message = conversationMessageToChatMessage(
+    raw({
+      run_status: "failed",
+      run_error: "The model provider blocked this response with its content filter.",
+    }),
+  );
+  expect(message.runFailed).toBe(true);
+  expect(message.runError).toContain("content filter");
+});
+
+it("marks a failed turn even when no detailed cause is available", () => {
+  const message = conversationMessageToChatMessage(raw({ run_status: "failed", run_error: null }));
+  expect(message.runFailed).toBe(true);
+  expect(message.runError).toBeUndefined();
+});
+
+it("does not show a stale failure on a completed turn", () => {
+  const message = conversationMessageToChatMessage(
+    raw({ run_status: "completed", run_error: "old failure" }),
+  );
+  expect(message.runFailed).toBe(false);
+  expect(message.runError).toBeUndefined();
+});
+
+for (const status of ["budget_exceeded", "guardrail_blocked", "loop_stopped"]) {
+  it(`keeps the failure notice after reloading a ${status} turn`, () => {
+    const message = conversationMessageToChatMessage(raw({ run_status: status }));
+    expect(message.runFailed).toBe(true);
+    expect(message.wasStopped).toBe(false);
+  });
+}

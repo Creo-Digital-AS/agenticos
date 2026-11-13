@@ -21,10 +21,8 @@ approval panel, `ask_user`. A frame that needs somebody to answer it needs a
 somebody, and only the surface knows whether it has one.
 """
 
-from __future__ import annotations
-
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import Any
 
 from pydantic_ai import (
@@ -37,16 +35,19 @@ from pydantic_ai import (
     TextPartDelta,
 )
 from pydantic_ai.messages import (
-    RetryPromptPart,
+    ERROR_OUTCOMES,
     TextPart,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
 )
 
+from app.agents.deps import AgentDeps
+from app.agents.tool_call_ids import fresh_call_id, used_call_ids
+from app.core.tool_identity import ToolIdentity
 from app.services.agent_chat import display_output
 from app.services.chat_timeline import TurnTimeline
-from app.services.transcript import tool_result_text, tool_retry_notice
+from app.services.transcript import tool_failure_notice, tool_result_text
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,22 @@ class RunFrames:
         timeline: TurnTimeline | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
         prompt: str = "",
+        draft_tools: Callable[[], Collection[str]] | None = None,
     ) -> None:
+        self._deps: AgentDeps | None = None
         self.emit = emit
         self.timeline = timeline if timeline is not None else TurnTimeline()
         self.tool_calls = tool_calls if tool_calls is not None else []
         self.prompt = prompt
+        self.draft_tools = draft_tools
+        self._resolved_draft_tools: frozenset[str] = frozenset()
+
+    def identity(self, name: str, call_id: str) -> ToolIdentity:
+        if self._deps is None:
+            return ToolIdentity()
+        return self._deps.tool_identities.get(
+            call_id, self._deps.tool_definitions.get(name, ToolIdentity())
+        )
 
     async def drive(self, agent_run: Any) -> None:
         """Iterate the run, dispatching each node to its streaming half.
@@ -93,6 +105,10 @@ class RunFrames:
         type - so `Any` here is the boundary the narrowing runs behind, not a
         shortcut around one.
         """
+        deps = agent_run.ctx.deps.user_deps
+        if isinstance(deps, AgentDeps):
+            self._deps = deps
+            self._resolved_draft_tools = deps.draft_tool_names
         async for node in agent_run:
             if Agent.is_user_prompt_node(node):
                 said = node.user_prompt if isinstance(node.user_prompt, str) else self.prompt
@@ -101,7 +117,9 @@ class RunFrames:
                 self.timeline.next_response()
                 await self.emit("model_request_start", {})
                 async with node.stream(agent_run.ctx) as request_stream:
-                    await self.request(request_stream)
+                    await self.request(
+                        request_stream, used_call_ids(agent_run.ctx.state.message_history)
+                    )
             elif Agent.is_call_tools_node(node):
                 await self.emit("call_tools_start", {})
                 async with node.stream(agent_run.ctx) as handle_stream:
@@ -120,8 +138,12 @@ class RunFrames:
                 # raises instead, and reaches the client as `error`.
                 await self.emit("final_result", {"output": display_output(agent_run.result.output)})
 
-    async def request(self, request_stream: Any) -> None:
+    async def request(self, request_stream: Any, used: set[str]) -> None:
         """Forward model-request events: text, reasoning, tool deltas, final-result start.
+
+        `used` is every tool call id the conversation already holds. A call that
+        reuses one is renamed on its start event, before the console hears of it -
+        see `app/agents/tool_call_ids.py`.
 
         `timeline` records exactly what was sent as `text_delta` and
         `thinking_delta`, and where each block sat, so a turn that never finishes
@@ -135,11 +157,16 @@ class RunFrames:
                     "part_type": type(event.part).__name__,
                 }
                 if isinstance(event.part, ToolCallPart):
+                    # In place: the part is the one the finished response holds.
+                    event.part.tool_call_id = fresh_call_id(event.part.tool_call_id, used)
                     # The name and id let a client show the call while its
                     # arguments stream - which, for a `write_file` carrying a
                     # whole report, can take minutes before `tool_call` exists.
                     start["tool_name"] = event.part.tool_name
                     start["tool_call_id"] = event.part.tool_call_id
+                    start.update(
+                        self.identity(event.part.tool_name, event.part.tool_call_id).wire()
+                    )
                 await self.emit("part_start", start)
                 if isinstance(event.part, TextPart) and event.part.content:
                     self.timeline.add_text(event.part.content)
@@ -147,6 +174,7 @@ class RunFrames:
                         "text_delta", {"index": event.index, "content": event.part.content}
                     )
                 elif isinstance(event.part, ThinkingPart) and event.part.content:
+                    self.timeline.next_response()
                     self.timeline.add_thinking(event.part.content)
                     await self.emit(
                         "thinking_delta", {"index": event.index, "content": event.part.content}
@@ -194,6 +222,15 @@ class RunFrames:
                     "tool_name": tool_event.part.tool_name,
                     "args": tool_event.part.args_as_dict(raise_if_invalid=False),
                 }
+                call.update(
+                    self.identity(tool_event.part.tool_name, tool_event.part.tool_call_id).wire()
+                )
+                if call.get("presentation_kind") != "generic" and tool_event.part.tool_name in (
+                    self.draft_tools()
+                    if self.draft_tools is not None
+                    else self._resolved_draft_tools
+                ):
+                    call["presentation_kind"] = "draft"
                 self.tool_calls.append(call)
                 self.timeline.add_tool(tool_event.part.tool_call_id)
                 pending[tool_event.part.tool_call_id] = call
@@ -205,13 +242,14 @@ class RunFrames:
                 # inside the stream, which reached the user as
                 # "❌ Error: 'FunctionToolResultEvent' object has no attribute
                 # 'result'" on every tool call in web chat.
-                if isinstance(tool_event.part, RetryPromptPart):
+                if tool_event.part.outcome in ERROR_OUTCOMES:
                     logger.warning(
-                        "Tool call %s asked the model to retry: %s",
+                        "Tool call %s returned %s: %s",
                         tool_event.tool_call_id,
+                        tool_event.part.outcome,
                         tool_event.part.content,
                     )
-                    content = tool_retry_notice(tool_event.part)
+                    content = tool_failure_notice(tool_event.part)
                 else:
                     content = tool_result_text(tool_event.part.content)
                 call = pending.get(tool_event.tool_call_id)

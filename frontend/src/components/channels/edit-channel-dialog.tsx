@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ClipboardCopy } from "lucide-react";
+import { ClipboardCopy, Download } from "lucide-react";
 import { toast } from "sonner";
 
 import { AnswerStyleFields, REACTION_PATTERN } from "@/components/channels/answer-style-fields";
 import { ChannelPlatformIcon } from "@/components/channels/channel-platform-icon";
 import { SlackTransport } from "@/components/channels/slack-transport";
+import { ImessageSetup } from "@/components/channels/imessage-setup";
 import {
   Button,
   Dialog,
@@ -19,20 +20,36 @@ import {
   Input,
 } from "@/components/ui";
 import {
+  choiceOf,
   TranscriptionFields,
   type TranscriptionChoice,
 } from "@/components/channels/transcription-fields";
-import { useCopySlackManifest } from "@/hooks/use-channel-bots";
+import {
+  useChannelBot,
+  useCopySlackManifest,
+  useDownloadTeamsPackage,
+} from "@/hooks/use-channel-bots";
 import { submitFailure } from "@/lib/api-error";
-import { DIALOG_FORM, DIALOG_SCROLL_GUTTER } from "@/lib/dialog-sizes";
+import { DIALOG_BODY, DIALOG_COLUMN, DIALOG_FORM } from "@/lib/dialog-sizes";
 import { cn } from "@/lib/utils";
 import type { AnswerStyle, ChannelBot, ChannelBotUpdate, ChannelPlatform } from "@/types/channels";
+import { MentionPolicyFields } from "./mention-policy-fields";
+import { DiscordGuildsField, parseDiscordGuilds, validDiscordGuilds } from "./discord-guilds-field";
 import { useTranslations } from "next-intl";
 
 const PLATFORM_LABEL: Record<ChannelPlatform, string> = {
   telegram: "Telegram",
   slack: "Slack",
   mattermost: "Mattermost",
+  // i18n-exempt: a product\'s own name, written the same in every language
+  teams: "Microsoft Teams",
+  // i18n-exempt: Twilio is the provider's own name
+  sms: "SMS (Twilio)",
+  // i18n-exempt: the name of the protocol, written the same in every language
+  email: "Email",
+  imessage: "iMessage",
+
+  discord: "Discord",
 };
 
 const MAX_NAME = 255;
@@ -50,6 +67,8 @@ export interface ChannelBotDraft {
   commandToken: string;
   /** Slack: whether Slack calls this deployment, or the deployment connects out. */
   webhookMode: boolean;
+  respondToBroadcasts: boolean;
+  discordGuilds: string;
   answerStyle: AnswerStyle;
   transcription: TranscriptionChoice;
 }
@@ -80,13 +99,15 @@ export function botPatch(bot: ChannelBot, draft: ChannelBotDraft): ChannelBotUpd
   const token = draft.token.trim();
   if (token) patch.token = token;
 
-  if (bot.platform === "mattermost") {
+  if (bot.platform === "mattermost" || bot.platform === "imessage") {
     const serverUrl = draft.serverUrl.trim();
     if (serverUrl && serverUrl !== bot.api_base_url) patch.api_base_url = serverUrl;
-    const webhookSecret = draft.webhookSecret.trim();
-    if (webhookSecret) patch.webhook_secret = webhookSecret;
-    const commandToken = draft.commandToken.trim();
-    if (commandToken) patch.command_token = commandToken;
+    if (bot.platform === "mattermost") {
+      const webhookSecret = draft.webhookSecret.trim();
+      if (webhookSecret) patch.webhook_secret = webhookSecret;
+      const commandToken = draft.commandToken.trim();
+      if (commandToken) patch.command_token = commandToken;
+    }
   }
 
   if (bot.platform === "slack") {
@@ -103,15 +124,56 @@ export function botPatch(bot: ChannelBot, draft: ChannelBotDraft): ChannelBotUpd
     }
   }
 
-  // Both halves whenever either moved, because the server pairs them against the
-  // stored row: sending a provider alone would be refused as a setting that
-  // cannot run, and clearing means clearing both.
-  const { provider, model } = draft.transcription;
-  if (provider !== bot.speech_to_text_provider || model !== bot.speech_to_text_model) {
+  if (draft.respondToBroadcasts !== (bot.access_policy.respond_to_broadcasts ?? false)) {
+    patch.access_policy = {
+      ...bot.access_policy,
+      respond_to_broadcasts: draft.respondToBroadcasts,
+    };
+  }
+  if (bot.platform === "discord") {
+    const guilds = parseDiscordGuilds(draft.discordGuilds);
+    const storedGuilds = parseDiscordGuilds((bot.access_policy.discord_guild_ids ?? []).join(" "));
+    if (guilds.join(",") !== storedGuilds.join(",")) {
+      patch.access_policy = {
+        ...bot.access_policy,
+        ...patch.access_policy,
+        discord_guild_ids: guilds,
+      };
+    }
+  }
+  Object.assign(patch, transcriptionPatch(bot, draft.transcription));
+  return patch;
+}
+
+/**
+ * The transcription half of the patch: the switch, and the pair with its key,
+ * each only where it moved.
+ *
+ * Off is the switch alone - the server clears the pair and the key with it.
+ * Inherit is the switch back on where it was off, and a null pair where the
+ * bot had its own; a null pair no longer means off (#1797), and the server
+ * clears the key with it. Choose is the switch on and both halves and the key
+ * whenever any of them moved, because the server checks them together against
+ * the stored row: a provider alone would be refused as a setting that cannot
+ * run, and a new provider without its key as a pair with nothing to pay with.
+ */
+function transcriptionPatch(bot: ChannelBot, choice: TranscriptionChoice): ChannelBotUpdate {
+  if (choice.mode === "off") {
+    return bot.transcribe_voice_notes ? { transcribe_voice_notes: false } : {};
+  }
+  const patch: ChannelBotUpdate = bot.transcribe_voice_notes
+    ? {}
+    : { transcribe_voice_notes: true };
+  const { provider, model, secretId } = choice;
+  if (
+    provider !== bot.speech_to_text_provider ||
+    model !== bot.speech_to_text_model ||
+    (choice.mode === "choose" && secretId !== bot.speech_to_text_secret_id)
+  ) {
     patch.speech_to_text_provider = provider;
     patch.speech_to_text_model = model;
+    if (choice.mode === "choose") patch.speech_to_text_secret_id = secretId;
   }
-
   return patch;
 }
 
@@ -146,17 +208,19 @@ function BotEditForm({ bot, onOpenChange, onSubmit, isPending }: BotEditFormProp
     appToken: "",
     commandToken: "",
     webhookMode: bot.webhook_mode,
+    respondToBroadcasts: bot.access_policy.respond_to_broadcasts ?? false,
+    discordGuilds: (bot.access_policy.discord_guild_ids ?? []).join(", "),
     answerStyle: {
       ack_reaction: bot.ack_reaction,
       stream_answers: bot.stream_answers,
       step_display: bot.step_display,
       rate_answers: bot.rate_answers,
     },
-    transcription: {
-      provider: bot.speech_to_text_provider,
-      model: bot.speech_to_text_model,
-    },
+    transcription: choiceOf(bot),
   });
+  // The single-bot read carries what "inherit" resolves to; the row the list
+  // handed over does not, because resolving it reads the bot's agent.
+  const inherited = useChannelBot(bot.id)?.inherited_speech_to_text;
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   function set(
@@ -186,13 +250,24 @@ function BotEditForm({ bot, onOpenChange, onSubmit, isPending }: BotEditFormProp
     !REACTION_PATTERN.test(draft.answerStyle.ack_reaction);
 
   async function submit() {
+    if (isPending) return;
     try {
       await onSubmit(bot.id, patch);
       onOpenChange(false);
     } catch (error) {
       const failure = submitFailure(
         error,
-        { fields: ["name", "token", "api_base_url", "webhook_secret"], identifiedBy: "name" },
+        {
+          fields: [
+            "name",
+            "token",
+            "api_base_url",
+            "webhook_secret",
+            "transcribe_voice_notes",
+            "speech_to_text_secret_id",
+          ],
+          identifiedBy: "name",
+        },
         tErrors,
       );
       setErrors(failure.fields);
@@ -207,147 +282,210 @@ function BotEditForm({ bot, onOpenChange, onSubmit, isPending }: BotEditFormProp
         <DialogDescription>{t("editChannelDescription")}</DialogDescription>
       </DialogHeader>
 
-      <div className={cn("max-h-[65vh] space-y-5 overflow-y-auto pl-1", DIALOG_SCROLL_GUTTER)}>
-        <div className="text-muted-foreground flex items-center gap-2.5 text-sm">
-          <ChannelPlatformIcon platform={bot.platform} />
-          <span>{PLATFORM_LABEL[bot.platform]}</span>
-        </div>
+      <div className={DIALOG_BODY}>
+        <fieldset disabled={isPending} className="min-w-0 space-y-5">
+          <legend className="sr-only">{t("editChannel")}</legend>
+          <div className="text-muted-foreground flex items-center gap-2.5 text-sm">
+            <ChannelPlatformIcon platform={bot.platform} />
+            <span>{PLATFORM_LABEL[bot.platform]}</span>
+          </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField
-            label={t("name")}
-            htmlFor="edit-channel-name"
-            error={errors.name}
-            description={t("nameHint")}
-            required
-          >
-            <Input
-              id="edit-channel-name"
-              value={draft.name}
-              onChange={(event) => set("name", event.target.value)}
-              maxLength={MAX_NAME}
-            />
-          </FormField>
-
-          <FormField
-            label={t("replaceBotToken")}
-            htmlFor="edit-channel-token"
-            error={errors.token ?? (shortToken ? t("tokenTooShort") : undefined)}
-            description={t("credentialStored")}
-          >
-            <Input
-              id="edit-channel-token"
-              type="password"
-              value={draft.token}
-              onChange={(event) => set("token", event.target.value)}
-              autoComplete="off"
-            />
-          </FormField>
-        </div>
-
-        {bot.platform === "mattermost" && (
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
-              label={t("mattermostServerUrl")}
-              htmlFor="edit-channel-server-url"
-              error={errors.api_base_url}
-              description={t("mattermostServerUrlHint")}
+              label={t("name")}
+              htmlFor="edit-channel-name"
+              error={errors.name}
+              description={t("nameHint")}
               required
             >
               <Input
-                id="edit-channel-server-url"
+                id="edit-channel-name"
+                value={draft.name}
+                onChange={(event) => set("name", event.target.value)}
+                maxLength={MAX_NAME}
+              />
+            </FormField>
+
+            <FormField
+              label={t("replaceBotToken")}
+              htmlFor="edit-channel-token"
+              error={errors.token ?? (shortToken ? t("tokenTooShort") : undefined)}
+              description={t("credentialStored")}
+            >
+              <Input
+                id="edit-channel-token"
+                type="password"
+                value={draft.token}
+                onChange={(event) => set("token", event.target.value)}
+                autoComplete="off"
+              />
+            </FormField>
+          </div>
+
+          {bot.platform === "mattermost" && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                label={t("mattermostServerUrl")}
+                htmlFor="edit-channel-server-url"
+                error={errors.api_base_url}
+                description={t("mattermostServerUrlHint")}
+                required
+              >
+                <Input
+                  id="edit-channel-server-url"
+                  value={draft.serverUrl}
+                  onChange={(event) => set("serverUrl", event.target.value)}
+                  maxLength={MAX_URL}
+                />
+              </FormField>
+
+              <FormField
+                label={t("mattermostWebhookToken")}
+                htmlFor="edit-channel-webhook-secret"
+                error={errors.webhook_secret}
+                description={stored(bot.has_webhook_secret)}
+              >
+                <Input
+                  id="edit-channel-webhook-secret"
+                  type="password"
+                  value={draft.webhookSecret}
+                  onChange={(event) => set("webhookSecret", event.target.value)}
+                  autoComplete="off"
+                  maxLength={MAX_NAME}
+                />
+              </FormField>
+            </div>
+          )}
+
+          {bot.platform === "mattermost" && bot.command_url && (
+            <MattermostCommand
+              url={bot.command_url}
+              token={draft.commandToken}
+              stored={stored(bot.has_command_token)}
+              onToken={(value) => set("commandToken", value)}
+            />
+          )}
+
+          {bot.platform === "slack" && (
+            <SlackTransport
+              webhookMode={draft.webhookMode}
+              onChange={(webhookMode) => setDraft((current) => ({ ...current, webhookMode }))}
+            />
+          )}
+
+          {bot.platform === "slack" && <SlackManifest botId={bot.id} />}
+
+          {bot.platform === "teams" && <TeamsSetup bot={bot} />}
+          {bot.platform === "imessage" && (
+            <FormField
+              label={t("imessageServerUrl")}
+              htmlFor="edit-imessage-server-url"
+              description={t("imessageServerUrlHint")}
+              error={errors.api_base_url}
+              required
+            >
+              <Input
+                id="edit-imessage-server-url"
                 value={draft.serverUrl}
                 onChange={(event) => set("serverUrl", event.target.value)}
                 maxLength={MAX_URL}
               />
             </FormField>
-
-            <FormField
-              label={t("mattermostWebhookToken")}
-              htmlFor="edit-channel-webhook-secret"
+          )}
+          {bot.platform === "imessage" && (
+            <ImessageSetup
+              botId={bot.id}
+              unsaved={draft.serverUrl.trim() !== bot.api_base_url || draft.token.trim() !== ""}
+            />
+          )}
+          {bot.platform === "sms" && <SmsSetup bot={bot} />}
+          {bot.platform === "email" && (
+            <EmailSetup
+              bot={bot}
+              secret={draft.webhookSecret}
               error={errors.webhook_secret}
-              description={stored(bot.has_webhook_secret)}
-            >
-              <Input
-                id="edit-channel-webhook-secret"
-                type="password"
-                value={draft.webhookSecret}
-                onChange={(event) => set("webhookSecret", event.target.value)}
-                autoComplete="off"
-                maxLength={MAX_NAME}
-              />
-            </FormField>
-          </div>
-        )}
+              onSecret={(value) => set("webhookSecret", value)}
+            />
+          )}
 
-        {bot.platform === "mattermost" && bot.command_url && (
-          <MattermostCommand
-            url={bot.command_url}
-            token={draft.commandToken}
-            stored={stored(bot.has_command_token)}
-            onToken={(value) => set("commandToken", value)}
+          {bot.platform === "slack" &&
+            (draft.webhookMode ? (
+              <FormField
+                label={t("signingSecret")}
+                htmlFor="edit-channel-signing-secret"
+                description={stored(bot.has_slack_signing_secret)}
+              >
+                <Input
+                  id="edit-channel-signing-secret"
+                  type="password"
+                  value={draft.signingSecret}
+                  onChange={(event) => set("signingSecret", event.target.value)}
+                  autoComplete="off"
+                />
+              </FormField>
+            ) : (
+              <FormField
+                label={t("appLevelToken")}
+                htmlFor="edit-channel-app-token"
+                description={stored(bot.has_slack_app_token)}
+              >
+                <Input
+                  id="edit-channel-app-token"
+                  type="password"
+                  value={draft.appToken}
+                  onChange={(event) => set("appToken", event.target.value)}
+                  autoComplete="off"
+                />
+              </FormField>
+            ))}
+
+          {bot.platform === "discord" && (
+            <DiscordGuildsField
+              idPrefix="edit-channel"
+              value={draft.discordGuilds}
+              onChange={(discordGuilds) => setDraft((current) => ({ ...current, discordGuilds }))}
+            />
+          )}
+          <MentionPolicyFields
+            idPrefix="edit-channel"
+            platform={bot.platform}
+            enabled={draft.respondToBroadcasts}
+            onChange={(respondToBroadcasts) =>
+              setDraft((current) => ({ ...current, respondToBroadcasts }))
+            }
           />
-        )}
-
-        {bot.platform === "slack" && (
-          <SlackTransport
-            webhookMode={draft.webhookMode}
-            onChange={(webhookMode) => setDraft((current) => ({ ...current, webhookMode }))}
+          <AnswerStyleFields
+            idPrefix="edit-channel"
+            platform={bot.platform}
+            value={draft.answerStyle}
+            onChange={(answerStyle) => setDraft((current) => ({ ...current, answerStyle }))}
           />
-        )}
 
-        {bot.platform === "slack" && <SlackManifest botId={bot.id} />}
-
-        {bot.platform === "slack" &&
-          (draft.webhookMode ? (
-            <FormField
-              label={t("signingSecret")}
-              htmlFor="edit-channel-signing-secret"
-              description={stored(bot.has_slack_signing_secret)}
-            >
-              <Input
-                id="edit-channel-signing-secret"
-                type="password"
-                value={draft.signingSecret}
-                onChange={(event) => set("signingSecret", event.target.value)}
-                autoComplete="off"
-              />
-            </FormField>
-          ) : (
-            <FormField
-              label={t("appLevelToken")}
-              htmlFor="edit-channel-app-token"
-              description={stored(bot.has_slack_app_token)}
-            >
-              <Input
-                id="edit-channel-app-token"
-                type="password"
-                value={draft.appToken}
-                onChange={(event) => set("appToken", event.target.value)}
-                autoComplete="off"
-              />
-            </FormField>
-          ))}
-
-        <AnswerStyleFields
-          idPrefix="edit-channel"
-          platform={bot.platform}
-          value={draft.answerStyle}
-          onChange={(answerStyle) => setDraft((current) => ({ ...current, answerStyle }))}
-        />
-
-        <TranscriptionFields
-          idPrefix="edit-channel"
-          value={draft.transcription}
-          onChange={(transcription) => setDraft((current) => ({ ...current, transcription }))}
-        />
+          <TranscriptionFields
+            idPrefix="edit-channel"
+            platform={bot.platform}
+            inherited={inherited}
+            value={draft.transcription}
+            onChange={(transcription) => setDraft((current) => ({ ...current, transcription }))}
+            keyError={errors.speech_to_text_secret_id}
+          />
+        </fieldset>
       </div>
 
       <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <Button variant="outline" disabled={isPending} onClick={() => onOpenChange(false)}>
           {t("cancel")}
         </Button>
-        <Button onClick={submit} disabled={nothingToSave || shortToken || badReaction || isPending}>
+        <Button
+          onClick={submit}
+          loading={isPending}
+          disabled={
+            nothingToSave ||
+            shortToken ||
+            badReaction ||
+            (bot.platform === "discord" && !validDiscordGuilds(draft.discordGuilds))
+          }
+        >
           {t("save")}
         </Button>
       </DialogFooter>
@@ -390,8 +528,13 @@ export function EditChannelDialog({
   isPending,
 }: EditChannelDialogProps) {
   return (
-    <Dialog open={bot !== null} onOpenChange={onOpenChange}>
-      <DialogContent className={DIALOG_FORM}>
+    <Dialog
+      open={bot !== null}
+      onOpenChange={(next) => {
+        if (!isPending) onOpenChange(next);
+      }}
+    >
+      <DialogContent className={cn(DIALOG_FORM, DIALOG_COLUMN)} dismissible={!isPending}>
         {bot && (
           <BotEditForm
             key={bot.id}
@@ -426,6 +569,98 @@ function SlackManifest({ botId }: { botId: string }) {
         <ClipboardCopy className="h-4 w-4" />
         {t("slackManifestCopy")}
       </Button>
+    </div>
+  );
+}
+
+/**
+ * A Teams bot, set up in two steps (#1985): its messaging endpoint goes into the
+ * Azure Bot resource, and the app package into the tenant's app catalog.
+ */
+function SmsSetup({ bot }: { bot: ChannelBot }) {
+  const t = useTranslations("pages.channels");
+  if (!bot.messaging_endpoint) return null;
+  return (
+    <div className="border-border space-y-1 rounded-lg border p-3">
+      <p className="text-sm font-medium">{t("smsEndpoint")}</p>
+      <p className="text-muted-foreground text-xs">{t("smsEndpointHint")}</p>
+      <code className="bg-muted block rounded-md px-2 py-1.5 text-xs break-all">
+        {bot.messaging_endpoint}
+      </code>
+    </div>
+  );
+}
+
+/** An e-mail bot: where the mail relay posts, and the secret it signs with (#2082). */
+function EmailSetup({
+  bot,
+  secret,
+  error,
+  onSecret,
+}: {
+  bot: ChannelBot;
+  secret: string;
+  error?: string;
+  onSecret: (value: string) => void;
+}) {
+  const t = useTranslations("pages.channels");
+  return (
+    <div className="border-border space-y-3 rounded-lg border p-3">
+      {bot.messaging_endpoint && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">{t("emailEndpoint")}</p>
+          <p className="text-muted-foreground text-xs">{t("emailEndpointHint")}</p>
+          <code className="bg-muted block rounded-md px-2 py-1.5 text-xs break-all">
+            {bot.messaging_endpoint}
+          </code>
+        </div>
+      )}
+      <FormField
+        label={t("emailRelaySecret")}
+        htmlFor="edit-channel-relay-secret"
+        error={error}
+        description={bot.has_webhook_secret ? t("credentialStored") : t("emailRelaySecretHint")}
+      >
+        <Input
+          id="edit-channel-relay-secret"
+          type="password"
+          value={secret}
+          onChange={(event) => onSecret(event.target.value)}
+          autoComplete="off"
+          maxLength={MAX_NAME}
+        />
+      </FormField>
+    </div>
+  );
+}
+
+function TeamsSetup({ bot }: { bot: ChannelBot }) {
+  const t = useTranslations("pages.channels");
+  const download = useDownloadTeamsPackage();
+  return (
+    <div className="border-border space-y-3 rounded-lg border p-3">
+      {bot.messaging_endpoint && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">{t("teamsEndpoint")}</p>
+          <p className="text-muted-foreground text-xs">{t("teamsEndpointHint")}</p>
+          <code className="bg-muted block rounded-md px-2 py-1.5 text-xs break-all">
+            {bot.messaging_endpoint}
+          </code>
+        </div>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <p className="text-muted-foreground flex-1 text-sm">{t("teamsPackageWhy")}</p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => download.mutate({ id: bot.id, name: bot.name })}
+          disabled={download.isPending}
+        >
+          <Download className="h-4 w-4" />
+          {t("teamsPackageDownload")}
+        </Button>
+      </div>
     </div>
   );
 }

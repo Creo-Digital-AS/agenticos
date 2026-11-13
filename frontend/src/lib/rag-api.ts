@@ -38,14 +38,23 @@ export interface RAGSearchResult {
   metadata: Record<string, unknown>;
   score: number;
   parent_doc_id: string;
+  /**
+   * The page a citation may name, or null when the document's format has no
+   * pages. Read this rather than `metadata.page_num`, which is 1 for every
+   * Markdown, text and `.docx` chunk (#2489).
+   */
+  page: number | null;
 }
 
 export interface RAGSearchResponse {
   results: RAGSearchResult[];
 }
 
-export async function searchDocuments(request: RAGSearchRequest): Promise<RAGSearchResponse> {
-  return apiClient.post<RAGSearchResponse>("/rag/search", request);
+export async function searchDocuments(
+  request: RAGSearchRequest,
+  signal?: AbortSignal,
+): Promise<RAGSearchResponse> {
+  return apiClient.post<RAGSearchResponse>("/rag/search", request, { signal });
 }
 
 /**
@@ -120,6 +129,20 @@ export interface SyncSourceCreate {
   sync_mode?: string;
   schedule_minutes?: number | null;
 }
+
+/**
+ * A change to an existing source: only the fields that change.
+ *
+ * The connector is fixed once a source exists. `config` is merged into the
+ * stored one rather than replacing it, and a `secret_id` sent is checked again
+ * as the caller's own choice - so leave it out unless the credential changes.
+ */
+export type SyncSourceUpdate = Partial<
+  Pick<
+    SyncSourceCreate,
+    "name" | "config" | "secret_id" | "organizational_unit" | "sync_mode" | "schedule_minutes"
+  >
+>;
 
 export interface SyncSourceRead {
   id: string;

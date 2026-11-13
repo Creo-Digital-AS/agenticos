@@ -5,20 +5,25 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import current_impersonator, record_audit
 from app.core.config import settings
 from app.core.exceptions import (
     AlreadyExistsError,
     AuthorizationError,
     BadRequestError,
     ConcurrentChangeError,
+    ConflictError,
     NotFoundError,
 )
+from app.core.field_errors import refused_field
 from app.core.permissions import AuthContext, OrgRoleName, Perm, role_has
 from app.db.locks import LockScope, hold_name, hold_subject, try_hold_name
 from app.db.models.knowledge_base import KnowledgeBase
 from app.db.models.organization import Organization, OrganizationMember, OrgRole
 from app.repositories import (
     collection_teardown_repo,
+    credential_repo,
+    invitation_repo,
     knowledge_base_repo,
     member_repo,
     organization_repo,
@@ -30,35 +35,86 @@ from app.schemas.organization import (
     OrganizationRead,
     OrganizationUpdate,
 )
-from app.services import skill_library
+from app.services import skill_library, speech_to_text
 from app.services.deployment_settings import DeploymentSettingsService
 from app.services.file_storage import avatar_filename, get_file_storage
+from app.services.invitation_admission import admits
+from app.services.model_outputs import model_outputs, not_chat_refusal
+from app.services.proactive import ProactiveService
 from app.services.skills import SkillService
+from app.services.speech_to_text_settings import SpeechToTextSettingsService
+from app.worker.jobs import BasePurge, Restamp
 
 if TYPE_CHECKING:
     from app.services.rag.vectorstore import BaseVectorStore
 
 logger = logging.getLogger(__name__)
 
+# The platform's own initiative: spending, so gated like a budget (#2301).
+_PROACTIVE_FIELDS = frozenset(
+    {
+        "proactive_enabled",
+        "proactive_model_profile_id",
+        "proactive_days",
+        "proactive_hour",
+        "proactive_timing",
+        "proactive_watches_enabled",
+        "proactive_watch_min_minutes",
+    }
+)
+_WELCOME_FIELDS = frozenset({"welcome_dm_enabled", "welcome_dm_text"})
 
-def _org_read(org: Organization, member_count: int, role: str) -> OrganizationRead:
+_SPEECH_FIELDS = frozenset(
+    {
+        "speech_to_text_provider",
+        "speech_to_text_model",
+        "speech_to_text_secret_id",
+        "speech_to_text_language",
+        "dictation_max_seconds",
+    }
+)
+"""The organization's speech-to-text default (#1797), validated together when any is named."""
+
+
+def _org_read(
+    org: Organization, member_count: int, role: str, *, is_default: bool = False
+) -> OrganizationRead:
     """One organization as a member of it sees it.
 
     `member_count` and `role` are not on the row - the first is a count over
     the membership table, the second is the caller's own membership - so every
-    response has to carry them in alongside it.
+    response has to carry them in alongside it. `is_default` is the deployment's
+    setting, which is not on the row either.
     """
     return OrganizationRead(
         id=org.id,
         name=org.name,
         slug=org.slug,
         is_personal=org.is_personal,
+        is_default=is_default,
         avatar_url=org.avatar_url,
         avatar_color=org.avatar_color,
         member_count=member_count,
         role=role,
         monthly_budget_usd=org.monthly_budget_usd,
+        proactive_limit_usd=org.proactive_limit_usd,
+        proactive_enabled=org.proactive_enabled,
+        proactive_model_profile_id=org.proactive_model_profile_id,
+        proactive_days=org.proactive_days,
+        proactive_hour=org.proactive_hour,
+        proactive_timing=org.proactive_timing,
+        proactive_watches_enabled=org.proactive_watches_enabled,
+        proactive_watch_min_minutes=org.proactive_watch_min_minutes,
+        welcome_dm_enabled=org.welcome_dm_enabled,
+        welcome_dm_text=org.welcome_dm_text,
         chat_may_waive_approvals=org.chat_may_waive_approvals,
+        public_agenticos_attribution=org.public_agenticos_attribution,
+        public_live_data=org.public_live_data,
+        speech_to_text_provider=org.speech_to_text_provider,
+        speech_to_text_model=org.speech_to_text_model,
+        speech_to_text_secret_id=org.speech_to_text_secret_id,
+        speech_to_text_language=org.speech_to_text_language,
+        dictation_max_seconds=org.dictation_max_seconds,
         created_at=org.created_at,
         updated_at=org.updated_at,
     )
@@ -67,7 +123,7 @@ def _org_read(org: Organization, member_count: int, role: str) -> OrganizationRe
 class OrganizationService:
     _ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
-    def __init__(self, db: AsyncSession, vector_store: "BaseVectorStore | None" = None):
+    def __init__(self, db: AsyncSession, vector_store: BaseVectorStore | None = None):
         self.db = db
         # Present only on the teardown path, where the request built a store to
         # drop the tenant's vector tables with; None everywhere else, so ordinary
@@ -104,12 +160,24 @@ class OrganizationService:
         """
         org, membership = await self.get_for_user(org_id, user_id)
         count = await organization_repo.count_members(self.db, org_id)
-        return _org_read(org, member_count=count, role=membership.role)
+        default_id = await self._default_organization_id()
+        return _org_read(
+            org, member_count=count, role=membership.role, is_default=org.id == default_id
+        )
 
     async def list_readable_for_user(self, user_id: UUID) -> OrganizationList:
         """Every organization the caller belongs to, each with role and size."""
         rows = await self.list_for_user(user_id)
-        items = [_org_read(row["org"], row["member_count"], row["role"]) for row in rows]
+        default_id = await self._default_organization_id()
+        items = [
+            _org_read(
+                row["org"],
+                row["member_count"],
+                row["role"],
+                is_default=row["org"].id == default_id,
+            )
+            for row in rows
+        ]
         return OrganizationList(items=items, total=len(items))
 
     async def list_for_user(self, user_id: UUID) -> list[dict]:
@@ -162,7 +230,15 @@ class OrganizationService:
             role=OrgRole.OWNER.value,
         )
         await self._seed_bundled_skills(org.id, owner_id)
+        await self._seed_system_agents(org.id, owner_id)
         return org
+
+    async def _seed_system_agents(self, organization_id: UUID, owner_id: UUID) -> None:
+        # Imported locally: the system agents reach the agent registry, whose
+        # browser capability imports this module back through the user service.
+        from app.services.system_agents import SystemAgentService
+
+        await SystemAgentService(self.db).seed(organization_id=organization_id, owner_id=owner_id)
 
     async def _seed_bundled_skills(self, organization_id: UUID, owner_id: UUID) -> None:
         """Copy every bundled skill into a brand-new organization.
@@ -228,6 +304,104 @@ class OrganizationService:
                 details={"limit": limit, "owned": owned},
             )
 
+    async def _default_organization_id(self) -> UUID | None:
+        placement = await DeploymentSettingsService(self.db).new_account_placement()
+        return placement.default_organization_id
+
+    async def settle_new_account(
+        self,
+        user_id: UUID,
+        email: str,
+        *,
+        invitation_token: str | None = None,
+        admitted_by_policy: bool = True,
+    ) -> None:
+        """Give an account created just now the organizations the deployment says it starts in.
+
+        Its own, unless the deployment has turned personal organizations off, and
+        the default organization when one is set (#2156). Both account-creation
+        paths - the sign-up form and a first sign-in through a provider - end here,
+        so neither can place a person somewhere the other would not.
+
+        The default organization only for an account the deployment's own rule
+        admitted. One admitted solely by another organization's invitation or
+        directory mapping was vouched for by that organization's managers, and
+        joining it to the default one would let them add people to an
+        organization they cannot manage.
+        """
+        placement = await DeploymentSettingsService(self.db).new_account_placement()
+        if placement.personal:
+            await self.create_personal_org(user_id, email)
+        if placement.default_organization_id is not None and admitted_by_policy:
+            await self._join_default(
+                user_id,
+                email,
+                placement.default_organization_id,
+                role=placement.role,
+                invitation_token=invitation_token,
+            )
+
+    async def _join_default(
+        self,
+        user_id: UUID,
+        email: str,
+        organization_id: UUID,
+        *,
+        role: str,
+        invitation_token: str | None,
+    ) -> None:
+        """Join the default organization, unless an invitation to it is about to.
+
+        An invitation names its own role, and accepting one into an organization
+        the person already joined is refused as "already a member" - so a
+        newcomer invited as an admin would end up a member, with an invitation
+        that no longer works. The invitation wins: the person joins when they
+        accept it.
+        """
+        invitations = [
+            await invitation_repo.get_by_token(self.db, invitation_token)
+            if invitation_token is not None
+            else None,
+            await invitation_repo.get_pending_for_org_email(
+                self.db, organization_id=organization_id, email=email
+            ),
+        ]
+        # Only an invitation the person can still accept stands in for the join:
+        # one past its expiry, used up or revoked would leave them in nothing.
+        if any(
+            invitation is not None
+            and invitation.organization_id == organization_id
+            and admits(invitation, email=email)
+            for invitation in invitations
+        ):
+            return
+        await member_repo.create(
+            self.db, organization_id=organization_id, user_id=user_id, role=role
+        )
+        await ProactiveService(self.db).queue_welcome(organization_id, user_id)
+
+    async def fallback_for(self, user_id: UUID) -> Organization | None:
+        """The organization a session acts in when the request names none.
+
+        The default organization when the person belongs to it, then their
+        personal one, then their only organization. `None` when that still leaves
+        a choice - two organizations and neither of them default or personal -
+        because guessing would be a request quietly acting in a tenant its
+        sender never meant (#2156).
+        """
+        default_id = await self._default_organization_id()
+        if default_id is not None and await member_repo.get(
+            self.db, organization_id=default_id, user_id=user_id
+        ):
+            return await organization_repo.get_by_id(self.db, default_id)
+        personal = await organization_repo.get_personal_for_user(self.db, user_id)
+        if personal is not None:
+            return personal
+        memberships = await organization_repo.list_for_user(self.db, user_id)
+        if len(memberships) == 1:
+            return memberships[0][0]
+        return None
+
     async def create_personal_org(self, user_id: UUID, email: str) -> Organization:
         """Create the Personal Organization for a newly registered user.
 
@@ -252,6 +426,7 @@ class OrganizationService:
             role=OrgRole.OWNER.value,
         )
         await self._seed_bundled_skills(org.id, user_id)
+        await self._seed_system_agents(org.id, user_id)
         return org
 
     async def update(
@@ -264,9 +439,8 @@ class OrganizationService:
         """Update org metadata and settings.
 
         Three permissions decide this PATCH, each covering the fields it names:
-        `org:settings` for the metadata (name, avatar), `budgets:manage` for
-        the monthly spending cap, `approvals:decide` for whether chat sessions
-        may waive approvals. The built-in Owner and Admin hold all three, so
+        `org:settings` for the metadata (name, avatar), `budgets:manage` for the monthly spending cap, `approvals:decide`
+        for whether chat sessions may waive approvals. The built-in Owner and Admin hold all three, so
         nothing changes for them - but the catalog advertises each as its own
         entitlement, and a permission the matrix shows and no endpoint consults
         is a row that means nothing.
@@ -276,6 +450,17 @@ class OrganizationService:
         decision about the approval queue, and somebody who may not decide one
         approval should not be able to switch the queue off for every
         conversation (#925).
+
+        `public_live_data` - whether a page's data may reach anonymous visitors - is
+        `org:settings` (Owner or Admin), signed in as themselves: nobody impersonating
+        them changes it (saving the value it already has is not a change), since it
+        widens who reads the organization's tables. Audited
+        `organization.public_live_data_changed` with the old and the new value.
+
+        The speech-to-text default falls under `org:settings` with the metadata,
+        and is validated only when one of its fields is named - so a rename never
+        trips over a default that went stale (#1797). Calls and dictation are
+        switched on per agent, so nothing else about voice is the organization's.
 
         `key_scopes` are those of the API key the request came with, `None` for
         a session: each field's permission must be one the key was issued for
@@ -288,20 +473,45 @@ class OrganizationService:
             return role_has(membership.role, perm) and (key_scopes is None or perm in key_scopes)
 
         wants_budget = "monthly_budget_usd" in data.model_fields_set
+        wants_proactive = data.proactive_limit_usd is not None or bool(
+            data.model_fields_set & _PROACTIVE_FIELDS
+        )
         wants_color = "avatar_color" in data.model_fields_set
         wants_waiver = "chat_may_waive_approvals" in data.model_fields_set
+        wants_public_data = "public_live_data" in data.model_fields_set
         wants_metadata = bool(
-            data.model_fields_set - {"monthly_budget_usd", "chat_may_waive_approvals"}
+            data.model_fields_set
+            - {
+                "monthly_budget_usd",
+                "proactive_limit_usd",
+                "chat_may_waive_approvals",
+                "public_live_data",
+            }
+            - _PROACTIVE_FIELDS
         )
         if wants_metadata and not holds(Perm.ORG_SETTINGS):
             raise AuthorizationError(message="Only Owner or Admin can update the organization")
-        if wants_budget and not holds(Perm.BUDGETS_MANAGE):
-            raise AuthorizationError(
-                message="Changing the spending limit requires 'budgets:manage'"
-            )
+        if (wants_budget or wants_proactive) and not holds(Perm.BUDGETS_MANAGE):
+            raise AuthorizationError(message="Changing a spending limit requires 'budgets:manage'")
         if wants_waiver and not holds(Perm.APPROVALS_DECIDE):
             raise AuthorizationError(
                 message="Changing whether chats may waive approvals requires 'approvals:decide'"
+            )
+
+        if wants_public_data and not holds(Perm.ORG_SETTINGS):
+            raise AuthorizationError(
+                message="Changing whether pages may show data publicly requires 'org:settings'"
+            )
+        if (
+            wants_public_data
+            and data.public_live_data != org.public_live_data
+            and current_impersonator() is not None
+        ):
+            raise AuthorizationError(
+                message=(
+                    "Changing whether pages may show data publicly is not allowed while "
+                    "impersonating another account."
+                )
             )
 
         if wants_budget:
@@ -310,6 +520,30 @@ class OrganizationService:
             # exactly where it was.
             org = await organization_repo.set_monthly_budget(
                 self.db, org, limit_usd=data.monthly_budget_usd
+            )
+
+        if data.proactive_limit_usd is not None:
+            org = await organization_repo.set_proactive_limit(
+                self.db, org, limit_usd=data.proactive_limit_usd
+            )
+
+        if data.model_fields_set & _PROACTIVE_FIELDS:
+            org = await self._apply_proactivity(org, data)
+
+        if data.model_fields_set & _WELCOME_FIELDS:
+            org = await organization_repo.set_welcome_dm(
+                self.db,
+                org,
+                enabled=(
+                    org.welcome_dm_enabled
+                    if data.welcome_dm_enabled is None
+                    else data.welcome_dm_enabled
+                ),
+                text=(
+                    (data.welcome_dm_text or "").strip() or None
+                    if "welcome_dm_text" in data.model_fields_set
+                    else org.welcome_dm_text
+                ),
             )
 
         if wants_color:
@@ -321,11 +555,189 @@ class OrganizationService:
                 self.db, org, allowed=data.chat_may_waive_approvals
             )
 
+        if (
+            wants_public_data
+            and data.public_live_data is not None
+            and data.public_live_data != org.public_live_data
+        ):
+            before = org.public_live_data
+            org = await organization_repo.set_public_live_data(
+                self.db, org, allowed=data.public_live_data
+            )
+            await record_audit(
+                self.db,
+                actor_user_id=requester_id,
+                organization_id=org.id,
+                action="organization.public_live_data_changed",
+                target_type="organization",
+                target_id=str(org.id),
+                details={"from": before, "to": org.public_live_data},
+            )
+        if data.public_agenticos_attribution is not None:
+            org = await organization_repo.set_public_agenticos_attribution(
+                self.db, org, enabled=data.public_agenticos_attribution
+            )
+        if data.model_fields_set & _SPEECH_FIELDS:
+            org = await self._apply_speech_settings(org, data)
+
         return await organization_repo.update(
             self.db,
             org,
             name=data.name,
             avatar_url=data.avatar_url,
+        )
+
+    async def _apply_proactivity(self, org: Organization, data: OrganizationUpdate) -> Organization:
+        """Merge the named proactivity fields over the stored ones, check, and write.
+
+        The model is chosen, never defaulted (#2301): the work spends money nobody
+        asked for in the moment, so turning it on without one - or clearing the
+        one it runs on while it is on - is refused, naming the model field. A
+        profile named must be one of this organization's.
+        """
+        named = data.model_fields_set
+        enabled = (
+            org.proactive_enabled if data.proactive_enabled is None else data.proactive_enabled
+        )
+        watches = (
+            org.proactive_watches_enabled
+            if data.proactive_watches_enabled is None
+            else data.proactive_watches_enabled
+        )
+        profile_id = (
+            data.proactive_model_profile_id
+            if "proactive_model_profile_id" in named
+            else org.proactive_model_profile_id
+        )
+        if profile_id is not None and ("proactive_model_profile_id" in named or enabled):
+            profile = await credential_repo.get_profile(self.db, profile_id, organization_id=org.id)
+            if profile is None:
+                raise refused_field(
+                    "proactive_model_profile_id", "That model is not one of this organization's"
+                )
+            outputs = model_outputs(profile.provider, profile.model, base_url=profile.base_url)
+            if not outputs.chat and (enabled or profile_id != org.proactive_model_profile_id):
+                raise refused_field(
+                    "proactive_model_profile_id",
+                    not_chat_refusal(profile.label, profile.model, outputs),
+                )
+        if enabled and profile_id is None:
+            raise refused_field(
+                "proactive_model_profile_id",
+                "Choose the model the proactive work runs on before turning it on",
+            )
+        org = await organization_repo.set_proactivity(
+            self.db,
+            org,
+            enabled=enabled,
+            model_profile_id=profile_id,
+            days=org.proactive_days if data.proactive_days is None else data.proactive_days,
+            hour=org.proactive_hour if data.proactive_hour is None else data.proactive_hour,
+            timing=org.proactive_timing if data.proactive_timing is None else data.proactive_timing,
+        )
+        return await organization_repo.set_watch_policy(
+            self.db,
+            org,
+            enabled=watches,
+            min_minutes=(
+                org.proactive_watch_min_minutes
+                if data.proactive_watch_min_minutes is None
+                else data.proactive_watch_min_minutes
+            ),
+        )
+
+    async def _apply_speech_settings(
+        self, org: Organization, data: OrganizationUpdate
+    ) -> Organization:
+        """Merge the named speech fields over the stored ones, check the result, write it.
+
+        Checked after the merge, because the rules span fields: a pair must be one
+        the catalog offers, and it is sent with a key named beside it - an
+        organization-visible API key for that provider
+        (`SpeechToTextSettingsService.key_problem`), since the platform spends
+        it for everybody. No pair here is allowed: an agent may carry its own
+        (`SpeechToTextSpec`), and one that has none dictates in the browser.
+
+        Only what the request changes is checked: the pair and its key when it
+        names the provider, the model or the key. A rename never trips over a
+        pair that went stale after its model was withdrawn or its key deleted. A
+        refusal names a field the request sent.
+
+        `null` clears the provider, the model, the key and the language; on the
+        length, which cannot be empty, it leaves the stored value alone. Clearing the pair clears its key with it - a key left behind
+        would ride along to whichever provider is chosen next.
+        """
+        named = data.model_fields_set
+        provider = (
+            data.speech_to_text_provider
+            if "speech_to_text_provider" in named
+            else org.speech_to_text_provider
+        )
+        model = (
+            data.speech_to_text_model
+            if "speech_to_text_model" in named
+            else org.speech_to_text_model
+        )
+        secret_id = (
+            data.speech_to_text_secret_id
+            if "speech_to_text_secret_id" in named
+            else org.speech_to_text_secret_id
+        )
+        language = (
+            data.speech_to_text_language
+            if "speech_to_text_language" in named
+            else org.speech_to_text_language
+        )
+        max_seconds = data.dictation_max_seconds or org.dictation_max_seconds
+        pair_field = (
+            "speech_to_text_model"
+            if "speech_to_text_model" in named
+            else "speech_to_text_provider"
+            if "speech_to_text_provider" in named
+            else None
+        )
+        key_named = "speech_to_text_secret_id" in named
+        if pair_field is not None or key_named:
+            field = pair_field or "speech_to_text_secret_id"
+            key_field = "speech_to_text_secret_id" if key_named else field
+            if provider is None or model is None:
+                if provider is not None or model is not None:
+                    raise refused_field(
+                        field, "Choose a provider and a model together, or clear both."
+                    )
+                if key_named and secret_id is not None:
+                    raise refused_field(
+                        key_field, "A key goes with a provider and a model - choose those first."
+                    )
+                secret_id = None
+            elif not speech_to_text.is_offered(provider, model):
+                raise refused_field(
+                    field, "That provider does not offer this model for transcription."
+                )
+            elif secret_id is None:
+                raise refused_field(key_field, f"Choose a key for {provider} to transcribe with.")
+            else:
+                problem = await SpeechToTextSettingsService(self.db).key_problem(
+                    secret_id, organization_id=org.id, provider=provider, ctx=None
+                )
+                if problem is not None:
+                    raise refused_field(key_field, problem)
+        if (
+            "speech_to_text_language" in named
+            and language is not None
+            and language not in speech_to_text.LANGUAGES
+        ):
+            raise refused_field(
+                "speech_to_text_language", "Transcription does not accept that language code."
+            )
+        return await organization_repo.set_speech_settings(
+            self.db,
+            org,
+            provider=provider,
+            model=model,
+            secret_id=secret_id,
+            language=language,
+            max_seconds=max_seconds,
         )
 
     async def delete(self, org_id: UUID, requester_id: UUID) -> None:
@@ -350,8 +762,9 @@ class OrganizationService:
         `ck_knowledge_bases_org_scope_has_org` (#9). Personal collections that
         merely carry this org's id are left to the `SET NULL` - but that flips
         their `vector_tenant` to `None` while their rows stay stamped with the
-        deleted org, so the deferred cleanup re-stamps those rows to untagged,
-        matching the `None` read scope again rather than stranding them (#1684).
+        deleted org, so the deferred cleanup re-stamps those rows to untagged and
+        filed under their base, matching the `None` read scope again rather than
+        stranding them (#1684, #2537).
 
         Two locks, in one order. Each doomed collection's `COLLECTION_TEARDOWN`
         lock is taken first, from a snapshot read without the row lock, and only
@@ -381,14 +794,13 @@ class OrganizationService:
         without a tenant column to filter on.
 
         The external side effects - dropping each physical vector table and
-        unlinking the stored uploads - are handed to a durable Prefect flow after
-        the request commits, via `spawn_after_commit`. Deferral means they run
-        only if the relational teardown committed, so a final commit that fails
-        rolls back the org, KB and doc rows and leaves none of them pointing at a
-        table or a file already gone (#1137). A Prefect deployment run rather than
-        an in-process task means a process that dies after the commit no longer
-        takes the cleanup with it - the run is recorded on the server and retried
-        by a worker (#1274). A collection another organization still references is
+        unlinking the stored uploads - are a cleanup job queued in the purge's own
+        transaction (`queue_external_state_cleanup`). It runs only if the
+        relational teardown committed, so a final commit that fails rolls back the
+        org, KB and doc rows - and the job with them - and leaves none of them
+        pointing at a table or a file already gone (#1137); and a process that
+        dies after the commit no longer takes the cleanup with it - the job is in
+        the database, and a worker retries it (#1274). A collection another organization still references is
         not dropped - `collection_name` is not tenant-unique (#913) - and each name
         that is dropped is reserved in `collection_teardowns`, committed with the
         delete, so a claim of the name in the commit-to-drop window is refused rather
@@ -408,18 +820,25 @@ class OrganizationService:
                 held.add(collection)
 
         await organization_repo.get_by_id_for_update(self.db, org.id)
+        from app.repositories import telephony as phone_repo
+
+        # The org row lock fences new call intents through their foreign key.
+        if await phone_repo.organization_has_unfinished_calls(self.db, org.id):
+            raise ConflictError(message="End all telephone calls before deleting this organization")
         collections: list[str] = []
         storage_paths: list[str] = []
+        deleted_bases: list[BasePurge] = []
         for kb in await knowledge_base_repo.list_org_scoped(self.db, org.id):
             storage_paths.extend(await rag_document_repo.delete_by_knowledge_base(self.db, kb.id))
             collections.append(kb.collection_name)
+            deleted_bases.append(BasePurge(collection=kb.collection_name, knowledge_base_id=kb.id))
             await knowledge_base_repo.delete(self.db, kb.id)
 
         # A personal base carrying this org's id is left standing by the `SET NULL`,
         # which flips its `vector_tenant` to `None` while its rows stay stamped with
         # the org - stranding them behind the read side's `IS NULL` scope. Each is
-        # handed to the deferred cleanup, which untags that base's own rows so they
-        # match again. Identified here, under the org lock, before the `SET NULL`:
+        # handed to the deferred cleanup, which untags that base's own rows - and
+        # files them under it (#2537) - so they match again. Identified here, under the org lock, before the `SET NULL`:
         # the cleanup re-stamps by the base's own `parent_doc_id`s (resolved at run
         # time), so it touches only its own documents even on a table it shares with
         # this org's own torn-down collection, and never another tenant's rows (#1684).
@@ -432,8 +851,8 @@ class OrganizationService:
         # A store is wired only on the teardown path, and it is the signal to clean up
         # the vector tables. A collection another organization still references is left
         # alone - the name is not tenant-unique (#913). The rest are dropped by the
-        # deferred cleanup, which re-reads the reference check under the teardown lock
-        # (#1355), and every one of them is reserved, so a claim in the
+        # deferred cleanup, under the teardown lock (#1355) and only while reserved,
+        # and every one of them is reserved here, so a claim in the
         # commit-to-drop window is refused rather than adopting the still-populated
         # table (#1362). Both readings below therefore happen under the name's lock:
         # the ones the snapshot saw are already held, and one created since is taken
@@ -459,16 +878,34 @@ class OrganizationService:
                     continue
                 to_drop.append(collection)
                 await collection_teardown_repo.reserve(self.db, collection)
-        restamps = [[kb.collection_name, str(org.id), str(kb.id)] for kb in restamp_orphans]
-        if storage_paths or to_drop or restamps:
-            from app.core.background import spawn_after_commit
-            from app.worker.tasks.teardown_tasks import dispatch_external_state_cleanup
+        restamps = [
+            Restamp(collection=kb.collection_name, organization_id=org.id, knowledge_base_id=kb.id)
+            for kb in restamp_orphans
+        ]
+        # A base whose table another organization keeps leaves its chunks in it,
+        # filed under an id no scope reads; the job deletes them by that id (#2537).
+        # Only with a store wired, the same signal the drops follow.
+        base_purges = (
+            [purge for purge in deleted_bases if purge.collection not in to_drop]
+            if self._vector_store is not None
+            else []
+        )
+        # The images, speech and video its agents generated go in the same job
+        # (#2310): their rows cascade with the organization, so the job is the
+        # only record of the bytes left. One prefix, which also takes the files
+        # written before they were recorded - and why the job is now always queued.
+        from app.services.generated_media import organization_directory
+        from app.worker.tasks.teardown_tasks import queue_external_state_cleanup
 
-            spawn_after_commit(
-                self.db,
-                dispatch_external_state_cleanup(storage_paths, to_drop, restamps),
-                name="org_purge_cleanup",
-            )
+        await queue_external_state_cleanup(
+            self.db,
+            storage_paths,
+            to_drop,
+            restamps,
+            prefixes=[organization_directory(org.id)],
+            organization_id=org.id,
+            base_purges=base_purges,
+        )
         # Whatever the `media` capability offloaded out of any of this tenant's
         # compacted histories. Content-addressed objects record nothing about who
         # still references them, so the tenant's prefix is the outer bound of

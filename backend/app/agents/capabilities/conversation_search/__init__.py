@@ -1,7 +1,5 @@
 """Conversation search - find and read what was said in past conversations."""
 
-from __future__ import annotations
-
 from pydantic import BaseModel, Field
 
 from app.agents.capabilities._registry import (
@@ -45,6 +43,7 @@ class ConversationSearchConfig(BaseModel):
 
 @register(
     id=CONVERSATION_SEARCH_CAPABILITY_ID,
+    read_only=True,
     name="Past conversations",
     category="knowledge",
     description=(
@@ -68,6 +67,7 @@ class ConversationSearchConfig(BaseModel):
     ),
     scopes=("conversations:read",),
     config_schema=ConversationSearchConfig,
+    tunable=True,
 )
 def _build(ctx: CapabilityBuildContext) -> ConversationSearch:
     """Build the capability from a binding's config.

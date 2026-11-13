@@ -52,8 +52,6 @@ a finished delegation to `SubagentRuntime.record`, which the runner supplied, an
 a `None` recorder is not an error - it is a preview, or a test.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import AsyncIterable, Generator
@@ -81,7 +79,9 @@ from subagents_pydantic_ai.registry import DynamicAgentRegistry
 from app.agents.capabilities.budget import BudgetExceeded, SpendShare, booked_to
 from app.agents.capabilities.subagents._events import FrameLabels, frame_for
 from app.agents.deps import AgentDeps
+from app.agents.ephemeral_media import without_ephemeral
 from app.agents.failures import run_failure_summary
+from app.agents.loop_guard import ToolLoopStopped
 from app.agents.spec import DelegationMode
 from app.agents.subagent_events import (
     SpecialistDefinition,
@@ -170,14 +170,15 @@ def _recorded_error(handle: TaskHandle, subagent: str, task_id: str) -> str | No
     carries pydantic-ai's own limit sentence - a number, never a request - behind
     the `usage limit exceeded` marker that is the library's telemetry contract
     across both dispatch modes, and `BudgetExceeded` carries this platform's own
-    ceiling sentence behind the library's type-name prefix. `BudgetExceeded`
+    ceiling sentence behind the library's type-name prefix, as does `ToolLoopStopped`
+    the loop guard's, which names tools and never their arguments. `BudgetExceeded`
     reaches this settlement because a delegate's requests are budget-checked
     inside the delegate's own run, so the breach lands on the handle rather than
     propagating to the caller the parent's row is written by - and composing it
     away would tell the reader to retry against a breached budget.
     """
     if handle.exception is None or isinstance(
-        handle.exception, UsageLimitExceeded | BudgetExceeded
+        handle.exception, UsageLimitExceeded | BudgetExceeded | ToolLoopStopped
     ):
         return handle.error
     logger.warning(
@@ -229,6 +230,9 @@ class ActingDelegate:
     name: str
     task_id: str | None
     agent_id: UUID | None
+    # How deep the delegate is, so work it hands on - a coding agent's task -
+    # streams one level inside its panel rather than beside it.
+    depth: int
 
 
 def acting_delegate() -> ActingDelegate | None:
@@ -247,7 +251,10 @@ def acting_delegate() -> ActingDelegate | None:
     if delegation is None:
         return None
     return ActingDelegate(
-        name=delegation.name, task_id=delegation.public_id, agent_id=delegation.agent_id
+        name=delegation.name,
+        task_id=delegation.public_id,
+        agent_id=delegation.agent_id,
+        depth=delegation.depth,
     )
 
 
@@ -667,7 +674,7 @@ class DelegationJournal:
                 # `all_messages_json` produced. Parsed here rather than at the
                 # resume so that a history the runner cannot serialise fails while
                 # there is still a run to attribute the failure to.
-                messages=[] if history is None else list(json.loads(history)),
+                messages=[] if history is None else without_ephemeral(list(json.loads(history))),
                 spent=self._carried_for_park(delegation),
                 started_at=self._span_start(delegation, handle),
             )
@@ -694,6 +701,8 @@ class DelegationJournal:
             billed_cost_usd=billed.cost_usd,
             billed_input_tokens=billed.input_tokens,
             billed_output_tokens=billed.output_tokens,
+            billed_cache_read_tokens=billed.cache_read_tokens,
+            billed_cache_write_tokens=billed.cache_write_tokens,
             billed_has_unpriced_models=billed.has_unpriced_models,
         )
 
@@ -977,7 +986,10 @@ class DelegationJournal:
                 cost_usd=billed.cost_usd,
                 input_tokens=billed.input_tokens,
                 output_tokens=billed.output_tokens,
+                cache_read_tokens=billed.cache_read_tokens,
+                cache_write_tokens=billed.cache_write_tokens,
                 cost_is_partial=billed.has_unpriced_models,
+                loop_stopped=handle is not None and isinstance(handle.exception, ToolLoopStopped),
                 agent_id=delegation.agent_id,
                 agent_version_id=delegation.agent_version_id,
                 error=error,
@@ -1062,7 +1074,7 @@ class DelegationJournal:
         return stream
 
     @contextmanager
-    def delegating(self, delegation: Delegation) -> Generator[None, None, None]:
+    def delegating(self, delegation: Delegation) -> Generator[None]:
         """Make `delegation` the current one, for the library and for the ledger.
 
         Two context variables, set together because they are two halves of one
@@ -1188,6 +1200,8 @@ class DelegationJournal:
             cost_usd=carried.billed_cost_usd + share.cost_usd,
             input_tokens=carried.billed_input_tokens + share.input_tokens,
             output_tokens=carried.billed_output_tokens + share.output_tokens,
+            cache_read_tokens=carried.billed_cache_read_tokens + share.cache_read_tokens,
+            cache_write_tokens=carried.billed_cache_write_tokens + share.cache_write_tokens,
             has_unpriced_models=carried.billed_has_unpriced_models or share.has_unpriced_models,
         )
 

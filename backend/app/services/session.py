@@ -15,8 +15,9 @@ from app.core.config import settings
 from app.core.exceptions import AuthenticationError, NotFoundError
 from app.core.security import create_refresh_token, read_uuid_claim
 from app.db.models.session import Session
+from app.repositories import push_subscription as push_repo
 from app.repositories import session_repo
-from app.schemas.session import SessionListResponse, SessionRead
+from app.schemas.session import SessionAppUpdate, SessionListResponse, SessionRead
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class SessionService:
         user_agent: str | None = None,
         *,
         session_id: UUID | None = None,
+        proved_email: str | None = None,
     ) -> Session:
         """The row a sign-in is tracked by, whose id the access token names in `sid`.
 
@@ -111,6 +113,22 @@ class SessionService:
             ip_address=ip_address,
             user_agent=user_agent,
             session_id=session_id,
+            proved_email=proved_email,
+        )
+
+    async def has_mailbox_proof(self, user_id: UUID, email: str, session_id: UUID | None) -> bool:
+        """Proof belongs to a live sign-in and its exact address, never just an account."""
+        if session_id is None:
+            return False
+        session = await session_repo.get_by_id(self.db, session_id)
+        return bool(
+            session is not None
+            and session.user_id == user_id
+            and session.is_active
+            and session.expires_at > datetime.now(UTC)
+            and session.impersonator_user_id is None
+            and session.proved_email is not None
+            and session.proved_email.lower() == email.lower()
         )
 
     async def rotate_session(
@@ -425,10 +443,28 @@ class SessionService:
         token_hash = hash_token(refresh_token)
         return await session_repo.deactivate_by_refresh_token_hash(self.db, token_hash)
 
+    async def record_app(
+        self, session_id: UUID | None, user_id: UUID, app: SessionAppUpdate
+    ) -> None:
+        """Label the caller's own session with the AgenticOS app it runs in.
+
+        Raises `NotFoundError` for a request with no session of its own - an API
+        key - or a session that is not the caller's open one.
+        """
+        if session_id is None or not await session_repo.set_app(
+            self.db,
+            session_id=session_id,
+            user_id=user_id,
+            platform=app.platform,
+            version=app.version,
+        ):
+            raise NotFoundError(message="This request has no signed-in session to label.")
+
     async def list_sessions(
         self,
         user_id: UUID,
         *,
+        current_session_id: UUID | None = None,
         skip: int = 0,
         limit: int = 10,
     ) -> SessionListResponse:
@@ -446,6 +482,7 @@ class SessionService:
             self.db, user_id, open_only=True, now=now, skip=skip, limit=limit
         )
         total = await self.count_user_sessions(user_id, now=now)
+        pushed = await push_repo.sessions_with_push(self.db, [s.id for s in sessions])
         return SessionListResponse(
             items=[
                 SessionRead(
@@ -453,7 +490,10 @@ class SessionService:
                     device_name=s.device_name,
                     device_type=s.device_type,
                     ip_address=s.ip_address,
-                    is_current=False,
+                    is_current=s.id == current_session_id,
+                    app_platform=s.app_platform,
+                    app_version=s.app_version,
+                    push=s.id in pushed,
                     created_at=s.created_at,
                     last_used_at=s.last_used_at,
                 )

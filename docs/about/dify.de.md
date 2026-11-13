@@ -1,5 +1,5 @@
 ---
-source_sha: "3689d8258a77"
+source_sha: "74d7e5d2126c"
 title: "AgenticOS vs Dify"
 seo_title: "AgenticOS vs Dify: mandantenfähige Apache-2.0-Alternative"
 description: "Dify und AgenticOS, selbst gehostete KI-Agent-Plattformen, im Vergleich: Lizenzbedingungen, Mandantenfähigkeit, SSO, Budgets, Freigaben, Audit-Logs, Preise."
@@ -9,22 +9,24 @@ description: "Dify und AgenticOS, selbst gehostete KI-Agent-Plattformen, im Verg
 
 Beide Produkte lassen sich selbst hosten und beide beherrschen Dokumenten-Retrieval, der Unterschied liegt also woanders. Dify ist eine visuelle Arbeitsfläche für LLM-Apps und Workflows, mit mehreren Workspaces, SSO und Audit-Logs in seiner Enterprise-Edition. AgenticOS steht unter Apache-2.0 und ist bereits im Open-Source-Produkt mandantenfähig; Budgets, Freigaben, Verzeichnisanmeldung und ein Audit-Log mit Manipulationsnachweis sind enthalten.
 
-Verantwortlich: das AgenticOS-Team. Quellen geprüft am 25. September 2026. AgenticOS-Basis: v0.0.504. Umfang bei Dify: das öffentliche Repository in Version 1.17.1, seine Lizenz, Dokumentation und Preisseite, kein getesteter Cloud-Tarif und keine fest versionierte Bereitstellung.
+Verantwortlich: das AgenticOS-Team. Quellen geprüft am 21. Oktober 2026. AgenticOS-Basis: v1.10.0. Umfang bei Dify: das öffentliche Repository in Version 1.17.1, seine Lizenz, Dokumentation und Preisseite, kein getesteter Cloud-Tarif und keine fest versionierte Bereitstellung.
+
+Die AgenticOS-Funktionsangaben wurden am 2. November 2026 anhand von v1.35.0 aktualisiert. Das Prüfdatum der Anbieterquellen oben bleibt unverändert; dies ist keine neue Preisprüfung.
 
 ## Auf einen Blick { #at-a-glance }
 
 | Bereich | Dify Community Edition | AgenticOS |
 | --- | --- | --- |
-| Wie Sie bauen | Eine visuelle Arbeitsfläche aus Workflow-, Chatflow- und Agent-Knoten | Instruktionen, ein Modellprofil, Capabilities, Sammlungen und ein Budget, als Version veröffentlicht |
+| Wie Sie bauen | Eine visuelle Arbeitsfläche aus Workflow-, Chatflow- und Agent-Knoten | Versionierte Agents und eine visuelle Workflow-Arbeitsfläche mit typisierten Schritten, Verzweigungen und Schleifen |
 | Lizenz | Dify Open Source License: Apache 2.0 mit zusätzlichen Bedingungen | Apache-2.0; siehe [Lizenzen der mitgelieferten Komponenten](../licenses.md) |
 | Mandantenfähigkeit | Ein Workspace; mehrere Workspaces sind Enterprise | Viele Organisationen in einer Bereitstellung |
-| Rollen | Vier eingebaute Rollen; eigene Rollen sind Enterprise | Sechs Rollen, 27 Berechtigungen und Grants pro Ressource für Personen und Gruppen |
+| Rollen | Vier eingebaute Rollen; eigene Rollen sind Enterprise | Sechs Rollen, 33 Berechtigungen und Grants pro Ressource für Personen und Gruppen |
 | Anmeldung | E-Mail; SSO ist Enterprise | E-Mail, Google, OIDC SSO, LDAP und Kerberos, mit Zuordnung von Verzeichnisgruppen |
 | Audit | Enterprise | Audit-Log mit Manipulationsnachweis mit Export als CSV und JSONL |
 | Ausgabenkontrolle | Abrechnung beim Provider oder Nachrichten-Credits in der Cloud | Ein monatliches Budget pro Agent und pro Organisation, vor jeder Modellanfrage geprüft |
-| Menschliche Freigabe | Ein Human-Input-Knoten in einem Workflow | Freigabe pro Capability und pro Werkzeug für Capability-Werkzeuge; der Run wartet, bis jemand entscheidet. MCP-Werkzeuge werden nicht pro Werkzeug freigegeben |
+| Menschliche Freigabe | Ein Human-Input-Knoten in einem Workflow | Freigabe pro Capability und pro Werkzeug sowie eine Freigaberichtlinie pro MCP-Verbindung (none, writes oder all); der Run wartet, bis jemand entscheidet |
 | Oberflächen | Web-App, Embed, API, MCP-Server; Slack über ein Plugin | Web-Chat, Widget, gehostete Seite, HTTP-API, WebSocket, Slack, Telegram, Mattermost |
-| Kubernetes | Helm-Charts aus der Community; offizielle Hochverfügbarkeit ist Enterprise | Docker Compose auf einem Host |
+| Kubernetes | Helm-Charts aus der Community; offizielle Hochverfügbarkeit ist Enterprise | [Gepflegtes Helm-Chart](../kubernetes.md) für API, Worker und Konsole mit externen Datendiensten; OpenShift unvalidiert |
 
 ## Wo AgenticOS weiter geht { #where-agenticos-goes-further }
 
@@ -53,15 +55,15 @@ AgenticOS prüft das [monatliche Budget](../governance.md#budgets) jedes Agents 
 
 ### Freigabe am Werkzeug, nicht nur im Ablauf { #approval-on-the-tool-not-only-in-the-flow }
 
-Der Human-Input-Knoten von Dify pausiert einen Workflow und sendet ein Formular, und die Anfrage schließt nach der ersten Antwort. In AgenticOS wird eine [Freigabe](../governance.md#approvals) pro Capability festgelegt und kann pro Werkzeug überschrieben werden. Sie gilt für Capability-Werkzeuge; ein MCP-Werkzeug erfordert nur dann eine Freigabe, wenn eine Web-Chat-Konversation bei allem nachfragt. Der Run wartet, die Personen Ihrer Wahl werden [benachrichtigt](../governance.md#alerts), und eine zweite Entscheidung über eine bereits entschiedene Freigabe wird abgelehnt.
+Der Human-Input-Knoten von Dify pausiert einen Workflow und sendet ein Formular, und die Anfrage schließt nach der ersten Antwort. In AgenticOS wird eine [Freigabe](../governance.md#approvals) pro Capability festgelegt und kann pro Werkzeug überschrieben werden. Eine MCP-Verbindung hat ihre eigene [Richtlinie](../mcp.md#which-calls-wait-for-a-person): none, writes oder all. Der Run wartet, die Personen Ihrer Wahl werden [benachrichtigt](../governance.md#alerts), und eine zweite Entscheidung über eine bereits entschiedene Freigabe wird abgelehnt.
 
 ### Eine Änderung, die ein Fachteam vornehmen kann { #a-change-a-business-team-can-make }
 
-In Dify ändern Sie einen Prozess, indem Sie die Arbeitsfläche bearbeiten. In AgenticOS bearbeitet ein fachlicher Verantwortlicher die Instruktionen oder schaltet eine Capability ein und veröffentlicht dann. Jede [Version](../concepts.md#version) bleibt lesbar, [Umgebungen](../environments.md#the-workflow-it-is-for) befördern eine getestete Version, und der Spec [wird als YAML exportiert](../features.md#exportable-into-your-own-repository), zur Prüfung in einem Pull Request. Konfiguration erreicht nur, was Entwickler registriert haben, und das macht einen No-Code-Builder sicher.
+In Dify ändern Sie einen Prozess, indem Sie die Arbeitsfläche bearbeiten. In AgenticOS bearbeitet ein fachlicher Verantwortlicher die Instruktionen oder schaltet eine Capability ein oder bearbeitet einen visuellen Workflow und veröffentlicht dann. Jede [Version](../concepts.md#version) bleibt lesbar, [Umgebungen](../environments.md#the-workflow-it-is-for) befördern eine getestete Version, und der Spec [wird als YAML exportiert](../features.md#exportable-into-your-own-repository), zur Prüfung in einem Pull Request. Konfiguration erreicht nur, was Entwickler registriert haben.
 
 ## Wann Dify besser passt { #when-dify-is-the-better-fit }
 
-- Ihr Team denkt in Flussdiagrammen und möchte eine visuelle Arbeitsfläche aus Knoten, Schleifen und Verzweigungen. AgenticOS hat keine Workflow-Arbeitsfläche.
+- Du bevorzugst die Knotenbibliothek, Integrationen und Workflow-Bearbeitung dieses Produkts. AgenticOS hat ebenfalls einen visuellen Builder; verfügbare Knoten und Ausführungssemantik unterscheiden sich.
 - Sie brauchen seine Marketplace-Plugins, seine hybride Suche mit Rerank oder seine vielen Observability-Integrationen. AgenticOS hat noch keinen Reranker und kein Trace-Dashboard.
 - Ein Workspace genügt, oder die Bedingungen der Enterprise-Edition passen zu Ihnen.
 
@@ -83,7 +85,7 @@ Difys Lizenz verlangt eine schriftliche Genehmigung, um eine mandantenfähige Um
 
 ### Hat AgenticOS einen visuellen Workflow-Builder wie Dify? { #does-agenticos-have-a-visual-workflow-builder-like-dify }
 
-Nein. AgenticOS baut Agents aus Instruktionen, Capabilities, Wissen und einem Budget und erledigt mehrstufige Arbeit mit Delegation, Planung und Triggern. Wenn Ihr Team mit einer Arbeitsfläche aus Knoten arbeitet, passt Dify besser.
+Ja. AgenticOS enthält einen visuellen Workflow-Builder mit typisierten Schritten, Verzweigungen, Schleifen und veröffentlichten Versionen. Dify besitzt eine eigene Knotenbibliothek und ein eigenes Ökosystem; vergleiche die für Ihre Aufgabe nötigen Knoten.
 
 ### Welches ist im Betrieb günstiger? { #which-one-costs-less-to-run }
 

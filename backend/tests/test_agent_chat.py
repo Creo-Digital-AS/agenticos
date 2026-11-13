@@ -11,8 +11,6 @@ is not. A run must carry the person's own role at the moment they typed, never
 the organization's and never none at all.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import uuid
@@ -38,6 +36,7 @@ from app.agents.capabilities.compaction import ContextGauge
 from app.agents.capabilities.guardrails import GuardrailBlocked
 from app.agents.capabilities.media import MediaOffload
 from app.agents.deps import AgentDeps
+from app.agents.loop_guard import ToolLoopStopped
 from app.agents.steering import SteeringInbox
 from app.core.exceptions import AuthorizationError, BadRequestError
 from app.core.permissions import OrgRoleName
@@ -51,6 +50,7 @@ from app.services.agent_chat import (
     requested_testing,
 )
 from app.services.agent_runner import AgentRunnerService, PersonalServiceGap, PreparedRun
+from app.services.message_history import ModelHistory
 
 pytestmark = pytest.mark.anyio
 
@@ -201,7 +201,9 @@ def _prepared(output: object = "the refund window is 30 days") -> PreparedRun:
     built.deps = AgentDeps()
     built.agent.iter = MagicMock(return_value=_Iteration(_agent_run(output)))
     return PreparedRun(
-        run=MagicMock(id=uuid.uuid4()),
+        # No conversation on the row: the tests that run a real `finish` and
+        # `keep_plan` would otherwise write a plan through a mocked session.
+        run=MagicMock(id=uuid.uuid4(), conversation_id=None),
         agent=MagicMock(),
         spec=MagicMock(),
         built=built,
@@ -228,6 +230,7 @@ def _runner(
         members.get = AsyncMock(return_value=membership)
         runner_cls.return_value.prepare = AsyncMock(return_value=prepared)
         runner_cls.return_value.finish = AsyncMock()
+        runner_cls.return_value.keep_plan = AsyncMock()
         yield runner_cls.return_value
 
 
@@ -252,13 +255,15 @@ async def _run(
     on_personal_gaps: Any = None,
     request_connection: Any = None,
     steering: Any = None,
+    on_sandbox_wait: Any = None,
+    history: list[ModelMessage] | None = None,
 ):
     return await ChatAgentRunner(db).run(
         user=user or _user(),
         organization_id=organization_id or uuid.uuid4(),
         agent_id=agent_id or uuid.uuid4(),
         user_input=user_input,
-        message_history=[],
+        message_history=[] if history is None else history,
         conversation_id=conversation_id,
         prompt_message_id=prompt_message_id,
         on_run_open=on_run_open,
@@ -269,6 +274,7 @@ async def _run(
         on_personal_gaps=on_personal_gaps,
         request_connection=request_connection,
         steering=steering,
+        on_sandbox_wait=on_sandbox_wait,
     )
 
 
@@ -290,11 +296,17 @@ class TestKeepingASummary:
             )
         )
 
+        db = _db()
+        db.scalar = AsyncMock(return_value=7)
         with _runner(prepared):
-            turn = await _run(_db())
+            turn = await _run(
+                db, conversation_id=uuid.uuid4(), history=ModelHistory([], revision=7)
+            )
 
         assert turn.summarized_history is not None
         assert turn.summarized_history[0]["parts"][0]["content"] == "Summary: …"
+
+        assert turn.history_revision == 7
 
     async def test_an_agent_bound_to_media_offload_stores_the_offloaded_history(self):
         """The one place media piles up is this blob, so the capability that
@@ -437,6 +449,7 @@ class TestAddressingAModel:
 class TestWhatTheClientIsShown:
     def test_an_answer_is_shown_as_the_model_wrote_it(self):
         assert display_output("42 days") == "42 days"
+        assert display_output({"days": 42}) == '```json\n{\n  "days": 42\n}\n```'
 
     def test_a_parked_run_produces_no_text_of_its_own(self):
         """This value is stored as the assistant message's `content`, so a notice
@@ -532,6 +545,12 @@ class TestMeteringWhatTheTurnEmbedded:
         billed = finish_run.await_args.kwargs
         assert billed["cost_usd"] == Decimal("0.00002")
         assert billed["input_tokens"] == 1000
+        # A turn whose cache was never in play credits the row with nothing.
+        assert (billed["cache_busts"], billed["cache_expiries"], billed["cache_missed_tokens"]) == (
+            0,
+            0,
+            0,
+        )
 
     async def test_an_unpriced_embedding_makes_the_turns_cost_a_floor(self):
         """`cost_is_partial` is what the chat draws its `+` from. An embedding
@@ -700,6 +719,16 @@ class TestRecordingTheRun:
         assert finished["status"] is RunStatus.GUARDRAIL_BLOCKED
         assert finished["error"] == "This request was blocked."
 
+    async def test_a_run_stopped_for_looping_is_recorded_as_such_and_raised_on(self):
+        stopped = ToolLoopStopped("Stopped: the agent called `search` 4 times in a row.")
+
+        with _runner(_prepared()) as runner, pytest.raises(ToolLoopStopped):
+            await _run(_db(), stream=AsyncMock(side_effect=stopped))
+
+        finished = runner.finish.call_args.kwargs
+        assert finished["status"] is RunStatus.LOOP_STOPPED
+        assert finished["error"] == str(stopped)
+
     async def test_a_run_that_ends_with_nothing_at_all_fails_loudly(self):
         """An empty answer persisted as the agent's reply would be a lie about it."""
         prepared = _prepared()
@@ -709,6 +738,46 @@ class TestRecordingTheRun:
             await _run(_db())
 
         assert runner.finish.call_args.kwargs["status"] is RunStatus.FAILED
+
+
+class TestKeepingThePlan:
+    """The web chat keeps the checklist a turn ended on, as every other surface
+    does - without it the next message started from an empty plan and the
+    agent's `read_plan` answered "No plan yet." (#1077, #2162)."""
+
+    async def test_a_turn_keeps_its_plan_on_the_way_out(self):
+        prepared = _prepared()
+
+        with _runner(prepared) as runner:
+            await _run(_db(), conversation_id=uuid.uuid4())
+
+        runner.keep_plan.assert_awaited_once_with(prepared, status=RunStatus.COMPLETED)
+
+    async def test_a_stopped_turn_keeps_its_plan_as_interrupted(self):
+        """`keep_plan` puts the step in progress down for an interrupted run, so
+        it has to be told how this one ended."""
+
+        async def _cancelled(agent_run: Any) -> None:
+            raise asyncio.CancelledError
+
+        prepared = _prepared()
+        with _runner(prepared) as runner, pytest.raises(asyncio.CancelledError):
+            await _run(_db(), stream=_cancelled)
+
+        runner.keep_plan.assert_awaited_once_with(prepared, status=RunStatus.CANCELLED)
+
+    async def test_the_plan_lands_in_the_terminal_commit(self):
+        """Written before the commit that closes the run, not after it - the
+        session is not committed again once the turn returns."""
+        db = _db()
+        order: list[str] = []
+        db.commit = AsyncMock(side_effect=lambda: order.append("commit"))
+
+        with _runner(_prepared()) as runner:
+            runner.keep_plan = AsyncMock(side_effect=lambda *_, **__: order.append("plan"))
+            await _run(db)
+
+        assert order == ["commit", "plan", "commit"]
 
 
 class TestLinkingThePromptToTheRun:
@@ -981,6 +1050,46 @@ class TestAttachmentsAreRoutedHereAndNotBySurfaces:
         assert (written["message_id"], written["conversation_id"]) == (message_id, conversation_id)
         assert "month,total" in written["context"]
 
+    @pytest.mark.security
+    async def test_a_blocked_turn_does_not_keep_what_its_file_added(self):
+        """#2578: the briefing is written before the input edge runs, and every
+        later turn replays it - so a file the edge refused reached the model one
+        follow-up later. The terminal write takes it back off the row."""
+        attachment = SimpleNamespace(
+            id=uuid.uuid4(),
+            filename="notes.txt",
+            mime_type="text/plain",
+            size=64,
+            storage_path="u/1/notes.txt",
+            file_type="text",
+            parsed_content="SECRETWORD payload",
+        )
+        prepared = _prepared()
+        prepared.workspace = None
+        conversation_id, message_id = uuid.uuid4(), uuid.uuid4()
+        blocked = GuardrailBlocked(edge="input", message="This request was blocked.")
+
+        with (
+            _runner(prepared),
+            patch("app.services.agent_chat.conversation_repo.link_message_to_run", new=AsyncMock()),
+            patch(
+                "app.services.agent_chat.conversation_repo.set_attachment_context",
+                new=AsyncMock(),
+            ) as kept,
+            pytest.raises(GuardrailBlocked),
+        ):
+            await _run(
+                _db(),
+                stream=AsyncMock(side_effect=blocked),
+                attachments=[attachment],
+                conversation_id=conversation_id,
+                prompt_message_id=message_id,
+            )
+
+        last = kept.await_args.kwargs
+        assert (last["message_id"], last["conversation_id"]) == (message_id, conversation_id)
+        assert last["context"] is None
+
     async def test_the_workspace_the_run_opened_is_the_one_the_file_lands_in(self):
         """Not a fresh one, and not none - the file has to be where the agent
         will look for it."""
@@ -1002,7 +1111,9 @@ class TestAttachmentsAreRoutedHereAndNotBySurfaces:
         # `parses_documents` is what says the runtime can read a PDF itself; a
         # stored workspace cannot, and so keeps the extracted text beside the file.
         prepared.workspace = SimpleNamespace(
-            workspace=document_workspace(document), briefing=None, parses_documents=False
+            workspace=document_workspace(document),
+            briefing=None,
+            parses_documents=False,
         )
 
         with (
@@ -1015,6 +1126,48 @@ class TestAttachmentsAreRoutedHereAndNotBySurfaces:
             await _run(_db(), attachments=[attachment])
 
         assert any(path.startswith("/uploads/") for path in document.files)
+
+    @pytest.mark.security
+    async def test_a_file_the_input_edge_refuses_is_not_written(self):
+        """Screened before routing, not only on the first model request: a refused
+        file written first stayed in a conversation's workspace for the next turn
+        to open (#2559). The text still goes to the run, whose edge refuses it."""
+        from pydantic_ai_backends import StateBackend
+
+        from app.agents.spec import AgentSpec, CapabilityBindingSpec
+        from tests.workspaces import document_workspace
+
+        attachment = SimpleNamespace(
+            id=uuid.uuid4(),
+            filename="raport.csv",
+            mime_type="text/csv",
+            size=512,
+            storage_path="u/1/raport.csv",
+            file_type="text",
+            parsed_content="month,total\nXYZZY,10",
+        )
+        document = StateBackend()
+        prepared = _prepared()
+        prepared.spec = AgentSpec(
+            name="Clerk",
+            capabilities=[
+                CapabilityBindingSpec(id="guardrails", config={"blocked_keywords_in": "XYZZY"})
+            ],
+        )
+        prepared.workspace = SimpleNamespace(
+            workspace=document_workspace(document), briefing=None, parses_documents=False
+        )
+        load = AsyncMock(return_value=b"month,total")
+
+        with (
+            _runner(prepared),
+            patch("app.services.attachments.get_file_storage", lambda: SimpleNamespace(load=load)),
+        ):
+            await _run(_db(), attachments=[attachment])
+
+        assert document.files == {}
+        load.assert_not_awaited()
+        assert "XYZZY" in prepared.built.agent.iter.call_args.args[0]
 
     async def test_a_prompt_already_assembled_as_parts_keeps_its_text(self):
         """A caller passing the richer shape would otherwise have its
@@ -1150,3 +1303,60 @@ class TestAddingToTheTurnAndAskingAside:
             await _run(_db(), steering=inbox)
 
         assert prepared.deps.steering is inbox
+
+
+class TestDrafts:
+    async def test_the_web_chat_draws_drafts(self):
+        prepared = _prepared()
+        with _runner(prepared):
+            await _run(_db())
+
+        assert prepared.deps.shows_drafts is True
+
+
+class TestSayingTheSandboxIsStillOpening:
+    """#2222: preparing the run already opens the sandbox session, so the chat's
+    sink has to be handed to `prepare` - attached afterwards, it missed the build."""
+
+    async def test_the_chat_sink_goes_into_the_preparation(self):
+        prepared = _prepared()
+        heard = AsyncMock()
+        with _runner(prepared) as runner:
+            await _run(_db(), on_sandbox_wait=heard)
+
+        assert runner.prepare.await_args.kwargs["on_sandbox_wait"] is heard
+
+    async def test_a_run_with_no_workspace_has_nothing_to_tell(self):
+        prepared = _prepared()
+        with _runner(prepared):
+            await _run(_db(), on_sandbox_wait=AsyncMock())
+
+        assert prepared.workspace is None
+
+
+@pytest.mark.parametrize(
+    "raw", [{"folder": ""}, "not-a-target", {"folder": "/work", "mode": "invalid"}]
+)
+def test_invalid_local_workspace_selection_is_refused(raw: object) -> None:
+    from app.services.agent_chat import requested_local
+
+    with pytest.raises(BadRequestError, match="not a folder"):
+        requested_local({"local": raw})
+
+
+def test_a_chat_frame_preserves_every_native_grant() -> None:
+    from app.services.agent_chat import requested_local
+
+    result = requested_local(
+        {
+            "local": {
+                "folder": "/work",
+                "model_service": "model",
+                "mcp_services": ["files"],
+                "browser": True,
+            }
+        }
+    )
+    assert result is not None
+    assert result.folder == "/work" and result.model_service == "model"
+    assert result.mcp_services == ["files"] and result.browser

@@ -55,8 +55,8 @@ const PROVIDER_LABEL = "OpenAI";
 const PROVIDER_MODEL = "gpt-4.1-mini";
 
 /**
- * One turn here is three model requests and a second agent's whole run inside the
- * middle of it, so the assertions that wait on it get the journey's timeout rather
+ * One turn here includes tool discovery, delegation and a second agent's whole run
+ * inside it, so the assertions that wait on it get the journey's timeout rather
  * than the one meant for clicks.
  */
 const TURN_TIMEOUT = 120_000;
@@ -221,12 +221,14 @@ test("an agent delegates to another, and both runs are recorded", async ({ page 
   // delegation this small prices to $0.0000, so the number says the cell rendered
   // rather than that money was counted.
   // Cells by position: status, agent, user, surface, model, tokens, cost - the
-  // agent and user columns render for this caller, who holds agents:view.
+  // agent and user columns render for this caller, who holds agents:view. The
+  // count is grouped as the page formats it: a delegate started from the
+  // starter's instructions spends over a thousand tokens even on this one line.
   const delegateRun = delegateRuns.first();
   await expect(
     delegateRun.getByRole("cell").nth(5),
     "the delegate's run was recorded with no tokens against it",
-  ).toHaveText(/^[1-9]\d*$/);
+  ).toHaveText(/^[1-9][\d,]*$/);
   await expect(delegateRun.getByRole("cell").nth(6)).toContainText(/^\$\d+\.\d{4}/);
 
   // And the parent's, which is the other one of the two. Read the same way, from

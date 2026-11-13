@@ -12,13 +12,16 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import html
 import logging
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import JsonValue
 
 from app.agents.capabilities.channel_tools import (
     ChannelDetails,
@@ -29,6 +32,7 @@ from app.agents.capabilities.channel_tools import (
 from app.core.security import encode_untrusted
 from app.db.session import get_db_context
 from app.services.channels import connection_state
+from app.services.channels.attachments import routed_type
 from app.services.channels.base import (
     ChannelAdapter,
     ChannelChoice,
@@ -39,11 +43,14 @@ from app.services.channels.base import (
     OutgoingMessage,
     PromptMessage,
     StepDisplay,
+    broadcast_mentioned,
+    mentionable_text,
     split_thread,
     supervise_stream,
     thread_key,
 )
 from app.services.channels.exceptions import ChannelNotConfigured
+from app.services.channels.notification_send import NotificationRateLimited, retry_after_seconds
 from app.services.channels.router import ChannelMessageRouter
 from app.services.channels.slack_answer import SlackNativeAnswer, feedback_block
 
@@ -131,7 +138,12 @@ class SlackAdapter(ChannelAdapter):
         self._app_tokens[bot_id] = app_token
 
     def prepare_connection(
-        self, bot_id: str, *, api_base_url: str | None, app_token: str | None
+        self,
+        bot_id: str,
+        *,
+        api_base_url: str | None,
+        app_token: str | None,
+        approved_guild_ids: tuple[str, ...] = (),
     ) -> None:
         if app_token:
             self.remember_app_token(bot_id, app_token)
@@ -140,7 +152,7 @@ class SlackAdapter(ChannelAdapter):
         await self._http.aclose()
 
     @staticmethod
-    def _web(bot_token: str) -> "AsyncWebClient":
+    def _web(bot_token: str) -> AsyncWebClient:
         """A Web API client for one bot's token.
 
         The `slack_sdk` import is deferred to the call rather than the module so a
@@ -256,6 +268,90 @@ class SlackAdapter(ChannelAdapter):
         channel, _thread_ts = split_thread(msg.platform_chat_id)
         await self._web(bot_token).chat_update(channel=channel, ts=handle, text=msg.text)
 
+    async def welcome(
+        self,
+        bot_token: str,
+        email: str,
+        text: str,
+        *,
+        api_base_url: str | None,
+        places: Sequence[str] = (),
+    ) -> bool:
+        """Find the person by address and greet them in a direct message.
+
+        Needs `users:read.email`, which the manifest asks for; a workspace whose
+        app predates that answers `missing_scope`, read here as not found.
+        """
+        from slack_sdk.errors import SlackApiError
+
+        client = self._web(bot_token)
+        try:
+            found = await client.users_lookupByEmail(email=email)
+        except SlackApiError as exc:
+            if exc.response.get("error") in ("users_not_found", "missing_scope"):
+                return False
+            raise
+        opened = await client.conversations_open(users=found["user"]["id"])
+        await client.chat_postMessage(channel=opened["channel"]["id"], text=text)
+        return True
+
+    async def send_notification(
+        self, bot_token: str, msg: OutgoingMessage, *, context_url: str | None
+    ) -> None:
+        """One explicit submission, plain-text blocks and a link to the shared outcome.
+
+        Disable SDK retries: an uncertain request must not become two notices.
+        Only a documented HTTP 429 refusal is safe for the durable queue to retry.
+        """
+        from slack_sdk.errors import SlackApiError
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=bot_token, retry_handlers=[])
+        channel, thread = split_thread(msg.platform_chat_id)
+        summary = msg.text if len(msg.text) <= 3000 else msg.text[:2999] + "…"
+        blocks: list[dict[str, JsonValue]] = [
+            {"type": "section", "text": {"type": "plain_text", "text": summary, "emoji": False}}
+        ]
+        if context_url:
+            blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Open in AgenticOS",
+                                "emoji": False,
+                            },
+                            "url": context_url,
+                            "action_id": "open_notification",
+                        }
+                    ],
+                }
+            )
+        fallback = "\n\n".join(part for part in (msg.text, context_url) if part)
+        try:
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread,
+                text=html.escape(fallback[:39999], quote=False),
+                blocks=blocks,
+                parse="none",
+                link_names=False,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except SlackApiError as exc:
+            if exc.response.status_code == 429:
+                headers = exc.response.headers or {}
+                raise NotificationRateLimited(
+                    retry_after_seconds=retry_after_seconds(
+                        headers.get("Retry-After", headers.get("retry-after"))
+                    )
+                ) from exc
+            raise
+
     async def send_message(self, bot_token: str, msg: OutgoingMessage) -> None:
         """Send a reply back to Slack via the Web API."""
         client = self._web(bot_token)
@@ -349,7 +445,7 @@ class SlackAdapter(ChannelAdapter):
         """
         try:
             return datetime.fromtimestamp(float(ts), UTC)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     async def channel_details(
@@ -372,35 +468,16 @@ class SlackAdapter(ChannelAdapter):
     async def channel_members(
         self, bot_token: str, channel_id: str, *, api_base_url: str | None, limit: int
     ) -> list[ChannelMember]:
-        """`conversations.members`, then one `users.info` per id, concurrently.
+        """Visible Slack IDs, rendered by Slack as native user mentions.
 
-        Slack has no bulk lookup by id - `users.list` answers with the whole
-        workspace - so the ids are resolved one at a time. Concurrently and
-        bounded by `limit`, because this runs inside a tool call somebody is
-        waiting on, and serially it is the length of the channel in round trips.
+        Do not fan out to users.info on every channel turn: the context snapshot
+        needs membership, not fifty profile requests sharing a rate limit.
         """
-        client = self._web(bot_token)
-        response = await client.conversations_members(channel=channel_id, limit=limit)
-        user_ids = [str(user_id) for user_id in (response.get("members") or [])][:limit]
-        if not user_ids:
-            return []
-
-        found = await asyncio.gather(*(client.users_info(user=user_id) for user_id in user_ids))
-        members: list[ChannelMember] = []
-        for user_id, entry in zip(user_ids, found, strict=True):
-            user: dict[str, Any] = entry.get("user") or {}
-            profile: dict[str, Any] = user.get("profile") or {}
-            members.append(
-                ChannelMember(
-                    user_id=user_id,
-                    username=str(user.get("name") or "") or None,
-                    display_name=str(profile.get("display_name") or profile.get("real_name") or "")
-                    or None,
-                    is_bot=bool(user.get("is_bot")),
-                    role="admin" if user.get("is_admin") else "member",
-                )
-            )
-        return members
+        response = await self._web(bot_token).conversations_members(channel=channel_id, limit=limit)
+        return [
+            ChannelMember(user_id=str(user_id), display_name=f"<@{user_id}>")
+            for user_id in (response.get("members") or [])[:limit]
+        ]
 
     async def is_channel_member(
         self, bot_token: str, channel_id: str, platform_user_id: str, *, api_base_url: str | None
@@ -710,6 +787,9 @@ class SlackAdapter(ChannelAdapter):
             return None
 
         addressed = self._addressed(raw_payload, event)
+        broadcast = broadcast_mentioned(self.platform, text)
+        if broadcast and addressed is None:
+            addressed = False
         # After `_addressed`, which is what the token is for. The model is the
         # addressee, so being told its own id is noise: `<@U09MQFTBHTV> try again`
         # is a question about a Slack id as far as it can tell, and an answer
@@ -748,6 +828,7 @@ class SlackAdapter(ChannelAdapter):
             message_id=message_ts,
             attachments=attachments,
             addressed=addressed,
+            broadcast_mention=broadcast,
             # Beside the event under the Events API, on it over the socket.
             platform_team_id=raw_payload.get("team_id") or event.get("team"),
         )
@@ -825,7 +906,7 @@ class SlackAdapter(ChannelAdapter):
         own = self._own_user_id(raw_payload)
         if own is None:
             return None
-        return f"<@{own}>" in (event.get("text") or "")
+        return f"<@{own}>" in mentionable_text(event.get("text") or "")
 
     @staticmethod
     def _attachments(event: dict[str, Any]) -> list[IncomingAttachment]:
@@ -839,21 +920,48 @@ class SlackAdapter(ChannelAdapter):
         A file still being processed has no download URL yet and is skipped. It
         arrives again on `file_shared` when Slack has finished with it; treating a
         missing URL as a failure would report an error for something that is
-        merely not ready.
+        merely not ready. This adapter does not subscribe to `file_shared`, so a
+        skipped file is logged: a voice clip that is never answered is otherwise
+        indistinguishable from a bot that is broken.
+
+        An audio clip recorded in Slack's composer says so twice - `subtype:
+        "slack_audio"` and `media_display_type: "audio"` - and either is taken
+        as the platform's word that it is a recording, because its `mimetype`
+        is not: a clip recorded on a phone can arrive as `video/mp4`, and a
+        `video/*` type would send the clip to storage rather than to
+        transcription (`routed_type`).
         """
         found: list[IncomingAttachment] = []
         for file in event.get("files") or []:
             if not isinstance(file, dict):
                 continue
+            recording = (
+                file.get("subtype") == "slack_audio" or file.get("media_display_type") == "audio"
+            )
             url = file.get("url_private_download") or file.get("url_private")
             if not url:
+                logger.info(
+                    "Skipped a Slack file with no download URL yet: file=%s recording=%s",
+                    file.get("id"),
+                    recording,
+                )
                 continue
+            name = file.get("name") or "file"
+            duration_ms = file.get("duration_ms")
             found.append(
                 IncomingAttachment(
-                    filename=file.get("name") or "file",
-                    mime_type=file.get("mimetype") or "application/octet-stream",
+                    filename=name,
+                    mime_type=routed_type(
+                        file.get("mimetype"),
+                        name,
+                        extension=file.get("filetype"),
+                        recording=recording,
+                    ),
                     size=int(file.get("size") or 0),
                     handle=str(url),
+                    duration_seconds=(
+                        duration_ms / 1000 if isinstance(duration_ms, int | float) else None
+                    ),
                 )
             )
         return found
