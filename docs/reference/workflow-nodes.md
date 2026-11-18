@@ -367,6 +367,19 @@ fails with `MAPPING_COERCION_FAILED` and names the field.
 
 ::: app.workflows.nodes.data_map._handler.FieldMapping
 
+## data.value { #data-value }
+
+**Data** holds one value for later steps: an object, a list, or a single number,
+text or boolean. Type it in as JSON, or bind it whole from an earlier output. The
+step hands it on unchanged as `value`, and a later step binds to the whole value
+or to a path into it, such as `value.customer.email`.
+
+The value is set once per run and is never overwritten. A step's output is fixed
+when the step completes, so no later step can change it: Data is a named
+constant, not a variable. To change a value, add a step that builds a new one
+from it. To collect values from the items of a loop, use `loop.yield`. A draft
+run of a Data step with no value fails with `DATA_NOT_SET`.
+
 ## data.filter and data.combine { #data-filter-and-data-combine }
 
 **Filter a list** keeps the items of a bound list for which a JMESPath condition
@@ -693,16 +706,9 @@ send `unsure` and a category down one path, or two categories to one log step.
 
 ## Decisions { #decisions }
 
-Three steps ask TypeSafe's Jev a typed question about a bound `text`, with a
-TypeSafe API key from the vault. Jev does not write text: it answers the
-question with a confidence from 0 to 1, in one request, and it can only answer
-with one of the answers the step allows. Below the step's `min_confidence` the
-step leaves by its `unsure` port instead, so a workflow decides there what a
-person or an agent does with a doubtful case.
+Three steps ask a native decision model a typed question about a bound `text`. Choose a model profile with its provider, vault key and endpoint. Existing configurations using a TypeSafe key and Jev model still load unchanged. Provider capabilities determine which question shapes are accepted.
 
-`decide.*` calls TypeSafe's hosted Jev only. To route doubtful cases on a
-self-hosted model, use `ai.classify` with `min_confidence`, which leaves by
-`unsure` the same way.
+The model returns an answer and confidence. Below `min_confidence`, the step follows `unsure`; the workflow can escalate or choose another path. Native profiles use OpenAI, Google, OpenRouter, TypeSafe or a custom System One endpoint through Pydantic AI. See [decision models](../models.md#decision-models) for provider availability and the distinction from LLM assessments.
 
 | Step | Asks | Leaves by |
 |---|---|---|
@@ -710,11 +716,7 @@ self-hosted model, use `ai.classify` with `min_confidence`, which leaves by
 | `decide.choose` | which of up to 255 options fits | `out` with the `choice`, or `unsure` |
 | `decide.score` | where the text sits on a rubric of 2 to 10 levels | `out` with the `score`, or `unsure` |
 
-The key is checked at publish and read again on every run. A key that is gone
-or unshared fails the step with `SECRET_NOT_USABLE`, a model that does not
-answer with `DECISION_FAILED`, which is retried as the step's policy says, and a
-deployment built without the `browser` extra with `DECISION_MODEL_UNAVAILABLE`.
-A merge may rejoin a decision's branches, as it rejoins an If's.
+Credentials and access are checked at publish and again for each execution. A removed legacy key gives `SECRET_NOT_USABLE`; a non-native profile gives `DECISION_MODEL_REQUIRED`. Provider failures give `DECISION_FAILED` under the step's retry policy. Spend counts toward workflow and organization budgets. Merge can rejoin decision branches.
 
 ::: app.workflows.nodes._decide.DecisionConfig
 
@@ -980,9 +982,12 @@ key, so a retried step sends again.
 **Ask for approval** stops the run until a person approves or rejects what it is
 about to do, then goes on by `approved` or `rejected`. The approver reads the
 step's `title` and the `details` bound to it, in the **Approvals** tab of
-Activity or over `GET /api/v1/workflow-approvals`. `approvers` names who may
-decide, and they are notified in the app; left empty, anyone holding
-`approvals:decide` may. Past `timeout_hours` the request expires and the step
+Activity or over `GET /api/v1/workflow-approvals`. `approvers` and
+`approver_groups` name who may decide: those people and the group members
+holding `approvals:decide` ([approval groups](../governance.md#approval-groups)).
+They are notified in the app. With both left empty, anyone holding
+`approvals:decide` may decide, and they are all notified. The request also leads the
+Inbox of whoever may decide it. Past `timeout_hours` the request expires and the step
 leaves by `rejected` with `decision: "expired"`. Cancelling the run cancels what
 it asked, and so does cancelling a workflow that called the run. Each run of the step asks once, so a retry or a loop iteration never
 asks twice for the same thing.
@@ -1259,6 +1264,8 @@ Four more steps read what the organization's tables are, and change nothing.
 create its table the first time it runs and reuse it after. The two questions
 leave by exactly one port, and a `logic.merge` can join the branches again.
 
+`table.record.exists` and `table.record.query` accept select option labels as well as IDs in saved filters. They resolve labels against the current table before querying; unknown or ambiguous labels remain validation errors.
+
 ::: app.workflows.nodes.table_list._handler.TableListOutput
 
 ::: app.workflows.nodes.table_describe._handler.TableDescribeOutput
@@ -1360,6 +1367,7 @@ configuration - choose a runtime without network for untrusted work.
 | The job ran past `timeout_seconds` | `PYTHON_SANDBOX_TIMEOUT`, the session purged |
 | No usable `sandboxd` connection | `SANDBOX_UNAVAILABLE` |
 | It wrote more than 20 files or 100 MB, or printed more than 10 MB | `PYTHON_OUTPUT_TOO_LARGE`, measured in the sandbox before anything is fetched, and the session purged |
+| The host answered but could not start the sandbox - a workspace directory it cannot write, an image that would not build | `SANDBOX_START_FAILED` with a safe diagnosis; raw host output stays in the host's logs, retried |
 | The host could not be reached | `SANDBOX_UNREACHABLE`, retried |
 
 ::: app.workflows.nodes.code_python_simple._handler.PythonSimpleConfig

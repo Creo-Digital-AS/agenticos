@@ -17,7 +17,7 @@ import { Badge, Button } from "@/components/ui";
 import { useModelProviders } from "@/hooks";
 import { useChanged } from "@/hooks/use-changed";
 import type { ProfilesStatus } from "@/hooks/use-model-providers";
-import { hasKey, modelDetail, runsAgents, usableForAgents } from "@/lib/model-profiles";
+import { hasKey, modelDetail, runsAgents } from "@/lib/model-profiles";
 import { cn } from "@/lib/utils";
 import type { ModelProfile } from "@/types/providers";
 import { useTranslations } from "next-intl";
@@ -26,6 +26,11 @@ interface ModelProfilePickerProps {
   profiles: ModelProfile[];
   /** A single selector for setup dialogs; model management keeps its full editor. */
   compact?: boolean;
+  purpose?: "chat" | "decision";
+  /** Personal-key agents choose a destination without an organization credential. */
+  requireOrganizationKey?: boolean;
+  /** A required independent model can label the empty choice without implying inheritance. */
+  emptyLabel?: string;
   /**
    * What `profiles` is: the organization's answer, a read still in flight, or
    * one that failed.
@@ -115,6 +120,9 @@ export function ModelProfilePicker({
   onChange,
   onCreationPendingChange,
   compact = false,
+  purpose = "chat",
+  requireOrganizationKey = true,
+  emptyLabel,
   allowAdd = false,
   allowRemove = false,
   disabled,
@@ -146,8 +154,12 @@ export function ModelProfilePicker({
   // marked, because a choice that vanished would read as no choice at all; and
   // where models are managed the rest stay too, marked and not selectable, since
   // this is the only place in the console that deletes one.
+  const usable = (profile: ModelProfile) =>
+    purpose === "decision"
+      ? profile.decision_capable === true && hasKey(profile)
+      : runsAgents(profile) && (!requireOrganizationKey || hasKey(profile));
   const offered = profiles.filter(
-    (profile) => usableForAgents(profile) || profile.id === value || allowRemove,
+    (profile) => usable(profile) || profile.id === value || allowRemove,
   );
   // Generated rather than a constant: the Builder and a dialog can both have a
   // picker mounted, and two elements answering to one id makes the second group's
@@ -168,9 +180,9 @@ export function ModelProfilePicker({
           // that cannot answer. The server's `missing_key`, not `secret_id`
           // alone: a self-hosted model at an endpoint has no key and needs none,
           // and reading the column marked every Ollama profile "no key" (#2478).
-          noKey={!hasKey(profile)}
-          notChat={!runsAgents(profile)}
-          selectable={usableForAgents(profile) || profile.id === value}
+          noKey={requireOrganizationKey && !hasKey(profile)}
+          notChat={purpose === "chat" && !runsAgents(profile)}
+          selectable={usable(profile) || profile.id === value}
           disabled={disabled}
           onRemove={allowRemove ? () => deleteProfile.mutate(profile.id) : undefined}
         />
@@ -200,14 +212,18 @@ export function ModelProfilePicker({
       <span className="min-w-0 flex-1 truncate text-sm font-medium">{selected.label}</span>
       {/* The badge that decides whether the agent can run at all. In a list of a
           dozen saved models the chosen one's badge is a badge among twelve. */}
-      {!hasKey(selected) && <Badge variant="destructive">{t("noKey")}</Badge>}
-      {!runsAgents(selected) && <Badge variant="destructive">{t("notAChatModel")}</Badge>}
-      {!runsAgents(selected) && (
+      {requireOrganizationKey && !hasKey(selected) && (
+        <Badge variant="destructive">{t("noKey")}</Badge>
+      )}
+      {purpose === "chat" && !runsAgents(selected) && (
+        <Badge variant="destructive">{t("notAChatModel")}</Badge>
+      )}
+      {purpose === "chat" && !runsAgents(selected) && (
         <p role="alert" className="text-destructive basis-full text-xs">
           {t("notAChatModelHint", { model: selected.model })}
         </p>
       )}
-      {runsAgents(selected) && !hasKey(selected) && (
+      {requireOrganizationKey && runsAgents(selected) && !hasKey(selected) && (
         <p role="alert" className="text-destructive basis-full text-xs">
           {t("modelHasNoKeyHint")}
         </p>
@@ -258,7 +274,7 @@ export function ModelProfilePicker({
             disabled={disabled || profilesStatus !== "loaded"}
             onValueChange={(id) => {
               if (id === "default") onChange(null);
-              else if (offered.some((profile) => profile.id === id && usableForAgents(profile)))
+              else if (offered.some((profile) => profile.id === id && usable(profile)))
                 selectProfile(id);
             }}
           >
@@ -266,17 +282,15 @@ export function ModelProfilePicker({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="default">{t("useDefaultModel")}</SelectItem>
+              <SelectItem value="default">{emptyLabel ?? t("useDefaultModel")}</SelectItem>
               {offered.map((profile) => (
-                <SelectItem
-                  key={profile.id}
-                  value={profile.id}
-                  disabled={!usableForAgents(profile)}
-                >
+                <SelectItem key={profile.id} value={profile.id} disabled={!usable(profile)}>
                   <span className="flex min-w-0 items-center gap-2">
                     <ProviderIcon provider={profile.provider} />
                     <span className="truncate">{profile.label}</span>
-                    {!hasKey(profile) && <Badge variant="destructive">{t("noKey")}</Badge>}
+                    {requireOrganizationKey && !hasKey(profile) && (
+                      <Badge variant="destructive">{t("noKey")}</Badge>
+                    )}
                   </span>
                 </SelectItem>
               ))}
@@ -317,6 +331,7 @@ export function ModelProfilePicker({
       <AddModel
         key={`${selected?.id ?? "none"}:${selectionVersion}`}
         selected={selected}
+        purpose={purpose}
         disabled={disabled}
         onCreationPendingChange={onCreationPendingChange}
         onCreated={(profile) => {
@@ -342,8 +357,7 @@ export function ModelProfilePicker({
           <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-1.5 text-xs">
             <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
             {t("useSavedModelCount", {
-              count: offered.filter((profile) => usableForAgents(profile) || profile.id === value)
-                .length,
+              count: offered.filter((profile) => usable(profile) || profile.id === value).length,
             })}
           </summary>
           <div className="mt-2 space-y-2">

@@ -19,6 +19,28 @@ model profile → credential → unsealed secret → provider client → Model
 
 Nothing about which model an agent uses lives in `.env`.
 
+## Personal model keys
+
+In the Builder's **Model access**, keep **Use the organization’s key** (the default), or select **Each user connects their own key**. Personal mode keeps the administrator's model and endpoint fixed. It supports API-key chat providers, without model fallbacks or per-conversation model overrides.
+
+A signed-in member opens the agent in web chat and connects their key through the private form above the composer or in chat controls. Keys never enter messages, prompts or agent instructions. The same connection is reused across agents in this organization with the same provider and endpoint. A missing key blocks the run before a model request; authentication errors never switch to the organization's key. Replace the key in chat settings, or remove the connection in **Vault → Your model connection**. Saving a key does not test it against the provider.
+
+The private-key form submits the expected profile, provider, endpoint and model shown to the user. If that destination changes before saving, the server refuses the key with a conflict; the form reloads the destination and clears the typed key before another attempt.
+
+Personal mode currently excludes channels (private and group), widgets, hosted pages, HTTP API runs, schedules, triggers, background topics, voice, reviewers and separate capability models. Pause or remove active channels, public surfaces and routines before publishing this mode. Creating or reactivating an incompatible surface is refused, and the runtime enforces the same rule. Hosted pages and widget JWTs do not identify a signed-in member of the instance.
+
+Delegation is supported in signed-in web chat. A personal-mode subagent must use the exact model profile selected on a personal-mode root agent. Organization-mode parents cannot spend personal keys, and personal delegates cannot select another model or endpoint. These limits are checked at publication, surface admission, promotion and runtime, including nested delegations and approval resumes.
+
+Organization-mode delegates retain their own credentials. Inline specialists inherit their parent's mode; dynamic specialists in personal mode stay on their parent's configured model. Personal MCP access keeps its existing caller boundaries.
+
+A missing subagent connection names the agent and model connection. Open that agent's chat settings to connect your key; ask its owner for access if it is not visible. The runner checks the delegation tree before model calls and checks again on resume. A key for another endpoint, another member's key or an approver's key never substitutes for the caller's missing connection.
+
+Credentials are encrypted for their owner in the vault, and are deleted when their membership or user account is removed. Changing the approved endpoint requires a new connection. Rotating one member's key does not change another member's key or the shared model profile.
+
+Impersonating another member never grants access to their personal model connections: requests to inspect, change or use their key are refused before vault access.
+
+Private conversation history follows the approved model destinations, including fallbacks; see [chat history](console.md#chat) for switching connections and resuming waiting runs.
+
 ## A model profile
 
 A row in an organization: a label, a provider, a model id, default settings, and
@@ -329,6 +351,7 @@ Standard providers use Pydantic AI's model and provider inference. The platform 
 | OpenAI | `openai` | API key, or none | ✓ |
 | Anthropic | `anthropic` | API key | ✓ |
 | Google Gemini | `google` | API key | ✓ |
+| TypeSafe (Jev) | `typesafe` | API key | ✓ |
 | OpenRouter | `openrouter` | API key |  ✓ |
 | Otari | `otari` | API key | ✓ |
 | Alibaba Cloud | `alibaba` | API key | ✓ |
@@ -355,6 +378,7 @@ Standard providers use Pydantic AI's model and provider inference. The platform 
 
 | Provider | id | Credential | Custom URL |
 |---|---|---|---|
+| System One API | `system-one` | API key, or none | ✓ |
 | Ollama | `ollama` | none | ✓ |
 | LiteLLM proxy | `litellm` | none | ✓ (`api_base`) |
 
@@ -750,3 +774,19 @@ A regional endpoint serves fewer embedding models than the global one: `eu.openr
 Upgrade every API and worker process before configuring regional endpoints. Earlier builds ignore the OpenRouter endpoint override.
 
 For another endpoint with the same provider and model, choose **Add separate model** in the Builder. Its automatic name includes the endpoint, and the existing profile stays unchanged. **Update model** edits the shared profile instead. Custom catalog downloads are limited to 2 MiB, 2,048 models and bounded field lengths, with at most 16 catalogs cached per process. A compressed or oversized response leaves the model ID editable without falling back to a global listing.
+
+## Decision models
+
+Decision profiles use a native `decisions` API instead of text generation. Select the provider, model and vault key in the model builder. OpenAI, Google and OpenRouter offer both chat and decision APIs; TypeSafe and a custom System One endpoint serve decisions. A decision profile cannot be the conversational model of an agent or a fallback to a chat model.
+
+The native adapters come from Pydantic AI. Current suggestions include OpenAI `gpt-6-luna`, Google `gemini-decision-1` and TypeSafe `jev-1.14.0` / `jev-latest`. OpenRouter reads its decision-model catalog separately from its text-model catalog. A custom System One endpoint requires its own URL and model identifier. Availability and account access depend on the provider; suggestions are not a guarantee of access.
+
+Workflow **Decision models** steps select a native profile. Existing `decide.*` ids and TypeSafe key configurations still load. Answers below the configured confidence follow the `unsure` port. Credentials and authorization are checked again for each execution, and provider spend counts toward workflow and organization budgets.
+
+Channel **Join conversations automatically** can use a native decision profile or an ordinary LLM with structured output. A native yes/no decision returns the probability of joining; a bounded numeric output preserves that probability. An LLM returns a usefulness assessment from 0 to 100, not a calibrated probability. Both compare against **Run the agent from (%)**, including the threshold itself. The classifier has no tools. Joining remains opt-in and uses the configured intervals; the main agent can use organization MCP accounts, never a participant's private credentials.
+
+Provider references: [Pydantic AI](https://pydantic.dev/docs/ai/models/decision/), [OpenAI](https://developers.openai.com/api/docs/guides/decisions), [Google](https://ai.google.dev/gemini-api/docs/decisions-api), [TypeSafe](https://docs.typesafe.ai/models), [OpenRouter](https://github.com/OpenRouterTeam/skills/tree/main/skills/openrouter-decisions).
+
+ElevenLabs Realtime adds `eleven_realtime_v1_mini` and `eleven_realtime_v1_max` over the 24 kHz PCM relay, using the `brian` default voice and semantic turn detection.
+
+The SDK does not report token charges. Calls with a configured spending budget are refused before connecting; calls without a spending budget retain the time cap and record connected audio as a cost floor, not a full bill. The catalog audio rate is $0.08/minute ($0.16 burst); token charges are additional. The 16k context value is a conservative platform history-seeding budget, not a published vendor context window. The integration is tested offline against SDK construction and controlled transports, not live accounts. [SDK](https://pydantic.dev/docs/ai/api/realtime/elevenlabs/), [ElevenLabs API pricing](https://elevenlabs.io/pricing/api).

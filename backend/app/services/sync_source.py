@@ -1,8 +1,11 @@
 # ruff: noqa: I001
 """Sync source service - org-scoped integration management."""
 
+import asyncio
 import hashlib
+from dataclasses import dataclass
 import json
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -11,10 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.updates import writable
 from app.core.audit import record_audit
-from app.core.exceptions import BadRequestError, NotFoundError
+from app.core.exceptions import (
+    AuthorizationError,
+    BadRequestError,
+    ConcurrentChangeError,
+    NotFoundError,
+)
 from app.core.field_errors import refused_field
 from app.core.permissions import AuthContext, Perm
 from app.db.base import Base
+from app.db.locks import LockScope, hold_name
+from app.db.models.knowledge_base import KBScope, KnowledgeBase
 from app.db.models.sync_log import SyncLog
 from app.db.models.sync_source import SyncSource
 from app.db.vector_tables import validate_collection_name
@@ -22,6 +32,8 @@ from app.services.access import SECRET, resolve_access
 from app.services.background_jobs import enqueue
 from app.services.rag.connectors import CONNECTOR_REGISTRY
 from app.repositories import background_job as background_job_repo
+from app.repositories import knowledge_base_repo
+from app.repositories.sync_log import SyncLogScope
 from app.repositories import organization_secret_repo
 from app.repositories import sync_log as sync_log_repo
 from app.repositories import sync_source as sync_source_repo
@@ -40,6 +52,7 @@ from app.worker.jobs import SYNC_SOURCE, Priority, SyncConnectorSource, sync_sou
 # `is_active` is how an operator pauses a source; a run refuses a paused one
 # whoever asked for it, and the scheduler already never selects one.
 PAUSED_SOURCE = "This source is paused; activate it to sync."
+logger = logging.getLogger(__name__)
 
 # The credential field names the two shipped connectors used to hold in `config`.
 # Kept as a list so a caller posting the old shape is told what to do instead of
@@ -95,7 +108,14 @@ async def _refuse_an_invalid_config(config: dict, connector_type: str) -> None:
     connector_cls = CONNECTOR_REGISTRY.get(connector_type)
     if connector_cls is None:  # pragma: no cover - a stored row names a live connector
         return
-    refusal = await connector_cls().validate_config(config)
+    connector = connector_cls()
+    try:
+        async with asyncio.timeout(5):
+            refusal = await connector.validate_config(config)
+    except TimeoutError as exc:
+        raise refused_field("config", "Connector address validation timed out. Try again.") from exc
+    finally:
+        await connector.aclose()
     if refusal is None:
         return
     sentence = f"Invalid connector config: {refusal.message}"
@@ -137,6 +157,17 @@ def _raw_config(source: SyncSource) -> dict:
     return {}
 
 
+@dataclass(frozen=True)
+class PreparedSourceUpdate:
+    """Network validation performed before taking the source's mutation locks."""
+
+    source_id: UUID
+    revision: datetime | None
+    fingerprint: str
+    data: SyncSourceUpdate
+    secret_hint: str | None
+
+
 class SyncSourceService:
     """Service for managing sync source configurations."""
 
@@ -150,6 +181,7 @@ class SyncSourceService:
             name=s.name,
             connector_type=s.connector_type,
             collection_name=s.collection_name,
+            knowledge_base_id=str(s.knowledge_base_id) if s.knowledge_base_id else None,
             # Unmasked, because there is nothing here to mask: the credential is
             # `secret_id` and what it points at never leaves the vault (#937).
             config=_raw_config(s),
@@ -199,18 +231,13 @@ class SyncSourceService:
             )
         return source
 
-    async def list_logs(self, source_id: UUID, *, limit: int = 20) -> RAGSyncLogList:
-        """One source's run history, newest first.
-
-        Both surfaces that show a source's history - a knowledge base's sync row
-        and an org integration - read it here rather than each holding its own
-        query and its own copy of this mapping. Whoever calls it has already
-        decided the caller may see this source: an org integration resolves it
-        through `CollectionAccessService`, and a KB route resolves it against the
-        base in the path. Scope is not this method's to add, which is why it takes
-        an id that has been through one of those.
-        """
-        logs = await sync_log_repo.get_all(self.db, sync_source_id=source_id, limit=limit)
+    async def list_logs(
+        self, source_id: UUID, *, scope: SyncLogScope, limit: int = 20
+    ) -> RAGSyncLogList:
+        """One source's history within its runs' immutable authorized base scope."""
+        logs = await sync_log_repo.get_all(
+            self.db, scope=scope, sync_source_id=source_id, limit=limit
+        )
         items = [
             RAGSyncLogItem(
                 id=str(log.id),
@@ -232,11 +259,19 @@ class SyncSourceService:
         ]
         return RAGSyncLogList(items=items, total=len(items))
 
-    async def create_source(self, data: SyncSourceCreate, *, ctx: AuthContext) -> SyncSourceRead:
+    async def create_source(
+        self,
+        data: SyncSourceCreate,
+        *,
+        ctx: AuthContext,
+        knowledge_base: KnowledgeBase | None = None,
+    ) -> SyncSourceRead:
         """Create a new sync source.
 
         `collection_name` is optional - omit to create an org-level integration
-        not yet linked to a knowledge base. Whatever it names decides who can
+        not yet linked to a knowledge base. When it is given, `knowledge_base` is
+        the base the caller resolved it to and checked, and the source records it
+        (:meth:`_target`). Whatever it names decides who can
         read what this source ingests, because access is decided at the
         collection and the credential's reach is the source's reach
         (`docs/file-processing.md#who-ends-up-able-to-read-what-a-source-ingested`).
@@ -255,9 +290,15 @@ class SyncSourceService:
         organization it was given.
 
         Raises:
-            BadRequestError: unknown connector, invalid config, or a collection
-                name that cannot safely become an identifier.
+            BadRequestError: unknown connector, invalid config, a collection
+                name that cannot safely become an identifier, or one named
+                without its knowledge base or with another organization's.
+            NotFoundError: The knowledge base was deleted meanwhile.
         """
+        if data.collection_name is None and not ctx.has(Perm.CONNECTIONS_MANAGE):
+            raise AuthorizationError(
+                message="Creating an unassigned connection template requires Manage connections"
+            )
         if data.connector_type not in CONNECTOR_REGISTRY:
             raise BadRequestError(
                 message=f"Unknown connector type: {data.connector_type}",
@@ -270,6 +311,7 @@ class SyncSourceService:
         await _refuse_a_credential_in_the_config(data.config, data.connector_type)
         await _refuse_an_invalid_config(data.config, data.connector_type)
         hint = await self._checked_secret(data.secret_id, data.connector_type, ctx)
+        knowledge_base_id = await self._target(data.collection_name, knowledge_base, ctx)
 
         source = await sync_source_repo.create(
             self.db,
@@ -277,6 +319,7 @@ class SyncSourceService:
             connector_type=data.connector_type,
             organization_id=ctx.organization_id,
             collection_name=data.collection_name,
+            knowledge_base_id=knowledge_base_id,
             config=data.config,
             secret_id=data.secret_id,
             organizational_unit=data.organizational_unit,
@@ -285,6 +328,62 @@ class SyncSourceService:
         )
         await self._record(source, "created", ctx=ctx)
         return self._to_read(source, secret_hint=hint)
+
+    async def _target(
+        self, collection_name: str | None, knowledge_base: KnowledgeBase | None, ctx: AuthContext
+    ) -> UUID | None:
+        """The base a source naming `collection_name` records: the one its caller resolved.
+
+        Every caller pointing a source at a collection has already decided which
+        base that is and that it may write it - a KB route from its path, a name
+        route through `CollectionAccessService.source_target`, `rag-source-add`
+        from the organization it was given - so the base travels with the name
+        rather than being looked up by it again here (#2551). A name without its
+        base, or with a base of another name, is a caller that skipped that
+        decision.
+
+        The base must also be the source's organization's, or the deployment's:
+        a personal base carries the organization it was created in, and its
+        owner reaches it from any organization they belong to. A source records
+        the caller's organization, whose credential and budget it syncs with, so
+        pointing it at a base of another one would write that organization's
+        documents into this one's tenant - which `writable_kb` alone does not
+        refuse.
+
+        Held under the name's teardown lock, as a deletion takes it, and the base
+        asked for again inside it - in SQL, holding the row as the source's
+        foreign key will: the row the caller loaded is the session's cached copy,
+        and a base deleted meanwhile is a miss rather than a failed insert.
+
+        Raises:
+            BadRequestError: A collection was named without its knowledge base,
+                or with one of another organization.
+            NotFoundError: The knowledge base was deleted meanwhile.
+        """
+        if collection_name is None:
+            return None
+        if knowledge_base is None or knowledge_base.collection_name != collection_name:
+            raise BadRequestError(
+                message="A sync source has to be pointed at a knowledge base, not only a name.",
+                details={"collection": collection_name},
+            )
+        if (
+            knowledge_base.scope != KBScope.APP.value
+            and knowledge_base.organization_id != ctx.organization_id
+        ):
+            raise BadRequestError(
+                message=(
+                    "This knowledge base is not this organization's, so a sync source "
+                    "of this organization cannot write into it."
+                ),
+                details={"kb_id": knowledge_base.id},
+            )
+        await hold_name(self.db, LockScope.COLLECTION_TEARDOWN, collection_name)
+        if not await knowledge_base_repo.hold_key_share(self.db, knowledge_base.id):
+            raise NotFoundError(
+                message="Knowledge base not found", details={"kb_id": knowledge_base.id}
+            )
+        return knowledge_base.id
 
     async def _record(
         self,
@@ -306,7 +405,8 @@ class SyncSourceService:
         one" (#983).
 
         What lands in `details` is the decision and not the payload: the
-        connector, the collection, and the *id* of the secret. Never the config
+        connector, the collection and its knowledge base, and the *id* of the
+        secret. Never the config
         document - a place a credential has been posted before (#937) - and never
         the row.
 
@@ -327,6 +427,9 @@ class SyncSourceService:
                 "name": source.name,
                 "connector_type": source.connector_type,
                 "collection_name": source.collection_name,
+                "knowledge_base_id": (
+                    str(source.knowledge_base_id) if source.knowledge_base_id else None
+                ),
                 "secret_id": str(source.secret_id) if source.secret_id else None,
                 **(extra or {}),
             },
@@ -390,9 +493,17 @@ class SyncSourceService:
         return row.hint
 
     async def clone_source(
-        self, source_id: str, data: SyncSourceClone, *, ctx: AuthContext
+        self,
+        source_id: str,
+        data: SyncSourceClone,
+        *,
+        ctx: AuthContext,
+        knowledge_base: KnowledgeBase,
     ) -> SyncSourceRead:
         """Clone an existing integration into a different knowledge base.
+
+        `knowledge_base` is the base the caller resolved `data.collection_name`
+        to and checked; the clone records it (:meth:`_target`).
 
         The clone *references the same vault secret* rather than copying a
         credential. That is the point of the id: one Drive credential feeding
@@ -413,6 +524,7 @@ class SyncSourceService:
         # caller must be one who may bind it, as on create - a member's private
         # secret behind somebody else's source is not theirs to lend.
         await self._checked_secret(existing.secret_id, existing.connector_type, ctx)
+        knowledge_base_id = await self._target(data.collection_name, knowledge_base, ctx)
 
         source = await sync_source_repo.create(
             self.db,
@@ -420,6 +532,7 @@ class SyncSourceService:
             connector_type=existing.connector_type,
             organization_id=ctx.organization_id,
             collection_name=data.collection_name,
+            knowledge_base_id=knowledge_base_id,
             config=raw,
             secret_id=existing.secret_id,
             organizational_unit=existing.organizational_unit,
@@ -429,26 +542,18 @@ class SyncSourceService:
         await self._record(source, "created", ctx=ctx, extra={"cloned_from": source_id})
         return self._to_read(source)
 
-    async def update_source(
-        self, source_id: str, data: SyncSourceUpdate, *, ctx: AuthContext
-    ) -> SyncSourceRead:
-        """Update an existing sync source.
-
-        No `••••••` round-trip any more: the config holds no credential, so a
-        patch has nothing to send back masked and nothing to skip on the way in
-        (#937). Changing the credential means changing `secret_id`, which is
-        checked the same way creation checks it.
-
-        Raises:
-            NotFoundError: If sync source does not exist.
-            BadRequestError: The config carries a credential, the connector
-                refuses it, or the credential named is not this organization's or
-                not the kind the connector needs.
-        """
-        existing = await self.get_source(source_id)
+    async def _checked_update(
+        self, existing: SyncSource, data: SyncSourceUpdate, ctx: AuthContext
+    ) -> tuple[SyncSourceUpdate, str | None]:
+        if (
+            existing.collection_name is None
+            or ("collection_name" in data.model_fields_set and data.collection_name is None)
+        ) and not ctx.has(Perm.CONNECTIONS_MANAGE):
+            raise AuthorizationError(
+                message="Managing unassigned connection templates requires Manage connections"
+            )
         updates = writable(data, over=SyncSource)
         hint: str | None = None
-
         if "secret_id" in updates:
             hint = await self._checked_secret(updates["secret_id"], existing.connector_type, ctx)
 
@@ -473,6 +578,68 @@ class SyncSourceService:
             await _refuse_an_invalid_config(merged, existing.connector_type)
             updates["config"] = merged
 
+        return data.model_copy(update=updates), hint
+
+    async def prepare_update(
+        self, source_id: str, data: SyncSourceUpdate, *, ctx: AuthContext
+    ) -> PreparedSourceUpdate:
+        """Validate without mutation locks; the eventual write checks this snapshot."""
+        source = await self.get_source(source_id)
+        if source.organization_id != ctx.organization_id:
+            raise NotFoundError(message="Sync source not found", details={"source_id": source_id})
+        revision = source.updated_at
+        fingerprint = sync_fingerprint(
+            _raw_config(source),
+            collection_name=source.collection_name or "",
+            sync_mode=source.sync_mode,
+        )
+        checked, hint = await self._checked_update(source, data, ctx)
+        return PreparedSourceUpdate(source.id, revision, fingerprint, checked, hint)
+
+    async def update_source(
+        self,
+        source_id: str,
+        data: SyncSourceUpdate,
+        *,
+        ctx: AuthContext,
+        prepared: PreparedSourceUpdate | None = None,
+        knowledge_base: KnowledgeBase | None = None,
+    ) -> SyncSourceRead:
+        """Update an existing sync source.
+
+        No `••••••` round-trip any more: the config holds no credential, so a
+        patch has nothing to send back masked and nothing to skip on the way in
+        (#937). Changing the credential means changing `secret_id`, which is
+        checked the same way creation checks it.
+
+        Raises:
+            NotFoundError: If sync source does not exist.
+            BadRequestError: The config carries a credential, the connector
+                refuses it, or the credential named is not this organization's or
+                not the kind the connector needs.
+        """
+        existing = await self.get_source(source_id)
+        if prepared is None:
+            checked, hint = await self._checked_update(existing, data, ctx)
+        else:
+            fingerprint = sync_fingerprint(
+                _raw_config(existing),
+                collection_name=existing.collection_name or "",
+                sync_mode=existing.sync_mode,
+            )
+            if (
+                existing.id != prepared.source_id
+                or existing.updated_at != prepared.revision
+                or fingerprint != prepared.fingerprint
+            ):
+                raise ConcurrentChangeError(
+                    message="This source changed during validation. Reload it and try again."
+                )
+            checked, hint = prepared.data, prepared.secret_hint
+        updates = writable(checked, over=SyncSource)
+        if "collection_name" in updates:
+            await self._repoint(existing, updates, knowledge_base, ctx)
+
         previous_collection = existing.collection_name
         source = await sync_source_repo.update(self.db, UUID(source_id), **updates)
         if source is None:
@@ -488,6 +655,40 @@ class SyncSourceService:
             source, "updated", ctx=ctx, extra={"fields": sorted(updates), **repointed}
         )
         return self._to_read(source, secret_hint=hint)
+
+    async def _repoint(
+        self,
+        existing: SyncSource,
+        updates: dict[str, object],
+        knowledge_base: KnowledgeBase | None,
+        ctx: AuthContext,
+    ) -> None:
+        """Turn a patched `collection_name` into the base the source records, in `updates`.
+
+        The name it already has, resent while it records a base, is no change:
+        resolving it again would move the source to whichever base of the name
+        the caller's organization resolves to first - a member's older personal
+        base, say - away from the one it was added to (#2551). Otherwise the
+        source records `knowledge_base` (:meth:`_target`), and a source that
+        changes base forgets its last clean run: that run filled the other base,
+        and stopping early on it would leave this one empty.
+        """
+        name = updates["collection_name"]
+        if (
+            name == existing.collection_name
+            and existing.knowledge_base_id is not None
+            and (knowledge_base is None or knowledge_base.id == existing.knowledge_base_id)
+        ):
+            del updates["collection_name"]
+            return
+        knowledge_base_id = await self._target(
+            name if isinstance(name, str) else None, knowledge_base, ctx
+        )
+        updates["knowledge_base_id"] = knowledge_base_id
+        if knowledge_base_id != existing.knowledge_base_id:
+            updates.update(
+                sync_state=None, last_sync_at=None, last_sync_status=None, last_error=None
+            )
 
     async def delete_source(self, source_id: str, *, ctx: AuthContext) -> None:
         """Delete a sync source.
@@ -511,6 +712,8 @@ class SyncSourceService:
             collection_name=collection_name,
             mode=source.sync_mode,
             sync_source_id=source.id,
+            organization_id=source.organization_id,
+            knowledge_base_id=source.knowledge_base_id,
             triggered_by_user_id=None,
         )
 
@@ -539,12 +742,14 @@ class SyncSourceService:
 
         Raises:
             NotFoundError: If sync source does not exist.
-            BadRequestError: If source is paused or has no assigned collection.
+            BadRequestError: If source has no assigned collection or knowledge base.
         """
 
         source = await self.get_source(source_id)
         self.refuse_paused(source)
-        if not source.collection_name:
+        # A source naming a collection but no base is one whose base was deleted
+        # or that could not be attributed to one (#2551): it has nowhere to write.
+        if not source.collection_name or source.knowledge_base_id is None:
             raise BadRequestError(
                 message="Cannot sync a source without an assigned knowledge base collection.",
                 details={"source_id": source_id},
@@ -561,6 +766,8 @@ class SyncSourceService:
             collection_name=source.collection_name,
             mode=source.sync_mode,
             sync_source_id=source.id,
+            organization_id=source.organization_id,
+            knowledge_base_id=source.knowledge_base_id,
             triggered_by_user_id=user_id,
         )
         payload = SyncConnectorSource(source_id=source.id, sync_log_id=sync_log.id)
@@ -615,21 +822,27 @@ class SyncSourceService:
         status: str,
         error: str | None = None,
         *,
+        expected_knowledge_base_id: UUID | None,
         sync_state: SyncState | None = None,
-    ) -> None:
-        """Update sync source status after a sync operation completes.
+    ) -> bool:
+        """Settle only the target this run admitted; False means deleted or retargeted.
 
         `sync_state` is what a clean run read; omitted, the source keeps the one
         it had, so a failed run is retried in full rather than skipped as current.
         """
-        await sync_source_repo.update_sync_status(
+        updated = await sync_source_repo.update_sync_status(
             self.db,
             UUID(source_id),
+            expected_knowledge_base_id=expected_knowledge_base_id,
             last_sync_at=datetime.now(UTC),
             last_sync_status=status,
             last_error=error,
             sync_state=None if sync_state is None else sync_state.model_dump(),
         )
+
+        if updated is None:
+            logger.info("sync_source_settlement_skipped", extra={"source_id": source_id})
+        return updated is not None
 
     @staticmethod
     def list_connectors() -> ConnectorList:

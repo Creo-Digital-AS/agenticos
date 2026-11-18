@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from app.core.config import settings
+from app.db.models.workflow_approval import WorkflowApprovalStatus
 from app.db.models.workflow_run import (
     NodeAttemptStatus,
     NodeRunStatus,
@@ -116,6 +117,7 @@ class WorkflowRunFilters(BaseSchema):
 
     statuses: tuple[WorkflowRunStatus, ...] = ()
     mode: WorkflowRunMode | None = None
+    step_test: bool | None = None
     triggered_by: WorkflowRunTrigger | None = None
     created_after: datetime | None = None
     created_before: datetime | None = None
@@ -126,6 +128,16 @@ class WorkflowResumed(BaseSchema):
 
     run_id: UUID
     resumed: int = Field(description="How many Wait steps waiting for a call it woke")
+
+
+class WorkflowTestedStep(BaseSchema):
+    """The one step a step test ran, as the run's own snapshot names it."""
+
+    node_id: UUID
+    label: str | None = Field(default=None, description="The step's name, if it was given one")
+    definition_id: str | None = Field(
+        default=None, description="The step's node type, for naming an unnamed step"
+    )
 
 
 class WorkflowRunRead(BaseSchema, TimestampSchema):
@@ -153,6 +165,10 @@ class WorkflowRunRead(BaseSchema, TimestampSchema):
         description="The run this one retries; its succeeded steps were not run again.",
     )
     depth: int
+    tested_step: WorkflowTestedStep | None = Field(
+        default=None,
+        description="The step a step test ran; null for a whole-draft test and a real run",
+    )
     can_cancel: bool = Field(
         default=False,
         description="Whether the caller may cancel this run and resolve its steps: its "
@@ -181,6 +197,22 @@ class WorkflowQuestionRead(BaseSchema):
     node_run_id: UUID
     agent_run_id: UUID
     questions: list[ParkedQuestion]
+
+
+class WorkflowStepDecision(BaseSchema):
+    """How a `human.approval` step's request was settled, for the run view to say so."""
+
+    status: WorkflowApprovalStatus
+    decided_at: datetime | None = Field(
+        default=None,
+        description="When a person decided it. Null while pending, and when it expired or was cancelled",
+    )
+    decided_by_name: str | None = Field(
+        default=None,
+        description="The decider's name, or their email when they set none. Null when nobody "
+        "decided, when the decider's account no longer exists, and for a caller without "
+        "`members:view`",
+    )
 
 
 class WorkflowNodeRunRead(BaseSchema):
@@ -217,6 +249,11 @@ class WorkflowNodeRunRead(BaseSchema):
     started_at: datetime | None
     ended_at: datetime | None
     reply_expectation: ReplyExpectation | None = None
+    approval: WorkflowStepDecision | None = Field(
+        default=None,
+        description="The decision an approval step asked for - who settled it and when. Null "
+        "for every other step",
+    )
 
 
 class WorkflowRunGraph(BaseSchema):

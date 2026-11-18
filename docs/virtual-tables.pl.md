@@ -1,5 +1,5 @@
 ---
-source_sha: "e49637ff7aa2"
+source_sha: "4d8a6c479c11"
 ---
 
 # Virtual Tables { #virtual-tables }
@@ -161,6 +161,19 @@ w niej nie tak. Wartość, której nie da się wyliczyć - dzielenie przez zero,
 w sumie, pusta komórka - zostawia komórkę tego rekordu pustą. Formuła jest
 wyliczana przy odczycie rekordu, jak odczyt z powiązania, i nigdy nie jest
 zapisywana, filtrowana ani sortowana.
+
+Ułamki dziesiętne zapisuje się z kropką, `{Price} * 1.23`, w każdym języku:
+przecinek oddziela argumenty funkcji, więc `{Price} * 1,23` zostaje odrzucone z tą
+wskazówką, a nie odczytane jako liczba; tak samo wywołanie, któremu przecinek dodaje o jedną
+wartość za dużo, jak `IF({Price} > 0,5, "yes", "no")`.
+
+Liczba wartości wywołania jest sprawdzana przy zapisie formuły:
+formuła zapisana wcześniej działa dalej, a pozostałe kolumny tabeli można zmieniać, dopóki
+ktoś jej nie zmieni. Odmowa podaje stały powód w
+`details.formula.reason`, na przykład `decimal_comma` albo `not_a_column`, dzięki
+któremu konsola mówi o nim w języku czytelnika. Konsola pokazuje liczby, także
+wynik formuły, z separatorem dziesiętnym czytelnika - `12,177` po polsku - i nie
+grupuje liczb czterocyfrowych.
 
 ## Zmiana schematu { #changing-a-schema }
 
@@ -331,7 +344,9 @@ nic nie zostaje zapisane, dopóki nie ma wszystkich wymaganych wartości.
 
 Każda edycja to jeden `PATCH` względem rewizji widocznej na ekranie, więc edycja, która
 przegrywa z nowszą zmianą, zostaje odrzucona, a nie zapisana na niej. Rekord otwiera się
-wtedy z odrzuconą wartością zachowaną obok **Reload and reapply**. Zaznaczenie wierszy
+wtedy z odrzuconą wartością zachowaną obok **Reload and reapply** i zostaje odczytany
+ponownie: pole mówi, co zawiera teraz, kto ostatnio zmienił rekord i kiedy, a tytuł
+panelu się odświeża. Zaznaczenie wierszy
 udostępnia **Delete** dla wszystkich naraz, każdy względem własnej rewizji: rekord,
 który ktoś w międzyczasie zmienił, zostaje, a konsola mówi, ile takich było. Panel
 rekordu usuwa pojedynczy rekord w ten sam sposób.
@@ -354,6 +369,8 @@ typy, na które dają się przekonwertować jej wartości.
 W **Columns** przełącznik **Required** sprawia, że kolumna wymaga wartości, a
 zarchiwizowana kolumna trafia do **Archived columns**, skąd **Restore** przywraca ją
 razem z jej wartościami.
+
+Odczyt porównania zachowuje niezapisane edycje innych pól i ich pierwotną rewizję. Kolejny konflikt odczytuje nowe porównanie; odpowiedź dla zamkniętego rekordu nie zamknie innego rekordu. Długie wartości mają skrócony podgląd.
 
 ### Import i eksport { #import-and-export }
 
@@ -427,6 +444,13 @@ nowy zapis: wykonuje się ponownie, zamiast zwrócić pierwszą odpowiedź. Pona
 oknie, a dłuższą przerwę traktuj jak nowe żądanie. Czas życia jest egzekwowany w chwili użycia
 klucza, więc obowiązuje co do godziny; codzienny sweep tylko odzyskuje miejsce po receipts,
 których nikt nie ponowił.
+
+Usunięcie grupy, projektu albo konta usuwa potwierdzenia zapisów powiązane z tabelą
+jej tablicy zadań, w tym wyniki operacji zbiorczych. Podczas aktualizacji starsze wyniki
+operacji zbiorczych bez id tabeli są kasowane, bo nie można odtworzyć ich powiązania
+z tabelą. Ich klucze pozostają do wygaśnięcia: ponowienie tego samego żądania zwraca
+`IDEMPOTENCY_RESULT_PURGED` (409) i niczego nie zapisuje. Sprawdź tabelę przed
+rozpoczęciem nowego zapisu. Pozostałe rodzaje potwierdzeń pozostają bez zmian.
 
 ## Listowanie i filtrowanie { #listing-and-filtering }
 
@@ -748,6 +772,7 @@ według czego klient się rozgałęzia.
 | `INVALID_QUERY` | 422 | Filtr lub sortowanie, na które tabela nie odpowie |
 | `INVALID_SCHEMA` | 422 | Niespójna zmiana schematu |
 | `IDEMPOTENCY_KEY_REUSED` | 422 | Klucz został użyty dla innego żądania |
+| `IDEMPOTENCY_RESULT_PURGED` | 409 | Wynik starszej operacji zbiorczej usunięto podczas aktualizacji; klucz blokuje kolejny zapis do wygaśnięcia |
 | `QUOTA_EXCEEDED` | 402 | Zapis przekroczyłby limit przechowywania; `details` nazywa limit (`tables`, `records`, `record_bytes`, `storage_bytes`) i jego pułap |
 | `RATE_LIMIT_EXCEEDED` | 429 | Za dużo zapisów do tabel w ostatniej minucie; zobacz `Retry-After` |
 | `VALIDATION_ERROR` | 422 | Samo żądanie jest wadliwe: zły typ, nieznane pole, limit albo NUL, znak nowego wiersza lub osamotniony surogat w id, kluczu lub nazwie. Trasa odrzuca je, zanim uruchomi się serwis |
@@ -812,9 +837,11 @@ Przy tworzeniu pustej tabeli wymagane kolumny nie potrzebują wartości domyśln
 
 ## Trwałe zadania {#durable-tasks}
 
+**Agent** również może mieć współdzieloną tablicę zadań. Dostęp wynika z aktualnych uprawnień do agenta; edycja zadań wymaga dodatkowo edycji tabel oraz możliwości uruchamiania tego agenta. Właściciel lub edytor agenta może zarządzać tablicą. Przypisanie agenta do prywatnego zadania nie udostępnia tego zadania. W AgenticOS MCP `create_task` i `ensure_task_board` używają istniejącej tabeli zakresu lub tworzą ją przy pierwszym użyciu. Wybieraj zakres prywatny dla spraw osobistych, projekt dla wyników projektu, a agenta dla jawnie wskazanej kolejki agenta. Przy niejasnym zakresie dopytaj; nie udostępniaj prywatnych treści domyślnie.
+
 Zadanie projektowe można utworzyć z prywatnej rozmowy spoza projektu. Pozostaw rozmowę roboczą niewskazaną: zadanie otworzy własną rozmowę w projekcie, bez podpinania prywatnego transkryptu. Jawne wskazanie rozmowy z innego projektu zostanie odrzucone.
 
-**Praca w tle** (`/work`) pokazuje trwałe zobowiązania obok uruchomionych rozmów w tle. Zadanie jest rekordem Virtual Table z odnośnikiem do rozmowy roboczej i jedną sprawą w Inbox, gdy potrzebna jest reakcja. Tabela, Kanban i API używają tej samej rewizji; nie ma osobnej synchronizowanej listy TODO.
+Zadaniami zarządzasz w **Tables** (`/tables`). **Praca w tle** (`/work`) pokazuje uruchomione rozmowy w tle i ich historię. Zadanie jest rekordem Virtual Table z odnośnikiem do rozmowy roboczej i jedną sprawą w Inbox, gdy potrzebna jest reakcja. Tabela, Kanban i API używają tej samej rewizji; nie ma osobnej synchronizowanej listy TODO.
 
 Tabela zadań powstaje przy pierwszym użyciu dla **osoby**, **projektu**, **grupy** lub **organizacji** i jest używana ponownie. Projects i Groups mają akcję **Zadania**, a Tables otwiera prywatną tabelę. Instalacja ani nowe członkostwo nie tworzą pustych tabel. Pierwsze utworzenie wymaga `tables:create`. Dostęp projektowy i członkostwo grupowe są sprawdzane na bieżąco; prywatne zadania są ukryte również przed innym właścicielem organizacji. Dotyczy to także zwykłego API tabel, odnośników i zapisanych widoków. Istniejące własne tabele zadań i presety śledzenia projektu nie są automatycznie konwertowane.
 
@@ -827,7 +854,7 @@ AgenticOS MCP udostępnia `list_task_boards`, `ensure_task_board`, `list_tasks`,
 
 Członkostwo w grupie pozwala czytać jej tablicę zadań; zapis wymaga dodatkowo uprawnienia do edycji tabel lub jawnego grantu edycji. Gdy osoba przypisana do przypomnienia traci dostęp, zadanie zostaje zablokowane, a twórca otrzymuje sprawę w Inbox do przekazania pracy. Nowe rozmowy robocze zadań projektowych należą do tego projektu. Limit tabel może zablokować opcjonalne zadanie z wyniku routine, ale rozmowa robocza, sprawa Inbox i powiadomienie nadal są dostarczane.
 
-Zapis na projektowej tablicy zadań wymaga dostępu do projektu oraz uprawnienia edycji tabel lub jawnego grantu Edit do tabeli. Usunięcie projektu, grupy albo prywatnego właściciela anuluje zadania w kolejce, zamyka ich sprawy i usuwa zarządzaną tabelę tego zakresu wraz z rekordami, historią i mediami w tej samej transakcji. Pozostałe zakresy pozostają nienaruszone. Panel zadań wraca do dostępnej prywatnej tablicy, gdy wybrana tablica znika.
+Zapis na projektowej tablicy zadań wymaga dostępu do projektu oraz uprawnienia edycji tabel lub jawnego grantu Edit do tabeli. Usunięcie projektu, grupy albo prywatnego właściciela anuluje zadania w kolejce, zamyka ich sprawy i usuwa zarządzaną tabelę tego zakresu wraz z rekordami, historią i mediami w tej samej transakcji. Pozostałe zakresy pozostają nienaruszone.
 
 Zmiana samej tablicy zadań jest węższa niż praca na niej. Zmiana nazwy tablicy, jej
 kolumn albo domyślnego widoku oraz jej archiwizacja albo przywrócenie wymagają
@@ -849,3 +876,8 @@ Notatki zadania są dokumentami rich text w Markdown, z edytorem i podglądem ja
 Nie można usunąć agenta, dopóki zarządzane zadanie zależy od jego zaplanowanego wykonania. Najpierw przepisz, ukończ lub anuluj te zadania; usunięcie agenta nie może po cichu porzucać ich wykonania.
 
 Przywrócenie zarchiwizowanej zarządzanej tablicy zadań ponownie kolejkuje zaplanowane przypomnienia dla osób, także te, których termin minął podczas archiwizacji. Dostarczenie nadal sprawdza aktualny dostęp pierwotnego autora i odbiorcy; przywrócenie tablicy nie upoważnia do nowej pracy agenta. Zarchiwizowana tablica nie przyjmuje też zapisów od swoich zadań: sprawa rozstrzygnięta w tym czasie w Inbox zostawia zadanie bez zmian, a przywrócenie tablicy przenosi je wtedy do stanu zrobione lub anulowane. Ponowne otwarcie sprawy, której zadanie leży na zarchiwizowanej tablicy, jest odrzucane kodem `TABLE_ARCHIVED`.
+
+
+Użytkownik z uprawnieniem tworzenia tabel dostaje brakującą prywatną tabelę zadań przy pierwszym wejściu do **Tables**. Istniejąca tabela jest używana ponownie. Nie powstają wtedy zaległości organizacji ani agenta. W projekcie przycisk **Task table** tworzy lub otwiera tabelę. Bez uprawnienia tworzenia dostępne tabele pozostają widoczne, bez próby niedozwolonego zapisu.
+
+Inbox pokazuje zadanie, gdy człowiek ma coś zrobić albo sprawdzić wynik; nie jest drugim magazynem zadań. Monitory, triggery pocztowe i rutyny mogą tworzyć sprawy Inbox bez rekordów zadań. Task zapisujemy dla konkretnego zobowiązania wymagającego dalszej pracy, a nie każdego zdarzenia. Uzgodnioną konwencję tabeli i sprawdzony identyfikator można zapamiętać; aktualny stan zadania pozostaje w tabeli.

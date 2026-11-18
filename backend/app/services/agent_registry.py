@@ -56,7 +56,7 @@ from app.agents.capabilities.sandbox import SandboxConfig
 from app.agents.capabilities.skills import SkillBody
 from app.agents.capabilities.subagents import SubagentsConfig
 from app.agents.mcp import PLATFORM_MCP_PREFIX, prefix_collisions
-from app.agents.model_resolver import lacks_key
+from app.agents.model_resolver import is_decision_api, lacks_key
 from app.agents.spec import (
     SPEC_VERSION,
     AgentSpec,
@@ -85,6 +85,7 @@ from app.core.exceptions import (
     AlreadyExistsError,
     AuthorizationError,
     BadRequestError,
+    ConflictError,
     NotFoundError,
 )
 from app.core.field_errors import field_problems, refused_field
@@ -119,11 +120,13 @@ from app.repositories import (
     skill_version_repo,
     user_repo,
 )
+from app.repositories import group as group_repo
 from app.repositories import workflow as workflow_repo
 from app.schemas.agent import (
     MAX_CATEGORIES,
     MAX_TAGS,
     AgentCeiling,
+    AgentDraftRevision,
     AgentRead,
     AgentTemplateCatalog,
     AgentTemplateRead,
@@ -136,6 +139,7 @@ from app.schemas.agent import (
     PublishedModel,
     TemplateIndustryRead,
     TemplateInstallResult,
+    agent_draft_revision,
     normalize_labels_query,
 )
 from app.schemas.context import ContextFileCreate
@@ -182,6 +186,13 @@ from app.services.model_profile import (
     usable_for_agents,
 )
 from app.services.notifications import NotificationService
+from app.services.personal_model_key import personal_profile_problem
+from app.services.personal_model_policy import (
+    PERSONAL_MODEL_LIMITS,
+    personal_delegate_problem,
+    personal_model_problems,
+    require_organization_model,
+)
 from app.services.resource_usage import groups_sharing
 from app.services.sandbox_connection import SandboxConnectionService
 from app.services.sandbox_runtimes import DESKTOP_RUNTIME
@@ -1522,6 +1533,9 @@ class AgentRegistryService:
         local_workspaces = await agent_repo.published_local_workspaces(
             self.db, version_ids=version_ids
         )
+        personal_model_keys = await agent_repo.published_personal_model_keys(
+            self.db, version_ids=version_ids
+        )
         profile_ids = await agent_repo.published_model_profiles(self.db, version_ids=version_ids)
         profiles = (
             await credential_repo.get_profiles_by_ids(
@@ -1614,6 +1628,7 @@ class AgentRegistryService:
                     else None
                 ),
                 local_workspace=agent.current_version_id in local_workspaces,
+                personal_model_key=agent.current_version_id in personal_model_keys,
                 published_model=(
                     published_models.get(agent.current_version_id)
                     if agent.current_version_id
@@ -1748,17 +1763,24 @@ class AgentRegistryService:
         # it was seeded would otherwise be bound, reported as installed, and then
         # refused at publish as a skill that does not exist - the check publish
         # makes, made here first.
-        return [
-            row
-            for name in wanted
-            if (
-                row := await skill_repo.get_by_name(
-                    self.db, name, organization_id=ctx.organization_id
+        skills: list[Skill] = []
+        keys_by_name = {name: key for key, name in bundled.items()}
+        for name in wanted:
+            row = await skill_repo.get_by_name(self.db, name, organization_id=ctx.organization_id)
+            if row is None or not await resolve_access(
+                self.db, ctx, row, Perm.SKILLS_VIEW, resource_type=SKILL
+            ):
+                continue
+            entry = skill_library.get(keys_by_name[name]) if name in keys_by_name else None
+            if entry is not None and not await SkillService(self.db).trusted_template_copy(
+                row, entry
+            ):
+                raise BadRequestError(
+                    message="A skill has the same name as a bundled skill but no trusted installation receipt. An administrator must review or refresh it before using this template.",
+                    details={"skill_id": str(row.id)},
                 )
-            )
-            is not None
-            and await resolve_access(self.db, ctx, row, Perm.SKILLS_VIEW, resource_type=SKILL)
-        ]
+            skills.append(row)
+        return skills
 
     async def _from_the_starter(self, ctx: AuthContext, spec: AgentSpec) -> AgentSpec:
         """A new agent made what the starter agent is, for the console's New agent (#2301).
@@ -2130,7 +2152,21 @@ class AgentRegistryService:
                 return candidate
         return _copy_name(base, _MAX_COPIES)
 
-    async def save_draft(self, ctx: AuthContext, agent_id: UUID, spec: AgentSpec) -> Agent:
+    async def draft_revision(self, ctx: AuthContext, agent_id: UUID) -> AgentDraftRevision:
+        """Expose a base token without requiring read authority or returning draft content."""
+        agent = await self.get(ctx, agent_id, perm=Perm.AGENTS_EDIT)
+        return AgentDraftRevision(
+            draft_revision=agent_draft_revision(AgentSpec.model_validate(agent.draft_spec))
+        )
+
+    async def save_draft(
+        self,
+        ctx: AuthContext,
+        agent_id: UUID,
+        spec: AgentSpec,
+        *,
+        expected_revision: str | None = None,
+    ) -> Agent:
         """Store an edited spec without making it live.
 
         Deliberately does not validate references: half-finished configuration
@@ -2142,8 +2178,19 @@ class AgentRegistryService:
 
         Raises:
             BadRequestError: A system agent's spec holds what it may never use.
+            ConflictError: The client's base draft changed. Nothing is written.
+
+        External draft replacements require expected_revision at the route.
+        Server-side commands already owning the current draft may omit it.
         """
         agent = await self.get(ctx, agent_id, perm=Perm.AGENTS_EDIT, for_update=True)
+        if expected_revision is not None and expected_revision != agent_draft_revision(
+            AgentSpec.model_validate(agent.draft_spec)
+        ):
+            raise ConflictError(
+                message="The draft changed elsewhere. Reload the latest draft before saving.",
+                details={"reason": "draft_changed"},
+            )
         spec = _without_unselectable(spec)
         await skill_repo.hold(self.db, bound_skill_ids(spec), organization_id=ctx.organization_id)
         if agent.kind != AgentKind.AGENT.value:
@@ -2158,7 +2205,9 @@ class AgentRegistryService:
             },
         )
 
-    async def import_spec(self, ctx: AuthContext, agent_id: UUID, text: str) -> Agent:
+    async def import_spec(
+        self, ctx: AuthContext, agent_id: UUID, text: str, *, expected_revision: str | None = None
+    ) -> Agent:
         """Replace the draft with a spec exported into a client's own repository.
 
         The parse happens before the agent is read. What it refuses depends only
@@ -2170,10 +2219,17 @@ class AgentRegistryService:
             BadRequestError: If the document does not parse, is not a mapping, or
                 breaks a field rule.
         """
-        return await self.save_draft(ctx, agent_id, _parse_spec_yaml(text))
+        return await self.save_draft(
+            ctx, agent_id, _parse_spec_yaml(text), expected_revision=expected_revision
+        )
 
     async def validate_spec(
-        self, ctx: AuthContext, spec: AgentSpec, *, agent_id: UUID | None = None
+        self,
+        ctx: AuthContext,
+        spec: AgentSpec,
+        *,
+        agent_id: UUID | None = None,
+        decision_model: bool = False,
     ) -> None:
         """Check every reference a spec makes, and report all problems at once.
 
@@ -2213,6 +2269,37 @@ class AgentRegistryService:
         """
         await skill_repo.hold(self.db, bound_skill_ids(spec), organization_id=ctx.organization_id)
         problems = _SpecProblems()
+        if spec.model_credential_mode == "personal":
+            problems.add(personal_model_problems(spec))
+            if agent_id is not None:
+                from app.repositories import agent_embed_repo
+
+                exposures = await agent_exposure_repo.list_for_agent(
+                    self.db, agent_id=agent_id, organization_id=ctx.organization_id
+                )
+                embeds = await agent_embed_repo.list_for_agent(
+                    self.db, agent_id=agent_id, organization_id=ctx.organization_id
+                )
+                triggers = await agent_trigger_repo.list_for_agent(
+                    self.db, agent_id=agent_id, organization_id=ctx.organization_id
+                )
+                if any(row.is_active for row in [*exposures, *embeds, *triggers]):
+                    problems.merge(_SpecProblems.at("model_credential_mode", PERSONAL_MODEL_LIMITS))
+        for kind in ("budget", "approvals", "usage"):
+            alert = getattr(spec.notifications, kind)
+            if not alert.group_ids:
+                continue
+            names = await group_repo.get_names(
+                self.db, organization_id=ctx.organization_id, group_ids=alert.group_ids
+            )
+            for index, group_id in enumerate(alert.group_ids):
+                if group_id not in names:
+                    problems.merge(
+                        _SpecProblems.at(
+                            f"notifications.{kind}.group_ids.{index}",
+                            "This group is not in the organization",
+                        )
+                    )
 
         for binding in spec.capabilities:
             problems.merge(await self._binding_problems(ctx, binding))
@@ -2227,7 +2314,14 @@ class AgentRegistryService:
         if spec.model_profile_id is None:
             problems.merge(_SpecProblems.at("model_profile_id", NO_MODEL))
         else:
-            problems.add(await self.model_profile_problems(ctx, spec.model_profile_id))
+            problems.add(
+                await self.model_profile_problems(
+                    ctx,
+                    spec.model_profile_id,
+                    decision=decision_model,
+                    personal=spec.model_credential_mode == "personal",
+                )
+            )
         # And each reviewer's, refused here rather than when a run first reaches
         # its cadence and finds nothing to review with.
         for reviewer in spec.reviewers:
@@ -2257,6 +2351,12 @@ class AgentRegistryService:
             if agent_id is None
             else await agent_repo.get(self.db, agent_id, organization_id=ctx.organization_id)
         )
+        if (
+            owner is not None
+            and spec.model_credential_mode == "personal"
+            and (owner.kind != AgentKind.AGENT.value or owner.a2a_enabled)
+        ):
+            problems.merge(_SpecProblems.at("model_credential_mode", PERSONAL_MODEL_LIMITS))
         if owner is not None and owner.kind != AgentKind.AGENT.value:
             for part in [
                 *unusable_parts(spec),
@@ -2350,6 +2450,11 @@ class AgentRegistryService:
         thought of as an agent.
         """
         problems = _SpecProblems()
+        inherited_speech = (
+            binding.enabled
+            and binding.id == "text_to_speech"
+            and binding.config.get("use_organization_defaults") is True
+        )
         try:
             definition = get_capability(binding.id)
         except BadRequestError:
@@ -2365,6 +2470,11 @@ class AgentRegistryService:
                 ]
             )
         try:
+            from app.services.text_to_speech_settings import TextToSpeechSettingsService
+
+            binding = await TextToSpeechSettingsService(self.db).resolve_binding(
+                ctx.organization_id, binding
+            )
             config = definition.validate_config(binding.config)
         except BadRequestError as exc:
             problems.merge(_config_problems(binding.id, exc))
@@ -2401,7 +2511,8 @@ class AgentRegistryService:
                 ]
             )
         problems.add(_tool_override_problems(binding, definition))
-        problems.add(await self._secret_problems(ctx, binding, definition))
+        if not inherited_speech:
+            problems.add(await self._secret_problems(ctx, binding, definition))
         return problems
 
     async def _mirage_problems(self, ctx: AuthContext, config: MirageConfig) -> list[str]:
@@ -2463,7 +2574,9 @@ class AgentRegistryService:
                     )
         return problems
 
-    async def model_profile_problems(self, ctx: AuthContext, profile_id: UUID) -> list[str]:
+    async def model_profile_problems(
+        self, ctx: AuthContext, profile_id: UUID, *, decision: bool = False, personal: bool = False
+    ) -> list[str]:
         """Whether a named model profile is still this organization's to run on.
 
         And whether it is a model anything can run *on*: a profile can name a
@@ -2480,6 +2593,11 @@ class AgentRegistryService:
         )
         if profile is None:
             return ["The selected model profile no longer exists"]
+        if personal:
+            problem = personal_profile_problem(profile)
+            return [] if problem is None else [problem]
+        if is_decision_api(profile.provider, profile.api) and not decision:
+            return ["The selected profile serves decisions, not conversation. Pick a chat model."]
         outputs = model_outputs(profile.provider, profile.model, base_url=profile.base_url)
         if not outputs.chat:
             return [not_chat_refusal(profile.label, profile.model, outputs)]
@@ -2498,12 +2616,19 @@ class AgentRegistryService:
             ]
         problems: list[str] = []
         fallback_ids = [UUID(pid) for pid in profile.fallback_profile_ids[:MAX_FALLBACK_DEPTH]]
+        if is_decision_api(profile.provider, profile.api) and fallback_ids:
+            return ["Decision models require an explicit model without automatic fallbacks"]
         fallbacks = await credential_repo.get_profiles_by_ids(
             self.db, fallback_ids, organization_id=ctx.organization_id
         )
         # In the chain's order. One that no longer exists is skipped at run
         # time, not refused here.
         for fallback in (fallbacks[pid] for pid in fallback_ids if pid in fallbacks):
+            if is_decision_api(fallback.provider, fallback.api):
+                problems.append(
+                    f"Fallback model '{fallback.label}' serves decisions, not conversation"
+                )
+                continue
             found = model_outputs(fallback.provider, fallback.model, base_url=fallback.base_url)
             if not found.chat:
                 problems.append(
@@ -2547,7 +2672,10 @@ class AgentRegistryService:
         agent at no sign-in, because a run under it may spend none
         (`sign_in_person`).
         """
-        refs = [*_model_refs(spec), *await self._pinned_model_refs(ctx, spec)]
+        refs = [
+            *(_model_refs(spec) if spec.model_credential_mode != "personal" else []),
+            *await self._pinned_model_refs(ctx, spec),
+        ]
         if not refs:
             return _SpecProblems()
         org = ctx.organization_id
@@ -2612,6 +2740,60 @@ class AgentRegistryService:
                     )
         return problems
 
+    async def require_organization_spec(self, ctx: AuthContext, spec: AgentSpec) -> None:
+        """Non-interactive surfaces cannot reach any personal model in a pinned tree."""
+        require_organization_model(spec)
+        if problems := await self.personal_delegation_problems(ctx, spec):
+            raise BadRequestError(
+                message="Personal model delegates require a personal web chat",
+                details={"problems": problems},
+                code="PERSONAL_MODEL_SURFACE",
+            )
+
+    async def personal_delegation_problems(self, ctx: AuthContext, spec: AgentSpec) -> list[str]:
+        """Refuse personal spending outside the root chat's explicitly chosen model.
+
+        Follow frozen pins only while the runtime can reach them. The same check
+        protects publish, promotion and admission of older published versions.
+        """
+        problems: list[str] = []
+        stack = [(spec, 0)]
+        visited: set[tuple[UUID, int]] = set()
+        while stack:
+            parent, left = stack.pop()
+            config = _subagents_config(parent)
+            if config is None:
+                continue
+            for specialist in config.inline:
+                inline = AgentSpec(
+                    name=specialist.name,
+                    model_profile_id=specialist.model_profile_id or parent.model_profile_id,
+                    model_credential_mode=parent.model_credential_mode,
+                )
+                if problem := personal_delegate_problem(spec, inline):
+                    problems.append(f"Specialist '{specialist.name}': {problem}")
+            for ref in parent.subagents:
+                node = (ref.agent_version_id, left)
+                if node in visited:
+                    continue
+                if len(visited) >= _MAX_DELEGATION_NODES:
+                    return [
+                        *problems,
+                        "Too many pinned delegates to validate personal model consent",
+                    ]
+                visited.add(node)
+                pinned = await self._resolve_pin(ctx, ref)
+                if pinned is None:
+                    continue
+                if problem := personal_delegate_problem(spec, pinned.spec):
+                    problems.append(f"Delegate '{pinned.spec.name}': {problem}")
+                remaining = (
+                    config.max_depth - 1 if parent is spec else min(left - 1, config.max_depth - 1)
+                )
+                if remaining > 0:
+                    stack.append((pinned.spec, remaining))
+        return problems
+
     async def _pinned_model_refs(self, ctx: AuthContext, spec: AgentSpec) -> list[_ModelRef]:
         """The models a run of this spec reaches through the delegates it pins (#2546).
 
@@ -2652,14 +2834,18 @@ class AgentRegistryService:
                 continue
             visited.add(node)
             delegate = pinned.spec
-            reached: list[UUID | None] = [
-                ref.profile_id for ref in _model_refs(delegate, include_inline=False)
-            ]
+            personal = delegate.model_credential_mode == "personal"
+            reached: list[UUID | None] = (
+                []
+                if personal
+                else [ref.profile_id for ref in _model_refs(delegate, include_inline=False)]
+            )
             nested = _subagents_config(delegate)
             if nested is not None and left > 0:
                 below = min(left - 1, nested.max_depth - 1)
-                reached.extend(specialist.model_profile_id for specialist in nested.inline)
-                if nested.allow_dynamic:
+                if not personal:
+                    reached.extend(specialist.model_profile_id for specialist in nested.inline)
+                if nested.allow_dynamic and not personal:
                     reached.extend(models_a_run_reaches(delegate))
                 for ref in delegate.subagents:
                     deeper = await self._resolve_pin(ctx, ref)
@@ -2684,7 +2870,18 @@ class AgentRegistryService:
         Raises:
             BadRequestError: With a `problems` list, one per model on such a sign-in.
         """
-        problems = await self._sign_in_problems(ctx, AgentSpec.model_validate(version.spec))
+        spec = AgentSpec.model_validate(version.spec)
+        if spec.model_credential_mode == "personal":
+            await self.get(ctx, version.agent_id, perm=Perm.AGENTS_PUBLISH, for_update=True)
+            await self.validate_spec(ctx, spec, agent_id=version.agent_id)
+            return
+        if personal_problems := await self.personal_delegation_problems(ctx, spec):
+            raise BadRequestError(
+                message="This version delegates to a personal model without the chat owner's consent",
+                details={"problems": personal_problems, "version_id": version.id},
+                code="PERSONAL_MODEL_CONSENT",
+            )
+        problems = await self._sign_in_problems(ctx, spec)
         if problems.messages:
             raise BadRequestError(
                 message=(
@@ -3236,15 +3433,24 @@ class AgentRegistryService:
         ]
         for specialist in config.inline:
             names.append(specialist.name)
-            problems.merge(await self._specialist_problems(ctx, specialist, shared=shared))
+            problems.merge(
+                await self._specialist_problems(
+                    ctx,
+                    specialist,
+                    shared=shared,
+                    personal=spec.model_credential_mode == "personal",
+                )
+            )
         problems.add(_share_problems(spec, config), fix=STOP_SHARING_UNBOUND)
 
+        problems.add(await self.personal_delegation_problems(ctx, spec))
         pins = await self._resolve_pins(ctx, spec.subagents)
         problems.add(pins.problems)
         # A pinned version passed this check at its own publish, on its own
         # bindings; what it is lent here can still leave it a desktop and no
         # desktop sandbox, and the fix is in this agent's share list.
         for delegate in pins.delegates:
+            problems.add(personal_model_problems(_inheriting(delegate.spec, shared)))
             if await _computer_use_sandbox_problems(
                 self.db, ctx, _inheriting(delegate.spec, shared)
             ):
@@ -3315,7 +3521,12 @@ class AgentRegistryService:
         return problems, [found[ref_id].slug for ref_id in ids if ref_id in found]
 
     async def _specialist_problems(
-        self, ctx: AuthContext, specialist: SpecialistSpec, *, shared: list[CapabilityBindingSpec]
+        self,
+        ctx: AuthContext,
+        specialist: SpecialistSpec,
+        *,
+        shared: list[CapabilityBindingSpec],
+        personal: bool = False,
     ) -> _SpecProblems:
         """Everything wrong with a specialist defined inside this agent.
 
@@ -3345,10 +3556,19 @@ class AgentRegistryService:
         # already checked - so only a profile it *did* name is a reference that
         # can be broken, or borrowed from another organization.
         if specialist.model_profile_id is not None:
-            problems.add(await self.model_profile_problems(ctx, specialist.model_profile_id))
+            problems.add(
+                await self.model_profile_problems(
+                    ctx, specialist.model_profile_id, personal=personal
+                )
+            )
         # Its instructions are filled the way the parent's are, so a typo in a
         # variable is refused here too rather than sent to the model as braces.
         as_agent = specialist.to_agent_spec(fallback_model_profile_id=None)
+        if personal:
+            as_agent = _inheriting(as_agent, shared).model_copy(
+                update={"model_credential_mode": "personal"}
+            )
+            problems.add(personal_model_problems(as_agent))
         problems.merge(_variable_problems(as_agent))
         problems.add(
             await _computer_use_sandbox_problems(self.db, ctx, _inheriting(as_agent, shared))
@@ -3962,9 +4182,17 @@ class AgentRegistryService:
         it. So it takes `AGENTS_PUBLISH`, grant-aware through `self.get`, and an
         agent with no published version cannot be served - it has nothing to run.
         """
-        agent = await self.get(ctx, agent_id, perm=Perm.AGENTS_PUBLISH)
+        agent = await self.get(ctx, agent_id, perm=Perm.AGENTS_PUBLISH, for_update=True)
         if enabled:
             refuse_system_agent(agent, action="serving over A2A")
+            await self.require_organization_spec(ctx, AgentSpec.model_validate(agent.draft_spec))
+            if agent.current_version_id is not None:
+                version = await agent_repo.get_version(
+                    self.db, agent.current_version_id, organization_id=ctx.organization_id
+                )
+                if version is None:
+                    raise NotFoundError(message="Agent version not found")
+                await self.require_organization_spec(ctx, AgentSpec.model_validate(version.spec))
         if enabled and agent.current_version_id is None:
             raise BadRequestError(
                 message="Publish the agent before serving it over A2A",
@@ -4035,6 +4263,9 @@ class AgentRegistryService:
 
         await agent_repo.fence_deletion(self.db, agent.id, organization_id=ctx.organization_id)
         await TaskService(self.db).require_no_agent_execution(ctx, agent.id)
+        await TaskService(self.db).purge_scope(
+            "agent", agent.id, organization_id=ctx.organization_id
+        )
         await AgentTriggerService(self.db).deregister_agent_webhooks(ctx, agent.id)
         # The grant table is generic and has no foreign key to the agent, so
         # nothing cascades on its behalf.
@@ -4613,6 +4844,7 @@ class AgentRegistryService:
         candidate: Candidate,
         *,
         environment_id: UUID | None = None,
+        decision_model: bool = False,
     ) -> tuple[Agent, AgentSpec, UUID | None]:
         """The spec an eval runs in place of the one an environment pins.
 
@@ -4665,7 +4897,9 @@ class AgentRegistryService:
                     ],
                 }
             )
-            await self.validate_spec(ctx, validation, agent_id=agent.id)
+            await self.validate_spec(
+                ctx, validation, agent_id=agent.id, decision_model=decision_model
+            )
             if virtual_contexts:
                 stored_contexts = await context_repo.get_many(
                     self.db, validation.context_ids, organization_id=ctx.organization_id

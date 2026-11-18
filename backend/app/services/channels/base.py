@@ -13,6 +13,11 @@ from app.agents.capabilities.channel_tools import (
     ChannelPost,
     ChannelSummary,
 )
+from app.agents.capabilities.channel_tools._directory import (
+    ChannelListPage,
+    HistoryPage,
+    HistoryQuery,
+)
 from app.core.memory_keys import room_owner_key
 from app.services.channels import connection_state
 from app.services.channels.exceptions import ChannelNotConfigured
@@ -81,6 +86,30 @@ DEFAULT_USAGE_REPORTING: dict[str, Any] = {
     "mode": "near_limit",
     "near_limit_percent": 80,
     "every_n": 10,
+}
+
+
+REACTION_EMOJI: dict[str, str] = {
+    "thumbsup": "👍",
+    "+1": "👍",
+    "thumbsdown": "👎",
+    "-1": "👎",
+    "heart": "❤",
+    "laughing": "😆",
+    "joy": "😂",
+    "smile": "😄",
+    "tada": "🎉",
+    "fire": "🔥",
+    "eyes": "👀",
+    "thinking_face": "🤔",
+    "clap": "👏",
+    "100": "💯",
+    "pray": "🙏",
+    "ok_hand": "👌",
+    "rocket": "🚀",
+    "writing_hand": "✍",
+    "zap": "⚡",
+    "hourglass": "⏳",
 }
 
 
@@ -281,6 +310,12 @@ class IncomingMessage:
     discord_roles_checked_for: tuple[str, str, str] | None = None
     """Trusted preflight metadata: bot, linked user and identity; never read from raw payloads."""
 
+    edit_admitted: bool = False
+    """A durable queue receipt authorized this edit while its ignored-original receipt existed."""
+
+    discord_interaction: tuple[str, str] | None = field(default=None, repr=False)
+    """Application and token for a deferred response, encrypted before persistence."""
+
 
 @dataclass
 class OutgoingMessage:
@@ -315,6 +350,8 @@ CHANNEL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Say hello"),
     ("agents", "Who answers here, and what it does"),
     ("new", "Start a new conversation"),
+    ("status", "Show the state of your latest task in this thread"),
+    ("stop", "Stop your active task before its next model request"),
     ("link", "Connect your chat account to your account"),
     ("unlink", "Disconnect your account"),
     ("help", "Show the commands"),
@@ -517,7 +554,7 @@ class ChannelAdapter(ABC):
         return incoming.addressed
 
     @abstractmethod
-    async def send_message(self, bot_token: str, msg: OutgoingMessage) -> None:
+    async def send_message(self, bot_token: str, msg: OutgoingMessage) -> str | None:
         """Send a reply back to the platform."""
 
     async def send_notification(
@@ -580,6 +617,18 @@ class ChannelAdapter(ABC):
         self, bot_token: str, press: IncomingPress, run_id: str, *, bot_id: str
     ) -> None:
         """Ask what was wrong with an answer somebody just rated down, in a form."""
+
+    async def react_to_message(
+        self,
+        bot_token: str,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        api_base_url: str | None,
+    ) -> None:
+        """Apply one real reaction after verifying the target is in the selected channel."""
+        raise ChannelDirectoryUnsupported("This platform does not support agent-chosen reactions")
 
     async def acknowledge_message(  # noqa: B027 - a no-op where the platform has no reactions
         self, bot_token: str, incoming: IncomingMessage, reaction: str
@@ -672,6 +721,39 @@ class ChannelAdapter(ABC):
     # Mattermost is self-hosted, so there is no address to assume. Slack and
     # Telegram ignore it.
 
+    async def joined_channels(
+        self,
+        bot_token: str,
+        *,
+        api_base_url: str | None,
+        query: str,
+        limit: int,
+        cursor: str | None,
+    ) -> ChannelListPage:
+        """List only joined destinations; unsupported platforms must say so."""
+        raise ChannelDirectoryUnsupported("This platform cannot enumerate a bot's joined channels")
+
+    async def require_joined_channel(
+        self,
+        bot_token: str,
+        channel_id: str,
+        *,
+        api_base_url: str | None,
+    ) -> None:
+        """Verify current bot membership before an explicit cross-channel operation."""
+        raise ChannelDirectoryUnsupported("This platform cannot verify cross-channel access")
+
+    async def require_channel_thread(
+        self,
+        bot_token: str,
+        channel_id: str,
+        thread_id: str,
+        *,
+        api_base_url: str | None,
+    ) -> None:
+        """Verify a selected root belongs to the selected channel."""
+        raise ChannelDirectoryUnsupported("This platform cannot verify the selected thread")
+
     async def channel_details(
         self, bot_token: str, channel_id: str, *, api_base_url: str | None
     ) -> ChannelDetails:
@@ -734,6 +816,22 @@ class ChannelAdapter(ABC):
             ChannelDirectoryUnsupported: If this platform has no channel search.
         """
         raise ChannelDirectoryUnsupported(f"{self.platform} has no channel search for a bot.")
+
+    async def channel_history_page(
+        self,
+        bot_token: str,
+        channel_id: str,
+        *,
+        api_base_url: str | None,
+        limit: int,
+        thread_id: str | None,
+        filters: HistoryQuery,
+    ) -> HistoryPage:
+        """Read a bounded, filtered page where the platform supports native paging."""
+        raise ChannelDirectoryUnsupported(
+            f"{self.platform} does not support filtered, paginated history here. "
+            "Read recent history without filters instead."
+        )
 
     async def channel_history(
         self,
@@ -925,3 +1023,11 @@ async def supervise_stream(
         else:
             wait = delay = RECONNECT_FLOOR_SECONDS
         await asyncio.sleep(wait)
+
+
+def is_run_control(text: str) -> bool:
+    """Recognize native command suffixes without treating ordinary prose as control."""
+    stripped = text.strip().casefold()
+    if stripped in {"status", "stop"}:
+        return True
+    return stripped.partition(" ")[0].partition("@")[0] in {"/status", "/stop"}

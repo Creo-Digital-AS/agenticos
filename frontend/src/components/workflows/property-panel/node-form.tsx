@@ -21,6 +21,7 @@ import { CurlImport } from "@/components/workflows/property-panel/curl-import";
 import type { CodeLanguage } from "@/lib/workflows/code-editing";
 import { useWorkflowEditorStore } from "@/stores/workflow-editor-store";
 import { SchemaForm } from "@/components/agents/schema-form";
+import { GroupPicker } from "@/components/orgs/group-picker";
 import { MemberPicker } from "@/components/orgs/member-picker";
 import {
   AgentVersionPicker,
@@ -73,6 +74,9 @@ import {
   McpToolField,
   useMcpToolSchema,
 } from "@/components/workflows/pickers/mcp-tool-picker";
+import { newFilter } from "@/components/tables/record-filters";
+import { FilterColumnField } from "./filter-column-field";
+import { FilterValueField } from "./filter-value-field";
 import { ReplyMailboxPicker } from "./reply-mailbox-picker";
 import { NotificationChannels } from "./notification-channels";
 import { FormPageForm } from "./form-page-form";
@@ -121,6 +125,8 @@ const TRIGGER_HINTS: Record<string, string> = {
 /** `agent.run`'s answer-shape override, edited as the Builder edits an agent's own. */
 const AGENT_RUN = "agent.run";
 const HTTP_REQUEST = "http.request";
+/** The Data step: its value is a constant for the run, which the form says up front. */
+const DATA_VALUE = "data.value";
 const STRUCTURED_OUTPUT = "structured_output_schema";
 /**
  * The fields that hold an answer's JSON Schema, edited as the Builder edits an
@@ -141,6 +147,11 @@ const MERGE = "logic.merge";
 const MCP_SERVER = "connection_id";
 const MCP_TOOL = "tool";
 const MCP_ARGUMENTS = "arguments";
+/** Table steps that only filter: they never read the table ref's `column_ids`. */
+const FILTER_ONLY_TABLE_STEPS: ReadonlySet<string> = new Set([
+  "table.record.exists",
+  "table.record.query",
+]);
 
 /** Optional in the API does not mean secondary in a person's task. */
 const PRIMARY_CONFIG: Readonly<Record<string, readonly string[]>> = {
@@ -175,6 +186,7 @@ const PRIMARY_INPUT: Readonly<Record<string, readonly string[]>> = {
   "html.parse": ["html", "file"],
   "debug.echo": ["message"],
   "data.map": ["source"],
+  "data.value": ["value"],
   "logic.if": ["value"],
   "logic.switch": ["value"],
   "transform.crypto": ["text"],
@@ -284,10 +296,12 @@ function CollectionPin({
 /** One of the organization's models, for a step that asks one directly. */
 function ModelProfilePin({
   value,
+  purpose = "chat",
   disabled,
   onChange,
 }: {
   value: unknown;
+  purpose?: "chat" | "decision";
   disabled?: boolean;
   onChange: (value: unknown) => void;
 }) {
@@ -295,6 +309,7 @@ function ModelProfilePin({
   const { can } = usePermissions();
   return (
     <ModelProfilePicker
+      purpose={purpose}
       profiles={profiles}
       profilesStatus={profilesStatus}
       allowAdd={can(Perm.connectionsManage)}
@@ -339,6 +354,7 @@ function ResourcePin({
   value,
   error,
   disabled,
+  pinsColumns,
   onChange,
 }: {
   kind: ResourceKind;
@@ -348,8 +364,13 @@ function ResourcePin({
   value: unknown;
   error?: string;
   disabled?: boolean;
+  /** For a table: whether the step reads the columns its ref narrows to. */
+  pinsColumns: boolean;
   onChange: (value: unknown) => void;
 }) {
+  if (kind === "group") {
+    return <GroupPicker selected={idList(value)} onChange={onChange} disabled={disabled} />;
+  }
   if (kind === "agent") {
     const ref = record(value);
     const current: AgentVersionRef = {
@@ -379,6 +400,7 @@ function ResourcePin({
         disabled={disabled}
         error={error}
         storedOnly={schema["x-columns"] === "stored"}
+        pinsColumns={pinsColumns}
       />
     );
   }
@@ -431,7 +453,16 @@ function ResourcePin({
       kind === "collection" ? CollectionPin : kind === "member" ? MemberPin : ModelProfilePin;
     return (
       <div className="space-y-1.5">
-        <Pin value={value} disabled={disabled} onChange={onChange} />
+        {kind === "model_profile" ? (
+          <ModelProfilePin
+            value={value}
+            disabled={disabled}
+            onChange={onChange}
+            purpose={schema["x-model-purpose"] === "decision" ? "decision" : "chat"}
+          />
+        ) : (
+          <Pin value={value} disabled={disabled} onChange={onChange} />
+        )}
         {error !== undefined && <p className="text-destructive text-xs">{error}</p>}
       </div>
     );
@@ -483,6 +514,7 @@ function ConfigLeaf({
           value={value}
           error={error}
           disabled={ctx.disabled}
+          pinsColumns={!FILTER_ONLY_TABLE_STEPS.has(ctx.node.definition_id)}
           onChange={onChange}
         />
       </div>
@@ -794,21 +826,68 @@ function ConfigArray({
               </Button>
             </div>
           </div>
-          {fields.map((child) => (
-            <ConfigNode
-              key={child.name}
-              schema={child.schema}
-              name={child.name}
-              required={child.required}
-              path={[...path, index, child.name]}
-              defs={defs}
-              ctx={ctx}
-              value={record(row)[child.name]}
-              onChange={(next) =>
-                onChange(replaceAt(rows, index, setKey(record(row), child.name, next)))
-              }
-            />
-          ))}
+          {fields.map((child) => {
+            const childPath = [...path, index, child.name];
+            const childValue = record(row)[child.name];
+            const childChange = (next: unknown) =>
+              onChange(replaceAt(rows, index, setKey(record(row), child.name, next)));
+            const node = (
+              <ConfigNode
+                key={child.name}
+                schema={child.schema}
+                name={child.name}
+                required={child.required}
+                path={childPath}
+                defs={defs}
+                ctx={ctx}
+                value={childValue}
+                onChange={childChange}
+              />
+            );
+            if (prefix.join("/") !== "filters") return node;
+            const field = bindingFieldPath(childPath);
+            const fieldId = `cfg-${field.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+            const tableId = strOrNull(record(ctx.node.config["table"])["table_id"]);
+            if (child.name === "column_id") {
+              return (
+                <FilterColumnField
+                  key={child.name}
+                  id={fieldId}
+                  tableId={tableId}
+                  value={childValue}
+                  error={ctx.errors.get(field)}
+                  disabled={ctx.disabled}
+                  // Another column starts the row afresh: the old operator or
+                  // operand may not suit it, and would stay where nobody sees it.
+                  onPick={(column) => {
+                    const { value: operand, ...fresh } = newFilter(column);
+                    onChange(
+                      replaceAt(
+                        rows,
+                        index,
+                        operand === null ? fresh : { ...fresh, value: operand },
+                      ),
+                    );
+                  }}
+                />
+              );
+            }
+            if (child.name !== "value") return node;
+            return (
+              <FilterValueField
+                key={child.name}
+                id={fieldId}
+                tableId={tableId}
+                columnId={record(row)["column_id"]}
+                op={record(row)["op"]}
+                value={childValue}
+                error={ctx.errors.get(field)}
+                disabled={ctx.disabled}
+                fallback={node}
+                onChange={childChange}
+              />
+            );
+          })}
         </div>
       ))}
       <Button type="button" variant="outline" size="sm" disabled={ctx.disabled} onClick={add}>
@@ -1293,6 +1372,9 @@ function NodeFields({
     );
   const agentStep = definition.id === AGENT_RUN;
   const mcpStep = definition.id === MCP_CALL;
+  const profiledDecision =
+    definition.id.startsWith("decide.") &&
+    configFields.some((entry) => entry.name === "model_profile_id");
   const httpStep = ["http.request", "http.upload", "http.download"].includes(definition.id);
   const httpUrlBinding = httpStep ? bindingFor(bindings, node.id, "url") : undefined;
   // Drawn by another field: an agent step's `inline` by `agent`, an MCP step's
@@ -1301,7 +1383,10 @@ function NodeFields({
     (definition.id === "flow.await_reply" && ["provider", "connection_id"].includes(name)) ||
     (agentStep && name === AGENT_INLINE) ||
     (mcpStep && name === MCP_TOOL) ||
-    (definition.id === "email.send" && name === "smtp_secret_id");
+    (definition.id === "email.send" && name === "smtp_secret_id") ||
+    (profiledDecision &&
+      ["secret_id", "model"].includes(name) &&
+      node.config.secret_id === undefined);
   // Shown however the options are folded: what is set, needed or always there.
   const configWanted = (entry: (typeof configFields)[number]) =>
     // An agent step always shows `agent`: neither it nor `inline` is required
@@ -1390,6 +1475,9 @@ function NodeFields({
           onChange={(changes) => updateNodeConfig(node.id, { ...node.config, ...changes })}
         />
       )}
+      {definition.id === DATA_VALUE && (
+        <p className="text-muted-foreground text-xs">{t("dataValueSetOnce")}</p>
+      )}
       {definition.id === HTTP_REQUEST && (
         <CurlImport
           node={node}
@@ -1465,7 +1553,18 @@ function NodeFields({
                 ctx={ctx}
                 value={node.config[entry.name]}
                 onChange={(next) =>
-                  updateNodeConfig(node.id, setKey(node.config, entry.name, next))
+                  updateNodeConfig(
+                    node.id,
+                    setKey(
+                      definition.id.startsWith("decide.") &&
+                        entry.name === "model_profile_id" &&
+                        typeof next === "string"
+                        ? setKey(setKey(node.config, "secret_id", undefined), "model", undefined)
+                        : node.config,
+                      entry.name,
+                      next,
+                    ),
+                  )
                 }
               />
             )}

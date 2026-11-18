@@ -41,6 +41,23 @@ An event trigger adds one more refusal at its edge: a webhook whose signature do
 not verify against the trigger's own secret is a 403 that never reaches the runner
 at all.
 
+GitHub routines show an author filter when creating or editing issue, pull-request
+and comment triggers. **Repository members (default)** admits `OWNER`, `MEMBER`
+and `COLLABORATOR`; **Members and contributors** also admits `CONTRIBUTOR`.
+**Anyone** includes first-time contributors and other reporters. These are GitHub
+author associations, not AgenticOS organization roles. Bot senders and an explicitly
+excluded connected login remain blocked under every option. The author filter does
+not apply to pushes, workflow runs or releases. Existing routines keep their policy;
+a configuration with no `authors` still means `members`.
+
+In the routine's history, its signed-in owner can see the **Latest filtered GitHub
+event**: when a verified webhook failed a filter, why, and the author policy at
+receipt. Both per-routine webhooks and GitHub App deliveries record this diagnostic.
+Only the latest retained sample is kept, updated at most once per minute per
+routine using the database clock. There is no payload, author text or secret, and
+no run is created or run-admission quota spent for it. No diagnostic means no rejection has been recorded; it
+does not prove webhook delivery. Public webhook responses remain unchanged.
+
 ## Routine delivery
 
 A routine created from a private chat through the platform MCP answers in that
@@ -847,7 +864,7 @@ notifications and decisions.
 Some work is the platform's own and still needs a model. A **system role** gives it
 an owner an operator can see: one configuration per organization and role, never
 an agent row, never one per job, and never attributed to the starter agent or any
-agent whose instructions did not run (#2575). **Organizations → AI & services → Background services** (`budgets:manage`) lists each role with what it runs on, this month's
+agent whose instructions did not run (#2575). **Organizations → AI & services** (`budgets:manage`) lists each role with what it runs on, this month's
 spend and its recent executions.
 
 | Role                 | What it does                                                                                                                                             | Configured                                                             |
@@ -1739,6 +1756,11 @@ trail with what was asked, and stays listed under **Decided** with the tool call
 own record. A step that names its approvers can be decided only by
 them. One nobody decides in time expires, and a cancelled run cancels its requests.
 
+A step that names approvers or [approval groups](#approval-groups) tells those
+approvers and the group members holding `approvals:decide`. A step naming
+neither tells everyone holding `approvals:decide`. They are told at the bell,
+and the request leads the Inbox of whoever may decide it.
+
 A step that is `editable` also shows the approver a proposal, such as a drafted
 reply, which they may change before approving it. The audit entry records whether
 the step was editable, whether the approver edited it (`edited`) and the length of
@@ -2395,3 +2417,11 @@ The Inbox MCP tools are for signed-in sessions and trusted private-chat run
 credentials; the latter are restricted to cases belonging to that chat. Ordinary
 API keys, unattended runs and publisher fallback identities cannot read or settle
 private Inbox cases.
+
+## Approval groups
+
+Workflow human-approval and MCP-call steps can name individual approvers, organization groups, or both. Any one eligible person may decide, and they must independently hold `approvals:decide`. With neither users nor groups configured, the existing unrestricted permission-based rule applies. A configured empty or deleted group never makes a request unrestricted.
+
+Group membership and active account status are checked at decision time. Notifications resolve eligible group members when the request is created and deduplicate overlap with named users. Joining later can grant decision eligibility without sending another notification; leaving or losing permission removes it.
+
+Agent approval, budget and usage alerts can also name groups under chosen recipients. These are notification audiences only: they neither grant approval permission nor restrict who may decide. Existing personal notification preferences remain effective.

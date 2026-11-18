@@ -80,7 +80,11 @@ the same list.
 
 **More → Settings** contains the workflow's name, description, tags and runtime settings, saved automatically. The step editor fills the available window: Input on the left, Parameters and Settings in the middle, Output on the right. Triggers use two panes because they have no incoming data. Each pane scrolls independently on larger screens; phones use one scrolling column. Recorded executions show the parameters read-only beside their data. Record values are fields named after table columns. Notes offer Open note, size presets and resize handles.
 
-The app picker includes catalog MCP servers before they are connected; its generic Call an MCP tool entry is hidden. Connect a service in place, then choose one of its discovered tools. The connection's allowlist remains enforced. The canvas starts with colored steps and a minimap. AI model steps expose instructions, temperature and reasoning effort; unset controls retain provider defaults. Jev decisions expose their model, question and confidence threshold. Send an email uses the platform sender, or connects Gmail or Outlook and switches to that mailbox's actual MCP tool after confirmation. Switching clears incompatible input mappings and is undoable.
+The app picker includes catalog MCP servers before they are connected; its generic Call an MCP tool entry is hidden, and those nobody has connected wait under **more apps to connect** at the end of their section. Connect a service in place, then choose one of its discovered tools. The connection's allowlist remains enforced.
+
+The canvas starts with colored steps and a minimap. On a phone it opens with the whole flow in view and the minimap hidden; **Canvas options** shows it again.
+
+AI model steps expose instructions, temperature and reasoning effort; unset controls retain provider defaults. **Decisions** steps, answered by the Jev decision model, expose their model, question and confidence threshold. Send an email uses the platform sender, or connects Gmail or Outlook and switches to that mailbox's actual MCP tool after confirmation. Switching clears incompatible input mappings and is undoable.
 
 The **Send an email** step also offers **SMTP account → New SMTP account**. Enter the server, port, username, password and sender in the vault dialog. STARTTLS usually uses 587; implicit TLS usually uses 465, with certificate verification in both modes. Only `smtp_secret_id` is stored in the workflow. Select **Platform sender** to clear it. Publication and execution enforce secret access; an unavailable account fails instead of silently changing senders.
 
@@ -132,7 +136,7 @@ pinch - or Ctrl or Cmd with the wheel - zooms it; its controls sit in the corner
 
 Steps are chosen in the **step picker**. It lists sections - **Start**, **AI**,
 **Flow**, **Data**, **Apps and the web** - with the groups under each. A group such
-as **Slack**, **Tables** or **Jev decisions** opens to its steps, and a group of one
+as **Slack**, **Tables** or **Decisions** opens to its steps, and a group of one
 step is that step. **Search steps** finds any step by its name, what it does or its
 group. You add a step four ways:
 
@@ -141,7 +145,10 @@ group. You add a step four ways:
   flow in view, wired to it when their ports fit. A starting step goes before the
   current start instead and becomes it.
 - **+** beside a step's output opens the picker for the step that comes after that
-  output.
+  output. When the output already leads to a step, the picker asks where the new one
+  goes: **Insert before** that step puts it into the connection, and **Add a parallel
+  branch** keeps the connection and runs the new step beside it. An output that already
+  leads to several steps can only take another branch.
 - **Right-click** the canvas: the same picker opens where you clicked, and the step
   lands there. Beneath it, **Add a note** and, once something is copied, **Paste**.
 - **Drag** a step from the picker to put it where you drop it, wired to nothing.
@@ -274,7 +281,9 @@ published version, a run and a comparison show the saved size without handles.
 ## Configuring a node { #configuring-a-node }
 
 What each node does, what it is configured with and what its failures mean is in
-the [node reference](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/).
+the [node reference](https://vstorm-co.github.io/agenticos/reference/workflow-nodes/). The console names each step, its ports and
+its settings in the reader's language; the reference, the API and an exported workflow keep
+the English names.
 
 A click selects a step; a double click opens it over the canvas. In a published version or **View only**, one click opens it. The header names the step and folds unfinished setup into one expandable summary. Open it to see what is missing; choosing a field takes you to its input. After a test or publish attempt, the summary opens with validation details.
 
@@ -664,6 +673,11 @@ version, it says so first. If the graph still has
 problems, publishing is blocked with **Fix the problems below before
 publishing**, so a version that would not validate is never created.
 
+Some things are worth a look without being wrong, and an amber sign on the step marks
+them: an **Ask for approval** outcome that leads nowhere, or a step that decides
+between outputs when none of them leads anywhere. The run simply ends there. The
+publish dialog lists them too, but they never block a test run or a publish.
+
 Publishing does not end your editing. The draft goes on existing independently of
 any published version, so you keep editing it straight away. **Versions** under **More** in the
 editor's header opens every published version with its release note, the live one
@@ -842,14 +856,22 @@ a later step sends what the person approved. A decider the step does not name se
 the proposal read-only, and a request decided with a changed version
 shows an **Edited** badge under **Decided**.
 
+In the run itself, a finished approval step opens with who decided it and when -
+**Approved by** or **Rejected by** the person and the time - only the decision and the time
+when the account is gone or the reader may not list members - above the step's output. When the approver changed the
+proposal, **Show changes** compares the two. A request that expired or was cancelled
+with its run says so instead.
+
 When the step lists **Ways to approve**, the queue shows one button for each, with the
 label its author wrote, in place of **Approve**; **Reject** stays. Each way is an output
 port of the step, so the workflow goes on by the one the approver pressed, and the
 decided row names it. An edit goes with whichever button is pressed.
 
-In the list a test run's version reads **Draft (test)** and a real one's
-**Published**, and a run started from the console or the HTTP API reads **Console or
-API**. **Status**, **Version**, **Started by** and **Started** (the last hour, day, week or
+In the list a test of the whole draft reads **Draft (test)**, a
+[test of one step](#a-steps-data-pinning-and-testing-one-step) **Step test** followed by the step's name, and a
+real run **Published**. **Version** can show step tests alone or leave them out.
+
+A run started from the console or the HTTP API reads **Console or API**. **Status**, **Version**, **Started by** and **Started** (the last hour, day, week or
 30 days) narrow the runs, and the list answers a
 page at a time; each filter is kept in the address, so a filtered list can be
 linked. **Runs** on the workflows list shows every workflow's runs together. On a
@@ -896,6 +918,8 @@ characters of it (at least four); **Show only this run** on a line fills it in, 
 that wrote it. In the run view, each step's own lines sit under it, in the order they
 were written. An organization API key with `workflows:view` reads them too, for
 public-origin runs: see [Reading a workflow's log](api.md#reading-a-workflows-log).
+
+New Quick Log lines show default step names in the reader's language, including on the dashboard. The saved run graph identifies default names, including in older lines. Custom labels and lines whose saved graph no longer identifies the step keep their stored words.
 
 ### Alerts { #log-alerts }
 

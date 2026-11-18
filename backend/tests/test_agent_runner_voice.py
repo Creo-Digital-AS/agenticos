@@ -2,6 +2,7 @@
 
 import uuid
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,16 @@ from app.agents.spec import AgentSpec, CapabilityBindingSpec
 from app.agents.voice import VoiceOptions
 from app.core.permissions import AuthContext, OrgRoleName
 from app.services.agent_runner import AgentRunnerService, PreparedRun, VoiceRun
+from tests.test_agent_runner import _resolved_model
+
+
+@pytest.fixture(autouse=True)
+def _no_connected_chat_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These agents have no bot grants; channel_actions tests cover connected audiences."""
+    monkeypatch.setattr(
+        "app.services.channel_actions.agent_exposure_repo.list_for_agent",
+        AsyncMock(return_value=[]),
+    )
 
 
 def _prepared() -> PreparedRun:
@@ -150,9 +161,7 @@ def runner_with_mocks():
         patch.object(
             service.models,
             "resolve",
-            new=AsyncMock(
-                return_value=MagicMock(label="gpt-4.1", provider="openai", secret_id=uuid.uuid4())
-            ),
+            new=AsyncMock(return_value=replace(_resolved_model("gpt-4.1"), secret_id=uuid.uuid4())),
         ),
         patch.object(service.skills, "resolve_for_agent", new=AsyncMock(return_value=[])),
         patch.object(service.workspaces, "open", new=AsyncMock(return_value=None)) as opened,

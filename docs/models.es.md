@@ -1,5 +1,5 @@
 ---
-source_sha: "bfe431b65940"
+source_sha: "7b83980dd889"
 ---
 
 # Modelos y providers { #models-and-providers }
@@ -24,6 +24,28 @@ model profile → credential → unsealed secret → provider client → Model
 ```
 
 Nada sobre qué modelo usa un agent vive en `.env`.
+
+## Claves personales de modelos { #personal-model-keys }
+
+En **Model access** del Builder, conserva **Use the organization’s key** (predeterminado) o selecciona **Each user connects their own key**. El formulario de clave privada envía el perfil, provider, endpoint y modelo esperados que vio el usuario. Si el destino cambia antes de guardar, el servidor rechaza la clave con un conflicto; el formulario recarga el destino y borra la clave escrita antes de otro intento.
+
+El modo personal mantiene fijos el modelo y el destino del administrador. Admite proveedores de chat con clave API, sin modelos alternativos ni cambios de modelo por conversación.
+
+Un miembro con sesión iniciada conecta su clave en el formulario privado sobre el campo de mensajes o en los ajustes del chat. Las claves nunca entran en mensajes, prompts ni instrucciones del agente. La conexión se reutiliza entre agentes de esta organización con el mismo proveedor y destino. Sin clave, la ejecución se bloquea antes de solicitar el modelo; los fallos de autenticación nunca cambian a la clave de la organización. Sustituye la clave en los ajustes del chat o elimina la conexión en **Vault → Your model connection**. Guardar la clave no la comprueba con el proveedor.
+
+El modo personal no admite canales privados ni grupales, widgets, páginas públicas, ejecuciones por HTTP API, horarios, triggers, temas en segundo plano, voz, revisores ni modelos separados para capacidades. Pausa o elimina canales, superficies públicas y rutinas activos antes de publicar. Se rechaza crear o reactivar una superficie incompatible; la misma regla se aplica al ejecutar. Las páginas públicas y los JWT de widgets no identifican a un miembro con sesión iniciada en la instancia.
+
+La delegación funciona en el chat web con sesión iniciada. Un subagente personal debe usar el mismo perfil de modelo que el agente principal en modo personal. Un agente principal con claves de organización no puede gastar claves personales mediante delegación; los subagentes personales no pueden elegir otro modelo ni endpoint. Estas reglas se comprueban al publicar, habilitar superficies, promover versiones y ejecutar, incluidas las delegaciones anidadas y las reanudaciones.
+
+Los subagentes de organización conservan sus credenciales. Los especialistas inline heredan el modo del padre; los dinámicos en modo personal mantienen su modelo. Los límites de acceso MCP personal no cambian.
+
+Si falta la conexión de un subagente, el mensaje identifica el agente y la conexión del modelo. Abre la configuración de chat de ese agente para conectar tu clave; pide acceso a su propietario si no aparece. El runner comprueba el árbol de delegación antes de llamar a los modelos y de nuevo al reanudar. Nunca sustituye una conexión ausente por la clave de otro endpoint, otro miembro o la persona que aprueba.
+
+Las claves se cifran para su propietario en el almacén y se eliminan al borrar su membresía o cuenta. Cambiar el destino aprobado requiere una nueva conexión. Rotar la clave de un miembro no cambia las claves de otros ni el perfil de modelo compartido.
+
+Suplantar la identidad de otro miembro no concede acceso a sus conexiones personales de modelos: las solicitudes de lectura, modificación o uso de la clave se rechazan antes de acceder al vault.
+
+El historial privado queda vinculado a los destinos aprobados de los modelos, incluidos los de respaldo; consulte el [historial del chat](console.md#chat) para cambiar conexiones y reanudar ejecuciones en espera.
 
 ## Un perfil de modelo { #a-model-profile }
 
@@ -350,6 +372,7 @@ Los providers estándar usan la inferencia de modelos y providers de Pydantic AI
 | OpenAI | `openai` | clave de API, o ninguna | ✓ |
 | Anthropic | `anthropic` | clave de API | ✓ |
 | Google Gemini | `google` | clave de API | ✓ |
+| TypeSafe (Jev) | `typesafe` | API key | ✓ |
 | OpenRouter | `openrouter` | clave de API |  ✓ |
 | Otari | `otari` | clave de API | ✓ |
 | Alibaba Cloud | `alibaba` | clave de API | ✓ |
@@ -376,6 +399,7 @@ Los providers estándar usan la inferencia de modelos y providers de Pydantic AI
 
 | Provider | id | Credencial | Custom URL |
 |---|---|---|---|
+| System One API | `system-one` | API key, or none | ✓ |
 | Ollama | `ollama` | ninguna | ✓ |
 | LiteLLM proxy | `litellm` | ninguna | ✓ (`api_base`) |
 
@@ -800,3 +824,19 @@ Un endpoint regional sirve menos modelos de embeddings que el global: `eu.openro
 Actualiza todos los procesos de API y workers antes de configurar endpoints regionales. Las versiones anteriores ignoran el endpoint personalizado de OpenRouter.
 
 Para otro endpoint con el mismo proveedor y modelo, elija **Añadir modelo separado** en el Builder. El nombre automático incluye el endpoint y el perfil existente no cambia. **Actualizar modelo** modifica el perfil compartido. Los catálogos personalizados están limitados a 2 MiB, 2048 modelos y longitudes de campos acotadas, con un máximo de 16 catálogos en caché por proceso. Una respuesta comprimida o demasiado grande permite escribir el ID del modelo sin recurrir a una lista global.
+
+## Modelos de decisión { #decision-models }
+
+Los perfiles de decisión usan la API nativa `decisions` en lugar de generar texto. Elige proveedor, modelo y clave del almacén en el formulario del modelo. OpenAI, Google y OpenRouter ofrecen APIs de chat y decisiones; TypeSafe y un endpoint System One propio sirven decisiones. Un perfil de decisión no puede ser el modelo conversacional de un agente ni recurrir a un modelo de chat como alternativa.
+
+Los adaptadores proceden de Pydantic AI. Las sugerencias actuales incluyen OpenAI `gpt-6-luna`, Google `gemini-decision-1` y TypeSafe `jev-1.14.0` / `jev-latest`. OpenRouter consulta el catálogo de decisiones por separado del catálogo de texto. System One propio requiere URL e identificador de modelo. La disponibilidad depende del proveedor y de la cuenta; una sugerencia no garantiza acceso.
+
+Los pasos **Decision models** de los workflows eligen un perfil nativo. Los identificadores `decide.*` y las configuraciones existentes con clave TypeSafe siguen siendo válidos. Por debajo del umbral de confianza se utiliza el puerto `unsure`. Cada ejecución comprueba de nuevo permisos y claves; el coste cuenta para los presupuestos del workflow y la organización.
+
+La participación automática en canales admite un modelo nativo o un LLM habitual con salida estructurada. La decisión nativa sí/no devuelve la probabilidad de intervenir; un campo numérico acotado conserva ese valor. Un LLM devuelve una valoración de utilidad de 0 a 100, no una probabilidad calibrada. Ambos se comparan con el control deslizante del umbral, incluyendo la igualdad. El clasificador no tiene herramientas. La función requiere activación y respeta los intervalos; el agente principal puede usar cuentas MCP de la organización, nunca credenciales privadas de un participante.
+
+Referencias: [Pydantic AI](https://pydantic.dev/docs/ai/models/decision/), [OpenAI](https://developers.openai.com/api/docs/guides/decisions), [Google](https://ai.google.dev/gemini-api/docs/decisions-api), [TypeSafe](https://docs.typesafe.ai/models), [OpenRouter](https://github.com/OpenRouterTeam/skills/tree/main/skills/openrouter-decisions).
+
+ElevenLabs Realtime incorpora `eleven_realtime_v1_mini` y `eleven_realtime_v1_max` mediante el relay PCM de 24 kHz, con la voz predeterminada `brian` y detección semántica de turnos.
+
+El SDK no informa los cargos por tokens. Las llamadas con un presupuesto de gasto se rechazan antes de conectar. Las llamadas sin presupuesto conservan el límite de tiempo y registran el coste de audio como límite inferior, no como factura completa. La tarifa de audio es de 0,08 USD/minuto (0,16 USD con burst); los tokens se cobran aparte. El contexto de 16k es un límite conservador de historial de la plataforma, no una ventana de contexto publicada por el proveedor. La integración se ha probado sin conexión mediante la construcción de modelos SDK y transportes controlados, no con cuentas reales. [SDK](https://pydantic.dev/docs/ai/api/realtime/elevenlabs/), [ElevenLabs API pricing](https://elevenlabs.io/pricing/api).

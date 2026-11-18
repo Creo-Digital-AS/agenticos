@@ -171,6 +171,7 @@ class EventSource(enum.StrEnum):
     GOOGLE_CALENDAR = "google_calendar"
     GOOGLE_DRIVE = "google_drive"
     HUBSPOT = "hubspot"
+    LINEAR = "linear"
     MICROSOFT_FILES = "microsoft_files"
     OUTLOOK = "outlook"
     OUTLOOK_CALENDAR = "outlook_calendar"
@@ -245,6 +246,17 @@ class AgentTrigger(Base, TimestampMixin):
     local_target: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     approved_sources: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
+    @property
+    def setup_required(self) -> bool:
+        """A saved schedule whose source review has not been admitted."""
+        return (self.approved_sources or {}).get("pending_review") is True
+
+    @property
+    def setup_issues(self) -> list[str]:
+        """Safe source labels from initial setup, not provider error bodies."""
+        value = (self.approved_sources or {}).get("unavailable_sources", [])
+        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
     action_consents: Mapped[list[dict[str, object]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
@@ -296,6 +308,8 @@ class AgentTrigger(Base, TimestampMixin):
     # dict; a schedule leaves it `{}` and the source null.
     event_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     event_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # One bounded diagnostic, read through an owner-only endpoint rather than listings.
+    last_filtered_event: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     # The secret an event webhook is verified against, sealed for this
     # organization through the one vault (`app/core/vault.py`) - GitHub's HMAC key
@@ -482,7 +496,7 @@ class AgentTrigger(Base, TimestampMixin):
         CheckConstraint(
             "event_source IS NULL OR event_source IN "
             "('github', 'gmail', 'google_calendar', 'google_drive', 'hubspot', "
-            "'microsoft_files', 'outlook', 'outlook_calendar', 'webhook', 'zendesk')",
+            "'linear', 'microsoft_files', 'outlook', 'outlook_calendar', 'webhook', 'zendesk')",
             name="ck_trigger_event_source",
         ),
         # The discriminator across both concepts, in one constraint so a row can
@@ -572,7 +586,7 @@ class TriggerAttempt(Base):
         ),
         CheckConstraint(
             "reason IN ('platform_identity_required', 'source_review_required', "
-            "'agent_unavailable', 'preparation_failed')",
+            "'agent_unavailable', 'preparation_failed', 'previous_run_active')",
             name="ck_trigger_attempt_reason",
         ),
     )

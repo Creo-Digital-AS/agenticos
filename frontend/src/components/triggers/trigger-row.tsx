@@ -75,24 +75,21 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
   const [viewing, setViewing] = useState(false);
   const runDisabled =
     !trigger.is_active || runNow.isPending || (trigger.waiting_device_count ?? 0) > 0;
-  // When "Run now" was pressed, so the runs view can show a waiting animation
-  // until a reply recorded after this moment arrives. Null when the view was
-  // opened just to read the log.
-  const [pendingSince, setPendingSince] = useState<number | null>(null);
+  // Compare history identities rather than clocks from the browser and worker.
+  const [activationId, setActivationId] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
 
   function openRuns() {
-    setPendingSince(null);
+    setActivationId(null);
+    setJobId(null);
     setViewing(true);
   }
 
   function fireAndWatch() {
-    // The boundary is the press, not the response: a fast fire can record its
-    // reply before the 202 reaches the browser, and a boundary stamped after
-    // that reply would wait forever for a message "newer" than it.
-    const pressedAt = Date.now();
     runNow.mutate(trigger.id, {
-      onSuccess: () => {
-        setPendingSince(pressedAt);
+      onSuccess: (pending) => {
+        setActivationId(pending.activation_id);
+        setJobId(pending.job_id);
         setViewing(true);
       },
     });
@@ -148,6 +145,22 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
       {trigger.last_delivery_status === "unavailable" && (
         <Badge variant="secondary">{t("deliveryUnavailable")}</Badge>
       )}
+      {trigger.setup_required &&
+        (trigger.can_manage && me != null && me === trigger.created_by_user_id && !impersonating ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setConsenting(true)}
+            title={t("setupRequiredHint")}
+          >
+            <ShieldCheck className="mr-1.5 size-3.5" />
+            {t("setupRequired")}
+          </Button>
+        ) : (
+          <Badge variant="secondary" title={t("setupOwnerRequired")}>
+            {t("setupRequired")}
+          </Badge>
+        ))}
       {trigger.runs_as_creator && <Badge variant="outline">{t("actsAsCreator")}</Badge>}
       {(trigger.waiting_device_count ?? 0) > 0 && (
         <Badge variant="secondary">
@@ -155,7 +168,7 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
         </Badge>
       )}
       <RoutineAutoPause stoppedAt={trigger.auto_stopped_at} count={trigger.consecutive_failures} />
-      {!trigger.is_active && !trigger.auto_stopped_at && (
+      {!trigger.is_active && !trigger.auto_stopped_at && !trigger.setup_required && (
         <Badge variant="secondary">{t("paused")}</Badge>
       )}
       {trigger.is_active && trigger.paused_for_budget && (
@@ -164,7 +177,7 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
       {trigger.can_manage && (
         <TooltipProvider>
           <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:ml-0">
-            {me != null && me === trigger.created_by_user_id && (
+            {me != null && me === trigger.created_by_user_id && !impersonating && (
               <RoutineActionTooltip label={t("actionConsents.title")}>
                 <Button
                   variant="ghost"
@@ -210,9 +223,10 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
                   className="h-8 w-8"
                   aria-label={trigger.is_active ? t("pause") : t("resume")}
                   disabled={setActive.isPending}
-                  onClick={() =>
-                    setActive.mutate({ triggerId: trigger.id, isActive: !trigger.is_active })
-                  }
+                  onClick={() => {
+                    if (!trigger.is_active && trigger.setup_required) setConsenting(true);
+                    else setActive.mutate({ triggerId: trigger.id, isActive: !trigger.is_active });
+                  }}
                 >
                   {trigger.is_active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                 </Button>
@@ -234,7 +248,17 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
         </TooltipProvider>
       )}
       {consenting && (
-        <ActionConsentsDialog trigger={trigger} onClose={() => setConsenting(false)} />
+        <ActionConsentsDialog
+          trigger={trigger}
+          onClose={() => setConsenting(false)}
+          onSaved={
+            trigger.setup_required
+              ? async () => {
+                  await setActive.mutateAsync({ triggerId: trigger.id, isActive: true });
+                }
+              : undefined
+          }
+        />
       )}
       {editing && (
         <TriggerFormDialog
@@ -255,11 +279,15 @@ export function TriggerRow({ trigger, showAgent = false }: TriggerRowProps) {
       />
       <TriggerRunsSheet
         trigger={trigger}
-        pendingSince={pendingSince}
+        activationId={activationId}
+        jobId={jobId}
         open={viewing}
         onOpenChange={(next) => {
           setViewing(next);
-          if (!next) setPendingSince(null);
+          if (!next) {
+            setActivationId(null);
+            setJobId(null);
+          }
         }}
       />
     </div>

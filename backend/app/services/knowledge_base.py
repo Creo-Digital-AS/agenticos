@@ -21,6 +21,7 @@ from app.repositories import (
     organization_secret_repo,
     rag_document_repo,
     resource_grant_repo,
+    sync_log_repo,
 )
 from app.repositories.rag_document import CollectionCounts, CollectionScope
 from app.schemas.knowledge_base import (
@@ -296,7 +297,8 @@ class KnowledgeBaseService:
         documents deleted with it, the stale-searchable-chunks bug a kept table
         left behind (#1361, #1364). A search reads an absent table as empty and
         the next upload recreates it (`_ensure_collection`); a non-default KB's
-        row goes too.
+        row goes too. Either way the sync sources recording the base are
+        detached and deactivated (#2551).
 
         Takes the row rather than the name: the caller has already resolved
         which knowledge base it is allowed to act on, and looking the name up
@@ -308,14 +310,31 @@ class KnowledgeBaseService:
         """
         await self._tear_down(kb, force_drop=force_drop)
 
-    async def _tear_down(self, kb: KnowledgeBase, *, force_drop: bool = False) -> None:
+    async def purge(self, kb: KnowledgeBase, *, cleanup_vectors: bool = True) -> None:
+        """Remove a base during its owner account/organization purge, including defaults.
+
+        Callers hold every collection name before locking the parent account or
+        organization. The ordinary teardown then keeps the same ownership rules.
+        """
+        await self._tear_down(kb, remove_default=True, cleanup_vectors=cleanup_vectors)
+
+    async def _tear_down(
+        self,
+        kb: KnowledgeBase,
+        *,
+        force_drop: bool = False,
+        remove_default: bool = False,
+        cleanup_vectors: bool = True,
+    ) -> None:
         """Remove a base's documents, its vectors and - unless it is a default - its row.
 
         The one teardown `DELETE /kb/{id}` (`delete`), `DELETE
         /rag/collections/{name}` (`delete_for_rag_collection`) and `rag-drop`
         (`drop_collection_by_name`, through the latter) all run, so each rule
         below exists once; the two copies had drifted (#2568). The caller has
-        resolved access, and refused or allowed a default.
+        resolved access, and refused or allowed a default. Every path detaches
+        and deactivates exactly the sync sources recording this base, a kept
+        default's included (`detach_sources_targeting`, #2551).
 
         The name is not tenant-unique (#913), so what goes depends on whether a
         base *other than this one* still holds it. If one does, the table backs
@@ -387,12 +406,20 @@ class KnowledgeBaseService:
         base_purges: list[BasePurge] = []
         # The documents go before the KB row: `ON DELETE SET NULL` would unfile
         # them first, and a delete by the base's id would then find nothing.
-        keeps_table = bool(others) or (
-            not force_drop
-            and await rag_document_repo.table_holds_unfiled_outside(self.db, CollectionScope.of(kb))
+        keeps_table = (
+            not cleanup_vectors
+            or bool(others)
+            or (
+                not force_drop
+                and await rag_document_repo.table_holds_unfiled_outside(
+                    self.db, CollectionScope.of(kb)
+                )
+            )
         )
         if keeps_table:
-            storage_paths, base_purges = await self._delete_documents_from_kept_table(kb, others)
+            storage_paths, base_purges = await self._delete_documents_from_kept_table(
+                kb, others, remove_default=remove_default
+            )
         else:
             _, unfiled = await self._delete_unfiled_taken(kb, [])
             storage_paths = (
@@ -406,15 +433,20 @@ class KnowledgeBaseService:
             # Reserve the name against reuse until the deferred drop runs, so a
             # concurrent claim cannot adopt the still-populated table (#1362).
             await collection_teardown_repo.reserve(self.db, collection)
-        if not kb.is_default:
-            await CollectionAccessService(self.db).detach_sources_targeting(kb)
+        # A kept default must not be refilled by its previous sources.
+        await CollectionAccessService(self.db).detach_sources_targeting(kb)
+        if remove_default or not kb.is_default:
+            await sync_log_repo.detach_sources_from_base_history(self.db, kb.id)
             await knowledge_base_repo.delete(self.db, kb.id)
         # Always a job: a kept table has the base's chunks to purge, and an
         # unreferenced one is dropped.
         from app.worker.tasks.teardown_tasks import queue_external_state_cleanup
 
         await queue_external_state_cleanup(
-            self.db, storage_paths, collections_to_drop, base_purges=base_purges
+            self.db,
+            storage_paths,
+            collections_to_drop,
+            base_purges=base_purges if cleanup_vectors else [],
         )
 
     async def drop_collection_by_name(
@@ -473,7 +505,7 @@ class KnowledgeBaseService:
         return kb
 
     async def _delete_documents_from_kept_table(
-        self, kb: KnowledgeBase, others: list[KnowledgeBase]
+        self, kb: KnowledgeBase, others: list[KnowledgeBase], *, remove_default: bool = False
     ) -> tuple[list[str], list[BasePurge]]:
         """Delete a base's document rows from a table that stays.
 
@@ -497,7 +529,8 @@ class KnowledgeBaseService:
         collection = kb.collection_name
         scope = CollectionScope.of(kb)
         takes_unfiled, unfiled = await self._delete_unfiled_taken(kb, others)
-        if kb.is_default or not others:
+        keeps_default = kb.is_default and not remove_default
+        if keeps_default or not others or takes_unfiled:
             stored = await rag_document_repo.stored_vector_ids_at_clear(
                 self.db, kb, takes_unfiled=takes_unfiled
             )
@@ -513,7 +546,7 @@ class KnowledgeBaseService:
             )
             named = unfiled.vector_document_ids
         base_purges = (
-            [] if kb.is_default else [BasePurge(collection=collection, knowledge_base_id=kb.id)]
+            [] if keeps_default else [BasePurge(collection=collection, knowledge_base_id=kb.id)]
         )
         # With no other base on the name, every id here is this base's own document.
         unfiled_too = takes_unfiled or not others

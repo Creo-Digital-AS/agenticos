@@ -1,5 +1,5 @@
 ---
-source_sha: "5a1c3230cf70"
+source_sha: "b5a555f17ceb"
 ---
 
 # Nodos de workflow { #workflow-nodes }
@@ -385,6 +385,21 @@ se puede convertir falla con `MAPPING_COERCION_FAILED` y nombra el campo.
 
 ::: app.workflows.nodes.data_map._handler.FieldMapping
 
+## data.value { #data-value }
+
+**Data** guarda un valor para los pasos siguientes: un objeto, una lista o un
+único número, texto o booleano. Escríbalo como JSON o vincúlelo entero a una
+salida anterior. El paso lo entrega sin cambios como `value`, y un paso
+posterior vincula el valor completo o una ruta dentro de él, como
+`value.customer.email`.
+
+El valor se fija una vez por run y nunca se sobrescribe. La salida de un paso
+queda fijada cuando el paso termina, así que ningún paso posterior puede
+cambiarla: Data es una constante con nombre, no una variable. Para cambiar un
+valor, añada un paso que construya uno nuevo a partir de él. Para reunir valores
+de los elementos de un bucle, use `loop.yield`. Un run de prueba de un paso Data
+sin valor falla con `DATA_NOT_SET`.
+
 ## data.filter y data.combine { #data-filter-and-data-combine }
 
 **Filter a list** conserva los elementos de una lista vinculada para los que se
@@ -729,16 +744,9 @@ categorías a un mismo paso de registro.
 
 ## Decisiones { #decisions }
 
-Tres pasos hacen a Jev, de TypeSafe, una pregunta tipada sobre un `text` enlazado,
-con una clave de API de TypeSafe del vault. Jev no escribe texto: responde la
-pregunta con una confianza de 0 a 1, en una sola petición, y solo puede responder
-con una de las respuestas que el paso permite. Por debajo del `min_confidence` del
-paso, sale por su puerto `unsure`, así que el workflow decide ahí qué hace una
-persona o un agent con un caso dudoso.
+Tres pasos plantean una pregunta tipada a un modelo nativo de decisión sobre el `text` de entrada. Elige un perfil con proveedor, clave del almacén y endpoint. Las configuraciones existentes con clave TypeSafe y modelo Jev siguen siendo válidas sin cambios. El proveedor determina los tipos de pregunta admitidos.
 
-`decide.*` solo llama al Jev alojado de TypeSafe. Para encaminar los casos dudosos
-con un modelo autoalojado usa `ai.classify` con `min_confidence`, que sale por
-`unsure` de la misma manera.
+El modelo devuelve una respuesta y su confianza. Por debajo de `min_confidence`, el paso sigue `unsure`; el workflow puede escalar o elegir otra ruta. Los perfiles nativos usan OpenAI, Google, OpenRouter, TypeSafe o un endpoint System One propio mediante Pydantic AI. Consulta [modelos de decisión](../models.md#decision-models) para conocer disponibilidad y diferencias con las valoraciones de un LLM.
 
 | Paso | Pregunta | Sale por |
 |---|---|---|
@@ -746,12 +754,7 @@ con un modelo autoalojado usa `ai.classify` con `min_confidence`, que sale por
 | `decide.choose` | cuál de hasta 255 opciones encaja | `out` con la `choice`, o `unsure` |
 | `decide.score` | dónde queda el texto en una escala de 2 a 10 niveles | `out` con el `score`, o `unsure` |
 
-La clave se comprueba al publicar y se vuelve a leer en cada run. Una clave que ya
-no existe o no está compartida hace fallar el paso con `SECRET_NOT_USABLE`, un
-modelo que no responde con `DECISION_FAILED`, que se reintenta según la política
-del paso, y un despliegue construido sin el extra `browser` con
-`DECISION_MODEL_UNAVAILABLE`. Un merge puede volver a unir las ramas de una
-decisión, como las de un If.
+Las credenciales y el acceso se comprueban al publicar y en cada ejecución. Una clave antigua eliminada produce `SECRET_NOT_USABLE`; un perfil sin API nativa, `DECISION_MODEL_REQUIRED`. Los fallos del proveedor producen `DECISION_FAILED` según la política de reintentos. El coste cuenta para los presupuestos del workflow y la organización. Merge puede reunir las ramas de decisión.
 
 ::: app.workflows.nodes._decide.DecisionConfig
 
@@ -1026,9 +1029,13 @@ vuelve a enviar.
 **Ask for approval** detiene el run hasta que una persona apruebe o rechace lo
 que está a punto de hacer, y sigue por `approved` o `rejected`. Quien aprueba lee
 el `title` del paso y los `details` vinculados en la pestaña **Approvals** de
-Activity o por `GET /api/v1/workflow-approvals`. `approvers` nombra quién puede
-decidir, y esas personas reciben un aviso en la aplicación; vacío, puede
-cualquiera con `approvals:decide`. Pasado `timeout_hours` la solicitud caduca y el
+Activity o por `GET /api/v1/workflow-approvals`. `approvers` y
+`approver_groups` nombran quién puede decidir: esas personas y los miembros de
+los grupos que tienen `approvals:decide`
+([grupos de aprobación](../governance.md#approval-groups)). Reciben un aviso en
+la aplicación. Si ambos están vacíos, puede decidir cualquiera con
+`approvals:decide`, y todas esas personas reciben el aviso. La
+solicitud también encabeza el Inbox de quien puede decidirla. Pasado `timeout_hours` la solicitud caduca y el
 paso sale por `rejected` con `decision: "expired"`. Cancelar el run cancela lo que
 pidió, y también cancelar un workflow que llamó a ese run. Cada ejecución del paso pregunta una vez, así que un reintento o una
 iteración de un bucle nunca preguntan dos veces lo mismo.
@@ -1322,6 +1329,8 @@ workflow puede crear su tabla la primera vez que se ejecuta y reutilizarla
 después. Las dos preguntas salen por exactamente un puerto, y un `logic.merge`
 puede volver a unir las ramas.
 
+`table.record.exists` y `table.record.query` aceptan etiquetas de opciones de selección además de IDs en filtros guardados. Resuelven las etiquetas con la tabla actual antes de consultar; las etiquetas desconocidas o ambiguas siguen causando errores de validación.
+
 ::: app.workflows.nodes.table_list._handler.TableListOutput
 
 ::: app.workflows.nodes.table_describe._handler.TableDescribeOutput
@@ -1425,6 +1434,7 @@ de confianza.
 | El trabajo superó `timeout_seconds` | `PYTHON_SANDBOX_TIMEOUT`, la sesión purgada |
 | No hay una conexión `sandboxd` utilizable | `SANDBOX_UNAVAILABLE` |
 | Escribió más de 20 archivos o 100 MB, o imprimió más de 10 MB | `PYTHON_OUTPUT_TOO_LARGE`, medido en la sandbox antes de traer nada, y la sesión purgada |
+| El host respondió pero no pudo iniciar el sandbox: un directorio de workspace en el que no puede escribir, una imagen que no se pudo construir | `SANDBOX_START_FAILED` con un diagnóstico seguro; la salida sin procesar queda en los registros del host, se reintenta |
 | No se pudo alcanzar el host | `SANDBOX_UNREACHABLE`, se reintenta |
 
 ::: app.workflows.nodes.code_python_simple._handler.PythonSimpleConfig

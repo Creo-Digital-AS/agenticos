@@ -52,6 +52,7 @@ const BUILDER_STEPS = [
   "agent-instructions",
   "agent-starters",
   "agent-model",
+  "agent-model-credentials",
   "agent-voice",
   "agent-identity",
   "agent-toolbox",
@@ -282,6 +283,7 @@ describe("stepsForPage", () => {
       "chat-coding-accounts",
       "chat-local-coding",
       "chat-coding-settings",
+      "chat-coding-revert",
       "chat-background-tasks",
       "chat-plan",
       "chat-visual",
@@ -504,7 +506,9 @@ describe("stepsForPage", () => {
       "members",
     ]) {
       expect(steps.find((step) => step.id === `org-${section}`)?.activate).toBe(
-        `org-tab-${section === "voice" ? "profile" : section}`,
+        section === "profile"
+          ? undefined
+          : `org-tab-${section === "voice" || section === "proactivity" ? "assistant" : section}`,
       );
     }
   });

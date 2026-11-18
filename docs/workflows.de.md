@@ -1,5 +1,5 @@
 ---
-source_sha: "e23a2fdc098e"
+source_sha: "3da552420873"
 ---
 
 # Workflows { #workflows }
@@ -89,7 +89,11 @@ Neuladen oder ein geteilter Link dieselbe Liste zeigt.
 
 **More → Settings** enthält Name, Beschreibung, Tags und Laufzeiteinstellungen des Workflows; Änderungen werden automatisch gespeichert. Der Schritteditor nutzt das verfügbare Fenster: Input links, Parameters und Settings in der Mitte, Output rechts. Trigger haben zwei Bereiche, da sie keine eingehenden Daten haben. Auf großen Bildschirmen scrollt jeder Bereich separat, auf Telefonen gibt es eine Spalte. Gespeicherte Ausführungen zeigen ihre Parameter schreibgeschützt neben den Daten. Datensatzwerte verwenden die Spaltennamen der Tabelle. Notizen bieten Open note, Größen und Ziehgriffe.
 
-Die App-Auswahl zeigt MCP-Katalogserver bereits vor dem Verbinden; der allgemeine Eintrag Call an MCP tool ist ausgeblendet. Verbinde einen Dienst direkt und wähle anschließend eines seiner erkannten Werkzeuge. Die Werkzeug-Freigabeliste bleibt wirksam. Farbige Schritte und Minimap sind standardmäßig aktiv. KI-Modellschritte zeigen Anweisungen, Temperatur und Reasoning-Aufwand; leere Einstellungen behalten die Anbieterstandards. Jev zeigt Modell, Frage und Konfidenzschwelle. Send an email verwendet den Plattformabsender oder verbindet Gmail beziehungsweise Outlook und wechselt nach Bestätigung zum tatsächlichen MCP-Werkzeug des Postfachs. Dabei werden inkompatible Eingabezuordnungen entfernt; der Wechsel lässt sich rückgängig machen.
+Die App-Auswahl zeigt MCP-Katalogserver bereits vor dem Verbinden; der allgemeine Eintrag Call an MCP tool ist ausgeblendet, und Dienste, die niemand verbunden hat, warten unter **Apps zum Verbinden** am Ende ihres Abschnitts. Verbinde einen Dienst direkt und wähle anschließend eines seiner erkannten Werkzeuge. Die Werkzeug-Freigabeliste bleibt wirksam.
+
+Farbige Schritte und Minimap sind standardmäßig aktiv. Auf einem Telefon öffnet sich der Canvas mit dem ganzen Ablauf im Blick und ausgeblendeter Minimap; **Canvas options** blendet sie wieder ein.
+
+KI-Modellschritte zeigen Anweisungen, Temperatur und Reasoning-Aufwand; leere Einstellungen behalten die Anbieterstandards. **Decisions**-Schritte, die das Entscheidungsmodell Jev beantwortet, zeigen Modell, Frage und Konfidenzschwelle. Send an email verwendet den Plattformabsender oder verbindet Gmail beziehungsweise Outlook und wechselt nach Bestätigung zum tatsächlichen MCP-Werkzeug des Postfachs. Dabei werden inkompatible Eingabezuordnungen entfernt; der Wechsel lässt sich rückgängig machen.
 
 Der Schritt **Send an email** bietet auch **SMTP account → Neues SMTP-Konto**. Im Vault-Dialog werden Server, Port, Benutzername, Passwort und Absender gespeichert. STARTTLS nutzt meist 587, implizites TLS meist 465; beide prüfen Zertifikate. Im Workflow steht nur `smtp_secret_id`. **Plattformabsender** entfernt die Auswahl. Veröffentlichung und Ausführung prüfen den Secret-Zugriff; ein nicht verfügbares Konto stoppt den Schritt statt den Absender zu wechseln.
 
@@ -145,7 +149,7 @@ sitzt in der Ecke.
 
 Schritte wählen Sie in der **Schrittauswahl**. Sie zeigt Abschnitte - **Start**,
 **AI**, **Flow**, **Data**, **Apps and the web** - mit den Gruppen darunter. Eine
-Gruppe wie **Slack**, **Tables** oder **Jev decisions** öffnet sich zu ihren
+Gruppe wie **Slack**, **Tables** oder **Decisions** öffnet sich zu ihren
 Schritten, und eine Gruppe mit einem Schritt ist dieser Schritt. **Search steps**
 findet jeden Schritt nach Namen, nach dem, was er tut, oder nach seiner Gruppe. Sie
 fügen einen Schritt auf vier Wegen hinzu:
@@ -155,7 +159,10 @@ fügen einen Schritt auf vier Wegen hinzu:
   Schritt oder ans Ende des sichtbaren Ablaufs und wird verbunden, wenn die Ports
   passen. Ein Startschritt kommt stattdessen vor den aktuellen Start und wird zu ihm.
 - **+** neben dem Ausgang eines Schritts öffnet die Auswahl für den Schritt, der nach
-  diesem Ausgang kommt.
+  diesem Ausgang kommt. Führt der Ausgang schon zu einem Schritt, fragt die Auswahl, wohin
+  der neue gehört: **Insert before** setzt ihn in die Verbindung, **Add a parallel
+  branch** behält die Verbindung und lässt den neuen Schritt daneben laufen. Ein Ausgang,
+  der schon zu mehreren Schritten führt, nimmt nur einen weiteren Zweig auf.
 - **Rechtsklick** auf die Zeichenfläche: dieselbe Auswahl öffnet sich dort, wo Sie
   geklickt haben, und der Schritt landet dort. Darunter **Notiz hinzufügen** (Add a note) und, sobald
   etwas kopiert ist, **Einfügen** (Paste).
@@ -302,7 +309,9 @@ Version, ein Run und ein Vergleich zeigen die gespeicherte Größe ohne Anfasser
 ## Einen Knoten konfigurieren { #configuring-a-node }
 
 Was jeder Knoten tut, womit er konfiguriert wird und was seine Fehler bedeuten, steht
-in der [Knotenreferenz](reference/workflow-nodes.md).
+in der [Knotenreferenz](reference/workflow-nodes.md). Die Konsole benennt jeden Schritt, seine
+Ports und Einstellungen in der Sprache der lesenden Person; die Referenz, die API und ein
+exportierter Workflow behalten die englischen Namen.
 
 Ein Klick wählt einen Schritt aus, ein Doppelklick öffnet ihn über der Zeichenfläche. In einer veröffentlichten Version oder **View only** genügt ein Klick. Der Kopf zeigt den Namen und eine aufklappbare Zusammenfassung der fehlenden Einrichtung. Klappen Sie sie auf, um die Angaben zu prüfen; ein Feldname führt direkt zur Eingabe. Nach einem Test- oder Veröffentlichungsversuch öffnen sich die Validierungsdetails automatisch.
 
@@ -738,6 +747,12 @@ Graph noch Probleme, wird das Veröffentlichen mit **Fix the problems below befo
 publishing** blockiert, sodass eine Version, die nicht validieren würde, nie
 entsteht.
 
+Manches ist einen Blick wert, ohne falsch zu sein, und ein bernsteinfarbenes Zeichen am
+Schritt markiert es: ein Ergebnis von **Ask for approval**, das ins Leere führt, oder ein
+Schritt, der zwischen Ausgängen entscheidet, von denen keiner weiterführt. Der Run endet
+dort einfach. Der Veröffentlichungsdialog listet sie ebenfalls auf, aber sie blockieren
+nie einen Testlauf oder eine Veröffentlichung.
+
 Das Veröffentlichen beendet Ihr Bearbeiten nicht. Der Draft existiert weiter
 unabhängig von jeder veröffentlichten Version, sodass Sie ihn sofort weiter
 bearbeiten. **Versions** unter **More** in der Kopfzeile des Editors öffnet jede veröffentlichte
@@ -943,6 +958,13 @@ Schritt aber nicht genannt wird, sieht den Vorschlag schreibgeschützt, und eine
 einer geänderten Fassung entschiedene Anfrage trägt unter **Entschieden (Decided)** das Zeichen
 **Bearbeitet (Edited)**.
 
+Im Run selbst beginnt ein abgeschlossener Freigabeschritt damit, wer wann entschieden hat -
+**Genehmigt von** oder **Abgelehnt von** der Person mit der Uhrzeit - nur Entscheidung und
+Uhrzeit, wenn das Konto nicht mehr existiert oder die lesende Person keine Mitglieder sehen
+darf - über der Ausgabe des Schritts. Hat die
+freigebende Person den Vorschlag geändert, vergleicht **Änderungen anzeigen (Show changes)**
+beide Fassungen. Eine abgelaufene oder mit dem Run abgebrochene Anfrage sagt stattdessen das.
+
 Listet der Schritt **Ways to approve**, zeigt die Warteschlange statt **Approve** eine
 Schaltfläche je Weg, mit der Beschriftung, die ihr Autor geschrieben hat; **Reject**
 bleibt. Jeder Weg ist ein Ausgangsport des Schritts, der Workflow geht also über den
@@ -950,8 +972,11 @@ weiter, den die freigebende Person gedrückt hat, und die entschiedene Zeile nen
 Eine Bearbeitung geht mit jeder gedrückten Schaltfläche mit.
 
 
-In der Liste lautet die Version eines Testlaufs **Draft (test)** und die eines echten
-**Published**, und ein aus der Konsole oder über die HTTP-API gestarteter Lauf
+In der Liste lautet ein Test des ganzen Entwurfs **Draft (test)**, ein [Test eines
+einzelnen Schritts](#a-steps-data-pinning-and-testing-one-step) **Step test** mit dem Namen des Schritts und ein echter Lauf
+**Published**. **Version** zeigt nur Schritttests oder lässt sie weg.
+
+Ein aus der Konsole oder über die HTTP-API gestarteter Lauf
 lautet **Console or API**. **Status**, **Version**, **Started by** und **Started** (die letzte Stunde, der letzte Tag,
 die letzte Woche oder 30 Tage) grenzen die Läufe ein, und die Liste
 antwortet seitenweise; jeder Filter steht in der Adresse, sodass sich eine
@@ -1008,6 +1033,8 @@ geschrieben hat. In der Laufansicht stehen die Zeilen jedes Schritts unter ihm, 
 Reihenfolge des Schreibens. Ein Organisations-API-Schlüssel mit `workflows:view` liest
 sie ebenfalls, für Läufe öffentlichen Ursprungs: siehe [Das Log eines Workflows
 lesen](api.md#reading-a-workflows-log).
+
+Neue Quick-Log-Zeilen zeigen Standardnamen der Schritte in der Sprache des Lesers, auch im Dashboard. Der gespeicherte Run-Graph identifiziert Standardnamen, auch in älteren Zeilen. Eigene Bezeichnungen und Zeilen, deren gespeicherter Graph den Schritt nicht mehr identifiziert, behalten ihren gespeicherten Text.
 
 ### Alerts { #log-alerts }
 

@@ -111,6 +111,7 @@ from app.services.scorers import (
     rubric_hash,
     run_checks,
     score_trajectory,
+    verdict_schema,
 )
 from app.services.system_agent_runner import SystemAgentRunner
 from app.services.system_agents import SystemAgentService
@@ -865,12 +866,17 @@ class ScoringService:
                 key=JUDGE.key,
                 prompt=judge_prompt(case, answer, criteria, scale_max=scoring.judge.scale_max),
                 output_type=JudgeVerdict,
+                schema=verdict_schema(criteria, scale_max=scoring.judge.scale_max),
                 agent_id=scoring.judge.agent_id,
                 model_profile_id=scoring.judge.model_profile_id,
                 instructions=scoring.judge.instructions,
                 version_id=judge_version_id,
                 improvement_run_id=improvement_run_id,
                 knowledge_base_ids=await self._answering_bases(ctx, answer),
+            )
+        except NotFoundError as exc:
+            return Evaluation(
+                not_graded(criteria, skipped=True, code="judge_missing", reason=exc.message)
             )
         except SystemAgentUnavailableError as exc:
             skipped = not_graded(
@@ -888,14 +894,14 @@ class ScoringService:
             )
             return Evaluation(failed, await self._failed_pin(ctx, exc.run_id, criteria, scoring))
         except SystemAgentOutputError as exc:
-            said = " ".join(exc.answer.split())
+            said = " ".join(exc.answer.split()) or None
             failed = not_graded(
                 criteria,
                 skipped=False,
                 code="judge_output_invalid",
                 reason=exc.message,
                 run_id=exc.run_id,
-                said=said if len(said) <= _SAID else f"{said[:_SAID]}…",
+                said=said if said is None or len(said) <= _SAID else f"{said[:_SAID]}…",
             )
             return Evaluation(failed, await self._failed_pin(ctx, exc.run_id, criteria, scoring))
         grades = graded(

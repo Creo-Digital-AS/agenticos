@@ -1,5 +1,5 @@
 ---
-source_sha: "68958b7ea0a1"
+source_sha: "9a9b600834b2"
 ---
 
 # El catálogo de capabilities { #the-capability-catalog }
@@ -141,7 +141,7 @@ contabilidad. El modo de código mantiene esas paradas al cruzar el límite del 
 | `browser_use` | Navegador web | research | `browse_web`, `browser_open`, `browser_new_tab`, `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_read`, `browser_click`, `browser_type`, `browser_select`, `browser_scroll`, `browser_back` | `web:browse` | mediante el extra `browser` | delegada |
 | `computer_use` | Computer use | research | `computer_screenshot`, `computer_act`, `computer_apps`, `computer_save_screenshot` | `computer:use` | para un daemon | delegada |
 | `code_execution` | Cálculos | analysis | `run_python` | `code:execute` | — | tal cual |
-| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute` | `sandbox:execute` | para Daytona | delegada |
+| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute`, `select_project_workspace` | `sandbox:execute` | para Daytona | delegada |
 | `mirage` | Terminal virtual | analysis | `mirage_ls`, `mirage_read_file`, `mirage_glob`, `mirage_grep`, `mirage_write_file`, `mirage_edit_file`, `mirage_execute` | — | por carpeta, con el extra `mirage` | delegada |
 | `charts` | Gráficos | analysis | `create_chart` | — | — | tal cual |
 | `visuals` | Visuals | analysis | `draw`, `revise_visual`, `read_visual` | — | — | tal cual |
@@ -161,7 +161,7 @@ contabilidad. El modo de código mantiene esas paradas al cruzar el límite del 
 | `compaction` | Conversaciones largas | utility | ninguna, a propósito | — | — | sin efecto |
 | `media` | Imágenes fuera del historial | utility | ninguna, a propósito | — | — | sin efecto |
 | `tool_output_limits` | Límites de resultados de herramientas | utility | `read_tool_result` | — | — | tal cual |
-| `artifacts` | Aplicaciones | utility | `publish_artifact`, `read_artifact`, `list_artifacts`, `preview_artifact`, `share_artifact` | — | — | tal cual |
+| `artifacts` | Aplicaciones | utility | `publish_artifact`, `read_artifact`, `list_artifacts`, `preview_artifact`, `export_artifact`, `share_artifact` | — | — | tal cual |
 | `channel_tools` | Información del canal de chat | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history`, `send_channel_file` | — | — | no disponible |
 | `phone_calls` | [Llamadas telefónicas](../voice.md#telephone-calls) | channels | `get_phone_contact_policy`, `call_me`, `list_phone_transfer_contacts`, `transfer_phone_call`, `end_phone_call` | `endpoint_id` | — | — |
 | `ask_user` | Preguntar al usuario | utility | `ask_user_question` | — | — | en pantalla |
@@ -236,7 +236,7 @@ y que un eval retiene y registra:
 | `image_generation` | `generate_image` |
 | `memory_files` | `write_memory`, `edit_memory`, `delete_memory` |
 | `memory_mem0` | `remember` |
-| `sandbox` | `write_file`, `edit_file`, `execute` |
+| `sandbox` | `write_file`, `edit_file`, `execute`, `select_project_workspace` |
 | `visuals` | `draw`, `revise_visual`, `read_visual` |
 
 Todas las demás herramientas de arriba solo leen. Delegar cuenta como leer: las
@@ -358,7 +358,9 @@ búsqueda, así que cambian latencia y un poco de gasto por recuperación en
 preguntas difusas. `multi_query` además recupera una vez por consulta, una tras
 otra, y cada recuperación genera el embedding de su propia consulta —las
 variantes no se agrupan en una sola llamada de embedding—, así que mantén
-`query_analysis_max_variants` bajo para acotar la ramificación.
+`query_analysis_max_variants` bajo para acotar la ramificación. Si alguno de los
+modos compensa en un corpus lo decide una medición, no un valor por defecto: la
+[evaluación de recuperación](../retrieval-eval.md) los compara sobre esta documentación.
 
 Ambos modos usan el propio modelo del agente —no hay un modelo aparte que
 configurar— y su coste se mide contra el presupuesto del run como cualquier otra
@@ -436,7 +438,7 @@ archivos se gestionan bajo `/api/v1/context` y se vinculan a un agent por id
 Notas que un agent guarda por su cuenta entre conversaciones, indexadas por otra
 que él mismo mantiene. Donde `context` es una biblioteca que una persona escribe y
 vincula a muchos agents, la memoria es del propio agent: escribe con herramientas
-en mitad del run, y aquí no escribe nadie más. No se vincula por id: activar la
+en mitad del run. Una persona puede corregir sus propias notas en **Settings → Memory → Notes**, sin obtener acceso a notas ajenas. Las correcciones conservan la fecha de escritura original del agent y el estado de supresión, comprueban la revisión y generan una auditoría sin el contenido de la nota. No se vincula por id: activar la
 capability le da al agent sus notas.
 
 **`MEMORY.md` es el índice, y se le muestra al agent en cada petición.** Es una
@@ -1225,6 +1227,8 @@ que el tiempo y la memoria son los únicos límites que merece la pena fijar.
 
 ## Sandbox { #files-shell }
 
+`select_project_workspace` selecciona un proyecto accesible para los tools de archivos y shell hasta terminar el run. Sin identificador de proyecto, restaura el workspace original. Una continuación tras una aprobación conserva la selección; el siguiente turno empieza en el workspace original. La conversación permanece en su hilo. Cada operación vuelve a comprobar el acceso; las rutinas siguen limitadas a su fuente de proyecto revisada. Las evaluaciones aisladas no pueden seleccionar proyectos persistentes.
+
 `ls`, `read_file`, `glob`, `grep` — _lectura._
 `write_file`, `edit_file`, `execute` — _escritura y ejecución._
 
@@ -1458,7 +1462,7 @@ archivos y usar grep de texto; la búsqueda semántica con modelos no está habi
 El consentimiento debe terminar en el mismo navegador y con la misma cuenta
 iniciadora de AgenticOS.
 
-Los secretos del vault deben corresponder al propósito del backend; `custom` permite una integración propia de forma explícita. OneDrive y SharePoint aceptan una aplicación Entra con propósito `sharepoint`, y los servicios de Hugging Face aceptan `huggingface`. La publicación y la ejecución aplican la misma regla. Cada host de una lista de servidores PostgreSQL debe figurar en la lista permitida del despliegue. MongoDB y GridFS requieren un único host `mongodb://`: la plataforma fuerza `directConnection=true` y rechaza el descubrimiento SRV. Los remitentes de canales sin cuenta vinculada necesitan aprobación para cada herramienta Mirage, incluso las lecturas; al vincular la cuenta se aplica la política habitual de carpetas del autor.
+Los secretos del vault deben corresponder al propósito del backend; `custom` permite una integración propia de forma explícita. OneDrive y SharePoint aceptan una aplicación Entra con propósito `sharepoint`, y los servicios de Hugging Face aceptan `huggingface`. La publicación y la ejecución aplican la misma regla. Cada host de una lista de servidores PostgreSQL debe figurar en la lista permitida del despliegue. MongoDB y GridFS requieren un único host `mongodb://`: la plataforma fuerza `directConnection=true` y rechaza el descubrimiento SRV. Las ejecuciones en canales usan los ajustes habituales de aprobación del autor para el vínculo Mirage y cada herramienta, también para remitentes sin cuenta vinculada.
 
 Los montajes PostgreSQL requieren una contraseña no vacía en el DSN de la bóveda; no se admiten contraseñas vacías ni autenticación sin contraseña. No recurren a `PGPASSWORD` ni a `.pgpass`. Se rechazan los parámetros DSN que apuntan a archivos de credenciales o TLS del host (`passfile`, `servicefile`, `sslkey`, `sslcert`, `sslrootcert`, `sslcrl`).
 
@@ -1580,8 +1584,13 @@ Lee un texto en voz alta con el provider de voz que elige el autor y se comporta
 como la generación de imágenes: el clip se guarda, aparece en la conversación como
 reproductor y se escribe en `output/` cuando hay un workspace abierto (#2259).
 
+Los valores de la organización son opcionales. En **Organización → AI & services → Text to speech**, un administrador guarda provider, modelo, voz y clave del vault visible para la organización como un grupo. El agente solo lo hereda cuando su autor activa **Use organization defaults**; los agentes existentes conservan su configuración. Un run en espera conserva el grupo resuelto aunque cambien los valores. Desactivar el TTS de la organización o revocar la clave sigue impidiendo generar voz. La configuración propia del agente usa conjuntamente su provider y su clave.
+
+El catálogo HTTP incluye Eleven v4 mediante su endpoint text-to-dialogue, con fragmentos de hasta 2000 caracteres, además de Eleven v3 y Flash v2. Los modelos conversacionales exclusivos de WebSocket requieren otro transporte y no se ofrecen para generar clips.
+
 | Configuración | Por defecto | Valores |
 | --- | --- | --- |
+| `use_organization_defaults` | `false` | Heredar conjuntamente provider, modelo, voz y clave de la organización; en caso contrario usar este binding |
 | `provider` | `openai` | `openai`, `elevenlabs`, `google` |
 | `model` | `gpt-4o-mini-tts` | Los modelos de ese provider, de `app/core/catalog/text_to_speech_models.json` |
 | `voice` | la primera del modelo | La voz por defecto del agente; puede cambiarla en cada clip dentro de `voices`. Una voz del catálogo para OpenAI y Gemini; un id de tu propia biblioteca de voces para ElevenLabs |
@@ -1801,8 +1810,38 @@ eran más pequeños al empezar la tarea. El parche se guarda hasta 256 KiB y 500
 **Quién lee el diff.** Se guarda con la conversación y se lee con el mismo acceso
 que su transcripción, así que lo ve quien pueda leer el chat; borrar el chat lo
 borra. En una sandbox que comparten varios chats, una tarea que se ejecuta a la vez
-que otra ve también los cambios de esa en su diff. Todavía no se ofrece revertir
-una tarea, y una tarea en este ordenador no registra diff.
+que otra ve también los cambios de esa en su diff. Una tarea en este ordenador no registra diff.
+
+**Revertir esta tarea.** Las tareas nuevas pueden restaurar archivos regulares
+solo si su snapshot completo se capturó en un workspace aislado de conversación.
+Los snapshots con ámbito de proyecto, agente, canal o usuario siguen siendo de
+solo lectura, porque pueden incluir trabajo de otra conversación. Necesitas
+acceso de edición actual y ningún run debe estar escribiendo en el workspace.
+El contenido y modo ejecutable de cada archivo deben coincidir con el estado
+final de la tarea. Un conflicto rechaza toda la reversión e indica los archivos.
+Los demás archivos, el índice de Git y su historial permanecen sin cambios.
+
+La reversión no está disponible si cualquiera de los snapshots encuentra un
+archivo demasiado grande sin capturar, una ruta ilegible o un tipo de archivo no
+compatible, aunque la ruta parezca no haber cambiado. El diff capturado sigue
+visible. Las carpetas de la plataforma y las herramientas quedan fuera del alcance
+de los snapshots por diseño.
+
+La acción encola un trabajo duradero y reserva el workspace. El panel muestra el
+progreso y los rechazos confirmados. Un resultado desconocido conserva la reserva;
+**Reintentar reversión** comprueba antes de escribir si los archivos ya se
+restauraron. Así, un fallo o una respuesta perdida no aplica la reversión dos
+veces. El worker vuelve a comprobar el acceso y registra el éxito en la auditoría.
+
+La reversión restaura solo archivos; conserva la conversación y el informe.
+Requiere Git y Python 3 y rechaza snapshots truncados, redactados, antiguos de
+solo visualización, archivos enlazados y archivos actuales de más de 2 MiB. No
+sustituye un workspace eliminado o trasladado.
+
+**Número de archivos cambiados.** El panel y el pie del mensaje usan el conjunto
+de cambios guardado, incluidas las ediciones del shell y el número de archivos
+omitidos por el límite. Solo una tarea sin conjunto de cambios usa la lista del
+harness; los informes nuevos expresan esas rutas respecto al workspace.
 
 **Las tareas de una conversación continúan una sesión.** El id de sesión del harness
 se guarda en la sandbox junto al trabajo, en `.agenticos/coding-agent/`, uno por
@@ -1958,6 +1997,8 @@ de bibliotecas del despliegue, que ahora incluye three.js, Mermaid y Leaflet, y 
 propia ruta de teselas del despliegue. Consulte [Visuals](../artifacts.md#visuals).
 
 ## Aplicaciones { #artifacts }
+
+`export_artifact` guarda la versión publicada actual como PDF real en el workspace. Usa el renderer aislado, admite informes A4 y presentaciones web 16:9, conserva las comprobaciones de acceso y audiencia de la vista previa y rechaza datos vinculados no disponibles. Requiere configurar el renderer y el extra `browser`. Los archivos tienen nombres únicos y un límite de 50 páginas y 20 MB. Consulta los [recursos de diseño](../skills.es.md#design-resources).
 
 `publish_artifact` — _Publica una página terminada — un informe, un pequeño
 dashboard, un resumen — bajo un enlace estable._
@@ -2728,12 +2769,18 @@ Resumir convierte tokens de entrada en tokens de salida, que se facturan más ca
 se generan en serie, así que a un agent cuyos runs están dominados por resultados de
 herramienta grandes le suele ir mejor con `tiered`.
 
-**Alcanza un run, no una conversación.** Entre turnos el historial se reconstruye
-desde la transcripción como texto de usuario y de asistente, así que las llamadas de
-herramienta y sus resultados no están ahí para compactarse y ninguna edición hecha
-aquí sobrevive a la frontera de un turno. El historial que merece la pena compactar
-es el largo bucle de herramientas dentro de un solo run, donde un listado de
-directorio o una búsqueda de conocimiento son decenas de miles de tokens.
+**El historial se conserva entre turnos.** Cada turno completado guarda mensajes
+del modelo, incluidas llamadas, resultados y descubrimientos de búsqueda de
+herramientas local o nativa. La compactación trabaja sobre ese mismo historial;
+su resumen permanece en el turno siguiente.
+
+Se conservan como máximo 200 mensajes del modelo y 2 MiB de historial serializado.
+Los mensajes antiguos se eliminan sin separar llamadas de sus resultados. Un aviso
+indica al modelo que vuelva a descubrir herramientas o a leer las pruebas que
+falten. Los descubrimientos caducan al eliminarse su registro. Las definiciones,
+la disponibilidad, los permisos y las aprobaciones actuales siguen aplicándose
+en cada run. Las aprobaciones pendientes usan un estado de reanudación separado;
+el historial no vuelve a ejecutar acciones.
 
 **El disparador es una fracción porque un número absoluto solo es correcto para un
 modelo**, y el mismo agent se ejecuta con el perfil al que apunte su spec. La ventana
@@ -2802,14 +2849,11 @@ vienen de
 | --- | --- | --- |
 | `threshold_bytes` | 32768 | 1 KiB–10 MiB; las partes de ese tamaño o mayores se guardan fuera del historial |
 
-**Hay un sitio donde los medios se acumulan de verdad, y es este.** Un adjunto
-llega al modelo una vez, en el turno en que se adjuntó: el historial ordinario se
-reconstruye a partir del _texto_ de la transcripción, así que una imagen no se
-reenvía. La excepción es una conversación [compactada](#context-management) —
-entonces el volcado que hace la propia biblioteca de los mensajes del run se
-guarda entero y se reproduce exactamente como el modelo lo vio por última vez,
-base64 incluido, hasta que el siguiente resumen lo sustituye. Ese blob son filas
-en Postgres y bytes en el cable, en cada turno intermedio.
+**Los adjuntos pueden conservarse en turnos posteriores.** Los turnos completados
+retienen mensajes del modelo, incluidas imágenes, dentro de los límites del
+historial. La descarga de medios se aplica tanto al guardado ordinario como a
+los historiales compactados. Las capturas efímeras del escritorio se sustituyen
+por un aviso antes del guardado.
 
 **Dónde van los bytes, y cuánto viven.** Al propio almacenamiento de ficheros del
 despliegue, en `media/<organización>/<conversación>/<digest>`. La organización es
@@ -3117,6 +3161,8 @@ través de la API HTTP, así que su modelo debe admitir streaming.
 censurado llega al modelo limpio, pero la conversación guarda el mensaje tal como lo
 escribió la persona, datos personales incluidos. Quien pueda leer la conversación
 puede leer ese mensaje.
+
+La transcripción para personas conserva el registro original de auditoría. Se guarda otra copia censurada, incluida la descripción de adjuntos, para el historial del modelo y las citas. Los turnos posteriores conservan esa copia aunque después se desactive la censura de entrada. El historial antiguo se revisa antes de gestionar el contexto del run; los turnos bloqueados siguen usando el marcador de rechazo.
 
 **El borde de entrada revisa un adjunto antes de escribirlo.** Un archivo adjunto
 llega al prompt como su nombre, su ruta y sus primeras 20 líneas (como máximo 2.000
@@ -3512,10 +3558,24 @@ Una decisión puede guardar pruebas estructuradas: situación, elección, altern
 
 En **Ajustes → Memoria**, lee las pruebas y registra un resultado observado mediante una corrección. La corrección añade un registro; el episodio anterior y su procedencia permanecen en el historial. La consolidación determinista no convierte episodios en reglas generales. El borrado elimina su contenido junto con los registros; la exportación de datos personales lo incluye.
 
-**Preparar caso Improve** abre una entrada y una respuesta esperada editables. Revisa el texto, elimina lo que deba permanecer privado y aprueba expresamente la descarga de un registro JSONL. Los campos `input`, `reference_answer`, `tags` y `note` corresponden al importador de [Improve PR #2172](https://github.com/vstorm-co/agenticos/pull/2172). Importa el archivo en un conjunto Improve cuando esa función esté instalada, evalúalo y acepta/publica los cambios allí. Esta exportación no crea un conjunto, no ejecuta un optimizador ni publica instrucciones automáticamente.
+**Añadir como caso de Improve** abre una entrada y una respuesta esperada editables y pregunta a qué dataset añadirlas; se ofrece a un miembro que puede editar datasets. Revisa el texto, quita lo que deba seguir siendo privado y aprueba explícitamente añadirlo. El caso lleva la etiqueta `decision-episode`, te registra como la persona que preguntó y enlaza el run y la conversación de los que procede el episodio mientras existan, así que borrarte lo anonimiza como cualquier caso tomado de tus conversaciones. Evalúalo y acepta o publica los cambios en Improve. Añadirlo no ejecuta un optimizador ni publica instrucciones automáticamente.
 
 La elección de acceso local pertenece al agente seleccionado, no a un valor global heredado por otros agentes. Revocar una carpeta también elimina las elecciones guardadas y los consentimientos de programación de sus subcarpetas. Las aplicaciones de escritorio antiguas conservan el consentimiento para todo el equipo solo en una conversación; actualiza la aplicación para reutilizarlo en las conversaciones del mismo agente.
 
 La corrección `[session:api] Usa las cifras de la UE` llega a la sesión `api`. Con una sola sesión activa, también recibe las correcciones sin destinatario; con varias, estas quedan para el agente principal para no modificar otra tarea. El agente principal registra la corrección una vez cuando continúa.
 
 Las tareas de programación en sandbox del mismo conjunto de herramientas se ejecutan en secuencia para evitar que se superpongan sus instantáneas de archivos; las sesiones locales independientes siguen en paralelo.
+
+
+## Aplicaciones de chat conectadas (`channel_actions`) { #connected-chat-apps-channel_actions }
+
+Permisos explícitos del bot para encontrar canales, buscar mensajes y entregar informes solicitados desde cualquier ejecución.
+
+| Herramienta | Acción |
+| --- | --- |
+| `list_chat_connections` | Identificadores de bots, permisos y destino actual |
+| `find_chat_channels` | Metadatos de canales del bot con paginación |
+| `read_chat_messages` | Historial limitado con filtros |
+| `send_chat_message` | Mensaje o informe solicitado en una publicación nueva o un hilo existente |
+
+Cada operación vuelve a comprobar la pertenencia a la organización, acceso al agente, vinculación y bot activos, además de pertenencia al canal y correspondencia del hilo. No se une a canales ni utiliza bots de otros agentes. La búsqueda y el historial devuelven páginas limitadas con cursores; una página sin coincidencias no es el final si hay cursor. Los fallos del proveedor son rechazos, no resultados vacíos. Los envíos siguen la política de aprobación; una entrega no confirmada debe comprobarse antes de reintentarse. Las demás plataformas conservan sus herramientas de conversación; las acciones entre canales solo se ofrecen donde el adaptador verifica la pertenencia.

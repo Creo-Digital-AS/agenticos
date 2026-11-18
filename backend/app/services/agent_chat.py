@@ -60,6 +60,7 @@ from app.db.models.chat_file import ChatFile
 from app.db.models.organization import Organization
 from app.db.models.user import User
 from app.repositories import conversation_repo, member_repo
+from app.schemas.conversation import HistoryCheckpointFrontier, HistoryProvenance
 from app.schemas.mention import MentionRef
 from app.services import change_feed
 from app.services.agent_runner import (
@@ -73,12 +74,21 @@ from app.services.agent_runner import (
     input_screen_for,
 )
 from app.services.attachments import AttachmentRouter
-from app.services.conversation import check_history_snapshot, model_context_check
+from app.services.conversation import (
+    ConversationService,
+    check_history_snapshot,
+    model_context_check,
+)
 from app.services.device_hub import LocalTarget
 from app.services.mentions import MentionService, ResolvedMentions
-from app.services.message_history import ModelHistory
+from app.services.message_history import (
+    ModelHistory,
+    bounded_stored_history,
+    without_standing_instructions,
+)
 from app.services.run_heartbeat import run_heartbeat
 from app.services.sandbox_workspace import SandboxWaitSink
+from app.services.screened_replay import screen_history, screened_copy
 from app.services.usage_report import UsageReport, UsageReportService, context_fill
 
 logger = logging.getLogger(__name__)
@@ -374,8 +384,12 @@ class ChatTurn:
     history_revision: int | None = None
     """The input snapshot's refusal revision; absent for unversioned caller histories."""
 
-    summarized_history: list[dict[str, Any]] | None = None
-    """The history a summary reduced this turn to, or `None` if none ran.
+    history_frontier: HistoryCheckpointFrontier | None = None
+    history_provenance: HistoryProvenance | None = None
+    """The original checkpoint and transcript frontier this turn actually read."""
+
+    history_snapshot: list[dict[str, Any]] | None = None
+    """The bounded model history after a completed turn; absent while parked.
 
     Carried out rather than written here because the surface writes the turn's
     own rows *after* this returns, and what is recorded alongside it is how far
@@ -599,6 +613,8 @@ class ChatAgentRunner:
         # This runner is the console's, which draws a draft as a card.
         prepared.deps.shows_drafts = True
         input_edge = input_screen_for(prepared.spec)
+        replay_prompt = _as_text(user_input)
+        replay_attachments: str | None = None
         if steering is not None:
             steering.screen = input_edge
         # Before the model answers, not after: the model is about to say it cannot
@@ -640,6 +656,7 @@ class ChatAgentRunner:
                 screen=input_edge,
             )
             user_input = await router.build_prompt(_as_text(user_input), attachments)
+            replay_attachments = router.context or None
             # Kept on the prompt's row so the next turn's history still carries
             # the file - it is otherwise in this one request and nowhere else.
             if router.context and prompt_message_id is not None and conversation_id is not None:
@@ -655,8 +672,9 @@ class ChatAgentRunner:
         error: str | None = None
         paused: PausedRunState | None = None
         budget_scope: BudgetScope | None = None
+        budget: BudgetExceeded | None = None
         output = ""
-        summarized: list[dict[str, Any]] | None = None
+        history_snapshot: list[dict[str, Any]] | None = None
         # Set as the last statement of the `try`, so it is True only when this run
         # completed or parked without raising. It is what the terminal write below
         # reads to decide whether a persistence failure should surface or be
@@ -667,8 +685,24 @@ class ChatAgentRunner:
         finished_cleanly = False
         # The transaction ends before the model is asked anything - the same
         # boundary `AgentRunnerService._run` sets, and for its reasons (#12).
-        prepared.model_context_check = model_context_check(conversation_id, message_history)
+        model_content = screened_copy(replay_prompt, replay_attachments, input_edge)
+        if (
+            model_content is not None
+            and prompt_message_id is not None
+            and conversation_id is not None
+        ):
+            await conversation_repo.set_model_content(
+                self.db,
+                message_id=prompt_message_id,
+                conversation_id=conversation_id,
+                content=model_content,
+            )
         try:
+            message_history = await ConversationService(self.db).history_for_provenance(
+                message_history, prepared.history_provenance
+            )
+            message_history = screen_history(message_history, input_edge)
+            prepared.model_context_check = model_context_check(conversation_id, message_history)
             if isinstance(message_history, ModelHistory):
                 await check_history_snapshot(self.db, conversation_id, message_history)
             await self.db.commit()
@@ -682,13 +716,18 @@ class ChatAgentRunner:
                 await stream(agent_run)
 
             result = _outcome(agent_run)
-            # Before the branch, so a turn that parked on an approval keeps its
-            # summary too: the resume replays the parked state, but the *next*
-            # turn reads the conversation and would otherwise summarise again.
-            if prepared.built.context.summarized:
-                summarized = await offloaded_history(
-                    prepared.built.capabilities,
-                    dump_messages(result.all_messages()),
+            # Parked runs retain their separate resume state. Conversation history
+            # is checkpointed only after a completed turn, without replayable actions.
+            if not isinstance(result.output, DeferredToolRequests) and not prepared.shared_history:
+                history_snapshot = bounded_stored_history(
+                    await offloaded_history(
+                        prepared.built.capabilities,
+                        dump_messages(
+                            without_standing_instructions(
+                                result.all_messages(), channel_authors=prepared.channel_authors
+                            )
+                        ),
+                    )
                 )
             status, output, _structured, paused = _classify_output(
                 result,
@@ -696,6 +735,10 @@ class ChatAgentRunner:
                 history_revision=message_history.revision
                 if isinstance(message_history, ModelHistory)
                 else None,
+                history_frontier=message_history.frontier
+                if isinstance(message_history, ModelHistory)
+                else None,
+                history_provenance=prepared.history_provenance,
             )
             if paused is not None:
                 paused.tool_identities = dict(prepared.built.deps.tool_identities)
@@ -713,6 +756,7 @@ class ChatAgentRunner:
             status = RunStatus.BUDGET_EXCEEDED
             error = str(exc)
             budget_scope = exc.scope
+            budget = exc
             logger.info("Chat run %s stopped by budget: %s", prepared.run.id, exc)
             raise
         except GuardrailBlocked as exc:
@@ -753,6 +797,7 @@ class ChatAgentRunner:
                     error=error,
                     paused_state=paused,
                     budget_scope=budget_scope,
+                    budget=budget,
                 )
                 if prepared.run.status == RunStatus.FAILED.value:
                     status = RunStatus.FAILED
@@ -781,13 +826,21 @@ class ChatAgentRunner:
             agent_id=prepared.agent.id,
             agent_version_id=prepared.run.agent_version_id,
             run_id=prepared.run.id,
-            parked=tuple(prepared.approvals.requested),
+            parked=tuple(
+                entry
+                for entry in prepared.approvals.requested
+                if str(entry.approval_id) in prepared.approvals.parked
+            ),
             questions=tuple(paused.questions) if paused is not None else (),
             mcp_origins=prepared.mcp_origins,
             draft_tools=draft_tool_names(prepared.spec),
             usage=await self._usage(ctx, prepared),
-            summarized_history=summarized,
+            history_snapshot=history_snapshot,
+            history_provenance=prepared.history_provenance,
             history_revision=message_history.revision
+            if isinstance(message_history, ModelHistory)
+            else None,
+            history_frontier=message_history.frontier
             if isinstance(message_history, ModelHistory)
             else None,
             overhead_tokens=prepared.built.context.overhead,

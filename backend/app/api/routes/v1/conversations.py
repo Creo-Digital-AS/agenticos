@@ -17,6 +17,7 @@ from app.api.deps import (
     VisualSvc,
     WorkspaceSvc,
     key_needs,
+    limit_coding_revert,
     limit_fork,
     require,
 )
@@ -83,7 +84,20 @@ async def get_coding_task_change(change_id: UUID, service: CodingTaskChangeSvc, 
     whoever may read the conversation the task ran in - the transcript's own
     check - and missing (404) for anybody else, in this organization or another.
     """
-    return await service.get(ctx, change_id)
+    return await service.read(ctx, change_id)
+
+
+@router.post(
+    "/coding-changes/{change_id}/revert",
+    dependencies=[Depends(limit_coding_revert)],
+    response_model=CodingTaskChangeRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def revert_coding_task_change(
+    change_id: UUID, service: CodingTaskChangeSvc, ctx: Auth
+) -> Any:
+    """Queue a recoverable task revert; read its change set to follow the outcome."""
+    return await service.revert(ctx, change_id)
 
 
 @router.get("/shared-with-me", response_model=ConversationList)
@@ -394,17 +408,22 @@ async def delete_conversation(
     ctx: Auth,
 ) -> None:
     """Delete a conversation and all its messages."""
+    await conversation_service.lock_for_deletion(
+        conversation_id,
+        organization_id=active_org.id,
+        user_id=current_user.id,
+        ctx=ctx,
+    )
+    # Read workspace refs before the conversation delete flushes their cascade.
+    # The purge queues remote destruction after commit, so a later refusal or
+    # rollback cannot delete the files of a restored conversation.
+    await workspaces.purge_for_conversation(ctx, conversation_id=conversation_id)
     await conversation_service.delete_conversation(
         conversation_id,
         organization_id=active_org.id,
         user_id=current_user.id,
         ctx=ctx,
     )
-    # The rows would cascade away with the conversation, but a container-backed
-    # workspace lives outside this database and would sit on the host until its
-    # TTL swept it - holding files whose conversation the user just deleted. Only
-    # this platform knows the conversation is gone.
-    await workspaces.purge_for_conversation(ctx, conversation_id=conversation_id)
 
 
 @router.post(

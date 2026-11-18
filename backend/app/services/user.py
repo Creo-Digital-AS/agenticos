@@ -42,14 +42,12 @@ from app.db.models.organization import Organization
 from app.db.models.user import User
 from app.db.updates import writable
 from app.repositories import (
-    collection_teardown_repo,
     conversation_repo,
     knowledge_base_repo,
     member_repo,
     organization_repo,
     organization_secret_repo,
     personal_data_repo,
-    rag_document_repo,
     session_repo,
     user_repo,
 )
@@ -61,7 +59,6 @@ from app.schemas.user import (
     UserUpdate,
 )
 from app.services import rate_limit
-from app.services.collection_access import CollectionAccessService
 from app.services.deployment_settings import DeploymentSettingsService
 from app.services.email.service import get_email_service
 from app.services.file_storage import avatar_filename, delete_files_best_effort, get_file_storage
@@ -69,7 +66,6 @@ from app.services.generated_media import GeneratedMediaService
 from app.services.organization import OrganizationService
 from app.services.personal_data import PersonalDataService
 from app.services.signup_policy import check_may_register
-from app.worker.jobs import BasePurge
 
 if TYPE_CHECKING:
     from app.services.rag.vectorstore import BaseVectorStore
@@ -758,6 +754,7 @@ class UserService:
         # cascade would leave those rows with no conversation and the bytes
         # readable by the organization. After `_release_owned_rows`, so a project
         # chat the person started - kept for the team - keeps its media too.
+        await conversation_repo.invalidate_author_checkpoints(self.db, user_id=user_id)
         await GeneratedMediaService(self.db).forget_user(user_id)
         await PersonalDataService(self.db).purge(user_id)
         await user_repo.delete(self.db, user_id)
@@ -960,7 +957,9 @@ class UserService:
            documents, the order `OrganizationService.purge` locks them in, and
            deleting the documents first inverted it (#2638);
         3. the user rows (`_lock_user_rows`), `NOWAIT`;
-        4. the names of bases created while this waited (`_hold_late_names`).
+        4. conversations the person owns or authored, `NOWAIT`, before their checkpoints
+           are invalidated and their author references disappear;
+        5. the names of bases created while this waited (`_hold_late_names`).
 
         The user rows are never waited for while the organization is held, nor
         the organization while a user row is. A write for this person takes both
@@ -1012,6 +1011,9 @@ class UserService:
                     for org in sorted(personal_orgs, key=lambda org: org.id):
                         await organization_repo.get_by_id_for_update(self.db, org.id)
                     locked = await self._lock_user_rows(user_id, app_admins=app_admins, nowait=True)
+                    # A message insert locks its conversation before its author FK.
+                    # Never wait for that history while holding the user row.
+                    await conversation_repo.lock_authored_histories(self.db, user_id=user_id)
                     await self._hold_late_names(user_id, personal_orgs, names)
             except DBAPIError as failed:
                 if getattr(failed.orig, "sqlstate", None) != LOCK_NOT_AVAILABLE:
@@ -1092,38 +1094,14 @@ class UserService:
         only when no other base claims the name; it is not tenant-unique, so two
         bases can share one.
         """
-        storage_paths: list[str] = []
-        collections_to_drop: list[str] = []
-        base_purges: list[BasePurge] = []
-        # Sorted by name so this loop, `_lock_account` and
-        # `OrganizationService.purge` - the paths that take several teardown locks in
-        # one transaction - acquire any shared name (#913) in one order, and cannot
-        # invert into a teardown-vs-teardown deadlock (#1387). On account deletion the
-        # names are already held here, taken by `_lock_account`.
+        from app.services.knowledge_base import KnowledgeBaseService
+
         personal = await knowledge_base_repo.list_personal_by_owner(self.db, user_id)
         ordered = sorted(personal, key=lambda kb: kb.collection_name)
-        # Acquire every name before source rows: an edit assigning a source to
-        # the next name may already hold that name while waiting for its row.
         for collection in dict.fromkeys(kb.collection_name for kb in ordered):
             await hold_name(self.db, LockScope.COLLECTION_TEARDOWN, collection)
         for kb in ordered:
-            collection = kb.collection_name
-            storage_paths.extend(await rag_document_repo.delete_by_knowledge_base(self.db, kb.id))
-            await CollectionAccessService(self.db).detach_sources_targeting(kb)
-            await knowledge_base_repo.delete(self.db, kb.id)
-            if await knowledge_base_repo.list_by_collection_name(self.db, collection):
-                # The table stays for the base still holding the name, so this
-                # base's chunks are deleted by its id instead (#2537).
-                base_purges.append(BasePurge(collection=collection, knowledge_base_id=kb.id))
-            else:
-                collections_to_drop.append(collection)
-                await collection_teardown_repo.reserve(self.db, collection)
-        if storage_paths or collections_to_drop or base_purges:
-            from app.worker.tasks.teardown_tasks import queue_external_state_cleanup
-
-            await queue_external_state_cleanup(
-                self.db, storage_paths, collections_to_drop, base_purges=base_purges
-            )
+            await KnowledgeBaseService(self.db).purge(kb)
 
     async def admin_update(
         self, user_id: UUID, user_in: UserUpdate, *, acting_admin_id: UUID

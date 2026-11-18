@@ -95,6 +95,7 @@ async def create_run(
     key_scopes: list[str] | None = None,
     inline_result_bytes: int = 0,
     entry_node_id: UUID | None = None,
+    tested_step_node_id: UUID | None = None,
 ) -> WorkflowRun:
     # `root_run_id` is NOT NULL, so it must be known before the first
     # `INSERT` - not filled in after a flush "mints" the id, which never gets
@@ -110,6 +111,7 @@ async def create_run(
         workflow_version_id=workflow_version_id,
         draft_graph_snapshot=draft_graph_snapshot,
         entry_node_id=entry_node_id,
+        tested_step_node_id=tested_step_node_id,
         mode=mode,
         triggered_by=triggered_by,
         public_origin=public_origin,
@@ -274,6 +276,12 @@ async def list_runs(
             where.append(WorkflowRun.status.in_([item.value for item in filters.statuses]))
         if filters.mode is not None:
             where.append(WorkflowRun.mode == filters.mode.value)
+        if filters.step_test is not None:
+            where.append(
+                WorkflowRun.tested_step_node_id.is_not(None)
+                if filters.step_test
+                else WorkflowRun.tested_step_node_id.is_(None)
+            )
         if filters.triggered_by is not None:
             where.append(WorkflowRun.triggered_by == filters.triggered_by.value)
         if filters.created_after is not None:
@@ -1436,6 +1444,7 @@ async def create_outbox(
     workflow_run_id: UUID,
     node_run_id: UUID,
     available_at: datetime | None = None,
+    delay: timedelta | None = None,
 ) -> DispatchOutbox:
     """Insert a dispatch row. Raises `IntegrityError` if one is already live.
 
@@ -1443,24 +1452,32 @@ async def create_outbox(
     failure wrap this in `db.begin_nested()`, the same savepoint shape
     `UserService.confirm_email_change` uses for its own race.
 
-    `available_at=None` means due now by the database's own clock - the clock
-    `claim_outbox` compares against - so an application host running slightly
-    ahead of the database cannot write a row that is not yet claimable when
-    its job arrives.
+    With neither `available_at` nor `delay` the row is due now by the database's
+    own clock - the clock `claim_outbox` compares against - so an application
+    host running slightly ahead of the database cannot write a row that is not
+    yet claimable when its job arrives. `delay` is measured on that clock too: a
+    retry's backoff waits as long as it says whatever the host's clock reads.
+    `available_at` is an absolute time, such as a Wait step's, and is kept as
+    given.
 
     `submitted_at` is when the row's job is due to run - now, or `available_at`
     when later - for the caller (`dispatch_queue.queue_dispatch`) queues that job
     in the same transaction. The poll then looks only at rows still pending a
     lease after they came due.
     """
+    due: datetime | ColumnElement[datetime]
+    if delay is not None:
+        due = func.clock_timestamp() + literal(delay, Interval())
+    elif available_at is not None:
+        due = available_at
+    else:
+        due = func.now()
     outbox = DispatchOutbox(
         organization_id=organization_id,
         workflow_run_id=workflow_run_id,
         node_run_id=node_run_id,
-        available_at=func.now() if available_at is None else available_at,
-        submitted_at=func.now()
-        if available_at is None
-        else func.greatest(func.now(), available_at),
+        available_at=due,
+        submitted_at=func.greatest(func.now(), due),
     )
     db.add(outbox)
     await db.flush()
@@ -1468,8 +1485,13 @@ async def create_outbox(
     return outbox
 
 
+async def database_time(db: AsyncSession) -> datetime:
+    """The database's clock now - the one a lease is written and checked against."""
+    return (await db.execute(select(func.clock_timestamp()))).scalar_one()
+
+
 async def claim_outbox(
-    db: AsyncSession, *, node_run_id: UUID, token: UUID, lease_expires_at: datetime
+    db: AsyncSession, *, node_run_id: UUID, token: UUID, lease_seconds: float
 ) -> DispatchOutbox | None:
     """The compare-and-swap claim: a `pending` row, or a `claimed` one whose lease expired.
 
@@ -1484,6 +1506,11 @@ async def claim_outbox(
     instant its worker died mid-lease. `available_at <= now()` keeps a
     scheduled-but-not-yet-due retry from being claimed early by a direct wake
     racing the poller.
+
+    The lease ends `lease_seconds` after the database's clock, the one every
+    expiry check reads: an application host whose clock runs ahead or behind
+    would otherwise hand out a lease that is already over, or one that outlives
+    its holder.
     """
     result = await db.execute(
         sql_update(DispatchOutbox)
@@ -1498,7 +1525,8 @@ async def claim_outbox(
         )
         .values(
             claimed_by=token,
-            lease_expires_at=lease_expires_at,
+            lease_expires_at=func.clock_timestamp()
+            + literal(timedelta(seconds=lease_seconds), Interval()),
             status=DispatchOutboxStatus.CLAIMED.value,
         )
         .returning(DispatchOutbox)
