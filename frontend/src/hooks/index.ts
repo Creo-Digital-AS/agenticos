@@ -13,7 +13,11 @@ export {
 export { useAdminOrganizationDetail } from "./use-admin-organization-detail";
 export { useWebSocket } from "./use-websocket";
 export { useChat } from "./use-chat";
-export { useCodingChanges } from "./use-coding-changes";
+export {
+  useCodingChanges,
+  useCodingChangeSets,
+  useRevertCodingChanges,
+} from "./use-coding-changes";
 export { useConversationWorkspace } from "./use-conversation-workspace";
 export { useConversationSearch, useConversations } from "./use-conversations";
 export { useConversationShares } from "./use-conversation-shares";
@@ -94,7 +98,7 @@ export {
 } from "./use-model-providers";
 export { useDeploymentSettings } from "./use-deployment-settings";
 export { useBrandingNotice } from "./use-branding-notice";
-export { useTables, useTable, useAllTables } from "./use-tables";
+export { useTables, useTable, useAllTables, useTableRecord } from "./use-tables";
 export { useTableRecords } from "./use-table-records";
 export { useTableRecordCount, useTableRecordPages } from "./use-table-record-pages";
 export { useTableViews, useTableDefaultView } from "./use-table-views";
@@ -122,6 +126,7 @@ export {
   useRunTranscript,
   useSpend,
 } from "./use-runs";
+export { useStopParkedRun } from "./use-stop-parked-run";
 export {
   useAgentAttention,
   usePeopleUsage,
@@ -208,3 +213,5 @@ export { useWikiGraph } from "./use-wiki-graph";
 export { useDurableTasks } from "./use-durable-tasks";
 
 export { useCodingAccounts } from "./use-coding-accounts";
+
+export { usePersonalModelKeys } from "./use-personal-model-keys";

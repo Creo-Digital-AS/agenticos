@@ -1,5 +1,5 @@
 ---
-source_sha: "66ff628633d4"
+source_sha: "ef824da65bb6"
 ---
 
 # Governance { #governance }
@@ -47,6 +47,25 @@ ein Alert, die niemals aufhören.
 Ein Event-Trigger fügt an seinem Rand eine weitere Ablehnung hinzu: ein Webhook,
 dessen Signatur sich nicht gegen das eigene Secret des Triggers verifizieren
 lässt, ist ein 403, der den Runner überhaupt nie erreicht.
+
+GitHub-Routinen zeigen beim Erstellen und Bearbeiten von Issue-, Pull-Request-
+und Kommentar-Triggern einen Autorenfilter. **Repository-Mitglieder (Standard)**
+lässt `OWNER`, `MEMBER` und `COLLABORATOR` zu; **Mitglieder und Beitragende**
+zusätzlich `CONTRIBUTOR`. **Alle** umfasst erstmalig Beitragende und andere
+Meldende. Dies sind GitHub-Autorenzuordnungen, keine AgenticOS-Organisationsrollen.
+Bots und ein ausdrücklich ausgeschlossener verbundener Login bleiben bei jeder
+Option gesperrt. Der Autorenfilter gilt nicht für Pushes, Workflow-Runs oder
+Releases. Bestehende Routinen behalten ihre Richtlinie; fehlt `authors` in der
+Konfiguration, gilt weiterhin `members`.
+
+Im Verlauf der Routine sieht ihr angemeldeter Eigentümer das **Zuletzt gefilterte
+GitHub-Ereignis**: Zeitpunkt und Grund der Filterablehnung eines verifizierten
+Webhooks sowie die Autorenrichtlinie beim Empfang. Sowohl Routinen-Webhooks als
+auch GitHub-App-Zustellungen erfassen diese Diagnose. Gespeichert wird die letzte
+Stichprobe, höchstens einmal pro Minute je Routine anhand der Datenbankuhr
+aktualisiert. Payload, Autorentext und Secrets werden nicht gespeichert; es wird
+kein Run erstellt und kein Kontingent für Run-Zulassungen verbraucht. Keine Diagnose bedeutet lediglich, dass keine Ablehnung erfasst wurde;
+sie bestätigt keinen Webhook-Eingang. Öffentliche Webhook-Antworten bleiben unverändert.
 
 ## Zustellung von Routinen { #routine-delivery }
 
@@ -958,7 +977,7 @@ Manche Arbeit gehört der Plattform selbst und braucht dennoch ein Modell. Eine
 **Systemrolle** gibt ihr einen Eigentümer, den ein Betreiber sehen kann: eine
 Konfiguration je Organisation und Rolle, nie eine Agent-Zeile, nie eine je Job und
 nie dem Starter-Agent oder einem Agent zugeschrieben, dessen Anweisungen nicht
-liefen (#2575). **Organisationen → KI und Dienste → Hintergrunddienste** (`budgets:manage`)
+liefen (#2575). **Organisationen → KI und Dienste** (`budgets:manage`)
 listet jede Rolle mit ihrem Modell, den Ausgaben dieses Monats und ihren letzten
 Ausführungen.
 
@@ -1973,6 +1992,12 @@ Einen Schritt, der seine Freigebenden nennt, können nur sie entscheiden. Eine
 Anfrage, die niemand rechtzeitig entscheidet, läuft ab, und ein abgebrochener Run
 bricht seine Anfragen ab.
 
+Ein Schritt, der Freigebende oder [Genehmigungsgruppen](#approval-groups) nennt,
+benachrichtigt diese Freigebenden und die Gruppenmitglieder mit
+`approvals:decide`. Ein Schritt, der keines von beiden nennt, benachrichtigt alle
+mit `approvals:decide`. Die Benachrichtigung kommt an der Glocke, und die Anfrage
+steht oben im Inbox aller, die sie entscheiden dürfen.
+
 Ein Schritt mit `editable` zeigt der freigebenden Person auch einen Vorschlag,
 etwa eine vorbereitete Antwort, den sie vor der Freigabe ändern darf. Der
 Audit-Eintrag hält fest, ob der Schritt editierbar war, ob die Person ihn geändert
@@ -2691,3 +2716,11 @@ vertrauenswürdigen Zugangsdaten eines privaten Chats zur Verfügung; Letztere
 sind auf Vorgänge dieses Chats beschränkt. Gewöhnliche API-Schlüssel,
 Hintergrundläufe und Ersatzidentitäten des Herausgebers dürfen private
 Inbox-Vorgänge weder lesen noch erledigen.
+
+## Genehmigungsgruppen { #approval-groups }
+
+Workflow-Schritte für menschliche Genehmigungen und MCP-Aufrufe können Personen, Organisationsgruppen oder beide nennen. Eine berechtigte Person entscheidet und benötigt unabhängig davon `approvals:decide`. Sind weder Personen noch Gruppen konfiguriert, gilt die bisherige berechtigungsbasierte Regel. Eine konfigurierte leere oder gelöschte Gruppe öffnet den Zugriff niemals für alle.
+
+Gruppenmitgliedschaft und aktives Konto werden bei der Entscheidung geprüft. Benachrichtigungen ermitteln berechtigte Mitglieder beim Erstellen der Anfrage und entfernen Überschneidungen mit genannten Personen. Ein späterer Beitritt kann die Entscheidung ohne erneute Benachrichtigung erlauben; Austritt oder Berechtigungsverlust entzieht sie.
+
+Agent-Benachrichtigungen für Genehmigungen, Budget und Verbrauch unterstützen Gruppen als ausgewählte Empfänger. Sie steuern nur Benachrichtigungen und erteilen oder beschränken keine Entscheidungsrechte. Persönliche Benachrichtigungseinstellungen gelten weiterhin.

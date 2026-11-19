@@ -45,6 +45,7 @@ import { ViewSettingsPopover } from "@/components/tables/view-settings-popover";
 import { TableDisplayContext } from "@/components/tables/table-display-context";
 import { DEFAULT_TABLE_DISPLAY, orderedTableColumns } from "@/lib/table-display";
 import type { TableDisplay } from "@/types/tables";
+import { useFormulaProblem } from "@/components/tables/formula-problem";
 import { RecordDetailSheet } from "@/components/tables/record-detail-sheet";
 import { filterable, isComplete } from "@/components/tables/record-filters";
 import { RecordSortPopover } from "@/components/tables/record-sort-popover";
@@ -97,6 +98,7 @@ import {
   useTableDefaultView,
 } from "@/hooks";
 import { DIALOG_FORM, DIALOG_SCROLL } from "@/lib/dialog-sizes";
+import { CreateTaskDialog } from "@/components/tasks/create-task-dialog";
 import { useDurableTasks } from "@/hooks/use-durable-tasks";
 import { useUrlState } from "@/hooks/use-url-state";
 import { COMPUTED_TYPES, emptyViewConfig } from "@/types/tables";
@@ -130,8 +132,10 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const tp = useTranslations("pages.tables");
   const tTriggers = useTranslations("pages.tables.triggers");
   const tErrors = useTranslations("errors");
+  const formulaProblem = useFormulaProblem();
   const tc = useTranslations("common");
   const tTasks = useTranslations("durableTasks");
+  const [creatingTask, setCreatingTask] = useState(false);
   const taskBoards = useDurableTasks().boards;
   const taskBoard = taskBoards.data?.find((board) => board.table_id === id);
   const tMenu = useTranslations("tables.columnMenu");
@@ -363,7 +367,8 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         // Only archiving can be refused for what still uses a column, and the
         // archive dialog lists that in place of a toast that names nothing.
         onError: (failure) => {
-          if (schemaDependents(failure) === null) toast.error(getErrorMessage(failure, tErrors));
+          if (schemaDependents(failure) !== null) return;
+          toast.error(formulaProblem(failure)?.text ?? getErrorMessage(failure, tErrors));
         },
       },
     );
@@ -484,13 +489,16 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }
         actions={
           canEdit && (
-            <Button size="sm" onClick={() => addRecord()}>
-              <Plus className="h-4 w-4" /> {t("addRecord")}
+            <Button size="sm" onClick={() => (taskBoard ? setCreatingTask(true) : addRecord())}>
+              <Plus className="h-4 w-4" /> {taskBoard ? tTasks("newTask") : t("addRecord")}
             </Button>
           )
         }
       />
 
+      {creatingTask && taskBoard && canEdit && (
+        <CreateTaskDialog open onOpenChange={setCreatingTask} board={taskBoard} />
+      )}
       {table.archived_at && (
         <ArchivedTableNotice
           archivedAt={table.archived_at}

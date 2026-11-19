@@ -19,6 +19,7 @@ from app.db.models.conversation_favourite import ConversationFavourite
 from app.db.models.conversation_last_read import ConversationLastRead
 from app.db.models.browser_sign_in import BrowserSignIn
 from app.db.models.coding_account import CodingAccount
+from app.db.models.personal_model_key import PersonalModelKey
 from app.db.models.conversation_share import ConversationShare
 from app.db.models.channel_bot import ChannelBot
 from app.db.models.channel_identity import ChannelIdentity
@@ -50,6 +51,7 @@ from app.db.models.agent_workspace import AgentWorkspace
 from app.db.models.sandbox_connection import SandboxConnection
 from app.db.models.sandbox_operation import SandboxOperation
 from app.db.models.agent_exposure import AgentExposure, ExposureSurface
+from app.db.models.channel_observation import ChannelObservation, ChannelObservationReceipt
 from app.db.models.agent_run import AgentRun, ApprovalStatus, RunStatus, RunSurface, ToolApproval
 from app.db.models.agent_trigger import AgentTrigger, ScheduleKind, TriggerAttempt
 from app.db.models.run_manifest import RunManifest
@@ -229,6 +231,7 @@ __all__ = [
     "ApiKey",
     "BrowserSignIn",
     "CodingAccount",
+    "PersonalModelKey",
     "OrganizationAssistant",
     "ChannelPrompt",
     "ExternalAgent",
@@ -306,6 +309,8 @@ __all__ = [
     "SandboxConnection",
     "SandboxOperation",
     "AgentExposure",
+    "ChannelObservation",
+    "ChannelObservationReceipt",
     "ExposureSurface",
     "AgentTrigger",
     "TriggerAttempt",

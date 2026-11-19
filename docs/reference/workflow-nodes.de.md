@@ -1,5 +1,5 @@
 ---
-source_sha: "5a1c3230cf70"
+source_sha: "b5a555f17ceb"
 ---
 
 # Workflow-Knoten { #workflow-nodes }
@@ -397,6 +397,22 @@ nennt das Feld.
 
 ::: app.workflows.nodes.data_map._handler.FieldMapping
 
+## data.value { #data-value }
+
+**Data** hält einen Wert für spätere Schritte bereit: ein Objekt, eine Liste
+oder eine einzelne Zahl, einen Text oder einen Wahrheitswert. Geben Sie ihn als
+JSON ein oder binden Sie ihn als Ganzes an eine frühere Ausgabe. Der Schritt
+gibt ihn unverändert als `value` weiter, und ein späterer Schritt bindet den
+ganzen Wert oder einen Pfad darin, etwa `value.customer.email`.
+
+Der Wert wird einmal pro Run gesetzt und nie überschrieben. Die Ausgabe eines
+Schritts steht fest, sobald er abgeschlossen ist, daher kann kein späterer
+Schritt sie ändern: Data ist eine benannte Konstante, keine Variable. Um einen
+Wert zu ändern, fügen Sie einen Schritt hinzu, der daraus einen neuen bildet.
+Um Werte aus den Elementen einer Schleife zu sammeln, verwenden Sie
+`loop.yield`. Ein Test-Run eines Data-Schritts ohne Wert schlägt mit
+`DATA_NOT_SET` fehl.
+
 ## data.filter und data.combine { #data-filter-and-data-combine }
 
 **Filter a list** behält die Elemente einer gebundenen Liste, für die eine
@@ -748,17 +764,9 @@ schicken oder zwei Kategorien zu einem Protokollschritt.
 
 ## Entscheidungen { #decisions }
 
-Drei Schritte stellen TypeSafes Jev eine typisierte Frage zu einem gebundenen
-`text`, mit einem TypeSafe-API-Key aus dem Vault. Jev schreibt keinen Text: Er
-beantwortet die Frage mit einer Konfidenz von 0 bis 1, in einer Anfrage, und kann
-nur mit einer der Antworten antworten, die der Schritt zulässt. Unter dem
-`min_confidence` des Schritts verlässt er ihn stattdessen über seinen Port
-`unsure`, sodass ein Workflow dort entscheidet, was ein Mensch oder ein Agent mit
-einem zweifelhaften Fall tut.
+Drei Schritte stellen einem nativen Entscheidungsmodell eine typisierte Frage zum gebundenen `text`. Wähle ein Modellprofil mit Anbieter, Tresorschlüssel und Endpunkt. Bestehende Konfigurationen mit TypeSafe-Schlüssel und Jev-Modell bleiben unverändert gültig. Der Anbieter bestimmt die unterstützten Frageformen.
 
-`decide.*` ruft nur TypeSafes gehostetes Jev auf. Um zweifelhafte Fälle mit einem
-selbst gehosteten Modell zu routen, nehmen Sie `ai.classify` mit `min_confidence`,
-das den Schritt genauso über `unsure` verlässt.
+Das Modell liefert Antwort und Konfidenz. Unter `min_confidence` folgt der Schritt `unsure`; der Workflow kann eskalieren oder einen anderen Pfad wählen. Native Profile nutzen OpenAI, Google, OpenRouter, TypeSafe oder einen eigenen System-One-Endpunkt über Pydantic AI. Verfügbarkeit und den Unterschied zu LLM-Bewertungen erläutern die [Entscheidungsmodelle](../models.md#decision-models).
 
 | Schritt | Fragt | Verlässt über |
 |---|---|---|
@@ -766,12 +774,7 @@ das den Schritt genauso über `unsure` verlässt.
 | `decide.choose` | welche von bis zu 255 Optionen passt | `out` mit der `choice`, oder `unsure` |
 | `decide.score` | wo der Text auf einer Skala von 2 bis 10 Stufen liegt | `out` mit dem `score`, oder `unsure` |
 
-Der Key wird beim Veröffentlichen geprüft und bei jedem Run neu gelesen. Ein Key,
-der weg oder nicht mehr geteilt ist, lässt den Schritt mit `SECRET_NOT_USABLE`
-fehlschlagen, ein Modell, das nicht antwortet, mit `DECISION_FAILED`, das nach der
-Policy des Schritts wiederholt wird, und eine Bereitstellung ohne das Extra
-`browser` mit `DECISION_MODEL_UNAVAILABLE`. Ein Merge darf die Zweige einer
-Entscheidung wieder zusammenführen, wie die eines If.
+Zugangsdaten und Zugriff werden beim Veröffentlichen und bei jeder Ausführung geprüft. Ein entfernter alter Schlüssel ergibt `SECRET_NOT_USABLE`, ein Profil ohne native API `DECISION_MODEL_REQUIRED`. Anbieterfehler ergeben `DECISION_FAILED` gemäß Wiederholungsrichtlinie. Kosten zählen zum Workflow- und Organisationsbudget. Merge kann Entscheidungszweige zusammenführen.
 
 ::: app.workflows.nodes._decide.DecisionConfig
 
@@ -1055,8 +1058,12 @@ Idempotenzschlüssel, daher sendet ein wiederholter Schritt erneut.
 er gleich tun wird, und geht dann über `approved` oder `rejected` weiter. Wer
 freigibt, liest den `title` des Schritts und die daran gebundenen `details` im
 Tab **Approvals** unter Activity oder über `GET /api/v1/workflow-approvals`.
-`approvers` nennt, wer entscheiden darf, und diese Personen werden in der App
-benachrichtigt; leer darf jeder mit `approvals:decide`. Nach `timeout_hours`
+`approvers` und `approver_groups` nennen, wer entscheiden darf: diese Personen und
+die Gruppenmitglieder mit `approvals:decide`
+([Genehmigungsgruppen](../governance.md#approval-groups)). Sie werden in der App
+benachrichtigt. Sind beide leer, darf jeder mit `approvals:decide` entscheiden,
+und alle diese Personen werden benachrichtigt. Die Anfrage steht außerdem oben im Inbox aller, die sie
+entscheiden dürfen. Nach `timeout_hours`
 läuft die Anfrage ab, und der Schritt geht über `rejected` mit
 `decision: "expired"` weiter. Einen Run abzubrechen bricht seine Anfragen ab, ebenso der Abbruch eines Workflows, der diesen Run aufgerufen hat.
 Jeder Lauf des Schritts fragt einmal, sodass eine Wiederholung oder eine
@@ -1363,6 +1370,8 @@ Kleinschreibung, sodass ein Workflow seine Tabelle beim ersten Lauf anlegen und
 danach wiederverwenden kann. Beide Fragen verlassen den Schritt über genau einen
 Port, und ein `logic.merge` kann die Zweige wieder zusammenführen.
 
+`table.record.exists` und `table.record.query` akzeptieren in gespeicherten Filtern Optionsnamen von Auswahlspalten sowie IDs. Sie lösen Namen anhand der aktuellen Tabelle vor der Abfrage auf; unbekannte oder mehrdeutige Namen bleiben Validierungsfehler.
+
 ::: app.workflows.nodes.table_list._handler.TableListOutput
 
 ::: app.workflows.nodes.table_describe._handler.TableDescribeOutput
@@ -1470,6 +1479,7 @@ vertrauenswürdige Arbeit eine Runtime ohne Netzwerk.
 | Der Job lief länger als `timeout_seconds` | `PYTHON_SANDBOX_TIMEOUT`, Sitzung gelöscht |
 | Keine nutzbare `sandboxd`-Verbindung | `SANDBOX_UNAVAILABLE` |
 | Es schrieb mehr als 20 Dateien oder 100 MB oder gab mehr als 10 MB aus | `PYTHON_OUTPUT_TOO_LARGE`, in der Sandbox gemessen, bevor etwas abgeholt wird, und die Session gelöscht |
+| Der Host antwortete, konnte die Sandbox aber nicht starten - ein Workspace-Verzeichnis, in das er nicht schreiben darf, ein Image, das sich nicht bauen ließ | `SANDBOX_START_FAILED` mit einer sicheren Diagnose; die rohe Host-Ausgabe bleibt in den Host-Logs, wiederholt |
 | Der Host war nicht erreichbar | `SANDBOX_UNREACHABLE`, wiederholt |
 
 ::: app.workflows.nodes.code_python_simple._handler.PythonSimpleConfig

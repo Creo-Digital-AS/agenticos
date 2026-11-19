@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { scrollWithin } from "@/lib/scroll-within";
 import { NAV_GROUPS, SidebarNav, isActive } from "./app-sidebar";
+
+vi.mock("@/lib/scroll-within", () => ({ scrollWithin: vi.fn() }));
 
 const can = vi.fn<(permission: string) => boolean>();
 const currentPath = vi.fn<() => string>(() => "/dashboard");
@@ -25,6 +28,10 @@ vi.mock("@/hooks/use-projects", () => ({
 }));
 const waiting = vi.fn<() => { id: string }[]>(() => []);
 vi.mock("@/hooks/use-suggestions", () => ({ useSuggestions: () => ({ suggestions: waiting() }) }));
+const approvals = vi.fn<() => number>(() => 0);
+vi.mock("@/hooks/use-pending-approvals", () => ({
+  usePendingApprovals: () => ({ count: approvals() }),
+}));
 const sidebar = {
   openGroups: [] as string[],
   closedGroups: [] as string[],
@@ -37,6 +44,7 @@ vi.mock("@/stores", () => ({
 
 beforeEach(() => {
   sidebar.closedGroups = [];
+  approvals.mockReturnValue(0);
 });
 
 function renderNav() {
@@ -206,18 +214,14 @@ describe("SidebarNav", () => {
     expect(screen.getByRole("button", { name: "connections" })).toBeDisabled();
   });
 
-  it("opens a group somebody opened before", () => {
+  it("leaves organizations and groups to the organization switcher even after an old rail preference", () => {
     can.mockReturnValue(true);
-    currentPath.mockReturnValue("/dashboard");
+    currentPath.mockReturnValue("/orgs/example/members");
     sidebar.openGroups = ["organization"];
-
     renderNav();
-
-    expect(screen.getByRole("link", { name: "groups" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "organization" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    expect(screen.queryByRole("link", { name: "groups" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "organizations" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "organization" })).not.toBeInTheDocument();
   });
 
   it("lists the reader's recent projects above all of them, lighting the one open", () => {
@@ -370,6 +374,19 @@ describe("the inbox count (#2301)", () => {
     expect(screen.getByLabelText("inboxCount")).toBeEmptyDOMElement();
   });
 
+  it("counts the approvals waiting on the reader with everything else", () => {
+    can.mockReturnValue(true);
+    waiting.mockReturnValue([{ id: "s1" }]);
+    approvals.mockReturnValue(2);
+    const { unmount } = render(<SidebarNav />);
+    expect(screen.getByLabelText("inboxCount")).toHaveTextContent("3");
+    unmount();
+
+    waiting.mockReturnValue([]);
+    render(<SidebarNav collapsed />);
+    expect(screen.getByLabelText("inboxCount")).toBeInTheDocument();
+  });
+
   it("shows nothing when nothing waits", () => {
     can.mockReturnValue(true);
     waiting.mockReturnValue([]);
@@ -419,5 +436,26 @@ describe("daily-work navigation", () => {
       "false",
     );
     expect(screen.queryByRole("link", { name: "skills" })).not.toBeInTheDocument();
+    const hiddenLink = screen.getByRole("link", { name: "skills", hidden: true });
+    expect(hiddenLink.closest("[inert]")).toHaveAttribute("aria-hidden", "true");
+    sidebar.openGroups = ["knowledge"];
+    sidebar.closedGroups = [];
+    rerender(<SidebarNav />);
+    expect(screen.getByRole("link", { name: "skills" })).toBe(hiddenLink);
+    expect(hiddenLink.closest("[inert]")).toBeNull();
   });
+});
+
+it("keeps the active destination in view when collapsing the navigation", () => {
+  can.mockReturnValue(true);
+  currentPath.mockReturnValue("/agents");
+  const view = render(<SidebarNav />);
+  vi.mocked(scrollWithin).mockClear();
+  view.rerender(<SidebarNav collapsed />);
+  expect(scrollWithin).toHaveBeenCalledWith(
+    screen.getByRole("link", { name: "agents" }),
+    "nearest",
+    "instant",
+  );
+  currentPath.mockReturnValue("/dashboard");
 });

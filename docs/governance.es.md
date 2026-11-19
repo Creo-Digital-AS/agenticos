@@ -1,5 +1,5 @@
 ---
-source_sha: "66ff628633d4"
+source_sha: "ef824da65bb6"
 ---
 
 # Governance { #governance }
@@ -45,6 +45,27 @@ alerta, que no para nunca.
 
 Un trigger de evento añade un rechazo más en su borde: un webhook cuya firma no se
 verifica contra el secreto propio del trigger es un 403 que nunca llega al runner.
+
+Las rutinas de GitHub muestran un filtro de autores al crear o editar triggers
+de issues, pull requests y comentarios. **Repository members (default)** admite
+`OWNER`, `MEMBER` y `COLLABORATOR`; **Members and contributors** añade
+`CONTRIBUTOR`. **Anyone** incluye a quienes contribuyen por primera vez y a otros
+usuarios que reportan problemas. Son asociaciones de autores de GitHub, no roles
+de organización de AgenticOS. Los bots y el login conectado excluido explícitamente
+siguen bloqueados con cualquier opción. El filtro no se aplica a pushes, runs de
+workflow ni releases. Las rutinas existentes conservan su política; una
+configuración sin `authors` sigue significando `members`.
+
+En el historial de la rutina, su propietario autenticado puede ver **Latest filtered
+GitHub event**: cuándo un webhook verificado fue rechazado por un filtro, el motivo
+y la política de autores al recibirlo. Tanto los webhooks individuales como las
+entregas de GitHub App registran este diagnóstico. Solo se conserva la última
+muestra, actualizada como máximo una vez por minuto por rutina según el reloj de
+la base de datos. No se guardan el payload, el texto del autor ni secretos, ni se
+crea un run o se consume la cuota de admisión de runs.
+
+La ausencia de diagnóstico indica que no se ha registrado un rechazo; no confirma la
+entrega de un webhook. Las respuestas públicas de los webhooks no cambian.
 
 ## Entrega de rutinas { #routine-delivery }
 
@@ -914,7 +935,7 @@ Parte del trabajo es de la propia plataforma y aun así necesita un modelo. Un
 **rol de sistema** le da un responsable que un operador puede ver: una
 configuración por organización y rol, nunca una fila de agent, nunca una por tarea
 y nunca atribuida al agent inicial ni a ningún agent cuyas instrucciones no se
-ejecutaron (#2575). **Organizaciones → AI & services → Background services**
+ejecutaron (#2575). **Organizaciones → AI & services**
 (`budgets:manage`) lista cada rol con el modelo en que corre, el gasto de este mes
 y sus últimas ejecuciones.
 
@@ -1862,6 +1883,12 @@ las llamadas a herramientas. Un
 paso que nombra a quienes aprueban solo puede decidirlo esa gente. Una solicitud
 que nadie decide a tiempo caduca, y un run cancelado cancela sus solicitudes.
 
+Un paso que nombra a quienes aprueban o [grupos de aprobación](#approval-groups)
+avisa a esas personas y a los miembros de los grupos que tienen
+`approvals:decide`. Un paso que no nombra ni a unos ni a otros avisa a todos los
+que tienen `approvals:decide`. El aviso llega en la campana, y la solicitud
+encabeza el Inbox de quien puede decidirla.
+
 Un paso `editable` también muestra a quien aprueba una propuesta, como una
 respuesta redactada, que puede cambiar antes de aprobarla. La entrada de auditoría
 registra si el paso era editable, si la persona lo editó (`edited`) y la longitud
@@ -2541,3 +2568,11 @@ Las herramientas MCP de Inbox sirven a sesiones iniciadas y credenciales de
 confianza de un chat privado; estas últimas solo acceden a casos de ese chat.
 Las claves API ordinarias, ejecuciones desatendidas e identidades de respaldo del
 publicador no pueden leer ni resolver casos privados de Inbox.
+
+## Grupos de aprobación { #approval-groups }
+
+Los pasos de aprobación humana y llamadas MCP de workflows pueden indicar personas, grupos de la organización o ambos. Una sola persona elegible decide y debe tener `approvals:decide` de forma independiente. Sin personas ni grupos configurados sigue vigente la regla anterior basada en ese permiso. Un grupo configurado vacío o eliminado nunca permite que decida cualquiera.
+
+La pertenencia al grupo y la cuenta activa se comprueban al decidir. Las notificaciones resuelven miembros elegibles al crear la solicitud y eliminan duplicados con personas indicadas. Incorporarse después puede dar derecho a decidir sin otra notificación; salir o perder permisos lo retira.
+
+Las alertas del agente sobre aprobaciones, presupuesto y uso también admiten grupos como destinatarios elegidos. Solo son audiencias de notificación: no conceden ni restringen autoridad para decidir. Se respetan las preferencias personales de notificación.

@@ -337,8 +337,7 @@ class TestAnAppCollectionKeepsApartFromASameNamedTenantBase:
 
     @pytest.mark.security
     async def test_a_tenants_sync_source_is_not_reachable_through_the_app_base(self, db) -> None:
-        """A source carries an organization and no base: it belongs to the base its
-        sync writes under, which is its organization's own before an app one."""
+        """A source belongs to the base it records, whoever else holds its name (#2551)."""
         seeded = await self._seed(db)
         access = CollectionAccessService(db)
         kb_app, kb_a = seeded["kb_app"], seeded["kb_a"]
@@ -347,6 +346,7 @@ class TestAnAppCollectionKeepsApartFromASameNamedTenantBase:
             name="Alpha drive",
             connector_type="gdrive",
             collection_name="both",
+            knowledge_base_id=kb_a.id,
             config={},
         )
         # An app admin's source for the app base, filed under an organization
@@ -356,6 +356,7 @@ class TestAnAppCollectionKeepsApartFromASameNamedTenantBase:
             name="App drive",
             connector_type="gdrive",
             collection_name="both",
+            knowledge_base_id=kb_app.id,
             config={},
         )
         db.add_all([tenants, apps])
@@ -511,15 +512,16 @@ class TestWhatABaseReportsStaysItsOwn:
             name="Alpha drive",
             connector_type="gdrive",
             collection_name="both",
+            knowledge_base_id=kb_a.id,
             config={"folder_id": "alpha-private"},
         )
-        # Org B holds no base by the name, so its source's sync writes under the
-        # app base.
+        # Org B holds no base by the name; its source is on the app base.
         apps = SyncSource(
             organization_id=org_b.id,
             name="App drive",
             connector_type="gdrive",
             collection_name="both",
+            knowledge_base_id=kb_app.id,
             config={},
         )
         db.add_all([tenants, apps])
@@ -603,3 +605,33 @@ class TestWhatABaseReportsStaysItsOwn:
         assert member_a.items == []
         assert [item.id for item in owner_a.items] == [str(seeded["tenant_run"].id)]
         assert [item.id for item in org_b.items] == [str(seeded["app_run"].id)]
+
+    @pytest.mark.security
+    async def test_deleted_sources_keep_proven_run_ownership_and_hide_unknown_legacy_runs(self, db):
+        seeded = await self._seed(db)
+        for run_key, ctx_key, kb_key, source_key in (
+            ("tenant_run", "ctx_owner_a", "kb_a", "tenants"),
+            ("app_run", "ctx_b", "kb_app", "apps"),
+        ):
+            row = seeded[run_key]
+            row.organization_id = seeded[ctx_key].organization_id
+            row.knowledge_base_id = seeded[kb_key].id
+            await db.delete(seeded[source_key])
+        unknown = SyncLog(source="local", collection_name="both", mode="full")
+        db.add(unknown)
+        await db.flush()
+        await db.refresh(seeded["tenant_run"])
+        await db.refresh(seeded["app_run"])
+        assert seeded["tenant_run"].sync_source_id is None
+        assert seeded["app_run"].sync_source_id is None
+        access = CollectionAccessService(db)
+        runs = RAGSyncService(db)
+        for ctx_key, expected in (
+            ("ctx_owner_a", [str(seeded["tenant_run"].id)]),
+            ("ctx_member_a", []),
+            ("ctx_b", [str(seeded["app_run"].id)]),
+        ):
+            result = await runs.list_sync_logs(
+                scope=await access.readable_sync_log_scope(seeded[ctx_key], "both")
+            )
+            assert [item.id for item in result.items] == expected

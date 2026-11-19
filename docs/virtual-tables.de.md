@@ -1,5 +1,5 @@
 ---
-source_sha: "e49637ff7aa2"
+source_sha: "4d8a6c479c11"
 ---
 
 # Virtual Tables { #virtual-tables }
@@ -170,6 +170,19 @@ Ein Wert, der sich nicht ermitteln lässt - eine Division durch null, Text in ei
 Summe, eine leere Zelle - lässt die Zelle dieses Datensatzes leer. Eine Formel
 wird beim Lesen ermittelt und nie gespeichert, geschrieben, gefiltert oder
 sortiert.
+
+Dezimalzahlen werden in jeder Sprache mit Punkt geschrieben, `{Price} * 1.23`: Ein
+Komma trennt die Argumente einer Funktion, deshalb wird `{Price} * 1,23` mit diesem
+Hinweis abgelehnt, statt als Zahl gelesen zu werden; ebenso ein Aufruf, dem das Komma einen Wert zu viel
+gibt, etwa `IF({Price} > 0,5, "yes", "no")`.
+
+Die Zahl der Werte eines Aufrufs wird geprüft, wenn
+seine Formel gespeichert wird: Eine früher gespeicherte funktioniert weiter, und die übrigen
+Spalten der Tabelle lassen sich ändern, bis jemand diese Formel bearbeitet. Eine Ablehnung nennt einen
+festen Grund in `details.formula.reason`, etwa `decimal_comma` oder `not_a_column`,
+mit dem die Konsole ihn in der Sprache der lesenden Person sagt. Die Konsole zeigt
+Zahlen, auch das Ergebnis einer Formel, mit dem Dezimaltrennzeichen der lesenden
+Person - `12,177` auf Deutsch - und gruppiert eine vierstellige Zahl nicht.
 
 ## Ein Schema ändern { #changing-a-schema }
 
@@ -355,7 +368,8 @@ Pflichtwerte da sind.
 Jede Bearbeitung ist ein `PATCH` gegen die angezeigte Revision, daher wird eine
 Bearbeitung, die gegen eine neuere Änderung verliert, abgelehnt statt darüber
 geschrieben. Der Datensatz öffnet sich dann mit dem abgelehnten Wert neben **Reload and
-reapply**. Markierte Zeilen bieten **Delete** für alle an, jede gegen ihre eigene
+reapply** und wird neu gelesen: Das Feld sagt, was es jetzt enthält, wer den Datensatz
+zuletzt geändert hat und wann, und der Titel des Panels zieht nach. Markierte Zeilen bieten **Delete** für alle an, jede gegen ihre eigene
 Revision: Ein zwischenzeitlich geänderter Datensatz bleibt erhalten, und die Konsole
 sagt, wie viele es waren. Das Datensatz-Panel löscht einen einzelnen Datensatz auf
 dieselbe Weise.
@@ -378,6 +392,8 @@ die sich ihre Werte umwandeln lassen.
 In **Columns** macht **Required** eine Spalte zur Pflicht, und eine archivierte Spalte
 wandert unter **Archived columns**, wo **Restore** sie samt ihren Werten
 zurückbringt.
+
+Das Lesen des Vergleichs erhält ungespeicherte Änderungen anderer Felder und deren ursprüngliche Revision. Ein weiterer Konflikt liest einen neuen Vergleich; eine Antwort für einen geschlossenen Datensatz schließt keinen anderen. Lange Werte erscheinen als gekürzte Vorschau.
 
 ### Import und Export { #import-and-export }
 
@@ -458,6 +474,14 @@ Antwort zurückzugeben. Wiederholen Sie innerhalb des Fensters und behandeln Sie
 längere Pause als neue Anfrage. Die Lebensdauer wird beim Verwenden des Schlüssels
 durchgesetzt und gilt daher auf die Stunde genau; der tägliche Sweep gibt nur den Platz
 von Receipts frei, die niemand wiederholt hat.
+
+Beim Entfernen einer Gruppe, eines Projekts oder eines Kontos werden die der
+Task-Board-Tabelle zugeordneten Receipts gelöscht, einschließlich der Batch-Ergebnisse.
+Beim Upgrade werden ältere Batch-Ergebnisse ohne Tabellen-id gelöscht, da sich ihre
+Tabellenzuordnung nicht rekonstruieren lässt. Ihre Schlüssel bleiben bis zum Ablauf
+erhalten: Dieselbe Anfrage liefert `IDEMPOTENCY_RESULT_PURGED` (409) und schreibt nichts.
+Prüfen Sie die Tabelle, bevor Sie einen neuen Schreibzugriff starten. Andere Receipt-Arten
+bleiben unverändert.
 
 ## Auflisten und Filtern { #listing-and-filtering }
 
@@ -801,6 +825,7 @@ Jede Ablehnung antwortet mit `{"error": {"code", "message", "details"}}`, und de
 | `INVALID_QUERY` | 422 | Ein Filter oder eine Sortierung, die die Tabelle nicht beantworten kann |
 | `INVALID_SCHEMA` | 422 | Eine widersprüchliche Schemaänderung |
 | `IDEMPOTENCY_KEY_REUSED` | 422 | Der Schlüssel wurde für eine andere Anfrage verwendet |
+| `IDEMPOTENCY_RESULT_PURGED` | 409 | Ein älteres Batch-Ergebnis wurde beim Upgrade gelöscht; sein Schlüssel verhindert bis zum Ablauf einen erneuten Schreibzugriff |
 | `QUOTA_EXCEEDED` | 402 | Der Schreibzugriff würde ein Speicherlimit überschreiten; `details` nennt das Limit (`tables`, `records`, `record_bytes`, `storage_bytes`) und seine Obergrenze |
 | `RATE_LIMIT_EXCEEDED` | 429 | Zu viele Tabellenschreibzugriffe in der letzten Minute; siehe `Retry-After` |
 | `VALIDATION_ERROR` | 422 | Die Anfrage selbst ist fehlerhaft: ein falscher Typ, ein unbekanntes Feld, eine Grenze oder NUL, ein Zeilenumbruch oder ein einzelnes Surrogat in einer id, einem Schlüssel oder Namen. Die Route lehnt sie ab, bevor der Service läuft |
@@ -867,9 +892,11 @@ Beim Erstellen einer leeren Tabelle benötigen Pflichtspalten keine Vorgaben: Je
 
 ## Dauerhafte Aufgaben {#durable-tasks}
 
+Ein **Agent** kann ebenfalls eine gemeinsame Aufgabentabelle besitzen. Der Zugriff folgt den aktuellen Agent-Berechtigungen; das Bearbeiten von Aufgaben erfordert zusätzlich Tabellenbearbeitung und die Berechtigung, den Agent auszuführen. Eigentümer oder Bearbeiter des Agents können die Tabelle verwalten. Die Zuweisung eines Agents gibt eine private Aufgabe nicht frei. AgenticOS MCP verwendet mit `create_task` und `ensure_task_board` die vorhandene Bereichstabelle oder erstellt sie bei der ersten Nutzung. Persönliche Aufgaben gehören in den privaten Bereich, Projektergebnisse zum Projekt und eine ausdrücklich gewünschte Agent-Warteschlange zum Agent. Bei unklarem Bereich nachfragen; persönliche Inhalte niemals stillschweigend teilen.
+
 Sie können Projektaufgaben aus privaten Unterhaltungen außerhalb des Projekts erstellen. Lassen Sie die Arbeitsunterhaltung offen: Die Aufgabe öffnet ihre eigene Unterhaltung im Projekt, ohne Ihr privates Transkript zu verknüpfen. Eine ausdrücklich verknüpfte Unterhaltung aus einem anderen Projekt wird abgelehnt.
 
-**Hintergrundarbeit** (`/work`) zeigt dauerhafte Aufgaben neben laufenden Hintergrundchats. Eine Aufgabe ist ein Virtual-Table-Datensatz mit Arbeitschat und einem Inbox-Fall, wenn Aufmerksamkeit nötig ist. Tabelle, Kanban und Aufgaben-API verwenden dieselbe Revision, ohne eine zweite synchronisierte TODO-Liste.
+Aufgaben werden in **Tables** (`/tables`) verwaltet. **Hintergrundarbeit** (`/work`) zeigt laufende Hintergrundchats und ihren Verlauf. Eine Aufgabe ist ein Virtual-Table-Datensatz mit Arbeitschat und einem Inbox-Fall, wenn Aufmerksamkeit nötig ist. Tabelle, Kanban und Aufgaben-API verwenden dieselbe Revision, ohne eine zweite synchronisierte TODO-Liste.
 
 Eine Aufgabentabelle entsteht bei der ersten Nutzung für eine **Person**, ein **Projekt**, eine **Gruppe** oder eine **Organisation** und wird wiederverwendet. Projects und Groups bieten **Aufgaben**; Tables öffnet die private Tabelle. Installation und neue Mitgliedschaften erzeugen keine leeren Tabellen. Die erste Erstellung erfordert `tables:create`. Aktuelle Projektberechtigungen und Gruppenmitgliedschaften gelten auch für Tabellen-API, Verknüpfungen und gespeicherte Ansichten. Private Aufgaben bleiben selbst vor einem anderen Organisationseigentümer verborgen. Eigene bestehende Aufgabentabellen und Projektverfolgungs-Presets werden nicht automatisch umgewandelt.
 
@@ -882,7 +909,7 @@ AgenticOS MCP bietet `list_task_boards`, `ensure_task_board`, `list_tasks`, `get
 
 Gruppenmitglieder dürfen das Aufgabenboard ihrer Gruppe lesen; Schreibzugriff erfordert zusätzlich Tabellen-Bearbeitungsrechte oder eine ausdrückliche Bearbeitungsfreigabe. Verliert die zugewiesene prüfende Person den Zugriff, wird die Erinnerung blockiert und ihr Ersteller erhält einen Inbox-Fall zur Übergabe. Neue Arbeitsunterhaltungen für Projektaufgaben gehören zum Projekt. Eine Tabellenquote kann die optionale Aufgabe eines Routine-Ergebnisses verhindern; Arbeitschat, Inbox-Fall und Benachrichtigung werden dennoch zugestellt.
 
-Schreiben auf Projekt-Aufgabentafeln erfordert Projektzugriff und Tabellenbearbeitungsrechte oder eine ausdrückliche Edit-Freigabe für die Tabelle. Das Entfernen eines Projekts, einer Gruppe oder eines privaten Eigentümers storniert wartende Aufgaben, schließt ihre Fälle und löscht die verwaltete Tabelle dieses Bereichs samt Datensätzen, Verlauf und Medien in derselben Transaktion. Andere Bereiche bleiben erhalten. Verschwindet die ausgewählte Tafel, wechselt das Aufgabenpanel zur verfügbaren privaten Tafel.
+Schreiben auf Projekt-Aufgabentafeln erfordert Projektzugriff und Tabellenbearbeitungsrechte oder eine ausdrückliche Edit-Freigabe für die Tabelle. Das Entfernen eines Projekts, einer Gruppe oder eines privaten Eigentümers storniert wartende Aufgaben, schließt ihre Fälle und löscht die verwaltete Tabelle dieses Bereichs samt Datensätzen, Verlauf und Medien in derselben Transaktion. Andere Bereiche bleiben erhalten.
 
 Ein Aufgabenboard selbst zu ändern ist enger gefasst, als darauf zu arbeiten. Das Board
 umzubenennen, seine Spalten oder Standardansicht zu ändern und es zu archivieren oder
@@ -905,3 +932,8 @@ Aufgabennotizen sind Markdown-Dokumente mit demselben Rich-Text-Editor und derse
 Ein Agent kann nicht gelöscht werden, solange eine verwaltete Aufgabe von seiner geplanten Ausführung abhängt. Weise diese Aufgaben zuerst neu zu, schließe sie ab oder brich sie ab; das Löschen darf ihre Ausführung nicht stillschweigend verwerfen.
 
 Beim Wiederherstellen einer archivierten verwalteten Aufgabentafel werden geplante Erinnerungen für Personen erneut eingereiht, auch wenn ihr Termin während der Archivierung verstrichen ist. Die Zustellung prüft weiterhin den aktuellen Zugriff des ursprünglichen Erstellers und Empfängers; die Wiederherstellung autorisiert keine neue Agentenarbeit. Auch die eigenen Aufgaben schreiben nicht in eine archivierte Tafel: Ein Fall, der in der Zwischenzeit in der Inbox erledigt wird, lässt seine Aufgabe unverändert, und erst die Wiederherstellung der Tafel setzt sie auf erledigt oder abgebrochen. Einen Fall wieder zu öffnen, dessen Aufgabe auf einer archivierten Tafel liegt, wird mit `TABLE_ARCHIVED` abgelehnt.
+
+
+Mitglieder mit Berechtigung zum Erstellen von Tabellen erhalten ihre fehlende private Aufgabentabelle beim ersten Besuch von **Tables**. Bestehende Tabellen werden wiederverwendet; dabei entstehen keine Organisations- oder Agent-Backlogs. Projekte bieten **Task table** zum Erstellen oder Öffnen ihrer Tabelle. Ohne Erstellungsrecht bleiben zugängliche Tabellen verfügbar, ohne einen verbotenen Schreibversuch.
+
+Inbox zeigt eine Aufgabe, wenn eine Person handeln oder ein Ergebnis prüfen muss; sie ist kein zweiter Aufgabenspeicher. Watches, Mail-Trigger und Routinen können Inbox-Fälle ohne Aufgabenrekord erzeugen. Aufgaben stehen für konkrete Verpflichtungen, nicht jedes Ereignis. Eine vereinbarte Tabellenkonvention darf mit geprüfter Tabellen-ID gespeichert werden; der aktuelle Aufgabenstatus bleibt in der Tabelle.

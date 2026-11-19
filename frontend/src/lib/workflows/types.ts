@@ -58,6 +58,8 @@ export interface NodeDefinition {
   input_schema: JsonSchema | null;
   output_schema: JsonSchema | null;
   ports: Port[];
+  /** Localized labels for standard ports synthesized from instance configuration. */
+  standardPortLabels?: { error: string; unsure: string };
   effect_kind: "pure" | "read" | "write";
   retry_guarantee: "none" | "idempotent" | "at_least_once";
   scopes: string[];
@@ -608,11 +610,20 @@ export interface WorkflowRunRead {
   /** The run this one retries; its succeeded steps were not run again. */
   retry_of_run_id: Uuid | null;
   depth: number;
+  /** The one step a step test ran; null for a whole-draft test and a real run. */
+  tested_step?: WorkflowTestedStep | null;
   /** Whether the caller may cancel the run and resolve its steps; the single-run read says so. */
   can_cancel: boolean;
   started_at: string | null;
   ended_at: string | null;
   created_at: string | null;
+}
+
+/** The step a step test ran, as the run's own snapshot names it. */
+export interface WorkflowTestedStep {
+  node_id: Uuid;
+  label: string | null;
+  definition_id: string | null;
 }
 
 export interface WorkflowRunList {
@@ -638,6 +649,15 @@ export interface ReplyExpectationEdit extends ReplyExpectationInput {
   review_mailbox: boolean;
 }
 
+/** How an approval step's request was settled. Mirrors `WorkflowStepDecision`. */
+export interface WorkflowStepDecision {
+  status: "pending" | "approved" | "rejected" | "expired" | "cancelled";
+  /** When a person decided it; null while pending, and when it expired or was cancelled. */
+  decided_at: string | null;
+  /** The decider's name or email; null when nobody decided or their account is gone. */
+  decided_by_name: string | null;
+}
+
 /** One step of a run, in one loop iteration. Mirrors `WorkflowNodeRunRead`. */
 export interface WorkflowNodeRunRead {
   reply_expectation?: ReplyExpectation | null;
@@ -657,6 +677,8 @@ export interface WorkflowNodeRunRead {
   late_output: Record<string, unknown> | null;
   started_at: string | null;
   ended_at: string | null;
+  /** The decision an approval step asked for; null for every other step. */
+  approval?: WorkflowStepDecision | null;
 }
 
 /** Questions the reading caller may answer for one suspended agent step. */
@@ -683,6 +705,8 @@ export interface WorkflowLogEntry {
   node_instance_id: Uuid;
   /** The step's name as it was when the line was written. */
   step_label: string;
+  /** The definition to translate; null for a custom label or an unavailable saved graph. */
+  step_definition_id?: string | null;
   /** The port the step left by, or `error`. */
   outcome: string;
   status: string;
@@ -756,6 +780,8 @@ export interface RunHistoryQuery {
   workflowId?: Uuid;
   status?: WorkflowRunStatus;
   mode?: "real" | "test";
+  /** Only step tests when true; leaves them out when false. */
+  stepTest?: boolean;
   triggeredBy?: string;
   /** Only runs started at or after this instant, ISO 8601. */
   createdAfter?: string;
@@ -854,6 +880,8 @@ export interface WorkflowApprovalRead {
   details: string | null;
   /** Who may decide it; empty means anyone holding `approvals:decide`. */
   approver_user_ids: Uuid[];
+  approver_group_ids?: Uuid[];
+  can_decide?: boolean;
   status: WorkflowApprovalStatus;
   expires_at: string | null;
   decided_by_user_id: Uuid | null;

@@ -24,6 +24,7 @@ import { ChannelPlatformIcon } from "@/components/channels/channel-platform-icon
 import { ExposurePrompt } from "@/components/agents/exposure-prompt";
 import { ExposureCostReporting } from "@/components/agents/exposure-cost-reporting";
 import { ExposureTools } from "@/components/agents/exposure-tools";
+import { ExposureObservation } from "@/components/agents/exposure-observation";
 import type { ExposureSurface } from "@/types/exposures";
 import { Perm } from "@/types/permissions";
 import { useTranslations } from "next-intl";
@@ -37,6 +38,7 @@ interface ExposuresPanelProps {
    * sharing panel does.
    */
   canManage: boolean;
+  personalModel?: boolean;
   /**
    * Whether the agent keeps files at all.
    *
@@ -63,7 +65,12 @@ interface ExposuresPanelProps {
 /** Sentinel for "the default environment" - a Select item may not be empty. */
 const DEFAULT_ENV = "__default__";
 
-export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPanelProps) {
+export function ExposuresPanel({
+  agentId,
+  canManage,
+  hasWorkspace,
+  personalModel = false,
+}: ExposuresPanelProps) {
   const t = useTranslations("agents");
   const {
     exposures,
@@ -75,6 +82,7 @@ export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPa
     setPrompt,
     setTools,
     setUsageReporting,
+    setObservation,
     revoke,
   } = useExposures(agentId);
   const { environments } = useAgentEnvironments(agentId);
@@ -150,7 +158,9 @@ export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPa
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={!canManage || setActive.isPending}
+                disabled={
+                  !canManage || setActive.isPending || (personalModel && !exposure.is_active)
+                }
                 aria-label={
                   exposure.is_active
                     ? t("pauseOn", { bot: exposure.channel_bot_name })
@@ -177,12 +187,24 @@ export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPa
                 about a binding somebody actually wants to change after making
                 it, and a surface's own instructions are worth reading beside
                 the surface they belong to. */}
-            {canManage && (
+            {canManage && !personalModel && (
               <>
                 {/* Under the binding, because that is what the answer belongs
                     to: the same agent on an internal Mattermost and a customer
                     Slack gets a different answer here, and a switch in the
                     Toolbox would have one for both. */}
+                {canRegister &&
+                  ["mattermost", "slack", "teams", "telegram", "discord"].includes(
+                    exposure.surface,
+                  ) && (
+                    <ExposureObservation
+                      value={exposure.observation}
+                      disabled={setObservation.isPending}
+                      onSave={(observation) =>
+                        setObservation.mutateAsync({ exposureId: exposure.id, observation })
+                      }
+                    />
+                  )}
                 <ExposureCostReporting
                   exposureId={exposure.id}
                   value={exposure.usage_reporting}
@@ -202,6 +224,8 @@ export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPa
                 <ExposurePrompt
                   botName={exposure.channel_bot_name}
                   value={exposure.prompt}
+                  defaultPrompt={exposure.default_prompt}
+                  replacesDefaults={exposure.prompt_replaces_defaults}
                   variables={exposure.available_variables}
                   disabled={setPrompt.isPending}
                   onSave={(prompt) => setPrompt.mutate({ exposureId: exposure.id, prompt })}
@@ -211,7 +235,7 @@ export function ExposuresPanel({ agentId, canManage, hasWorkspace }: ExposuresPa
           </div>
         ))}
 
-        {canManage && (
+        {canManage && !personalModel && (
           <ExposureChannelTiles
             available={available}
             // A rule under the bindings; over nothing it would only underline the header.

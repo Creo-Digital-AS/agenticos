@@ -86,7 +86,7 @@ from app.agents.capabilities.system_reminders import (
     ReminderState,
     SystemReminders,
 )
-from app.agents.capabilities.tool_search import ConfiguredToolSearch
+from app.agents.capabilities.tool_search import ConfiguredToolSearch, ToolSearchConfig
 from app.agents.capabilities.visuals import WEB_REACH_RESOURCE, web_reach
 from app.agents.code_mode import CodeCalls, code_mode
 from app.agents.computer_on_use import REQUEST_COMPUTER_ACCESS, RequestComputerOnUse
@@ -94,7 +94,7 @@ from app.agents.connect_on_use import CONNECT_ACCOUNT, ConnectOnUse
 from app.agents.deps import AgentDeps, ApprovalCallback
 from app.agents.isolation import IsolationGuard, RunIsolation, capability_tools
 from app.agents.loop_guard import LoopGuard
-from app.agents.manifest import RecordingModel, RunRecorder
+from app.agents.manifest import RecordedToolSearch, RecordingModel, RunRecorder
 from app.agents.model_resolver import PROMPT_CACHE, ModelRequestSpec
 from app.agents.observability import instrument_agent, suppress_content
 from app.agents.routine_actions import RoutineToolCheck
@@ -163,6 +163,14 @@ def answer_text(answer: AgentAnswer) -> str:
 # How often the model may be sent back to fix an answer that does not fit the
 # spec's `output_schema` before the run fails on it.
 OUTPUT_RETRIES = 2
+
+
+class OutputSchemaRetry(ModelRetry):
+    """Schema feedback whose stored diagnosis never includes the model's values."""
+
+    def __init__(self, message: str, *, schema_path: str) -> None:
+        super().__init__(message)
+        self.diagnosis = f"The answer did not match its output schema at {schema_path}"
 
 
 @dataclass
@@ -254,11 +262,14 @@ def build_agent(
     test_bindings: frozenset[str] = frozenset(),
     voice: VoiceOptions | None = None,
     answering_call: VoiceOptions | None = None,
+    offer_setup_tools: bool = True,
 ) -> BuiltAgent:
     """Instantiate an agent from its spec.
 
     Args:
         spec: The published (or draft, when previewing) agent definition.
+        offer_setup_tools: Whether to offer implicit setup actions. Restricted
+            automatic turns and answer-only turns cannot expand their setup.
         model_spec: Already-resolved model and credentials.
         run_person: The member who answers for this run, or `None` when nobody
             does - derived by the runner, which alone knows the request. Handed
@@ -499,6 +510,18 @@ def build_agent(
     # Made before the capabilities, because a run reviewer, code mode and
     # `CacheWatch` write onto it.
     recorder = RunRecorder()
+    for binding in bindings:
+        if binding.capability_id == "tool_search":
+            search = ToolSearchConfig.model_validate(binding.config)
+            recorder.tool_search = RecordedToolSearch(
+                strategy=search.strategy,
+                max_results=search.max_results,
+                defer_capabilities=search.defer_capabilities,
+                defer_mcp_servers=search.defer_mcp_servers,
+                exclude_capabilities=tuple(search.exclude_capabilities),
+                exclude_mcp_servers=tuple(search.exclude_mcp_servers),
+                exclude_tools=tuple(search.exclude_tools),
+            )
     asking = frozenset(
         name
         for name, kind in (
@@ -550,7 +573,11 @@ def build_agent(
         # Every agent, in text: what it can and cannot do here, from the spec
         # rather than from a prompt that goes stale the moment a capability is
         # switched (#2301). A call is told by its text twin instead.
-        *((SetupBriefing.for_spec(spec, agent_id=agent_id),) if voice is None else ()),
+        *(
+            (SetupBriefing.for_spec(spec, agent_id=agent_id),)
+            if voice is None and offer_setup_tools
+            else ()
+        ),
         *extra_capabilities,
         AnswerUnknownTools(structured=voice is None),
         *(
@@ -621,10 +648,11 @@ def build_agent(
     agent = PydanticAgent[AgentDeps, AgentOutput](
         model=RecordingModel(model_spec.build(), recorder),
         model_settings=model_settings,
-        # A realtime session reads only `instructions=` (#54), so a call carries
-        # the spec's instructions there and no system prompt at all.
-        system_prompt="" if voice is not None else spec.instructions or "",
-        instructions=None if voice is None else voice_instructions(spec.instructions, voice),
+        # Instructions are resolved on every run, including one continuing a
+        # stored model history from an older published version.
+        instructions=(spec.instructions or "")
+        if voice is None
+        else voice_instructions(spec.instructions, voice),
         # The answer first - text, or the spec's object - then
         # `DeferredToolRequests`, which is not a shape the model can choose: it
         # is what the run ends with when the approval gate parks a call.
@@ -834,8 +862,9 @@ def _fits_schema(schema: dict[str, Any]) -> Callable[[AgentOutput], AgentOutput]
             problem = next(iter(sorted(checker.iter_errors(output), key=str)), None)
             if problem is not None:
                 where = "/".join(str(part) for part in problem.absolute_path) or "the answer"
-                raise ModelRetry(
-                    f"The answer does not fit its schema at {where}: {problem.message}"
+                raise OutputSchemaRetry(
+                    f"The answer does not fit its schema at {where}: {problem.message}",
+                    schema_path="/".join(str(part) for part in problem.absolute_schema_path),
                 )
         return output
 

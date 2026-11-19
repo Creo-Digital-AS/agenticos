@@ -34,6 +34,7 @@ from app.agents.spec import CapabilityBindingSpec, StarterIcon, StarterIcons, St
 from app.db.locks import LockScope, hold_subject_shared
 from app.db.models.agent import Agent, AgentKind, AgentStatus, AgentVersion
 from app.db.models.agent_environment import AgentEnvironment
+from app.db.models.agent_exposure import AgentExposure
 from app.db.models.agent_run import AgentRun, RunStatus
 from app.db.models.context import ContextFile
 from app.db.models.organization_assistant import OrganizationAssistant
@@ -577,11 +578,20 @@ async def naming_model_profile(
         )
         .exists()
     )
+    channel_observer = (
+        select(AgentExposure.id)
+        .where(
+            AgentExposure.organization_id == organization_id,
+            AgentExposure.agent_id == Agent.id,
+            AgentExposure.observation["model_profile_id"].astext == str(profile_id),
+        )
+        .exists()
+    )
     result = await db.execute(
         select(Agent)
         .where(
             Agent.organization_id == organization_id,
-            or_(names_it(Agent.draft_spec), live_version),
+            or_(names_it(Agent.draft_spec), live_version, channel_observer),
         )
         .order_by(Agent.name.asc())
     )
@@ -1336,3 +1346,17 @@ async def fence_deletion(db: AsyncSession, agent_id: UUID, *, organization_id: U
         .where(Agent.id == agent_id, Agent.organization_id == organization_id)
         .with_for_update()
     )
+
+
+async def published_personal_model_keys(
+    db: AsyncSession, *, version_ids: Sequence[UUID]
+) -> set[UUID]:
+    if not version_ids:
+        return set()
+    result = await db.execute(
+        select(AgentVersion.id).where(
+            AgentVersion.id.in_(list(version_ids)),
+            AgentVersion.spec["model_credential_mode"].astext == "personal",
+        )
+    )
+    return set(result.scalars().all())

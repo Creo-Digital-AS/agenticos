@@ -129,7 +129,7 @@ across the sandbox boundary.
 | `browser_use` | Web browser | research | `browse_web`, `browser_open`, `browser_new_tab`, `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_read`, `browser_click`, `browser_type`, `browser_select`, `browser_scroll`, `browser_back` | `web:browse` | via the `browser` extra | handed off |
 | `computer_use` | Computer use | research | `computer_screenshot`, `computer_act`, `computer_apps`, `computer_save_screenshot` | `computer:use` | for a daemon | handed off |
 | `code_execution` | Calculations | analysis | `run_python` | `code:execute` | — | as-is |
-| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute` | `sandbox:execute` | for Daytona | handed off |
+| `sandbox` | Sandbox | analysis | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `execute`, `select_project_workspace` | `sandbox:execute` | for Daytona | handed off |
 | `mirage` | Virtual terminal | analysis | `mirage_ls`, `mirage_read_file`, `mirage_glob`, `mirage_grep`, `mirage_write_file`, `mirage_edit_file`, `mirage_execute` | — | per folder, via the `mirage` extra | handed off |
 | `charts` | Charts | analysis | `create_chart` | — | — | as-is |
 | `visuals` | Visuals | analysis | `draw`, `revise_visual`, `read_visual` | — | — | as-is |
@@ -149,7 +149,7 @@ across the sandbox boundary.
 | `compaction` | Long conversations | utility | none, by design | — | — | no effect |
 | `media` | Media offload | utility | none, by design | — | — | no effect |
 | `tool_output_limits` | Tool output limits | utility | `read_tool_result` | — | — | as-is |
-| `artifacts` | Apps | utility | `publish_artifact`, `read_artifact`, `list_artifacts`, `preview_artifact`, `share_artifact` | — | — | as-is |
+| `artifacts` | Apps | utility | `publish_artifact`, `read_artifact`, `list_artifacts`, `preview_artifact`, `export_artifact`, `share_artifact` | — | — | as-is |
 | `channel_tools` | Chat channel lookup | channels | `get_channel_info`, `list_channel_members`, `search_channels`, `read_channel_history`, `send_channel_file` | — | — | not available |
 | `phone_calls` | [Telephone calls](../voice.md#telephone-calls) | channels | `get_phone_contact_policy`, `call_me`, `list_phone_transfer_contacts`, `transfer_phone_call`, `end_phone_call` | `endpoint_id` | — | — |
 | `ask_user` | Ask the user | utility | `ask_user_question` | — | — | on screen |
@@ -216,7 +216,7 @@ and records:
 | `image_generation` | `generate_image` |
 | `memory_files` | `write_memory`, `edit_memory`, `delete_memory` |
 | `memory_mem0` | `remember` |
-| `sandbox` | `write_file`, `edit_file`, `execute` |
+| `sandbox` | `write_file`, `edit_file`, `execute`, `select_project_workspace` |
 | `visuals` | `draw`, `revise_visual`, `read_visual` |
 
 Every other tool above only reads. Delegation counts as reading: a delegate's
@@ -328,7 +328,9 @@ default, `query_analysis_mode` optionally expands the query *before* retrieval:
 latency and a little spend for recall on fuzzy questions. `multi_query` also
 retrieves once per query, one after another, and each retrieval embeds its own
 query — the variants are not batched into one embedding call — so keep
-`query_analysis_max_variants` low to bound the fan-out.
+`query_analysis_max_variants` low to bound the fan-out. Whether either mode pays
+for itself on a corpus is a measurement rather than a default: the
+[retrieval evaluation](../retrieval-eval.md) compares them on these docs.
 
 Both modes use the agent's own model — there is no separate model to configure —
 and their cost is metered against the run's budget like any other model call. An
@@ -400,8 +402,10 @@ same way `knowledge` bound to no collections is not. Files are managed under
 
 Notes an agent keeps of its own across conversations, indexed by one it maintains
 itself. Where `context` is a library a person authors and binds to many agents,
-memory is the agent's own: it writes through tools mid-run, and nobody else writes
-here at all. It is not bound by id — enabling the capability gives the agent its
+memory is the agent's own: it writes through tools mid-run. A person can correct
+their own notes in **Settings → Memory → Notes**; this does not grant access to
+other people’s notes. Corrections preserve the original agent-write timestamp and
+suppression state, use a revision check and record an audit entry without content. It is not bound by id — enabling the capability gives the agent its
 notes.
 
 **`MEMORY.md` is the index, and it is shown to the agent every request.** It is an
@@ -1152,6 +1156,8 @@ memory are the only limits worth setting.
 
 ## Sandbox { #files-shell }
 
+`select_project_workspace` selects an accessible project for file and shell tools until the run ends. Omit its project id to restore the original workspace. Approval continuations retain the selection; the next turn starts in the original workspace. The conversation stays in its own thread. Access is checked on every operation, and routines remain limited to their reviewed project source. Isolated evaluations cannot switch into persistent projects.
+
 `ls`, `read_file`, `glob`, `grep` — *reading.*
 `write_file`, `edit_file`, `execute` — *writing and running.*
 
@@ -1368,7 +1374,7 @@ reading and text grep; model-backed semantic search is not enabled. Connected-ac
 consent must finish in the same browser and signed-in account that started it.
 
 
-Vault secrets must match the backend’s purpose; `custom` is the explicit escape hatch. OneDrive and SharePoint accept the `sharepoint` Entra-app purpose, and Hugging Face services accept `huggingface`. Publish and runtime enforce the same rule. Every host in a PostgreSQL seed list must be on the deployment allowlist. MongoDB and GridFS require one `mongodb://` host: the platform forces `directConnection=true` and refuses SRV discovery. Unlinked channel senders require approval for every Mirage tool, including reads; linking an account restores the author’s ordinary folder policy.
+Vault secrets must match the backend’s purpose; `custom` is the explicit escape hatch. OneDrive and SharePoint accept the `sharepoint` Entra-app purpose, and Hugging Face services accept `huggingface`. Publish and runtime enforce the same rule. Every host in a PostgreSQL seed list must be on the deployment allowlist. MongoDB and GridFS require one `mongodb://` host: the platform forces `directConnection=true` and refuses SRV discovery. Channel runs use the author’s ordinary Mirage binding and per-tool approval settings, including for senders without a linked account.
 
 PostgreSQL mounts require a nonempty password in the vault DSN; empty passwords and passwordless authentication are not supported. They do not fall back to `PGPASSWORD` or `.pgpass`. DSN parameters naming host credential or TLS files (`passfile`, `servicefile`, `sslkey`, `sslcert`, `sslrootcert`, `sslcrl`) are refused.
 
@@ -1485,8 +1491,13 @@ Reads a text aloud through a speech provider the author picks, and behaves as
 image generation does: the clip is stored, shown in the conversation as a player,
 and written under `output/` when a workspace is open (#2259).
 
+Organization defaults are optional. In **Organization → AI & services → Text to speech**, an administrator saves the provider, model, voice and organization-visible vault key as one group. An agent inherits that group only after its author enables **Use organization defaults**; existing agents keep their explicit settings. A waiting run keeps its resolved group when the default changes, but disabling organization TTS or revoking the key still refuses speech. An agent override uses its own provider and key together.
+
+The HTTP catalog includes Eleven v4 through its text-to-dialogue endpoint, with chunks of at most 2,000 characters, plus Eleven v3 and Flash v2. WebSocket-only conversational models belong to a different transport and are not offered for clip generation.
+
 | Config | Default | Values |
 |---|---|---|
+| `use_organization_defaults` | `false` | Inherit the organization's provider, model, voice and key together; otherwise use this binding |
 | `provider` | `openai` | `openai`, `elevenlabs`, `google` |
 | `model` | `gpt-4o-mini-tts` | That provider's models, from `app/core/catalog/text_to_speech_models.json` |
 | `voice` | the model's first | The default the agent speaks in; it may switch per clip within `voices`. A catalog voice for OpenAI and Gemini; an id from your own voice library for ElevenLabs |
@@ -1694,8 +1705,36 @@ The patch is kept up to 256 KiB and 500 files, and marked where it was cut.
 **Who reads the diff.** It is stored with the conversation and read with the
 transcript's own access, so whoever can read the chat sees it; deleting the chat
 deletes it. In a sandbox several chats share, a task running at the same time as
-another sees that one's edits in its diff too. Reverting a task is not offered
-yet, and a task on this computer records no diff.
+another sees that one's edits in its diff too. A task on this computer records no diff.
+
+**Revert this task.** New tasks can restore regular files only when their complete
+snapshot was captured in an isolated conversation workspace. Project-, agent-,
+channel- and user-scoped snapshots stay read-only because they can include another
+conversation's work. You need current edit access, and no run may be writing the
+workspace. Every affected file must match the task's final content and executable
+mode; a conflict refuses the whole revert and lists the files. Unrelated files
+and your Git index and history stay unchanged.
+
+Undo is unavailable if either snapshot encounters an uncaptured oversized file,
+an unreadable path or an unsupported file type, even if that path appears unchanged.
+The captured diff stays readable. Platform and toolchain folders remain outside
+snapshot coverage by design.
+
+The action queues a durable job and reserves the workspace. The panel shows
+progress and any definite refusal. An unknown result keeps the reservation;
+**Retry revert** checks whether the files were already restored before applying
+anything. A crash or a lost response therefore cannot silently apply undo twice.
+The worker rechecks access before acting and audits success.
+
+Revert restores files only, keeping the conversation and task report. It requires
+Git and Python 3 and refuses truncated, redacted, older display-only or linked-file
+snapshots, and current files over 2 MiB. A removed or moved workspace is not
+replaced.
+
+**Changed-file counts.** The panel and message footer use the stored change set,
+including shell edits and the count of files omitted by the limit. Only a task
+without a change set uses the harness's file list; new reports make those paths
+relative to the workspace.
 
 **A conversation's tasks continue one session.** The harness's session id is kept
 in the sandbox beside the work, under `.agenticos/coding-agent/`, one per
@@ -1843,6 +1882,8 @@ includes three.js, Mermaid and Leaflet, and the deployment's own map tile path.
 See [Visuals](../artifacts.md#visuals).
 
 ## Apps { #artifacts }
+
+`export_artifact` exports the current published version to a real PDF in the workspace. It uses the isolated renderer, supports A4 reports and 16:9 browser presentations, preserves preview access and audience checks, and refuses unavailable bound data. The renderer and `browser` extra must be configured. Exports have unique filenames and are limited to 50 pages and 20 MB. See [design resources](../skills.md#design-resources).
 
 `publish_artifact` — *Publish a finished page - a report, a small dashboard, a
 summary - under a stable link.*
@@ -2555,11 +2596,16 @@ tokens into output tokens, which are billed at a premium and generated serially,
 so an agent whose runs are dominated by large tool results is usually better on
 `tiered`.
 
-**It reaches one run, not one conversation.** Between turns the history is rebuilt
-from the transcript as user and assistant text, so tool calls and their results
-are not there to compact and no edit made here survives a turn boundary. The
-history worth compacting is the long tool loop inside a single run, where one
-directory listing or knowledge search is tens of thousands of tokens.
+**History survives turn boundaries.** Each completed turn checkpoints its model
+messages, including tool calls, results and local or native tool-search discovery.
+Compaction works on that same history; its summaries survive into the next turn.
+
+The checkpoint keeps at most 200 model messages and 2 MiB of serialized history.
+Older messages are evicted without separating calls from their results, and an
+omission notice tells the model to rediscover missing tools or reread evidence.
+Discovery expires when its evidence is evicted. Current tool definitions,
+availability, permissions and execution approvals still apply on every run.
+Parked approvals use their separate resume state; a checkpoint does not replay actions.
 
 **The trigger is a fraction because an absolute number is only right for one
 model**, and the same agent runs on whatever profile its spec points at. The
@@ -2625,13 +2671,10 @@ stores and the walkers come from
 |---|---|---|
 | `threshold_bytes` | 32768 | 1 KiB–10 MiB; parts at least this large are stored out of line |
 
-**There is one place media actually piles up, and this is it.** An attachment
-reaches the model once, on the turn it was attached: the ordinary history is
-rebuilt from the transcript's *text*, so a picture is not re-sent on later turns.
-A conversation that has been [compacted](#context-management) is the exception —
-the library's own dump of the run's messages is stored whole and replayed exactly
-as the model last saw it, base64 and all, until the next summary replaces it.
-That blob is rows in Postgres and bytes on the wire, every turn in between.
+**Attachments can survive into later turns.** Completed turns retain model
+messages within the history limits, including retained images. Media offload runs
+on ordinary checkpoints as well as compacted histories. Ephemeral desktop
+screenshots are replaced with a notice before storage.
 
 **Where the bytes go, and how long they live.** Into the deployment's own file
 storage, at `media/<organization>/<conversation>/<digest>`. The organization is
@@ -2915,6 +2958,8 @@ API, so its model must support streaming.
 prompt reaches the model scrubbed, but the conversation stores the message as the
 person typed it, personal data included. Anyone who can read the conversation can
 read that message.
+
+The human transcript remains the original audit record. A separate screened copy, including any attachment briefing, is stored for model replay and quotations. Later turns keep that copy even if input redaction is disabled afterwards. Legacy replay is screened before the run’s context management; blocked turns still use the refusal marker.
 
 **The input edge screens an attachment before it is written.** An attached file
 reaches the prompt as its name, its path and its first 20 lines (at most 2,000
@@ -3288,10 +3333,24 @@ A decision claim can carry structured evidence: the situation, choice, alternati
 
 In **Settings → Memory**, read the evidence and record an observed outcome with **Correct**. A correction appends a new claim; the previous episode and its provenance remain in history. Deterministic consolidation does not fold episodes into general rules. Erasure removes their payload along with the claims; personal data export includes it.
 
-**Prepare Improve case** opens an editable input and expected answer. Review the text, remove anything that must stay private, and explicitly approve downloading one JSONL record. Its flat `input`, `reference_answer`, `tags` and `note` fields match the dataset importer in [Improve PR #2172](https://github.com/vstorm-co/agenticos/pull/2172). Import that file into an Improve dataset when that feature is installed, evaluate it and accept/publish changes there. This handoff does not create a dataset, run an optimizer or publish instructions automatically.
+**Add as an Improve case** opens an editable input and expected answer and asks which dataset to add them to; it is offered to a member who may edit datasets. Review the text, remove anything that must stay private, and explicitly approve adding it. The case is tagged `decision-episode`, records you as the person who asked it and links the run and conversation the episode came from while they exist, so erasing you anonymises it like any case taken from your conversations. Evaluate it and accept or publish changes in Improve. Adding it does not run an optimizer or publish instructions automatically.
 
 Local access choices belong to the selected agent, not to a global default inherited by other agents. Revoking a folder also removes its remembered choices and coding consents for folders inside it. Older desktop apps keep whole-computer consent within one conversation; upgrade the app to remember it across an agent’s conversations.
 
 While local coding sessions run, `[session:api] Use the EU numbers` redirects the session named `api`. With one active session, an unaddressed correction reaches it; with several, it stays with the parent agent to avoid changing an unrelated task. The parent records the correction once when it continues.
 
  Sandbox coding tasks in the same toolset queue so their workspace snapshots do not overlap; independent local sessions still run in parallel.
+
+
+## Connected chat apps (`channel_actions`)
+
+Explicit bot grants for finding channels, searching messages and delivering requested reports from any run.
+
+| Tool | Action |
+| --- | --- |
+| `list_chat_connections` | Bot IDs, granted actions, current destination |
+| `find_chat_channels` | Joined channel metadata and pagination |
+| `read_chat_messages` | Bounded, filtered message history |
+| `send_chat_message` | Requested message or report, new post or existing thread |
+
+The service rechecks organization membership, agent access, the active binding and bot, then destination membership and thread ownership on each operation. It never joins channels or borrows another agent’s bot. Search and history are bounded pages; follow their cursors and treat empty matches as one scanned page. Provider failures are refusals, not empty results. Sending follows the approval policy; an unconfirmed submission must be checked at the destination before retrying. Other platforms retain their existing conversation tools; cross-channel actions are offered only where the adapter verifies membership.

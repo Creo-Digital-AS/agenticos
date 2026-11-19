@@ -1583,6 +1583,18 @@ async def limit_table_write(ctx: Auth) -> None:
     _refuse_if_over(decision, "Too many table writes in the last minute. Wait and try again.")
 
 
+async def limit_coding_revert(ctx: Auth) -> None:
+    """Bound queued file verification per person and organization, even without Redis."""
+    for caller, attempts in (
+        (f"user:{ctx.subject_id}", 6),
+        (f"org:{ctx.organization_id}", 20),
+    ):
+        decision = await rate_limit.consume_with_local_floor(
+            surface="coding_revert", caller=caller, limit=rate_limit.Limit(attempts=attempts)
+        )
+        _refuse_if_over(decision, "Too many task reverts. Wait and try again.")
+
+
 async def limit_fork(ctx: Auth) -> None:
     """Refuse a member forking conversations faster than the deployment allows.
 
@@ -2482,3 +2494,13 @@ def get_onboarding_service(db: DBSession) -> OnboardingService:
 
 
 OnboardingSvc = Annotated[OnboardingService, Depends(get_onboarding_service)]
+
+
+from app.services.personal_model_key import PersonalModelKeyService
+
+
+def get_personal_model_key_service(db: DBSession) -> PersonalModelKeyService:
+    return PersonalModelKeyService(db)
+
+
+PersonalModelKeySvc = Annotated[PersonalModelKeyService, Depends(get_personal_model_key_service)]

@@ -1,5 +1,5 @@
 ---
-source_sha: "66ff628633d4"
+source_sha: "ef824da65bb6"
 ---
 
 # Governance { #governance }
@@ -45,6 +45,23 @@ nigdy się nie kończy.
 Trigger zdarzeniowy dokłada na swojej krawędzi jeszcze jedną odmowę: webhook,
 którego podpis nie weryfikuje się względem własnego sekretu triggera, to 403,
 które w ogóle nie dociera do runnera.
+
+Rutyny GitHub pokazują filtr autorów przy tworzeniu i edycji triggerów issue,
+pull requestów i komentarzy. **Członkowie repozytorium (domyślnie)** dopuszcza
+`OWNER`, `MEMBER` i `COLLABORATOR`; **Członkowie i contributorzy** dopuszcza też
+`CONTRIBUTOR`. **Każdy** obejmuje osoby wnoszące pierwszy wkład i innych
+zgłaszających. To powiązania autorów w GitHub, a nie role organizacji AgenticOS.
+Boty i jawnie wykluczony login podłączonego konta pozostają zablokowane w każdej
+opcji. Filtr autorów nie dotyczy pushy, runów workflow ani wydań. Istniejące rutyny
+zachowują swoją politykę; brak `authors` w konfiguracji nadal oznacza `members`.
+
+W historii rutyny jej zalogowany właściciel widzi **Ostatnie odfiltrowane zdarzenie
+GitHub**: czas odrzucenia zweryfikowanego webhooka, przyczynę i politykę autorów
+obowiązującą przy odbiorze. Diagnostykę zapisują webhooki rutyn i dostawy GitHub App.
+Zachowujemy ostatnie zapisane odrzucenie, aktualizowane najwyżej raz na minutę na
+rutynę według zegara bazy danych. Nie zapisujemy treści zdarzenia, tekstu autora
+ani sekretu. Nie powstaje run i nie zużywamy limitu uruchomień. Brak diagnostyki oznacza brak zapisanego odrzucenia, a nie
+potwierdzenie dostawy webhooka. Publiczne odpowiedzi webhooków pozostają bez zmian.
 
 ## Dostarczanie wyników rutyny { #routine-delivery }
 
@@ -901,7 +918,7 @@ Część pracy należy do samej platformy i mimo to potrzebuje modelu. **Rola
 systemowa** daje jej właściciela, którego operator widzi: jedna konfiguracja na
 organizację i rolę, nigdy wiersz agenta, nigdy jedna na zadanie i nigdy
 przypisana agentowi startowemu ani żadnemu agentowi, którego instrukcje się nie
-wykonały (#2575). **Organizacje → AI i usługi → Usługi w tle**
+wykonały (#2575). **Organizacje → AI i usługi**
 (`budgets:manage`) wylicza każdą rolę z modelem, na którym działa, wydatkami w tym
 miesiącu i ostatnimi wykonaniami.
 
@@ -1856,6 +1873,12 @@ narzędzi. Krok, który wskazuje zatwierdzających, mogą rozstrzygnąć tylko
 oni. Prośba, której nikt nie rozstrzygnie na czas, wygasa, a anulowany run anuluje
 swoje prośby.
 
+Krok, który wskazuje zatwierdzających lub [grupy akceptujące](#approval-groups),
+powiadamia tych zatwierdzających i członków grup z `approvals:decide`. Krok, który
+nie wskazuje ani jednych, ani drugich, powiadamia każdego z `approvals:decide`.
+Powiadomienie przychodzi przy dzwonku, a prośba trafia na początek Inboxu
+każdego, kto może ją rozstrzygnąć.
+
 Krok `editable` pokazuje też zatwierdzającemu propozycję, na przykład przygotowaną
 odpowiedź, którą może zmienić przed zatwierdzeniem. Wpis audytu zapisuje, czy krok
 był edytowalny, czy zatwierdzający go zmienił (`edited`) oraz długość propozycji i
@@ -2532,3 +2555,11 @@ rutyna. Narzędzia MCP do Inbox działają w zalogowanej sesji i przez zaufane
 poświadczenia prywatnej rozmowy; te ostatnie obejmują wyłącznie sprawy tej rozmowy.
 Zwykłe klucze API, uruchomienia w tle i zastępcza tożsamość publikującego nie mogą
 czytać ani zamykać prywatnych spraw.
+
+## Grupy akceptujące { #approval-groups }
+
+Kroki akceptacji i wywołań MCP w workflowach mogą wskazywać osoby, grupy organizacji lub oba zbiory. Decyzję podejmuje jedna uprawniona osoba, która niezależnie musi mieć `approvals:decide`. Bez wskazanych osób i grup obowiązuje dotychczasowa reguła oparta na tym uprawnieniu. Wskazana pusta lub usunięta grupa nigdy nie otwiera dostępu wszystkim.
+
+Członkostwo w grupie i aktywność konta są sprawdzane przy podejmowaniu decyzji. Powiadomienia trafiają do uprawnionych członków przy tworzeniu prośby; osoby wskazane kilkoma sposobami dostają je raz. Późniejsze dołączenie może dać prawo do decyzji bez nowego powiadomienia; wyjście lub utrata uprawnienia je odbiera.
+
+Alerty akceptacji, budżetu i zużycia agenta również obsługują grupy jako wybranych odbiorców. To wyłącznie adresaci powiadomień: wybór nie nadaje ani nie ogranicza prawa do decyzji. Osobiste preferencje powiadomień nadal obowiązują.

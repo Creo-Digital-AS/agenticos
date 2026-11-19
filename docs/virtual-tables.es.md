@@ -1,5 +1,5 @@
 ---
-source_sha: "e49637ff7aa2"
+source_sha: "4d8a6c479c11"
 ---
 
 # Virtual Tables { #virtual-tables }
@@ -163,6 +163,19 @@ una fórmula no se puede archivar. Guardar el esquema comprueba la fórmula y di
 qué le pasa. Un valor que no puede calcular - una división por cero, texto en una
 suma, una celda vacía - deja vacía la celda de ese registro. Una fórmula se
 calcula al leer el registro y nunca se guarda, escribe, filtra ni ordena.
+
+Los decimales se escriben con punto, `{Price} * 1.23`, en cualquier idioma: una
+coma separa los argumentos de una función, así que `{Price} * 1,23` se rechaza con
+esa indicación en lugar de leerse como número, y lo mismo una llamada a la que la coma da un valor de
+más, como `IF({Price} > 0,5, "yes", "no")`.
+
+El número de valores de una llamada se comprueba al guardar su
+fórmula: una guardada antes sigue funcionando, y las demás columnas de la tabla se pueden
+cambiar, hasta que alguien la edite. El rechazo da un motivo estable en
+`details.formula.reason`, como `decimal_comma` o `not_a_column`, que la consola usa
+para decirlo en el idioma de quien lee. La consola muestra los números, también el
+resultado de una fórmula, con el separador decimal de quien lee - `12,177` en
+polaco - y no agrupa un número de cuatro cifras.
 
 ## Cambiar un esquema { #changing-a-schema }
 
@@ -333,7 +346,8 @@ obligatorios.
 Cada edición es un `PATCH` contra la revisión que se ve en pantalla, así que una
 edición que pierde frente a un cambio más reciente se rechaza en lugar de escribirse
 encima. El registro se abre entonces con el valor rechazado junto a **Reload and
-reapply**. Marcar filas ofrece **Delete** para todas, cada una contra su propia
+reapply**, y se vuelve a leer: el campo dice qué contiene ahora, quién cambió el
+registro por última vez y cuándo, y el título del panel se actualiza. Marcar filas ofrece **Delete** para todas, cada una contra su propia
 revisión: un registro que alguien cambió entretanto se conserva, y la consola dice
 cuántos. El panel del registro elimina uno solo de la misma forma.
 
@@ -355,6 +369,8 @@ El tipo de una columna cambia en **Columns**, a los tipos a los que se convierte
 
 En **Columns**, **Required** hace que una columna necesite un valor, y una columna
 archivada pasa a **Archived columns**, donde **Restore** la devuelve con sus valores.
+
+Leer la comparación conserva las ediciones sin guardar de otros campos y su revisión original. Un conflicto posterior obtiene otra comparación; la respuesta de un registro cerrado no cierra otro. Los valores largos muestran una vista previa abreviada.
 
 ### Importar y exportar { #import-and-export }
 
@@ -430,6 +446,13 @@ es una escritura nueva: se ejecuta de nuevo en vez de devolver la primera respue
 Reintenta dentro de la ventana y trata una pausa más larga como una solicitud nueva. La duración se aplica al usar la
 clave, así que se cumple a la hora exacta; el barrido diario solo recupera el espacio de los
 receipts que nadie reintentó.
+
+Al eliminar un grupo, proyecto o cuenta se purgan los receipts asociados a la tabla
+de su tablero de tareas, incluidos los resultados de lotes. Durante la actualización
+se borran los resultados de lotes antiguos sin id de tabla, porque no se puede recuperar
+su tabla asociada. Sus claves se conservan hasta caducar: un reintento con la misma
+solicitud devuelve `IDEMPOTENCY_RESULT_PURGED` (409) y no escribe nada. Comprueba la tabla
+antes de iniciar una escritura nueva. Los demás tipos de receipts no cambian.
 
 ## Listar y filtrar { #listing-and-filtering }
 
@@ -754,6 +777,7 @@ un cliente usa para bifurcar.
 | `INVALID_QUERY` | 422 | Un filtro u orden que la tabla no puede responder |
 | `INVALID_SCHEMA` | 422 | Un cambio de esquema incoherente |
 | `IDEMPOTENCY_KEY_REUSED` | 422 | La clave se usó para una solicitud distinta |
+| `IDEMPOTENCY_RESULT_PURGED` | 409 | Un resultado de lote antiguo se borró durante la actualización; su clave impide otra escritura hasta caducar |
 | `QUOTA_EXCEEDED` | 402 | La escritura superaría un límite de almacenamiento; `details` nombra el límite (`tables`, `records`, `record_bytes`, `storage_bytes`) y su techo |
 | `RATE_LIMIT_EXCEEDED` | 429 | Demasiadas escrituras de tablas en el último minuto; consulta `Retry-After` |
 | `VALIDATION_ERROR` | 422 | La solicitud misma es defectuosa: un tipo erróneo, un campo desconocido, un límite, o NUL, un salto de línea o un sustituto aislado en un id, clave o nombre. La ruta la rechaza antes de que se ejecute el servicio |
@@ -819,9 +843,11 @@ Al crear una tabla vacía, las columnas obligatorias no necesitan valores predet
 
 ## Tareas duraderas {#durable-tasks}
 
+Un **agent** también puede tener una tabla compartida de tareas. El acceso sigue los permisos actuales del agent; editar tareas requiere además permiso de edición de tablas y de ejecución del agent. El propietario o un editor del agent puede administrar la tabla. Asignar un agent a una tarea privada no la comparte. AgenticOS MCP reutiliza la tabla del ámbito con `create_task` o `ensure_task_board` y la crea si todavía no existe. El ámbito privado sirve para asuntos personales, el proyecto para entregables del proyecto y el agent para una cola solicitada explícitamente. Si el ámbito es ambiguo, preguntar; nunca compartir contenido personal implícitamente.
+
 Puedes crear tareas de proyecto desde conversaciones privadas fuera del proyecto. Deja sin especificar la conversación de trabajo: la tarea abre su propia conversación en el proyecto sin enlazar tu transcripción privada. Se rechaza el enlace explícito a una conversación de otro proyecto.
 
-**Trabajo en segundo plano** (`/work`) muestra compromisos duraderos junto a los chats en ejecución. Una tarea es un registro de Virtual Table con un chat de trabajo y un caso de Inbox cuando requiere atención. Tabla, Kanban y API comparten la misma revisión, sin otra lista TODO sincronizada.
+Las tareas se gestionan en **Tables** (`/tables`). **Trabajo en segundo plano** (`/work`) muestra los chats en ejecución y su historial. Una tarea es un registro de Virtual Table con un chat de trabajo y un caso de Inbox cuando requiere atención. Tabla, Kanban y API comparten la misma revisión, sin otra lista TODO sincronizada.
 
 Se crea una tabla de tareas al primer uso para una **persona**, **proyecto**, **grupo** u **organización** y luego se reutiliza. Projects y Groups ofrecen **Tareas**; Tables abre la tabla privada. La instalación y las nuevas membresías no crean tablas vacías. La primera creación requiere `tables:create`. Los permisos actuales del proyecto y las membresías del grupo también se comprueban en la API de tablas, enlaces y vistas guardadas. Las tareas privadas permanecen ocultas incluso para otro propietario de la organización. Las tablas propias existentes y los ajustes de seguimiento de proyectos no se convierten automáticamente.
 
@@ -834,7 +860,7 @@ AgenticOS MCP ofrece `list_task_boards`, `ensure_task_board`, `list_tasks`, `get
 
 La pertenencia al grupo permite leer su tablero de tareas; escribir requiere además permiso para editar tablas o una concesión explícita de edición. Si la persona asignada a un recordatorio pierde acceso, la tarea queda bloqueada y su creador recibe un caso en Inbox para transferirla. Las conversaciones nuevas de tareas de proyecto pertenecen al proyecto. La cuota de tablas puede impedir la tarea opcional de un resultado de rutina, pero su chat de trabajo, caso de Inbox y notificación siguen entregándose.
 
-Escribir en tableros de proyecto requiere acceso al proyecto y permiso de edición de tablas o una concesión Edit explícita. Eliminar un proyecto, grupo o propietario privado cancela las tareas en cola, resuelve sus casos y elimina la tabla gestionada de ese ámbito con registros, historial y medios en la misma transacción. Los demás ámbitos permanecen intactos. El panel vuelve a un tablero privado accesible si desaparece el seleccionado.
+Escribir en tableros de proyecto requiere acceso al proyecto y permiso de edición de tablas o una concesión Edit explícita. Eliminar un proyecto, grupo o propietario privado cancela las tareas en cola, resuelve sus casos y elimina la tabla gestionada de ese ámbito con registros, historial y medios en la misma transacción. Los demás ámbitos permanecen intactos.
 
 Cambiar el propio tablero de tareas es más estrecho que trabajar en él. Renombrar el
 tablero, cambiar sus columnas o su vista predeterminada, y archivarlo o restaurarlo
@@ -857,3 +883,8 @@ Las notas de tareas son documentos Markdown con el mismo editor rich text y vist
 No se puede eliminar un agent mientras una tarea gestionada dependa de su ejecución programada. Reasigna, completa o cancela primero esas tareas; eliminar el agent no debe descartar su trabajo silenciosamente.
 
 Restaurar un tablero administrado archivado vuelve a poner en cola sus recordatorios planificados para personas, incluidos los que vencieron durante el archivo. La entrega sigue comprobando el acceso actual del creador original y del destinatario; restaurar el tablero no autoriza nuevo trabajo del agente. Un tablero archivado tampoco acepta escrituras de sus tareas: un caso resuelto en Inbox mientras tanto deja su tarea como estaba, y al restaurar el tablero la tarea pasa entonces a hecha o cancelada. Reabrir un caso cuya tarea está en un tablero archivado se rechaza con `TABLE_ARCHIVED`.
+
+
+Los miembros con permiso para crear tablas reciben su tabla privada de tareas al visitar **Tables** por primera vez, si falta. Se reutilizan las existentes; no se crean automáticamente listas de organización o agente. Los proyectos ofrecen **Task table** para crear o abrir la suya. Sin permiso de creación siguen disponibles las tablas accesibles, sin intentar una escritura prohibida.
+
+Inbox muestra una tarea cuando alguien debe actuar o revisar su resultado; no es otro almacén de tareas. Los monitores, triggers de correo y rutinas pueden crear casos de Inbox sin registros de tareas. Una tarea representa un compromiso concreto, no cada evento recibido. Se puede recordar una convención acordada junto con su identificador verificado; el estado actual de la tarea permanece en la tabla.

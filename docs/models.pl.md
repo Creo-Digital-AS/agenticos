@@ -1,5 +1,5 @@
 ---
-source_sha: "bfe431b65940"
+source_sha: "7b83980dd889"
 ---
 
 # Modele i providery { #models-and-providers }
@@ -24,6 +24,28 @@ model profile → credential → unsealed secret → provider client → Model
 ```
 
 Nic z tego, którego modelu używa agent, nie mieszka w `.env`.
+
+## Osobiste klucze do modeli { #personal-model-keys }
+
+W Builderze, w sekcji **Dostęp do modelu**, pozostaw domyślne **Użyj klucza organizacji** lub wybierz **Każdy użytkownik podłącza własny klucz**. Tryb osobisty zachowuje model i endpoint administratora. Obsługuje modele czatu z kluczem API, bez modeli zapasowych i zmiany modelu dla pojedynczej rozmowy.
+
+Zalogowany członek otwiera agenta w czacie i podłącza klucz przez prywatny formularz nad polem wiadomości lub w ustawieniach czatu. Klucz nigdy nie trafia do wiadomości, promptów ani instrukcji agenta. Połączenie jest wspólne dla agentów tej organizacji korzystających z tego samego dostawcy i endpointu. Brak klucza blokuje run przed zapytaniem do modelu; błąd uwierzytelnienia nigdy nie przełącza na klucz organizacji. Wymień klucz w ustawieniach czatu lub usuń połączenie w **Vault → Twoje połączenie z modelem**. Zapis klucza nie sprawdza go u dostawcy.
+
+Formularz prywatnego klucza przesyła oczekiwany profil, dostawcę, endpoint i model pokazane użytkownikowi. Jeśli cel zmieni się przed zapisem, serwer odrzuca klucz jako konflikt; formularz odświeża cel i usuwa wpisany klucz przed kolejną próbą.
+
+Tryb osobisty nie obsługuje obecnie kanałów prywatnych ani grupowych, widgetów, stron publicznych, uruchomień przez HTTP API, harmonogramów, triggerów, tematów w tle, głosu, recenzentów ani osobnych modeli funkcji. Przed publikacją wstrzymaj lub usuń aktywne kanały, publiczne udostępnienia i rutyny. Utworzenie lub ponowne włączenie niezgodnego udostępnienia zostaje odrzucone; run sprawdza tę samą zasadę. Strony publiczne i tokeny JWT widgetów nie identyfikują zalogowanego członka instancji.
+
+Delegowanie działa w czacie zalogowanego użytkownika. Subagent w trybie osobistym musi używać dokładnie tego profilu modelu, który wybrano w głównym agencie działającym w trybie osobistym. Agent organizacyjny nie może korzystać z osobistych kluczy przez delegację, a osobisty subagent nie może wybrać innego modelu ani endpointu. Zasady obowiązują przy publikacji, udostępnianiu, promocji wersji i wykonaniu, także w zagnieżdżonych delegacjach i po wznowieniu.
+
+Subagenci organizacyjni zachowują własne klucze. Specjaliści inline dziedziczą tryb rodzica, a dynamiczni w trybie osobistym pozostają przy jego modelu. Zasady osobistego dostępu MCP pozostają bez zmian.
+
+Komunikat o brakującym połączeniu subagenta podaje nazwę agenta i połączenia z modelem. Otwórz ustawienia czatu tego agenta i podłącz klucz; jeśli agent nie jest widoczny, poproś właściciela o dostęp. Runner sprawdza drzewo delegacji przed zapytaniami do modeli i ponownie przy wznowieniu. Klucz innego endpointu, innej osoby ani osoby zatwierdzającej nie zastępuje brakującego połączenia użytkownika.
+
+Klucze są szyfrowane w vaulcie dla właściciela i usuwane wraz z jego członkostwem lub kontem. Zmiana zatwierdzonego endpointu wymaga nowego połączenia. Rotacja klucza jednej osoby nie zmienia kluczy innych ani wspólnego profilu modelu.
+
+Impersonacja innego członka nie daje dostępu do jego osobistych połączeń z modelami: próby odczytu, zmiany lub użycia klucza są odrzucane przed dostępem do vault.
+
+Prywatna historia rozmowy jest przypisana do zatwierdzonych celów modeli, także fallbacków; [historia czatu](console.md#chat) opisuje zmianę połączenia i wznawianie oczekujących runów.
 
 ## Profil modelu { #a-model-profile }
 
@@ -341,6 +363,7 @@ Standardowe providery korzystają z wnioskowania modeli i providerów w Pydantic
 | OpenAI | `openai` | klucz API albo brak | ✓ |
 | Anthropic | `anthropic` | klucz API | ✓ |
 | Google Gemini | `google` | klucz API | ✓ |
+| TypeSafe (Jev) | `typesafe` | API key | ✓ |
 | OpenRouter | `openrouter` | klucz API |  ✓ |
 | Otari | `otari` | klucz API | ✓ |
 | Alibaba Cloud | `alibaba` | klucz API | ✓ |
@@ -367,6 +390,7 @@ Standardowe providery korzystają z wnioskowania modeli i providerów w Pydantic
 
 | Provider | id | Poświadczenie | Custom URL |
 |---|---|---|---|
+| System One API | `system-one` | API key, or none | ✓ |
 | Ollama | `ollama` | brak | ✓ |
 | proxy LiteLLM | `litellm` | brak | ✓ (`api_base`) |
 
@@ -779,3 +803,19 @@ Endpoint regionalny obsługuje mniej modeli embeddingów niż globalny: `eu.open
 Przed ustawieniem regionalnych endpointów zaktualizuj wszystkie procesy API i workerów. Starsze wersje ignorują nadpisanie endpointu OpenRouter.
 
 Aby użyć innego endpointu z tym samym dostawcą i modelem, wybierz w Builderze **Dodaj osobny model**. Automatyczna nazwa zawiera endpoint, a istniejący profil pozostaje bez zmian. **Aktualizuj model** edytuje wspólny profil. Pobieranie niestandardowego katalogu ma limit 2 MiB, 2048 modeli i długości pól; proces przechowuje maksymalnie 16 katalogów. Skompresowana lub zbyt duża odpowiedź pozostawia możliwość wpisania identyfikatora modelu bez przechodzenia na globalną listę.
+
+## Modele decyzyjne { #decision-models }
+
+Profile decyzyjne używają natywnego API `decisions` zamiast generowania tekstu. Wybierz dostawcę, model i klucz z sejfu w formularzu modelu. OpenAI, Google i OpenRouter oferują API czatu i decyzji; TypeSafe i własny endpoint System One służą do decyzji. Profil decyzyjny nie może być modelem rozmowy agenta ani przełączać się awaryjnie na model czatowy.
+
+Adaptery pochodzą z Pydantic AI. Obecne sugestie obejmują OpenAI `gpt-6-luna`, Google `gemini-decision-1` oraz TypeSafe `jev-1.14.0` / `jev-latest`. OpenRouter pobiera katalog modeli decyzyjnych osobno od tekstowych. Własny System One wymaga adresu i identyfikatora modelu. Dostępność zależy od dostawcy i konta; sugestia nie gwarantuje dostępu.
+
+Kroki **Decision models** w workflow wybierają profil natywny. Istniejące identyfikatory `decide.*` i konfiguracje z kluczem TypeSafe nadal działają. Odpowiedź poniżej progu pewności kieruje do portu `unsure`. Każde wykonanie ponownie sprawdza uprawnienia i klucz; koszt wchodzi do budżetu workflow i organizacji.
+
+Automatyczne dołączanie do rozmów na kanałach może korzystać z modelu natywnego lub zwykłego LLM ze structured output. Natywna decyzja tak/nie zwraca prawdopodobieństwo dołączenia; ograniczone pole liczbowe zachowuje tę wartość. LLM zwraca ocenę przydatności 0–100, a nie skalibrowane prawdopodobieństwo. Obie wartości porównujemy z suwakiem progu, włącznie z samą granicą. Klasyfikator nie ma narzędzi. Funkcja wymaga włączenia i respektuje ustawione interwały; główny agent może używać organizacyjnych kont MCP, nigdy prywatnych danych uczestnika.
+
+Źródła dostawców: [Pydantic AI](https://pydantic.dev/docs/ai/models/decision/), [OpenAI](https://developers.openai.com/api/docs/guides/decisions), [Google](https://ai.google.dev/gemini-api/docs/decisions-api), [TypeSafe](https://docs.typesafe.ai/models), [OpenRouter](https://github.com/OpenRouterTeam/skills/tree/main/skills/openrouter-decisions).
+
+ElevenLabs Realtime udostępnia `eleven_realtime_v1_mini` oraz `eleven_realtime_v1_max` przez relay PCM 24 kHz, z domyślnym głosem `brian` i semantycznym wykrywaniem tur.
+
+SDK nie raportuje opłat za tokeny. Połączenia z ustawionym budżetem wydatków są odrzucane przed nawiązaniem; połączenia bez takiego budżetu zachowują limit czasu i zapisują koszt audio jako dolną granicę, a nie pełny rachunek. Stawka katalogowa audio wynosi 0,08 USD/minutę (0,16 USD w trybie burst); tokeny kosztują dodatkowo. Wartość kontekstu 16k jest ostrożnym limitem historii przyjętym przez platformę, a nie oknem kontekstu ogłoszonym przez dostawcę. Integrację sprawdzono offline na konstrukcji modeli SDK i kontrolowanych transportach, bez testów na rzeczywistym koncie. [SDK](https://pydantic.dev/docs/ai/api/realtime/elevenlabs/), [ElevenLabs API pricing](https://elevenlabs.io/pricing/api).

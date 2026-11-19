@@ -56,6 +56,14 @@ class WakeTask(Payload):
     revision: int = Field(ge=1)
 
 
+class RevertCodingTask(Payload):
+    organization_id: UUID
+    change_id: UUID
+    user_id: UUID
+    claim_id: UUID
+    api_key_id: UUID | None = None
+
+
 class MoveProjectWorkspacePayload(Payload):
     transfer_id: UUID
     project_id: UUID
@@ -84,6 +92,41 @@ class ChannelDelivery(Payload):
     payload: dict[str, JsonValue]
 
 
+class ChannelMessageFile(Payload):
+    filename: str
+    mime_type: str
+    size: int
+    handle: str = Field(repr=False)
+    handle_key_version: int | None = None
+    duration_seconds: float | None = None
+    author_id: str | None = None
+
+
+class ChannelMessage(Payload):
+    """An authenticated native event, without webhook credentials or raw provider envelopes."""
+
+    receipt_id: UUID
+    organization_id: UUID
+    bot_id: UUID
+    authorization_generation: UUID
+    platform: Literal["slack", "telegram", "mattermost", "teams", "discord"]
+    platform_user_id: str
+    platform_chat_id: str
+    chat_type: Literal["private", "group"]
+    text: str
+    platform_username: str | None = None
+    platform_display_name: str | None = None
+    message_id: str | None = None
+    broadcast_mention: bool = False
+    addressed: bool | None = None
+    edit_admitted: bool = False
+    interaction_handle: str | None = Field(default=None, repr=False)
+    interaction_key_version: int = 1
+    platform_team_id: str | None = None
+    attachments: list[ChannelMessageFile] = Field(default_factory=list)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class EmailDelivery(Payload):
     organization_id: UUID
     bot_id: UUID
@@ -100,7 +143,16 @@ class ChannelHandbackCall(Payload):
     result: str | None = None
 
 
+class ChannelHandbackFile(Payload):
+    filename: str
+    mime_type: str
+    stored_leaf: str
+
+
 class ChannelHandback(Payload):
+    initial_reply_id: UUID | None = None
+    submission_started: bool = False
+    message_id: str | None = None
     organization_id: UUID
     run_id: UUID
     bot_id: UUID
@@ -110,10 +162,20 @@ class ChannelHandback(Payload):
     tool_calls: list[ChannelHandbackCall] = Field(default_factory=list)
     generated_files: frozenset[str] = frozenset()
     notice: bool = False
+    attachments: list[ChannelHandbackFile] = Field(default_factory=list)
 
 
 class NoPayload(Payload):
     """For a job whose work is to look at the current state."""
+
+
+class AnalyzeChannel(Payload):
+    organization_id: UUID
+    observation_id: UUID
+    generation: UUID
+    admission_hash: str = Field(min_length=64, max_length=64)
+    revision: int = Field(ge=1)
+    messages: list[dict[str, JsonValue]] = Field(min_length=1, max_length=20)
 
 
 class Tick(Payload):
@@ -775,6 +837,16 @@ RECONCILE_CONVERSATION_TASKS = _sweep("reconcile-conversation-tasks", timeout=ti
 SWEEP_GENERATED_MEDIA = _sweep("sweep-generated-media")
 SEND_DIAGNOSTICS = _sweep("send-diagnostics", timeout=timedelta(seconds=60))
 PROACTIVE_SWEEP = _sweep("proactive-sweep")
+CHANNEL_OBSERVATION_SWEEP = _sweep("channel-observation-sweep")
+ANALYZE_CHANNEL = Task(
+    kind="analyze-channel",
+    payload_type=AnalyzeChannel,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(minutes=5),
+    priority=Priority.SCHEDULED,
+    retry_refusal="Wait for new channel messages; automatic replies are not replayed",
+)
 WATCH_SWEEP = _sweep("watch-sweep")
 # Three attempts, unlike the sweeps above: a sweep's next tick is the same work
 # again, but the next report is a week or a month away and covers another window,
@@ -782,6 +854,16 @@ WATCH_SWEEP = _sweep("watch-sweep")
 # is idempotent across attempts (Codex, #2248).
 WEEKLY_USAGE_REPORT = _sweep("weekly-usage-report", timeout=timedelta(hours=1), max_attempts=3)
 MONTHLY_USAGE_REPORT = _sweep("monthly-usage-report", timeout=timedelta(hours=1), max_attempts=3)
+
+REVERT_CODING_TASK = Task(
+    retry_refusal="Retry the revert from its conversation so its files and current access can be checked again",
+    kind="revert-coding-task",
+    payload_type=RevertCodingTask,
+    pool=Pool.AGENT,
+    max_attempts=3,
+    timeout=timedelta(minutes=3),
+    priority=Priority.INTERACTIVE,
+)
 
 MOVE_PROJECT_WORKSPACE = Task(
     retry_refusal="Start a new transfer in the project's sandbox settings; retired transfer copies cannot be reused",
@@ -791,6 +873,26 @@ MOVE_PROJECT_WORKSPACE = Task(
     max_attempts=3,
     timeout=timedelta(minutes=30),
     priority=Priority.INTERACTIVE,
+)
+
+PROCESS_CHANNEL_CONTROL = Task(
+    kind="process-channel-control",
+    payload_type=ChannelMessage,
+    pool=Pool.SYSTEM,
+    max_attempts=1,
+    timeout=timedelta(minutes=1),
+    priority=Priority.INTERACTIVE,
+    retry_refusal="Send the control command again; the previous request is not replayed",
+)
+
+PROCESS_CHANNEL_MESSAGE = Task(
+    kind="process-channel-message",
+    payload_type=ChannelMessage,
+    pool=Pool.AGENT,
+    max_attempts=1,
+    timeout=timedelta(hours=1),
+    priority=Priority.INTERACTIVE,
+    retry_refusal="Send a new message after checking the run; an interrupted action may already have executed",
 )
 
 PROCESS_CHANNEL_DELIVERY = Task(
@@ -811,6 +913,16 @@ PROCESS_EMAIL_DELIVERY = Task(
     priority=Priority.INTERACTIVE,
 )
 
+DELIVER_CHANNEL_REPLY = Task(
+    kind="deliver-channel-reply",
+    payload_type=ChannelHandback,
+    pool=Pool.SYSTEM,
+    max_attempts=1,
+    timeout=timedelta(minutes=2),
+    priority=Priority.INTERACTIVE,
+    retry_refusal="Check whether the answer arrived before sending the saved response again",
+)
+
 DELIVER_CHANNEL_HANDBACK = Task(
     kind="deliver-channel-handback",
     payload_type=ChannelHandback,
@@ -823,10 +935,14 @@ DELIVER_CHANNEL_HANDBACK = Task(
 TASKS: dict[str, TaskKind] = {
     task.kind: task
     for task in (
+        PROCESS_CHANNEL_CONTROL,
+        PROCESS_CHANNEL_MESSAGE,
         PROCESS_CHANNEL_DELIVERY,
         PROCESS_EMAIL_DELIVERY,
+        DELIVER_CHANNEL_REPLY,
         DELIVER_CHANNEL_HANDBACK,
         MOVE_PROJECT_WORKSPACE,
+        REVERT_CODING_TASK,
         INGEST_DOCUMENT,
         SYNC_COLLECTION,
         SYNC_SOURCE,
@@ -889,6 +1005,8 @@ TASKS: dict[str, TaskKind] = {
         SWEEP_GENERATED_MEDIA,
         SEND_DIAGNOSTICS,
         PROACTIVE_SWEEP,
+        CHANNEL_OBSERVATION_SWEEP,
+        ANALYZE_CHANNEL,
         WATCH_SWEEP,
         WEEKLY_USAGE_REPORT,
         MONTHLY_USAGE_REPORT,

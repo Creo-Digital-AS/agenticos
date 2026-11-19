@@ -1,4 +1,4 @@
-.PHONY: ci-test-db-configure test-frontend-jobs-check test-frontend-reports-check test-frontend-merge build-frontend-pack docker-test-db docker-test-db-down docker-minio install format lint desktop-dev desktop-build desktop-check mobile-android mobile-ios mobile-check lint-backend lint-frontend check audit licenses licenses-check build-frontend test run clean help sandbox-token sandbox-runtimes deps-upgrade deps-upgrade-all db-init dev dev-down dev-logs dev-rebuild dev-frontend docker-clean dev-server dev-server-down dev-server-logs dev-server-frontend stage stage-down prod prod-down prod-frontend upgrade upgrade-dry-run upgrade-new-features upgrade-finalize docs docs-build docs-slug-check presentation audit-frontend sbom
+.PHONY: ci-test-db-configure test-frontend-jobs-check test-frontend-reports-check test-frontend-merge build-frontend-pack docker-test-db docker-test-db-down docker-minio install format lint desktop-dev desktop-build desktop-check mobile-android mobile-ios mobile-check lint-backend lint-frontend check audit licenses licenses-check build-frontend test run clean help sandbox-token sandbox-workspace sandbox-runtimes deps-upgrade deps-upgrade-all db-init dev dev-down dev-logs dev-rebuild dev-frontend docker-clean dev-server dev-server-down dev-server-logs dev-server-frontend stage stage-down prod prod-down prod-frontend upgrade upgrade-dry-run upgrade-new-features upgrade-finalize docs docs-build docs-slug-check presentation audit-frontend sbom
 
 # === Environments ===========================================================
 # Three. The images are published to GHCR by `.github/workflows/images.yml`
@@ -45,6 +45,40 @@ sandbox-token:
 		echo "▶ Generated SANDBOXD_TOKEN in backend/.env"; \
 	fi
 
+# Where the sandbox service keeps each session's files, mounted at the same path
+# on the host. Created here, world-writable like `/tmp` itself, because a missing
+# bind source is created by the Docker daemon as root:root 755 on Linux, under
+# Docker Desktop's WSL integration as much as with a native engine - and the
+# service, running as uid 10001, then cannot write it, so every sandbox fails to
+# start while the service still reports healthy. An existing directory is only
+# checked: changing the owner of one Docker created takes root. Under WSL, do not
+# delete it while a container mounts it either: Docker Desktop keeps a mount of
+# the old directory, and the next container fails "no such file or directory"
+# until every container using it is stopped or Docker Desktop restarts.
+# The pinned sandboxd image runs as uid 10001, primary gid 999.
+SANDBOX_WORKSPACE_ROOT ?= /tmp/agenticos-sandbox-workspaces
+
+sandbox-workspace:
+	@dir="$(SANDBOX_WORKSPACE_ROOT)"; \
+	if [ ! -d "$$dir" ]; then \
+		if mkdir -p "$$dir" && chmod 1777 "$$dir"; then \
+			echo "▶ Created $$dir for the sandbox service"; \
+		else \
+			echo "⚠ Could not create $$dir. Create it writable by uid 10001, or sandboxes will not start."; \
+		fi; \
+	else \
+		owner=$$(ls -Lnd "$$dir" | awk '{print $$3}'); \
+		group=$$(ls -Lnd "$$dir" | awk '{print $$4}'); \
+		if [ "$$owner" = 10001 ]; then bits=3,4; \
+		elif [ "$$group" = 999 ]; then bits=6,7; \
+		else bits=9,10; fi; \
+		access=$$(ls -Lnd "$$dir" | awk '{print $$1}' | cut -c $$bits); \
+		case "$$access" in wx|ws|wt) ;; *) \
+			echo "⚠ The sandbox service (uid 10001) needs write and search access to $$dir."; \
+			echo "  Fix it once with: sudo chown 10001 $$dir && sudo chmod u+wx $$dir"; \
+		;; esac; \
+	fi
+
 # The runtime allowlist the compose files hand the sandbox service, written from
 # backend/app/core/catalog/sandbox_runtimes.json. Run it after editing that file;
 # `backend/tests/test_sandbox_runtime_catalog.py` is what fails when nobody did.
@@ -61,7 +95,7 @@ sandbox-runtimes:
 # `sandboxd:0.2` once served an older API than the backend's client spoke, and
 # every command failed as a lost session (#2484). `--pull missing` would add
 # nothing, and would override `pull_policy: never` on the images built here.
-dev: sandbox-token
+dev: sandbox-token sandbox-workspace
 	@echo "▶ Building the backend image and starting the stack (migrations run as the \`migrate\` service)…"
 	@if ! docker compose $(COMPOSE_LOCAL) $(COMPOSE_DEV_PROFILES) up -d --build; then \
 		echo ""; \
@@ -323,8 +357,8 @@ lint: lint-backend lint-frontend lint-spelling lint-precommit
 # outside `backend/` and so is a fourth path rather than a second invocation; its
 # relaxations are declared in `pyproject.toml` under `../scripts/**`.
 lint-backend:
-	uv run --directory backend ruff check . ../scripts ../deploy/updater
-	uv run --directory backend ruff format . ../scripts ../deploy/updater --check
+	uv run --directory backend ruff check . ../scripts ../deploy/updater ../evals
+	uv run --directory backend ruff format . ../scripts ../deploy/updater ../evals --check
 	uv run --directory backend ty check
 	uv run --directory backend vulture
 	uv run --directory backend deptry app cli alembic
@@ -338,6 +372,7 @@ lint-backend:
 	uv run --directory backend python3 ../scripts/check_comments.py
 	uv run --directory backend python3 ../scripts/check_docs_paragraphs.py
 	uv run --directory backend python3 ../scripts/check_docs_i18n.py
+	uv run --directory backend python3 ../scripts/gen_architect_guide.py --check
 	uv run --directory backend python3 ../scripts/check_docs_glossary.py
 
 # Unused functions and methods, reported rather than gated. `make lint` runs
@@ -416,8 +451,8 @@ lint-precommit:
 # applying it, so without the second line here the only way to fix a formatting
 # failure would be to let the pre-commit hook rewrite the file for you.
 format:
-	uv run --directory backend ruff format . ../scripts ../deploy/updater
-	uv run --directory backend ruff check . ../scripts ../deploy/updater --fix
+	uv run --directory backend ruff format . ../scripts ../deploy/updater ../evals
+	uv run --directory backend ruff check . ../scripts ../deploy/updater ../evals --fix
 	cd frontend && bunx prettier --write "src/**/*.{ts,tsx}" "e2e/**/*.ts"
 
 # === Testing ===
@@ -636,7 +671,7 @@ audit:
 # target was added: `next` and `postcss` raised, `nanoid` and `js-yaml` pinned
 # forward through their parents.
 AUDIT_LEVEL ?= high
-# The one other case is a finding with no fixed release anywhere in its chain: it
+# The other case is a finding with no fixed release anywhere in its chain: it
 # is named here with the path it arrives by and the condition that removes it,
 # and the audit ignores that advisory only.
 #   GHSA-vfj7-8cjw-p6xm (CVE-2026-93687): braces <= 3.0.3 has no patched release.
@@ -644,7 +679,13 @@ AUDIT_LEVEL ?= high
 #   > fast-glob > micromatch, a lint-time dependency that the built console does
 #   not ship. Remove when braces publishes a fix or @next/eslint-plugin-next
 #   drops fast-glob. bun matches advisories by their GHSA id, not the CVE.
-AUDIT_IGNORE ?= GHSA-vfj7-8cjw-p6xm
+#   GHSA-fc5q-39xc-vjpf (CVE-2026-112366): picomatch <= 4.0.7 has no fixed
+#   release. The locked paths are lint/build/test tools and next-intl's source
+#   watcher, absent from the standalone image. Next's bundled matcher is traced
+#   only by image pattern checks; this build has no remote patterns and the
+#   fixed local pattern **. Requests cannot supply glob patterns. Track #3102;
+#   remove after an upstream fix, and reassess if runtime patterns change.
+AUDIT_IGNORE ?= GHSA-vfj7-8cjw-p6xm GHSA-fc5q-39xc-vjpf
 
 audit-frontend:
 	cd frontend && bun audit --audit-level=$(AUDIT_LEVEL) $(addprefix --ignore=,$(AUDIT_IGNORE))
@@ -749,6 +790,14 @@ load-test:
 	uv run --directory backend python ../loadtest/run.py \
 		$(if $(API_PID),--api-pid $(API_PID),) \
 		$(if $(DATABASE_URL),--database-url $(DATABASE_URL),)
+
+# The retrieval evaluation (#2482): a question set over docs/ and the harness
+# that measures knowledge retrieval on it. Not part of `make check` and never in
+# CI: every run makes billed embedding and model calls. `docs/retrieval-eval.md`
+# has what it needs, the options and what a run costs.
+EVAL_ARGS ?=
+eval-retrieval:
+	@uv run --directory backend python ../evals/retrieval/run.py $(EVAL_ARGS)
 
 # Every CI job, in the order the workflow declares them, with the exceptions
 # named below. This is the one claim in this file that has to be exactly true:
@@ -1094,6 +1143,9 @@ help:
 	@echo "  make load-stub-model  The slow-on-purpose model the suite measures against"
 	@echo "  make load-seed        Build the fixture: an agent, a collection, a routine"
 	@echo "  make load-test        Offer the workload and print the report"
+	@echo ""
+	@echo "Retrieval evaluation (billed model calls - see docs/retrieval-eval.md):"
+	@echo "  make eval-retrieval   Measure knowledge retrieval on the docs; EVAL_ARGS= passes options"
 	@echo ""
 	@echo "Database:"
 	@echo "  make db-init       Initialize database (start + migrate)"

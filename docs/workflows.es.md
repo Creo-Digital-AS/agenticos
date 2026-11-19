@@ -1,5 +1,5 @@
 ---
-source_sha: "e23a2fdc098e"
+source_sha: "3da552420873"
 ---
 
 # Workflows { #workflows }
@@ -88,7 +88,11 @@ un enlace compartido muestran la misma lista.
 
 **More → Settings** contiene el nombre, la descripción, las etiquetas y los ajustes de ejecución; los cambios se guardan automáticamente. El editor ocupa la ventana disponible: Input a la izquierda, Parameters y Settings en el centro y Output a la derecha. Los disparadores usan dos paneles porque no reciben datos anteriores. En pantallas grandes cada panel se desplaza por separado; en móviles hay una columna. Las ejecuciones guardadas muestran sus parámetros de solo lectura junto a sus datos. Los valores del registro usan los nombres de las columnas. Las notas ofrecen Open note, tamaños y controles para redimensionar.
 
-El selector muestra servidores del catálogo MCP antes de conectarlos; la entrada genérica Call an MCP tool está oculta. Conecta un servicio y elige una de sus herramientas descubiertas. Se mantiene la lista de herramientas permitidas. Los pasos de colores y el minimapa están activos por defecto. Los pasos de modelos muestran instrucciones, temperatura y esfuerzo; los ajustes vacíos conservan los valores del proveedor. Jev muestra modelo, pregunta y umbral de confianza. Send an email usa el remitente de la plataforma o conecta Gmail u Outlook y, tras confirmar, cambia a la herramienta MCP real del buzón. El cambio elimina asignaciones incompatibles y se puede deshacer.
+El selector muestra servidores del catálogo MCP antes de conectarlos; la entrada genérica Call an MCP tool está oculta, y los que nadie ha conectado esperan bajo **apps para conectar** al final de su sección. Conecta un servicio y elige una de sus herramientas descubiertas. Se mantiene la lista de herramientas permitidas.
+
+Los pasos de colores y el minimapa están activos por defecto. En el teléfono, el lienzo se abre con todo el flujo a la vista y el minimapa oculto; **Canvas options** lo vuelve a mostrar.
+
+Los pasos de modelos muestran instrucciones, temperatura y esfuerzo; los ajustes vacíos conservan los valores del proveedor. Los pasos de **Decisions**, que responde el modelo de decisión Jev, muestran modelo, pregunta y umbral de confianza. Send an email usa el remitente de la plataforma o conecta Gmail u Outlook y, tras confirmar, cambia a la herramienta MCP real del buzón. El cambio elimina asignaciones incompatibles y se puede deshacer.
 
 El paso **Send an email** también ofrece **SMTP account → New SMTP account**. Guarda servidor, puerto, usuario, contraseña y remitente en el diálogo del vault. STARTTLS suele usar 587 y TLS implícito 465; ambos verifican certificados. El workflow solo guarda `smtp_secret_id`. **Platform sender** elimina la selección. La publicación y cada ejecución comprueban el acceso al secreto; una cuenta no disponible detiene el paso en lugar de cambiar de remitente.
 
@@ -142,7 +146,7 @@ un pellizco - o Ctrl o Cmd con la rueda - lo amplía; sus controles están en la
 
 Los pasos se eligen en el **selector de pasos**. Muestra secciones - **Start**, **AI**,
 **Flow**, **Data**, **Apps and the web** - con sus grupos debajo. Un grupo como
-**Slack**, **Tables** o **Jev decisions** se abre a sus pasos, y un grupo de un solo
+**Slack**, **Tables** o **Decisions** se abre a sus pasos, y un grupo de un solo
 paso es ese paso. **Search steps** encuentra cualquier paso por su nombre, por lo que
 hace o por su grupo. Añades un paso de cuatro maneras:
 
@@ -151,7 +155,10 @@ hace o por su grupo. Añades un paso de cuatro maneras:
   a la vista, conectado a él cuando sus puertos encajan. Un paso de inicio va en
   cambio antes del inicio actual y pasa a serlo.
 - **+** junto a la salida de un paso abre el selector para el paso que va tras esa
-  salida.
+  salida. Si la salida ya lleva a un paso, el selector pregunta dónde va el nuevo:
+  **Insert before** lo coloca en esa conexión y **Add a parallel branch** conserva la
+  conexión y ejecuta el nuevo paso a su lado. Una salida que ya lleva a varios pasos solo
+  admite otra rama.
 - **Clic derecho** en el lienzo: el mismo selector se abre donde hiciste clic, y el
   paso aparece allí. Debajo, **Add a note** y, cuando hay algo copiado, **Paste**.
 - **Arrastra** un paso desde el selector para dejarlo donde lo sueltes, sin conectar.
@@ -291,7 +298,9 @@ comparación muestran el tamaño guardado sin controles.
 ## Configurar un nodo { #configuring-a-node }
 
 Qué hace cada nodo, con qué se configura y qué significan sus fallos está en la
-[referencia de nodos](reference/workflow-nodes.md).
+[referencia de nodos](reference/workflow-nodes.md). La consola nombra cada paso, sus puertos y
+sus ajustes en el idioma de quien lee; la referencia, la API y un workflow exportado conservan
+los nombres en inglés.
 
 Un clic selecciona un paso y un doble clic lo abre sobre el lienzo. En una versión publicada o **View only** basta un clic. La cabecera muestra el nombre y un resumen desplegable de la configuración pendiente. Ábrelo para ver qué falta; elegir un campo lleva a su entrada. Después de intentar probar o publicar, los detalles de validación se abren automáticamente.
 
@@ -700,6 +709,12 @@ versión en vivo, lo dice primero. Si el grafo aún tiene problemas, la
 publicación se bloquea con **Fix the problems below before publishing**, así que una
 versión que no validaría nunca se crea.
 
+Algunas cosas merecen un vistazo sin ser errores, y un signo ámbar en el paso las marca:
+un resultado de **Ask for approval** que no lleva a ninguna parte, o un paso que decide
+entre salidas cuando ninguna lleva a ninguna parte. El run simplemente termina ahí. El
+diálogo de publicación también las enumera, pero nunca bloquean una prueba ni una
+publicación.
+
 Publicar no termina tu edición. El draft sigue existiendo con independencia de
 cualquier versión publicada, así que lo sigues editando enseguida. **Versions** en la
 cabecera del editor abre cada versión publicada con su release note, la que está en
@@ -891,14 +906,23 @@ lo que la persona aprobó. Quien puede decidir pero no está nombrado en el paso
 lectura, y una solicitud decidida con una versión cambiada lleva la insignia
 **Edited** en **Decided**.
 
+En el propio run, un paso de aprobación terminado empieza por quién lo decidió y cuándo -
+**Approved by** o **Rejected by** la persona y la hora - solo la decisión y la hora cuando
+la cuenta ya no existe o quien lee no puede ver los miembros - encima de la salida del paso. Si quien aprobó cambió la propuesta,
+**Show changes** compara las dos versiones. Una solicitud que caducó o se canceló con su
+run lo dice en su lugar.
+
 Cuando el paso enumera **Ways to approve**, la cola muestra un botón por cada una, con la
 etiqueta que escribió su autor, en lugar de **Approve**; **Reject** se queda. Cada forma
 es un puerto de salida del paso, así que el workflow sigue por la que pulsó quien
 aprueba, y la fila decidida la nombra. Una edición va con el botón que se pulse.
 
 
-En la lista, la versión de un run de prueba dice **Draft (test)** y la de uno real
-**Published**, y un run iniciado desde la consola o la API HTTP dice **Console or
+En la lista, una prueba de todo el borrador dice **Draft (test)**, una [prueba de un
+paso](#a-steps-data-pinning-and-testing-one-step) **Step test** seguido del nombre del paso, y un run real **Published**.
+**Version** puede mostrar solo las pruebas de paso u omitirlas.
+
+Un run iniciado desde la consola o la API HTTP dice **Console or
 API**. **Status**, **Version**, **Started by** y **Started** (la última hora, día, semana o 30
 días) acotan las ejecuciones, y la lista responde
 una página cada vez; cada filtro queda en la dirección, así que una lista filtrada
@@ -954,6 +978,8 @@ la escribió. En la vista de la ejecución, las líneas de cada paso están deba
 el orden en que se escribieron. Una clave de API de la organización con `workflows:view`
 también las lee, para las ejecuciones de origen público: consulta [Leer el log de un
 workflow](api.md#reading-a-workflows-log).
+
+Las nuevas líneas de Quick Log muestran los nombres predeterminados de los pasos en el idioma del lector, también en el dashboard. El grafo guardado del run identifica los nombres predeterminados, también en las líneas antiguas. Las etiquetas propias y las líneas cuyo grafo guardado ya no identifica el paso conservan su texto guardado.
 
 ### Alertas { #log-alerts }
 

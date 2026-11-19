@@ -205,6 +205,7 @@ export interface AlertSpec {
   enabled: boolean;
   to: AlertAudience[];
   user_ids: string[];
+  group_ids?: string[];
 }
 
 /**
@@ -449,6 +450,7 @@ export interface AgentSpec {
   /** `system`, `user` (the person's own) or an IANA zone, for `{{current_time}}`. */
   time_zone?: string;
   model_profile_id?: string | null;
+  model_credential_mode?: "organization" | "personal";
   model_settings: ModelSettingsSpec;
   capabilities: CapabilityBindingSpec[];
   collection_ids: string[];
@@ -611,6 +613,7 @@ export interface Agent {
    * Read off the frozen spec, not the draft; null for a draft agent and when the
    * profile has been deleted. Listing only.
    */
+  personal_model_key?: boolean;
   published_model?: PublishedModel | null;
   /** Enabled bindings from the frozen version; absent on older servers. */
   published_capabilities?: string[] | null;
@@ -642,6 +645,12 @@ export interface Agent {
 
 export interface AgentDetail extends Agent {
   draft_spec: AgentSpec;
+  draft_revision: string;
+}
+
+export interface AgentDraftUpdate {
+  spec: AgentSpec;
+  expected_revision: string;
 }
 
 /**
@@ -901,6 +910,7 @@ export interface JsonSchemaProperty {
   default?: unknown;
   minimum?: number;
   maximum?: number;
+  "x-percent"?: boolean;
   maxLength?: number;
   enum?: unknown[];
   /**

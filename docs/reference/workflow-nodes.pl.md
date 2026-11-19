@@ -1,5 +1,5 @@
 ---
-source_sha: "5a1c3230cf70"
+source_sha: "b5a555f17ceb"
 ---
 
 # Węzły workflow { #workflow-nodes }
@@ -381,6 +381,20 @@ zamienić, kończy się błędem `MAPPING_COERCION_FAILED` z nazwą pola.
 
 ::: app.workflows.nodes.data_map._handler.FieldMapping
 
+## data.value { #data-value }
+
+**Data** przechowuje jedną wartość dla kolejnych kroków: obiekt, listę albo
+pojedynczą liczbę, tekst lub wartość logiczną. Wpisz ją jako JSON albo podepnij
+w całości pod wynik wcześniejszego kroku. Krok przekazuje ją bez zmian jako
+`value`, a kolejny krok podpina całą wartość albo ścieżkę w niej, na przykład
+`value.customer.email`.
+
+Wartość jest ustawiana raz na run i nigdy nie jest nadpisywana. Wynik kroku jest
+ustalony w chwili jego zakończenia, więc żaden kolejny krok nie może go zmienić:
+Data to nazwana stała, a nie zmienna. Aby zmienić wartość, dodaj krok, który
+zbuduje z niej nową. Aby zebrać wartości z elementów pętli, użyj `loop.yield`.
+Testowy run kroku Data bez wartości kończy się błędem `DATA_NOT_SET`.
+
 ## data.filter i data.combine { #data-filter-and-data-combine }
 
 **Filter a list** zostawia te elementy powiązanej listy, dla których spełniony jest
@@ -715,15 +729,9 @@ do jednego kroku zapisu.
 
 ## Decyzje { #decisions }
 
-Trzy kroki zadają Jev od TypeSafe typowane pytanie o powiązany `text`, z kluczem
-API TypeSafe z vaulta. Jev nie pisze tekstu: odpowiada na pytanie z pewnością od 0
-do 1, w jednym żądaniu, i może odpowiedzieć tylko jedną z odpowiedzi, na które krok
-pozwala. Poniżej `min_confidence` kroku wychodzi on portem `unsure`, więc to
-workflow decyduje, co człowiek albo agent zrobi z wątpliwym przypadkiem.
+Trzy kroki zadają natywnemu modelowi decyzyjnemu typowane pytanie o wejściowy `text`. Wybierz profil modelu z dostawcą, kluczem z sejfu i endpointem. Istniejące konfiguracje z kluczem TypeSafe i modelem Jev nadal wczytują się bez zmian. Możliwości dostawcy określają akceptowane rodzaje pytań.
 
-`decide.*` wywołuje wyłącznie hostowanego Jev od TypeSafe. Wątpliwe przypadki na
-modelu hostowanym u siebie kieruj przez `ai.classify` z `min_confidence`, który
-wychodzi portem `unsure` tak samo.
+Model zwraca odpowiedź i pewność. Poniżej `min_confidence` krok wybiera `unsure`; workflow może przekazać sprawę dalej lub wybrać inną ścieżkę. Profile natywne używają OpenAI, Google, OpenRouter, TypeSafe albo własnego endpointu System One przez Pydantic AI. Dostępność i różnicę względem ocen LLM opisują [modele decyzyjne](../models.md#decision-models).
 
 | Krok | Pyta | Wychodzi portem |
 |---|---|---|
@@ -731,12 +739,7 @@ wychodzi portem `unsure` tak samo.
 | `decide.choose` | która z maksymalnie 255 opcji pasuje | `out` z `choice` albo `unsure` |
 | `decide.score` | gdzie tekst leży na skali od 2 do 10 poziomów | `out` ze `score` albo `unsure` |
 
-Klucz jest sprawdzany przy publikacji i odczytywany ponownie przy każdym runie.
-Klucz, którego już nie ma albo nie jest udostępniony, kończy krok błędem
-`SECRET_NOT_USABLE`, model, który nie odpowiada, błędem `DECISION_FAILED`,
-ponawianym zgodnie z polityką kroku, a wdrożenie zbudowane bez extra `browser`
-błędem `DECISION_MODEL_UNAVAILABLE`. Merge może połączyć gałęzie decyzji tak jak
-gałęzie kroku If.
+Klucze i dostęp sprawdzamy przy publikacji i ponownie przy każdym wykonaniu. Usunięty dawny klucz daje `SECRET_NOT_USABLE`, a profil bez natywnego API — `DECISION_MODEL_REQUIRED`. Błędy dostawcy dają `DECISION_FAILED` zgodnie z polityką ponowień kroku. Koszt wchodzi do budżetu workflow i organizacji. Merge może połączyć gałęzie decyzji.
 
 ::: app.workflows.nodes._decide.DecisionConfig
 
@@ -1012,8 +1015,11 @@ Poczta nie ma klucza idempotencji, więc ponowiony krok wysyła ponownie.
 tego, co run ma zrobić, a potem idzie dalej przez `approved` albo `rejected`.
 Zatwierdzający czyta `title` kroku i powiązane z nim `details` w zakładce
 **Approvals** w Activity albo przez `GET /api/v1/workflow-approvals`.
-`approvers` wskazuje, kto może zdecydować, i ci ludzie dostają powiadomienie w
-aplikacji; gdy lista jest pusta, może każdy z `approvals:decide`. Po
+`approvers` i `approver_groups` wskazują, kto może zdecydować: te osoby i członkowie
+grup z `approvals:decide` ([grupy akceptujące](../governance.md#approval-groups)).
+Dostają powiadomienie w aplikacji. Gdy obie listy są puste, może każdy z
+`approvals:decide` i wszyscy oni dostają powiadomienie. Prośba trafia też na początek Inboxu każdego, kto może ją
+rozstrzygnąć. Po
 `timeout_hours` prośba wygasa, a krok wychodzi przez `rejected` z
 `decision: "expired"`. Anulowanie runa anuluje jego prośby, tak samo jak anulowanie workflowu, który ten run wywołał. Każdy przebieg kroku
 pyta raz, więc ponowienie ani iteracja pętli nigdy nie pytają dwa razy o to samo.
@@ -1300,6 +1306,8 @@ może utworzyć swoją tabelę przy pierwszym uruchomieniu, a potem jej używać
 pytania wychodzą dokładnie jednym portem, a `logic.merge` może z powrotem
 połączyć gałęzie.
 
+`table.record.exists` i `table.record.query` przyjmują w zapisanych filtrach etykiety opcji select obok identyfikatorów. Rozwiązują etykiety według bieżącej tabeli przed zapytaniem; nieznane lub niejednoznaczne etykiety nadal powodują błąd walidacji.
+
 ::: app.workflows.nodes.table_list._handler.TableListOutput
 
 ::: app.workflows.nodes.table_describe._handler.TableDescribeOutput
@@ -1402,6 +1410,7 @@ wybierz runtime bez sieci.
 | Zadanie przekroczyło `timeout_seconds` | `PYTHON_SANDBOX_TIMEOUT`, sesja wyczyszczona |
 | Brak używalnego połączenia `sandboxd` | `SANDBOX_UNAVAILABLE` |
 | Zapisał więcej niż 20 plików albo 100 MB albo wypisał więcej niż 10 MB | `PYTHON_OUTPUT_TOO_LARGE`, zmierzone w sandboksie, zanim cokolwiek zostanie pobrane, a sesja wyczyszczona |
+| Host odpowiedział, ale nie uruchomił sandboxa - nie może pisać do katalogu workspace albo obraz się nie zbudował | `SANDBOX_START_FAILED` z bezpieczną diagnozą; surowa odpowiedź pozostaje w logach hosta, ponawiane |
 | Nie udało się połączyć z hostem | `SANDBOX_UNREACHABLE`, ponawiane |
 
 ::: app.workflows.nodes.code_python_simple._handler.PythonSimpleConfig

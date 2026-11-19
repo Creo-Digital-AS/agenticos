@@ -311,6 +311,7 @@ export default function WorkflowsPage() {
           <ErrorState cta={{ label: tc("retry"), onClick: () => void refetch() }} />
         ) : list.matched === 0 ? (
           <ListCardEmpty
+            onClearFilters={filtersActive ? clearFilters : undefined}
             icon={Workflow}
             title={filtersActive ? t("nothingMatches") : t("noWorkflowsYet")}
             description={
@@ -320,7 +321,19 @@ export default function WorkflowsPage() {
                   ? t("createFirst")
                   : t("nobodyHasShared")
             }
-            cta={filtersActive ? { label: t("clearFilter"), onClick: clearFilters } : undefined}
+            cta={
+              filtersActive
+                ? { label: t("clearFilter"), onClick: clearFilters }
+                : canCreate
+                  ? {
+                      label: t("newWorkflow"),
+                      onClick: () => {
+                        setInitial(undefined);
+                        setCreateOpen(true);
+                      },
+                    }
+                  : undefined
+            }
           />
         ) : (
           <div className="space-y-4">
